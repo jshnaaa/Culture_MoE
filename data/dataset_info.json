@@ -1,4 +1,67 @@
 {
+    "CulturalBench-Hard": {
+    "file_name": "CulturalBench-Hard_v2.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "prompt_question_country",
+      "query": "prompt_option",
+      "response": "answer"
+    }
+  },
+  "CulturalBench-Hard_train": {
+    "file_name": "CulturalBench-Hard_train.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "prompt_question_country",
+      "query": "prompt_option",
+      "response": "answer"
+    }
+  },
+  "CulturalBench-Hard_test": {
+    "file_name": "CulturalBench-Hard_test.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "prompt_question_country",
+      "query": "prompt_option",
+      "response": "answer"
+    }
+  },
+  "culturebank_tiktok": {
+    "file_name": "culturebank_tiktok_v2.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "background",
+      "query": "eval_question",
+      "response": ""
+    }
+  },
+  "global_opinions": {
+    "file_name": "global_opinions_v2.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "question_source",
+      "query": "options",
+      "response": "selections"
+    }
+  },
+  "global_opinions_train": {
+    "file_name": "global_opinions_train.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "prompt",
+      "query": "options",
+      "response": "selections"
+    }
+  },
+  "global_opinions_test": {
+    "file_name": "global_opinions_test.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "prompt",
+      "query": "options",
+      "response": "selections"
+    }
+  },
   "identity": {
     "file_name": "identity.json"
   },

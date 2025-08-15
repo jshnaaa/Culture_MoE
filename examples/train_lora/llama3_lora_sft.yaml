@@ -1,16 +1,17 @@
 ### model
-model_name_or_path: meta-llama/Meta-Llama-3-8B-Instruct
+#model_name_or_path: meta-llama/Meta-Llama-3-8B-Instruct
+model_name_or_path: ../../Meta-Llama-3.1-8B-Instruct
 trust_remote_code: true
 
 ### method
 stage: sft
 do_train: true
 finetuning_type: lora
-lora_rank: 8
+lora_rank: 8 # 低秩矩阵的秩大小
 lora_target: all
 
 ### dataset
-dataset: identity,alpaca_en_demo
+dataset: identity,alpaca_en_demo # 改成自己的数据集
 template: llama3
 cutoff_len: 2048
 max_samples: 1000
@@ -19,10 +20,10 @@ preprocessing_num_workers: 16
 dataloader_num_workers: 4
 
 ### output
-output_dir: saves/llama3-8b/lora/sft
-logging_steps: 10
-save_steps: 500
-plot_loss: true
+output_dir: saves/Llama3_1-8B_Instruct/lora/sft #模型输出路径
+logging_steps: 10 # 每隔多少步记录一次 训练日志
+save_steps: 500 # 每隔多少步保存一次 模型检查点
+plot_loss: true # 是否绘制 损失曲线
 overwrite_output_dir: true
 save_only_model: false
 report_to: none  # choices: [none, wandb, tensorboard, swanlab, mlflow]
@@ -36,7 +37,7 @@ lr_scheduler_type: cosine
 warmup_ratio: 0.1
 bf16: true
 ddp_timeout: 180000000
-resume_from_checkpoint: null
+resume_from_checkpoint: null # 设定是否从上次训练的 检查点 恢复训练。如果为 null，表示从头开始训练。
 
 ### eval
 # eval_dataset: alpaca_en_demo
