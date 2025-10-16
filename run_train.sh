@@ -1,0 +1,1 @@
+python examples/train_classification.py examples/classification_config.json

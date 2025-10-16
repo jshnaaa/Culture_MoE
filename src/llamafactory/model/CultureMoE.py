@@ -99,9 +99,6 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             nn.Linear(args.classification_hidden_dim, args.num_classes)
         )
 
-        # 6. 输出映射
-        self.output_map = {0: "no", 1: "neutral", 2: "yes"}
-
     # 添加 generate 方法
     def generate(self, input_ids, attention_mask=None, **kwargs):
         return self.llama_model.generate(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
