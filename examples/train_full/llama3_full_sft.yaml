@@ -1,6 +1,7 @@
 ### model
-model_name_or_path: meta-llama/Meta-Llama-3-8B-Instruct
+model_name_or_path: /root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct
 trust_remote_code: true
+use_custom_llama: true  # 新增的参数
 
 ### method
 stage: sft
@@ -9,18 +10,18 @@ finetuning_type: full
 deepspeed: examples/deepspeed/ds_z3_config.json  # choices: [ds_z0_config.json, ds_z2_config.json, ds_z3_config.json]
 
 ### dataset
-dataset: identity,alpaca_en_demo
+dataset: CulturalBench-Hard_train
 template: llama3
 cutoff_len: 2048
-max_samples: 1000
+max_samples: 1000000000
 overwrite_cache: true
 preprocessing_num_workers: 16
 dataloader_num_workers: 4
 
 ### output
-output_dir: saves/llama3-8b/full/sft
+output_dir: /root/autodl-fs/saves/llama3.1-8b/lora/sft
 logging_steps: 10
-save_steps: 500
+save_steps: 1500
 plot_loss: true
 overwrite_output_dir: true
 save_only_model: false
@@ -30,7 +31,7 @@ report_to: none  # choices: [none, wandb, tensorboard, swanlab, mlflow]
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 2
 learning_rate: 1.0e-5
-num_train_epochs: 3.0
+num_train_epochs: 1.0
 lr_scheduler_type: cosine
 warmup_ratio: 0.1
 bf16: true

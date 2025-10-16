@@ -103,9 +103,36 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
 
         return super()._get_train_sampler(*args, **kwargs)
 
-    @override
+    label_map = {"no": 0, "neutral": 1, "yes": 2}  # 标签映射字典
+
     def compute_loss(self, model, inputs, *args, **kwargs):
-        return super().compute_loss(model, inputs, *args, **kwargs)
+        print("custom_compute_loss\n")
+        # 获取模型输出
+        logits_avg = model(**inputs)
+        print("computeloss_logits_avg: ", logits_avg)
+        # logits = outputs.logits  # 假设outputs.logits是 [B, L, num_classes]
+        
+        # 对logits进行平均
+        # logits_avg = logits.mean(dim=1)  # [B, num_classes]
+        
+        # 获取标签并进行映射
+        labels = inputs.get("labels")
+        if labels is not None:
+            # 将标签从字符串转换为整数
+            print("before labels: ", labels)
+            labels = torch.tensor([self.label_map[label] for label in labels]).to(logits_avg.device)
+            print("after label mapping:", labels)
+
+        # 使用CrossEntropyLoss计算损失
+        loss_fn = nn.CrossEntropyLoss()
+        loss = loss_fn(logits_avg, labels)
+        
+        return loss
+    
+    @override
+    # def compute_loss(self, model, inputs, *args, **kwargs):
+    #     print("sft_super().compute_loss\n")
+    #     return super().compute_loss(model, inputs, *args, **kwargs)
 
     @override
     def prediction_step(
@@ -124,6 +151,13 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
             labels = inputs.pop("labels", None)
         else:
             labels = inputs.get("labels")
+
+        # 添加标签转换步骤
+        # if labels is not None:
+        #     # 将标签从字符串转换为整数
+        #     print("before labels: ", labels)
+        #     labels = torch.tensor([self.label_map[label] for label in labels])
+        #     print("after labels: ", labels)
 
         loss, generated_tokens, _ = super().prediction_step(
             model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys, **gen_kwargs

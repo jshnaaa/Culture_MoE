@@ -158,7 +158,13 @@ def patch_model(
     is_trainable: bool,
     add_valuehead: bool,
 ) -> None:
-    gen_config = model.generation_config  # check and fix generation config
+    # gen_config = model.generation_config  # check and fix generation config
+    # 新增：检查 generation_config 是否存在
+    if hasattr(model, 'generation_config'):
+        gen_config = model.generation_config  # check and fix generation config
+    else:
+        gen_config = None  # 如果没有 generation_config，则设置为 None
+    
     if not gen_config.do_sample and (
         (gen_config.temperature is not None and gen_config.temperature != 1.0)
         or (gen_config.top_p is not None and gen_config.top_p != 1.0)

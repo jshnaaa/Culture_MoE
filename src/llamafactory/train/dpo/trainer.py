@@ -308,6 +308,7 @@ class CustomDPOTrainer(DPOTrainer):
         self, model: "PreTrainedModel", inputs: dict[str, "torch.Tensor"], return_outputs: bool = False, **kwargs
     ) -> Union["torch.Tensor", tuple["torch.Tensor", list["torch.Tensor"]]]:
         r"""Subclass and override to accept extra kwargs."""
+        print("dpo_super().compute_loss\n")
         return super().compute_loss(model, inputs, return_outputs)
 
     @override

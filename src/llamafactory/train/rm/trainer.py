@@ -95,6 +95,7 @@ class PairwiseTrainer(Trainer):
         Note that the first element will be removed from the output tuple.
         See: https://github.com/huggingface/transformers/blob/v4.40.0/src/transformers/trainer.py#L3842
         """
+        print("rm_compute_loss\n")
         _, _, values = model(**inputs, output_hidden_states=True, return_dict=True, use_cache=False)
         batch_size = inputs["input_ids"].size(0) // 2
         chosen_masks, rejected_masks = torch.split(inputs["attention_mask"], batch_size, dim=0)

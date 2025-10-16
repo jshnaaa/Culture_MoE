@@ -384,6 +384,8 @@ class ModelArguments(
 
     The class on the most right will be displayed first.
     """
+    # 新增
+    use_custom_llama: bool = field(default=False, metadata={"help": "Whether to use a custom Llama model."})
 
     compute_dtype: Optional[torch.dtype] = field(
         default=None,

@@ -209,6 +209,10 @@ def get_ray_args(args: Optional[Union[dict[str, Any], list[str]]] = None) -> Ray
 def get_train_args(args: Optional[Union[dict[str, Any], list[str]]] = None) -> _TRAIN_CLS:
     model_args, data_args, training_args, finetuning_args, generating_args = _parse_train_args(args)
 
+    # 如果需要，使用 use_custom_llama 参数来做其他操作
+    if model_args.use_custom_llama:
+        logger.info("Using custom Llama model.")
+
     # Setup logging
     if training_args.should_log:
         _set_transformers_logging()

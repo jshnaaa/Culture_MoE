@@ -227,6 +227,19 @@ def _get_dataset_processor(
     return dataset_processor_class(template=template, tokenizer=tokenizer, processor=processor, data_args=data_args)
 
 
+#自定义
+# def _process_output(output):
+#     """自定义数据处理函数，将 'TRUE' 转为 1，'FALSE' 转为 0"""
+#     # 打印出类型和值，帮助调试
+#     print(f"Processing output: {output} (Type: {type(output)})")
+
+#     if output == "TRUE":
+#         return 1
+#     elif output == "FALSE":
+#         return 0
+#     else:
+#         raise ValueError(f"Unexpected output value: {output}")
+
 def _get_preprocessed_dataset(
     dataset: Optional[Union["Dataset", "IterableDataset"]],
     data_args: "DataArguments",
@@ -253,13 +266,53 @@ def _get_preprocessed_dataset(
             desc="Running tokenizer on dataset",
         )
 
+    # 自定义数据处理：在 preprocessing 阶段处理 output 字段，以下是culturebench数据集的处理
+    # def custom_preprocess(example):
+    #     # 打印调试信息
+    #     print(f"Processing example: {example['output']}")
+
+    #     example['output'] = _process_output(example['output'])  # 转换 'TRUE'/'FALSE' 为 1/0
+    #     return example
+    
     dataset = dataset.map(
-        dataset_processor.preprocess_dataset,
+        # custom_preprocess(dataset_processor.preprocess_dataset),  # 执行自定义处理
+        dataset_processor.preprocess_dataset, # 原代码
         batched=True,
         batch_size=data_args.preprocessing_batch_size,
         remove_columns=column_names,
         **kwargs,
     )
+
+    # # 自定义数据处理：在 preprocessing 阶段处理输入字段，以下是normad_mask数据集的处理
+    # def custom_preprocess(example):
+    #     # 将数据传递给不同的专家
+    #     shared_input = {  # 共享专家输入
+    #         'Background_MASK': example.get('Background_MASK'),
+    #         'Explanation_MASK': example.get('Explanation_MASK')
+    #     }
+
+    #     router_input = {  # 路由专家输入
+    #         'Background': example.get('Background'),
+    #         'Explanation': example.get('Explanation')
+    #     }
+
+    #     # 将分配好的输入存入样本
+    #     example['shared_input'] = shared_input
+    #     example['router_input'] = router_input
+        
+    #     # 如果需要将其他字段（如 'Gold Label'）处理或转化，可以在这里添加
+    #     # 如果有目标标签字段，也可以在这里进行转换（比如 'Gold Label' 转为类别 0 或 1）
+        
+    #     return example
+
+    # # 应用自定义数据处理函数
+    # dataset = dataset.map(
+    #     custom_preprocess,
+    #     batched=True,
+    #     batch_size=data_args.preprocessing_batch_size,
+    #     remove_columns=column_names,
+    #     **kwargs,
+    # )
 
     if training_args.should_log:
         try:

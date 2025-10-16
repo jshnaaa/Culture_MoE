@@ -1,4 +1,28 @@
 {
+    "CulturalBench-Hard": {
+    "file_name": "/root/autodl-fs/CulturalBench-Hard_v2.json"
+  },
+  "CulturalBench-Hard_train": {
+    "file_name": "/root/autodl-fs/CulturalBench-Hard_train.json"
+  },
+  "CulturalBench-Hard_test": {
+    "file_name": "/root/autodl-fs/CulturalBench-Hard_test.json"
+  },
+  "culturebank_tiktok_test": {
+    "file_name": "/root/autodl-fs/culturebank_v2_test.json"
+  },
+  "global_opinions": {
+    "file_name": "/root/autodl-fs/global_opinions_v2.json"
+  },
+  "global_opinions_train": {
+    "file_name": "/root/autodl-fs/global_opinions_llama_train.json"
+  },
+  "global_opinions_test": {
+    "file_name": "/root/autodl-fs/global_opinions_pad_test.json"
+  },
+  "normad_ed": {
+    "file_name": "/root/autodl-fs/normad_ed.json"
+  },
   "identity": {
     "file_name": "identity.json"
   },

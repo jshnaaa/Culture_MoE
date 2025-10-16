@@ -1,27 +1,33 @@
 ### model
-model_name_or_path: meta-llama/Meta-Llama-3-8B-Instruct
+model_name_or_path: /root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct
 trust_remote_code: true
+use_custom_llama: true  # 新增的参数
 
 ### method
 stage: sft
 do_train: true
 finetuning_type: lora
 lora_rank: 8
-lora_target: all
+#lora_target: llama_model #"attention, ffn"  #q_proj, k_proj, v_proj, o_proj #all
+lora_target:
+  - embed_tokens  # 对 embed_tokens 层应用 LoRA
+  - layers.*.self_attn.q_proj  # 对每个 decoder 层的 self_attn.q_proj 应用 LoRA
+  - layers.*.self_attn.k_proj  # 对每个 decoder 层的 self_attn.k_proj 应用 LoRA
+  - layers.*.self_attn.v_proj  # 对每个 decoder 层的 self_attn.v_proj 应用 LoRA
 
 ### dataset
-dataset: identity,alpaca_en_demo
+dataset: normad_ed # CulturalBench-Hard_train
 template: llama3
 cutoff_len: 2048
-max_samples: 1000
+max_samples: 1000000000
 overwrite_cache: true
 preprocessing_num_workers: 16
 dataloader_num_workers: 4
 
 ### output
-output_dir: saves/llama3-8b/lora/sft
+output_dir: /root/autodl-fs/saves/llama3.1-8b/lora/sft
 logging_steps: 10
-save_steps: 500
+save_steps: 1500
 plot_loss: true
 overwrite_output_dir: true
 save_only_model: false
@@ -39,8 +45,8 @@ ddp_timeout: 180000000
 resume_from_checkpoint: null
 
 ### eval
-# eval_dataset: alpaca_en_demo
-# val_size: 0.1
+# eval_dataset: CulturalBench-Hard_test
+# # val_size: 0.1
 # per_device_eval_batch_size: 1
 # eval_strategy: steps
 # eval_steps: 500

@@ -654,6 +654,7 @@ def _dft_cross_entropy(
     num_items_in_batch: Optional[torch.Tensor] = None,
     ignore_index: int = -100,
 ) -> torch.Tensor:
+    print("_dft_cross_entropy\n")
     per_token_loss = torch.nn.functional.cross_entropy(source, target, ignore_index=ignore_index, reduction="none")
     valid_mask = target != ignore_index
     if not valid_mask.any():

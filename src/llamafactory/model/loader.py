@@ -153,26 +153,46 @@ def load_model(
         init_kwargs["config"] = config
         init_kwargs["pretrained_model_name_or_path"] = model_args.model_name_or_path
 
-        if model_args.mixture_of_depths == "load":
-            model = load_mod_pretrained_model(**init_kwargs)
-        else:
-            if type(config) in AutoModelForImageTextToText._model_mapping.keys():  # image-text
-                load_class = AutoModelForImageTextToText
-            elif type(config) in AutoModelForVision2Seq._model_mapping.keys():  # image-text
-                load_class = AutoModelForVision2Seq
-            elif type(config) in AutoModelForSeq2SeqLM._model_mapping.keys():  # audio-text
-                load_class = AutoModelForSeq2SeqLM
-            elif type(config) in AutoModelForTextToWaveform._model_mapping.keys():  # audio hack for qwen2_5_omni
-                load_class = AutoModelForTextToWaveform
-            else:
-                load_class = AutoModelForCausalLM
+        # 判断是否使用自定义 LlamaSharedRouterExpertsModel 模型，新增
+        if model_args.use_custom_llama:  # 假设用 model_args.use_custom_llama 来控制是否加载自定义模型
+            # 加载预训练的 LLaMA 模型作为基模型
+            # base_model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path, **init_kwargs)
+            # 确保 init_kwargs 中不再传递 'pretrained_model_name_or_path'
+            init_kwargs.pop('pretrained_model_name_or_path', None)
+            base_model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path, **init_kwargs)
 
-            if model_args.train_from_scratch:
-                model = load_class.from_config(config, trust_remote_code=model_args.trust_remote_code)
+            # 初始化自定义的 LlamaSharedRouterExpertsModel 模型
+            from .CultureMoE import LlamaSharedRouterExpertsModel  # 导入自定义模型
+            from .moe_args import ModelArgs
+            my_args = ModelArgs()
+            
+            model = LlamaSharedRouterExpertsModel(
+                llama_model=base_model, 
+                config=base_model.config,
+                args=my_args  # 将所有参数传递给模型
+            )
+        
+        else: # 新增
+            if model_args.mixture_of_depths == "load":
+                model = load_mod_pretrained_model(**init_kwargs)
             else:
-                model = load_class.from_pretrained(**init_kwargs)
-                if getattr(model.config, "model_type", None) == "qwen2_5_omni":
-                    model = model.thinker  # use part of Omni model
+                if type(config) in AutoModelForImageTextToText._model_mapping.keys():  # image-text
+                    load_class = AutoModelForImageTextToText
+                elif type(config) in AutoModelForVision2Seq._model_mapping.keys():  # image-text
+                    load_class = AutoModelForVision2Seq
+                elif type(config) in AutoModelForSeq2SeqLM._model_mapping.keys():  # audio-text
+                    load_class = AutoModelForSeq2SeqLM
+                elif type(config) in AutoModelForTextToWaveform._model_mapping.keys():  # audio hack for qwen2_5_omni
+                    load_class = AutoModelForTextToWaveform
+                else:
+                    load_class = AutoModelForCausalLM
+
+                if model_args.train_from_scratch:
+                    model = load_class.from_config(config, trust_remote_code=model_args.trust_remote_code)
+                else:
+                    model = load_class.from_pretrained(**init_kwargs)
+                    if getattr(model.config, "model_type", None) == "qwen2_5_omni":
+                        model = model.thinker  # use part of Omni model
 
         if model_args.mixture_of_depths == "convert":
             model = convert_pretrained_model_to_mod(model, config, model_args)

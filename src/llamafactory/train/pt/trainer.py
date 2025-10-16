@@ -78,4 +78,5 @@ class CustomTrainer(Trainer):
 
     @override
     def compute_loss(self, model, inputs, *args, **kwargs):
+        print("pt_super().compute_loss\n")
         return super().compute_loss(model, inputs, *args, **kwargs)
