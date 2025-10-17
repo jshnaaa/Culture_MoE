@@ -211,8 +211,6 @@ def run_classification_training(args: ClassificationTrainingArguments):
     model = model.half()
 
     # 冻结 LLaMA 基础模型参数（可选）
-    if args.freeze_llama:
-        print("Freezing LLaMA base model parameters...")
         for param in model.llama_model.parameters():
             param.requires_grad = False
 

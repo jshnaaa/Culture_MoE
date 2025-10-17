@@ -94,12 +94,8 @@ def test_model_forward():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"\n✅ Using device: {device}")
 
-    # 加载 tokenizer
     tokenizer = AutoTokenizer.from_pretrained("/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct", trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
 
-    # 创建测试数据
     test_texts = [
         "Do you agree with this statement?",
         "What is your opinion on this matter?",
