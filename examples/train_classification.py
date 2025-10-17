@@ -1,16 +1,13 @@
+#!/usr/bin/env python3
 # examples/train_classification.py
-# !/usr/bin/env python3
-"""
-三分类任务训练脚本
-使用 CultureMoE 模型进行 yes/neutral/no 分类
-"""
 
 import sys
 import os
 
 # 添加项目路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from dataclasses import dataclass
 from transformers import HfArgumentParser
 from src.llamafactory.train.classification.workflow import (
     ClassificationTrainingArguments,

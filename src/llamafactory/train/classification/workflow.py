@@ -10,7 +10,6 @@ from transformers import (
     DataCollatorWithPadding,
     HfArgumentParser
 )
-from transformers import TrainingArguments
 
 from ...model.CultureMoE import LlamaSharedRouterExpertsModel
 from ...model.moe_args import ModelArgs
@@ -30,7 +29,7 @@ class ClassificationTrainingArguments:
 
     # 数据参数
     train_file: str = field(
-        metadata={"help": "训练数据文件路径 (json/jsonl)，output 字段必须是 int 类型"}
+        metadata={"help": "训练数据文件路径 (json/jsonl)"}
     )
     val_file: Optional[str] = field(
         default=None,
@@ -64,23 +63,23 @@ class ClassificationTrainingArguments:
 
     # 训练参数
     output_dir: str = field(
-        default="/root/autodl-fs/output/classi_$(date +%Y%m%d_%H%M%S)",
+        default="./output/classification",
         metadata={"help": "输出目录"}
     )
     num_train_epochs: int = field(default=3, metadata={"help": "训练轮数"})
-    per_device_train_batch_size: int = field(default=8, metadata={"help": "训练批次大小"})
-    per_device_eval_batch_size: int = field(default=16, metadata={"help": "评估批次大小"})
+    per_device_train_batch_size: int = field(default=4, metadata={"help": "每个设备的训练批次大小"})
+    per_device_eval_batch_size: int = field(default=8, metadata={"help": "每个设备的评估批次大小"})
     learning_rate: float = field(default=2e-5, metadata={"help": "学习率"})
     weight_decay: float = field(default=0.01, metadata={"help": "权重衰减"})
     warmup_ratio: float = field(default=0.1, metadata={"help": "warmup 比例"})
     logging_steps: int = field(default=10, metadata={"help": "日志记录步数"})
-    save_steps: int = field(default=1000, metadata={"help": "模型保存步数"})
+    save_steps: int = field(default=500, metadata={"help": "模型保存步数"})
     eval_steps: int = field(default=500, metadata={"help": "评估步数"})
     save_total_limit: int = field(default=3, metadata={"help": "最多保存的检查点数量"})
 
     # GPU 优化参数
     fp16: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "是否使用 FP16 混合精度训练"}
     )
     bf16: bool = field(
@@ -88,11 +87,11 @@ class ClassificationTrainingArguments:
         metadata={"help": "是否使用 BF16 混合精度训练（推荐用于 A100）"}
     )
     gradient_accumulation_steps: int = field(
-        default=1,
-        metadata={"help": "梯度累积步数"}
+        default=4,
+        metadata={"help": "梯度累积步数，增大可以模拟更大的 batch size"}
     )
     gradient_checkpointing: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "是否使用梯度检查点（节省显存但会降低速度）"}
     )
     dataloader_num_workers: int = field(
@@ -106,28 +105,48 @@ class ClassificationTrainingArguments:
 
     # 其他参数
     seed: int = field(default=42, metadata={"help": "随机种子"})
+    evaluation_strategy: str = field(
+        default="steps",
+        metadata={"help": "评估策略: 'steps' 或 'epoch'"}
+    )
 
-    evaluation_strategy: Optional[str] = field(
-        default="steps",  # 适合你的需求的默认值
-        metadata={"help": "策略, 'steps' 或 'epoch' 等"}
+    # ✅ 多卡训练参数
+    local_rank: int = field(
+        default=-1,
+        metadata={"help": "分布式训练的 local rank，由 torch.distributed.launch 自动设置"}
     )
 
 
 def run_classification_training(args: ClassificationTrainingArguments):
     """
     运行分类任务训练
-    所有操作在 GPU 上进行
+    支持单卡和多卡训练
 
     Args:
         args: 训练参数
     """
-    # 1. 设置随机种子
+    # ✅ 1. 设置分布式训练环境
+    local_rank = args.local_rank
+    is_distributed = local_rank != -1
+
+    if is_distributed:
+        torch.cuda.set_device(local_rank)
+        torch.distributed.init_process_group(backend='nccl')
+        device = torch.device('cuda', local_rank)
+        print(f"[Rank {local_rank}] Initialized distributed training")
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Running on device: {device}")
+
+    # 2. 设置随机种子
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    # ✅ 2. 加载 tokenizer（在使用之前定义）
-    print(f"Loading tokenizer from {args.model_name_or_path}...")
+    # 3. 加载 tokenizer（只在主进程打印）
+    if not is_distributed or local_rank == 0:
+        print(f"\nLoading tokenizer from {args.model_name_or_path}...")
+
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path,
         trust_remote_code=True
@@ -136,10 +155,12 @@ def run_classification_training(args: ClassificationTrainingArguments):
     # 确保有 pad_token
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-        print(f"Set pad_token to eos_token: {tokenizer.eos_token}")
+        if not is_distributed or local_rank == 0:
+            print(f"Set pad_token to eos_token: {tokenizer.eos_token}")
 
-    # 3. 加载和处理数据
-    print(f"\nLoading and processing data from {args.train_file}...")
+    # 4. 加载和处理数据
+    if not is_distributed or local_rank == 0:
+        print(f"\nLoading and processing data from {args.train_file}...")
 
     if args.val_file:
         # 有单独的验证集
@@ -171,25 +192,26 @@ def run_classification_training(args: ClassificationTrainingArguments):
         train_dataset = data["train"]
         val_dataset = data["validation"]
 
-    print(f"\nTrain dataset size: {len(train_dataset)}")
-    if val_dataset:
-        print(f"Validation dataset size: {len(val_dataset)}")
+    if not is_distributed or local_rank == 0:
+        print(f"\nTrain dataset size: {len(train_dataset)}")
+        if val_dataset:
+            print(f"Validation dataset size: {len(val_dataset)}")
 
-    # 4. 加载基础模型（直接加载到 GPU）
-    print(f"\nLoading base model from {args.model_name_or_path}...")
+    # ✅ 5. 加载基础模型（不使用 device_map，让 Trainer 处理分布式）
+    if not is_distributed or local_rank == 0:
+        print(f"\nLoading base model from {args.model_name_or_path}...")
 
-    # ✅ 使用 device_map="auto" 自动分配到 GPU
+    # ⚠️ 关键：不使用 device_map="auto"，让 DDP 自己管理设备
     llama_model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
         torch_dtype=torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32),
-        device_map="auto",  # auto 自动分配到可用 GPU
         trust_remote_code=True
     )
 
-    print(f"Model loaded on device: {next(llama_model.parameters()).device}")
+    # ✅ 6. 创建 MoE 模型
+    if not is_distributed or local_rank == 0:
+        print("\nCreating CultureMoE model...")
 
-    # 5. 创建 MoE 模型
-    print("\nCreating CultureMoE model...")
     moe_args = ModelArgs(
         num_experts=args.num_experts,
         shared_hidden_dim=args.shared_hidden_dim,
@@ -207,21 +229,30 @@ def run_classification_training(args: ClassificationTrainingArguments):
         config=llama_model.config,
         args=moe_args
     )
-    # 将整个模型转换为 float16
-    model = model.half()
 
-    # 冻结 LLaMA 基础模型参数（可选）
+    # ✅ 冻结 LLaMA 基础模型参数
+    if args.freeze_llama:
         for param in model.llama_model.parameters():
             param.requires_grad = False
+        if not is_distributed or local_rank == 0:
+            print("Frozen LLaMA base model parameters")
+
+    # ✅ 启用梯度检查点（节省显存）
+    if args.gradient_checkpointing:
+        if hasattr(model.llama_model, 'gradient_checkpointing_enable'):
+            model.llama_model.gradient_checkpointing_enable()
+            if not is_distributed or local_rank == 0:
+                print("Enabled gradient checkpointing")
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    print(f"\nModel created successfully!")
-    print(f"Total parameters: {total_params:,}")
-    print(f"Trainable parameters: {trainable_params:,} ({trainable_params / total_params * 100:.2f}%)")
+    if not is_distributed or local_rank == 0:
+        print(f"\nModel created successfully!")
+        print(f"Total parameters: {total_params:,}")
+        print(f"Trainable parameters: {trainable_params:,} ({trainable_params / total_params * 100:.2f}%)")
 
-    # 6. 创建 TrainingArguments
+    # ✅ 7. 创建 TrainingArguments（支持分布式）
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -236,7 +267,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
-        eval_strategy="steps" if val_dataset else "no",
+        evaluation_strategy=args.evaluation_strategy if val_dataset else "no",
         save_strategy="steps",
         save_total_limit=args.save_total_limit,
 
@@ -245,32 +276,40 @@ def run_classification_training(args: ClassificationTrainingArguments):
         metric_for_best_model="f1_macro" if val_dataset else None,
         greater_is_better=True,
 
-        # GPU 优化
+        # ✅ GPU 优化和分布式训练
         fp16=args.fp16,
         bf16=args.bf16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        gradient_checkpointing=args.gradient_checkpointing,
         dataloader_num_workers=args.dataloader_num_workers,
-        dataloader_pin_memory=args.dataloader_pin_memory,  # ✅ 加速 CPU->GPU 传输
+        dataloader_pin_memory=args.dataloader_pin_memory,
+
+        # ✅ 分布式训练关键参数
+        local_rank=local_rank,
+        ddp_find_unused_parameters=False,  # 设为 False 提高性能
+        ddp_backend="nccl",  # 使用 NCCL 后端
 
         # 其他
         remove_unused_columns=False,
-        report_to=["tensorboard"],
+        report_to=["tensorboard"] if (not is_distributed or local_rank == 0) else [],
         seed=args.seed,
 
-        # ✅ GPU 相关优化
-        ddp_find_unused_parameters=False,  # 如果使用多 GPU
-        gradient_checkpointing=args.gradient_checkpointing,  # 如果显存不够可以开启
+        # ✅ 显存优化
+        max_grad_norm=1.0,  # 梯度裁剪
+        optim="adamw_torch",  # 使用 PyTorch 原生 AdamW
     )
 
-    # 7. 创建 Data Collator
+    # 8. 创建 Data Collator
     data_collator = DataCollatorWithPadding(
         tokenizer=tokenizer,
         padding=True,
         max_length=args.max_length
     )
 
-    # 8. 创建 Trainer
-    print("\nCreating trainer...")
+    # 9. 创建 Trainer
+    if not is_distributed or local_rank == 0:
+        print("\nCreating trainer...")
+
     trainer = ClassificationTrainer(
         model=model,
         args=training_args,
@@ -278,43 +317,49 @@ def run_classification_training(args: ClassificationTrainingArguments):
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        compute_metrics=compute_classification_metrics,
+        compute_metrics=compute_classification_metrics if (not is_distributed or local_rank == 0) else None,
     )
 
-    # 9. 开始训练
-    print("\n" + "=" * 60)
-    print("Starting training...")
-    print("=" * 60)
+    # 10. 开始训练
+    if not is_distributed or local_rank == 0:
+        print("\n" + "=" * 60)
+        print("Starting training...")
+        print("=" * 60)
 
-    # 打印 GPU 信息
-    if torch.cuda.is_available():
-        print(f"\nGPU Information:")
-        print(f"  Number of GPUs: {torch.cuda.device_count()}")
-        for i in range(torch.cuda.device_count()):
-            print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
-            print(f"    Memory: {torch.cuda.get_device_properties(i).total_memory / 1024 ** 3:.2f} GB")
+        # 打印 GPU 信息
+        if torch.cuda.is_available():
+            print(f"\nGPU Information:")
+            print(f"  Number of GPUs: {torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+                print(f"    Memory: {torch.cuda.get_device_properties(i).total_memory / 1024 ** 3:.2f} GB")
+
+            if is_distributed:
+                print(f"\n  Using Distributed Data Parallel (DDP)")
+                print(f"  World size: {torch.distributed.get_world_size()}")
 
     train_result = trainer.train()
 
-    # 10. 保存模型
-    print(f"\nSaving model to {args.output_dir}...")
-    trainer.save_model()
-    trainer.save_state()
+    # 11. 保存模型（只在主进程）
+    if not is_distributed or local_rank == 0:
+        print(f"\nSaving model to {args.output_dir}...")
+        trainer.save_model()
+        trainer.save_state()
 
-    # 保存训练指标
-    metrics = train_result.metrics
-    trainer.log_metrics("train", metrics)
-    trainer.save_metrics("train", metrics)
+        # 保存训练指标
+        metrics = train_result.metrics
+        trainer.log_metrics("train", metrics)
+        trainer.save_metrics("train", metrics)
 
-    # 11. 最终评估
-    if val_dataset:
-        print("\nRunning final evaluation...")
-        eval_metrics = trainer.evaluate()
-        trainer.log_metrics("eval", eval_metrics)
-        trainer.save_metrics("eval", eval_metrics)
+        # 12. 最终评估
+        if val_dataset:
+            print("\nRunning final evaluation...")
+            eval_metrics = trainer.evaluate()
+            trainer.log_metrics("eval", eval_metrics)
+            trainer.save_metrics("eval", eval_metrics)
 
-    print("\n" + "=" * 60)
-    print("Training completed successfully! ✅")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print("Training completed successfully! ✅")
+        print("=" * 60)
 
     return trainer
