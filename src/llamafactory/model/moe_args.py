@@ -17,9 +17,9 @@ class ModelArgs:
     experts_hidden_dim: int = 256
     # experts_output_dim: int = 128
     router_hidden_dim: int = 256
-    shared_hidden_dim = 512
-    num_heads = 8
-    classification_hidden_dim = 256
+    shared_hidden_dim: int = 512
+    num_heads: int = 8
+    classification_hidden_dim: int = 256
     num_classes: int = 3  # TRUE/FALSE classification for culturalbench
 
     # LoRA configuration
@@ -36,7 +36,7 @@ class ModelArgs:
     warmup_steps: int = 100
     weight_decay: float = 0.01
     max_grad_norm: float = 0.5
-    dropout = 0.1 
+    dropout: float = 0.1 
 
     # Data parameters
     # max_length: int = 64

@@ -99,9 +99,6 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             nn.Linear(args.classification_hidden_dim, args.num_classes)
         )
 
-        # 6. 输出映射
-        self.output_map = {0: "no", 1: "neutral", 2: "yes"}
-
     # 添加 generate 方法
     def generate(self, input_ids, attention_mask=None, **kwargs):
         return self.llama_model.generate(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
@@ -111,21 +108,25 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         return self.llama_model.prepare_inputs_for_generation(input_ids, **kwargs)
 
     def forward(self, input_ids=None, attention_mask=None, **kwargs):
+        # 确保所有张量都在相同的设备上
+        device = input_ids.device  # 获取输入张量的设备
+        dtype = torch.float16
+
         # step 1：llama 正常 forward
         outputs = self.llama_model(input_ids, attention_mask=attention_mask, output_hidden_states=True)
-        hidden = outputs.hidden_states[-1]  # 最后一层 hidden state
+        hidden = outputs.hidden_states[-1].to(device).to(dtype)  # Ensure hidden states are on the same device
         h_no = hidden  # 保存处理过的 hidden 状态
         h_all = hidden  # 保存所有的 hidden 状态
 
         # Step 2: Shared 层 (对 h_no 进行处理)
-        shared_out = self.shared(h_no)  # [B, L, H]
+        shared_out = self.shared(h_no.to(dtype))  # [B, L, H]
 
         # Step 3: Router (基于 pooled shared 表示)
         pooled = shared_out.mean(dim=1)  # [B, H]
         expert_weights, _ = self.router(pooled)  # [B, E]
 
         # Step 4: Experts 层 (返回 list，每个是 [B, L, H])
-        expert_outs = self.experts_layer(h_all)  # list of len(E)
+        expert_outs = self.experts_layer(h_all.to(dtype))  # list of len(E)
 
         # Step 5: 权重缩放专家输出
         weighted_expert_outs = [
@@ -136,22 +137,14 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         # Step 6: 拼接 shared + 加权专家输出 → KV
         kv = torch.cat([shared_out] + weighted_expert_outs, dim=1)  # [B, (E+1)*L, H]
 
-        # Step 7: Cross-attention (Q=shared_out, KV=shared+experts)
-        # fused = self.cross_attn(query=shared_out, key_value=kv)  # [B, L, H]
-
         # Step 8: 分类 (取最后 token)
-        # final_repr = fused[:, -1, :]  # [B, H]
         final_repr = kv
         logits = self.classifier(final_repr)
-        print("logits: ", logits)
-        print("logits.shape: ", logits.shape)
-        # return logits
 
         # Step 9: 对 logits 进行平均，得到每个样本的平均 logits
         logits_avg = logits.mean(dim=1)  # [B, num_classes]，对所有位置的 logits 进行平均
-        print("logits_avg: ", logits_avg)
-        print("logits_avg.shape: ", logits_avg.shape)
         return logits_avg
+
 
         # # Step 10: 应用 softmax 得到每个类别的概率
         # probs = torch.softmax(logits_avg, dim=-1)  # [B, num_classes]
