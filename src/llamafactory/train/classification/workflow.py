@@ -271,7 +271,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
-        evaluation_strategy=args.evaluation_strategy if val_dataset else "no",
+        eval_strategy=args.evaluation_strategy if val_dataset else "no",
         save_strategy="steps",
         save_total_limit=args.save_total_limit,
 
