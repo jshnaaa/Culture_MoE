@@ -18,7 +18,8 @@ class ClassificationTrainer(Trainer):
             self,
             model: PreTrainedModel,
             inputs: Dict[str, Any],
-            return_outputs: bool = False
+            return_outputs: bool = False,
+            num_items_in_batch: Optional[int] = None  # 忽略
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         重写 loss 计算逻辑
