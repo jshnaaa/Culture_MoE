@@ -7,31 +7,31 @@ from .router import ExpertRouter
 from .moe_args import ModelArgs
 
 
-class CrossAttentionBlock(nn.Module):
-    """ Shared 层输出作为 Q，专家+shared 输出作为 KV """
-
-    def __init__(self, hidden_dim, num_heads=8, dropout=0.1):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(
-            embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True
-        )
-        self.norm1 = nn.LayerNorm(hidden_dim)
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 4, hidden_dim)
-        )
-        self.norm2 = nn.LayerNorm(hidden_dim)
-
-    def forward(self, query, key_value):
-        # Q = shared_out, KV = shared + experts
-        attn_out, _ = self.attn(query, key_value, key_value)
-        x = self.norm1(query + attn_out)
-
-        ffn_out = self.ffn(x)
-        out = self.norm2(x + ffn_out)
-        return out
+# class CrossAttentionBlock(nn.Module):
+#     """ Shared 层输出作为 Q，专家+shared 输出作为 KV """
+#
+#     def __init__(self, hidden_dim, num_heads=8, dropout=0.1):
+#         super().__init__()
+#         self.attn = nn.MultiheadAttention(
+#             embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True
+#         )
+#         self.norm1 = nn.LayerNorm(hidden_dim)
+#         self.ffn = nn.Sequential(
+#             nn.Linear(hidden_dim, hidden_dim * 4),
+#             nn.ReLU(),
+#             nn.Dropout(dropout),
+#             nn.Linear(hidden_dim * 4, hidden_dim)
+#         )
+#         self.norm2 = nn.LayerNorm(hidden_dim)
+#
+#     def forward(self, query, key_value):
+#         # Q = shared_out, KV = shared + experts
+#         attn_out, _ = self.attn(query, key_value, key_value)
+#         x = self.norm1(query + attn_out)
+#
+#         ffn_out = self.ffn(x)
+#         out = self.norm2(x + ffn_out)
+#         return out
 
 
 class LlamaSharedRouterExpertsModel(nn.Module):
@@ -85,6 +85,40 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             nn.Dropout(args.dropout),
             nn.Linear(args.classification_hidden_dim, args.num_classes)
         )
+
+    # ✅ 添加梯度检查点相关方法
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        """
+        启用梯度检查点
+        """
+        if hasattr(self.llama_model, 'gradient_checkpointing_enable'):
+            self.llama_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
+        else:
+            # 兼容旧版本
+            if hasattr(self.llama_model, 'enable_input_require_grads'):
+                self.llama_model.enable_input_require_grads()
+            if hasattr(self.llama_model, 'gradient_checkpointing'):
+                self.llama_model.gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self):
+        """
+        禁用梯度检查点
+        """
+        if hasattr(self.llama_model, 'gradient_checkpointing_disable'):
+            self.llama_model.gradient_checkpointing_disable()
+        else:
+            if hasattr(self.llama_model, 'gradient_checkpointing'):
+                self.llama_model.gradient_checkpointing = False
+
+    def is_gradient_checkpointing(self):
+        """
+        检查是否启用了梯度检查点
+        """
+        if hasattr(self.llama_model, 'is_gradient_checkpointing'):
+            return self.llama_model.is_gradient_checkpointing
+        elif hasattr(self.llama_model, 'gradient_checkpointing'):
+            return self.llama_model.gradient_checkpointing
+        return False
 
     def generate(self, input_ids, attention_mask=None, **kwargs):
         return self.llama_model.generate(input_ids=input_ids, attention_mask=attention_mask, **kwargs)

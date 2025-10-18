@@ -237,12 +237,16 @@ def run_classification_training(args: ClassificationTrainingArguments):
         if not is_distributed or local_rank == 0:
             print("Frozen LLaMA base model parameters")
 
+    if not is_distributed or local_rank == 0:
+        if args.gradient_checkpointing:
+            print("Gradient checkpointing will be enabled by Trainer")
+
     # ✅ 启用梯度检查点（节省显存）
-    if args.gradient_checkpointing:
-        if hasattr(model.llama_model, 'gradient_checkpointing_enable'):
-            model.llama_model.gradient_checkpointing_enable()
-            if not is_distributed or local_rank == 0:
-                print("Enabled gradient checkpointing")
+    # if args.gradient_checkpointing:
+    #     if hasattr(model.llama_model, 'gradient_checkpointing_enable'):
+    #         model.llama_model.gradient_checkpointing_enable()
+    #         if not is_distributed or local_rank == 0:
+    #             print("Enabled gradient checkpointing")
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
