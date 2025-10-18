@@ -81,7 +81,8 @@ class ClassificationTrainer(Trainer):
             labels = inputs.get("labels")
             # 确保 labels 在正确的设备上
             if isinstance(labels, torch.Tensor):
-                labels = labels.to(model.device)
+                model_device = next(model.parameters()).device  # 从模型参数获取设备
+                labels = labels.to(model_device)
         else:
             labels = None
 
