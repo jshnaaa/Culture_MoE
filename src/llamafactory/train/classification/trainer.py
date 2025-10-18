@@ -111,12 +111,12 @@ class ClassificationTrainer(Trainer):
         if prediction_loss_only:
             return (loss, None, None)
 
-        # 转移到 CPU
+        #
         if preds is not None:
-            preds = preds.detach().cpu()
+            preds = preds.detach()
         if labels is not None:
-            labels = labels.detach().cpu()
-        if loss is not None:
-            loss = loss.detach().cpu()
+            labels = labels.detach()
+        # if loss is not None:
+        #     loss = loss.detach().cpu()
 
         return (loss, preds, labels)
