@@ -3,7 +3,7 @@
 # 评估双路输入模型的脚本（三分类 → 二分类）
 
 # ✅ 配置参数
-MODEL_PATH="/root/autodl-fs/output/classi_dual_20251019_131545"  # 训练输出的 checkpoint 目录
+MODEL_PATH="/root/autodl-fs/output/classi_dual_20251019_131545/checkpoint-3000"  # 训练输出的 checkpoint 目录
 BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"  # 原始 LLaMA 模型路径
 TEST_FILE="/root/autodl-fs/CulturalBench_Hard_merge.json"  # 二分类测试集
 OUTPUT_FILE="/root/autodl-fs/eval_results_binary_$(date +%Y%m%d_%H%M%S).json"
