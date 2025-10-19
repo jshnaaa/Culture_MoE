@@ -21,24 +21,57 @@ from src.llamafactory.model.moe_args import ModelArgs
 from src.llamafactory.train.classification.metrics import compute_classification_metrics
 
 
-def load_model(model_path: str, use_lora: bool = True):
+def load_model(model_path: str, base_model_path: str = None, use_lora: bool = True):
     """
     加载训练好的模型
 
     Args:
-        model_path: 模型路径
+        model_path: 训练输出的模型路径（包含 MoE 权重）
+        base_model_path: 原始 LLaMA 模型路径（如果为 None，尝试从 model_path 读取）
         use_lora: 是否使用了 LoRA 微调
     """
     print(f"Loading model from {model_path}...")
 
-    # 加载 tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    # ✅ 尝试从训练输出目录读取 tokenizer，如果失败则使用 base_model_path
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        print("✅ Tokenizer loaded from checkpoint")
+    except Exception as e:
+        if base_model_path:
+            print(f"⚠️  Could not load tokenizer from checkpoint: {e}")
+            print(f"   Loading tokenizer from base model: {base_model_path}")
+            tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+        else:
+            raise ValueError(f"Could not load tokenizer from {model_path} and no base_model_path provided")
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # 加载基础模型
+    # ✅ 尝试从训练输出目录读取配置，确定 base_model_path
+    if base_model_path is None:
+        # 尝试从 trainer_state.json 读取原始模型路径
+        trainer_state_path = os.path.join(model_path, "trainer_state.json")
+        if os.path.exists(trainer_state_path):
+            try:
+                with open(trainer_state_path, 'r') as f:
+                    trainer_state = json.load(f)
+                    # 尝试从训练参数中获取原始模型路径
+                    # 这个路径可能在不同的字段中
+                    print("⚠️  Could not find base model path in trainer_state.json")
+            except Exception as e:
+                print(f"⚠️  Could not read trainer_state.json: {e}")
+
+        # 如果还是找不到，要求用户提供
+        if base_model_path is None:
+            raise ValueError(
+                f"Could not determine base model path from {model_path}. "
+                "Please provide --base_model_path argument."
+            )
+
+    # ✅ 从原始路径加载基础模型
+    print(f"Loading base LLaMA model from {base_model_path}...")
     llama_model = AutoModelForCausalLM.from_pretrained(
-        model_path,
+        base_model_path,
         torch_dtype=torch.float16,
         device_map="auto",
         trust_remote_code=True
@@ -48,13 +81,14 @@ def load_model(model_path: str, use_lora: bool = True):
     if use_lora:
         try:
             from peft import PeftModel
-            print("Loading LoRA weights...")
+            print(f"Loading LoRA weights from {model_path}...")
             llama_model = PeftModel.from_pretrained(
                 llama_model,
                 model_path,
                 is_trainable=False
             )
             # 合并 LoRA 权重以加速推理
+            print("Merging LoRA weights...")
             llama_model = llama_model.merge_and_unload()
             print("✅ LoRA weights loaded and merged")
         except Exception as e:
@@ -230,7 +264,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="评估双路输入分类模型")
     parser.add_argument("--model_path", type=str, required=True,
-                        help="训练好的模型路径")
+                        help="训练好的模型路径（checkpoint 目录）")
+    parser.add_argument("--base_model_path", type=str, default=None,
+                        help="原始 LLaMA 模型路径（如果不提供，会尝试自动检测）")
     parser.add_argument("--test_file", type=str, required=True,
                         help="测试数据文件（需包含 instruction, instruction_mask, input, output 字段）")
     parser.add_argument("--batch_size", type=int, default=8,
@@ -252,7 +288,11 @@ def main():
     print(f"Using GPU: {torch.cuda.get_device_name(0)}\n")
 
     # 加载模型
-    model, tokenizer = load_model(args.model_path, use_lora=args.use_lora)
+    model, tokenizer = load_model(
+        args.model_path,
+        base_model_path=args.base_model_path,
+        use_lora=args.use_lora
+    )
 
     # 评估模型
     metrics = evaluate_model(
