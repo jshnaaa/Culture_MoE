@@ -70,12 +70,24 @@ def load_model(model_path: str, base_model_path: str = None, use_lora: bool = Tr
 
     # ✅ 从原始路径加载基础模型
     print(f"Loading base LLaMA model from {base_model_path}...")
+
+    # ✅ 确定使用的设备（单个 GPU）
+    if torch.cuda.is_available():
+        target_device = "cuda:0"  # 使用第一个 GPU
+        print(f"Using device: {target_device}")
+    else:
+        target_device = "cpu"
+        print("Using device: cpu")
+
     llama_model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
-        torch_dtype=torch.float16,
-        device_map="auto",
+        torch_dtype=torch.float16 if target_device.startswith("cuda") else torch.float32,
+        device_map=None,  # ✅ 不使用 device_map，手动管理设备
         trust_remote_code=True
     )
+
+    # ✅ 手动将模型移到目标设备
+    llama_model = llama_model.to(target_device)
 
     # ✅ 如果使用了 LoRA，加载 LoRA 权重
     if use_lora:
