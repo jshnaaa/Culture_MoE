@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """
 双路输入分类任务评估脚本
-在测试集上评估训练好的模型（支持 instruction + instruction_mask）
+在测试集上评估训练好的模型（支持 instruction + instruction_mask）双路
 """
 
 import json
