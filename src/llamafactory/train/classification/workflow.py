@@ -12,6 +12,7 @@ from transformers import (
     DataCollatorWithPadding
 )
 
+from .callbacks import SaveFullModelCallback
 from .metrics import compute_classification_metrics
 from .trainer import ClassificationTrainer
 from ...data.classification_processor import load_and_process_classification_data
@@ -413,6 +414,15 @@ def run_classification_training(args: ClassificationTrainingArguments):
     if not is_distributed or local_rank == 0:
         print("Creating trainer...")
 
+    # ✅ 创建回调列表
+    callbacks = []
+
+    # ✅ 如果使用了 LoRA，添加保存回调
+    if args.use_llama_lora and not args.freeze_llama:
+        callbacks.append(SaveFullModelCallback())
+        if not is_distributed or local_rank == 0:
+            print("✅ Added SaveFullModelCallback to save LoRA weights in every checkpoint")
+
     trainer = ClassificationTrainer(
         model=model,
         args=training_args,
@@ -421,6 +431,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_classification_metrics if (not is_distributed or local_rank == 0) else None,
+        callbacks=callbacks,  # ✅ 添加回调
     )
 
     # 14. 开始训练
