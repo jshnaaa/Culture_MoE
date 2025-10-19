@@ -1,11 +1,8 @@
 # src/llamafactory/train/classification/trainer.py
-import torch
-import torch.nn as nn
-from typing import Optional, Dict, Any, Union, Tuple
-from transformers import Trainer
-from transformers.trainer import *
+from typing import Dict, Tuple
+
 from transformers.modeling_utils import PreTrainedModel
-import numpy as np
+from transformers.trainer import *
 
 
 class ClassificationTrainer(Trainer):
@@ -40,9 +37,12 @@ class ClassificationTrainer(Trainer):
             labels = None
 
         # 前向传播 - CultureMoE 返回 logits_avg [B, num_classes]
+        # ✅ 支持双路输入
         logits = model(
             input_ids=inputs.get("input_ids"),
-            attention_mask=inputs.get("attention_mask")
+            attention_mask=inputs.get("attention_mask"),
+            input_ids_mask=inputs.get("input_ids_mask"),
+            attention_mask_mask=inputs.get("attention_mask_mask")
         )
 
         # 如果没有标签，只返回 logits（用于推理）

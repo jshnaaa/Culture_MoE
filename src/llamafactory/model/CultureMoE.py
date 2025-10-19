@@ -1,10 +1,10 @@
 # src/llamafactory/model/CultureMoE.py
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM
+
 from .experts import ExpertLayer
-from .router import ExpertRouter
 from .moe_args import ModelArgs
+from .router import ExpertRouter
 
 
 # class CrossAttentionBlock(nn.Module):
@@ -126,27 +126,46 @@ class LlamaSharedRouterExpertsModel(nn.Module):
     def prepare_inputs_for_generation(self, input_ids, **kwargs):
         return self.llama_model.prepare_inputs_for_generation(input_ids, **kwargs)
 
-    def forward(self, input_ids=None, attention_mask=None, **kwargs):
+    def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None, **kwargs):
         # ✅ 获取输入的设备和数据类型
         device = input_ids.device
         dtype = next(self.parameters()).dtype  # 使用模型参数的 dtype
 
-        # Step 1: LLaMA forward
-        outputs = self.llama_model(
+        # ✅ Step 1: LLaMA forward for h_all (instruction + input)
+        outputs_all = self.llama_model(
             input_ids,
             attention_mask=attention_mask,
             output_hidden_states=True
         )
 
         # ✅ 确保 hidden states 在正确的设备上
-        hidden = outputs.hidden_states[-1]
-        if hidden.device != device:
-            hidden = hidden.to(device)
-        if hidden.dtype != dtype:
-            hidden = hidden.to(dtype)
+        hidden_all = outputs_all.hidden_states[-1]
+        if hidden_all.device != device:
+            hidden_all = hidden_all.to(device)
+        if hidden_all.dtype != dtype:
+            hidden_all = hidden_all.to(dtype)
 
-        h_no = hidden
-        h_all = hidden
+        h_all = hidden_all
+
+        # ✅ Step 2: LLaMA forward for h_no (instruction_mask + input)
+        # 如果提供了 mask 输入，使用它；否则使用相同的输入
+        if input_ids_mask is not None:
+            outputs_no = self.llama_model(
+                input_ids_mask,
+                attention_mask=attention_mask_mask,
+                output_hidden_states=True
+            )
+
+            hidden_no = outputs_no.hidden_states[-1]
+            if hidden_no.device != device:
+                hidden_no = hidden_no.to(device)
+            if hidden_no.dtype != dtype:
+                hidden_no = hidden_no.to(dtype)
+
+            h_no = hidden_no
+        else:
+            # 如果没有提供 mask 输入，使用相同的特征
+            h_no = h_all
 
         # Step 2: Shared 层
         shared_out = self.shared(h_no)  # [B, L, H]

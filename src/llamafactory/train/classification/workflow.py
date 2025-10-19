@@ -1,22 +1,24 @@
 # src/llamafactory/train/classification/workflow.py
 # src/llamafactory/train/classification/workflow.py
 import os
-import torch
-from typing import Optional
 from dataclasses import dataclass, field
+from typing import Optional
+
+import torch
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     TrainingArguments,
-    DataCollatorWithPadding,
-    HfArgumentParser
+    DataCollatorWithPadding
 )
 
+from .metrics import compute_classification_metrics
+from .trainer import ClassificationTrainer
+from ...data.classification_processor import load_and_process_classification_data
+from ...data.dual_classification_collator import DualClassificationDataCollator
+from ...data.dual_classification_processor import load_and_process_dual_classification_data
 from ...model.CultureMoE import LlamaSharedRouterExpertsModel
 from ...model.moe_args import ModelArgs
-from ...data.classification_processor import load_and_process_classification_data
-from .trainer import ClassificationTrainer
-from .metrics import compute_classification_metrics
 
 
 @dataclass
@@ -43,6 +45,10 @@ class ClassificationTrainingArguments:
     max_length: int = field(
         default=512,
         metadata={"help": "最大序列长度"}
+    )
+    use_dual_input: bool = field(
+        default=False,
+        metadata={"help": "是否使用双路输入（instruction + instruction_mask）"}
     )
 
     # MoE 参数
@@ -181,16 +187,26 @@ def run_classification_training(args: ClassificationTrainingArguments):
     # 4. 加载和处理数据
     if not is_distributed or local_rank == 0:
         print(f"\nLoading and processing data from {args.train_file}...")
+        if args.use_dual_input:
+            print("Using dual input mode (instruction + instruction_mask)")
+
+    # ✅ 根据 use_dual_input 选择数据处理器
+    if args.use_dual_input:
+        # 使用双路输入处理器
+        load_func = load_and_process_dual_classification_data
+    else:
+        # 使用单路输入处理器
+        load_func = load_and_process_classification_data
 
     if args.val_file:
-        train_data = load_and_process_classification_data(
+        train_data = load_func(
             args.train_file,
             tokenizer,
             max_length=args.max_length,
             val_split=0,
             num_proc=args.dataloader_num_workers
         )
-        val_data = load_and_process_classification_data(
+        val_data = load_func(
             args.val_file,
             tokenizer,
             max_length=args.max_length,
@@ -200,7 +216,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
         train_dataset = train_data["train"]
         val_dataset = val_data["train"]
     else:
-        data = load_and_process_classification_data(
+        data = load_func(
             args.train_file,
             tokenizer,
             max_length=args.max_length,
@@ -379,11 +395,19 @@ def run_classification_training(args: ClassificationTrainingArguments):
     )
 
     # 12. 创建 Data Collator
-    data_collator = DataCollatorWithPadding(
-        tokenizer=tokenizer,
-        padding=True,
-        max_length=args.max_length
-    )
+    # ✅ 根据 use_dual_input 选择 DataCollator
+    if args.use_dual_input:
+        data_collator = DualClassificationDataCollator(
+            tokenizer=tokenizer,
+            padding=True,
+            max_length=args.max_length
+        )
+    else:
+        data_collator = DataCollatorWithPadding(
+            tokenizer=tokenizer,
+            padding=True,
+            max_length=args.max_length
+        )
 
     # 13. 创建 Trainer
     if not is_distributed or local_rank == 0:
