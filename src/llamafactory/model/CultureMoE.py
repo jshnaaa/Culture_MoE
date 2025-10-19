@@ -168,6 +168,8 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             h_no = h_all
 
         # Step 2: Shared 层
+        # ✅ 确保 h_no 在正确的设备和数据类型上
+        h_no = h_no.to(device=device, dtype=dtype)
         shared_out = self.shared(h_no)  # [B, L, H]
 
         # Step 3: Router
@@ -175,6 +177,8 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         expert_weights, _ = self.router(pooled)  # [B, E]
 
         # Step 4: Experts 层
+        # ✅ 确保 h_all 在正确的设备和数据类型上
+        h_all = h_all.to(device=device, dtype=dtype)
         expert_outs = self.experts_layer(h_all)  # list of [B, L, H]
 
         # Step 5: 权重缩放专家输出
