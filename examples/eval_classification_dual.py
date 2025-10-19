@@ -177,14 +177,29 @@ def evaluate_model(
 
     # 批量评估
     for i in tqdm(range(0, len(test_dataset), batch_size)):
-        batch = test_dataset[i:i + batch_size]
+        # ✅ 获取批次数据（使用 select 方法）
+        batch_indices = list(range(i, min(i + batch_size, len(test_dataset))))
+        batch = test_dataset.select(batch_indices)
 
         # ✅ 准备双路输入
-        input_ids = torch.tensor([item['input_ids'] for item in batch]).to(device)
-        attention_mask = torch.tensor([item['attention_mask'] for item in batch]).to(device)
-        input_ids_mask = torch.tensor([item['input_ids_mask'] for item in batch]).to(device)
-        attention_mask_mask = torch.tensor([item['attention_mask_mask'] for item in batch]).to(device)
-        labels = torch.tensor([item['labels'] for item in batch])
+        # 使用 pad_sequence 处理不同长度的序列
+        from torch.nn.utils.rnn import pad_sequence
+
+        # 第一组输入
+        input_ids_list = [torch.tensor(item) for item in batch['input_ids']]
+        attention_mask_list = [torch.tensor(item) for item in batch['attention_mask']]
+
+        # 第二组输入
+        input_ids_mask_list = [torch.tensor(item) for item in batch['input_ids_mask']]
+        attention_mask_mask_list = [torch.tensor(item) for item in batch['attention_mask_mask']]
+
+        # Padding
+        input_ids = pad_sequence(input_ids_list, batch_first=True, padding_value=tokenizer.pad_token_id).to(device)
+        attention_mask = pad_sequence(attention_mask_list, batch_first=True, padding_value=0).to(device)
+        input_ids_mask = pad_sequence(input_ids_mask_list, batch_first=True, padding_value=tokenizer.pad_token_id).to(device)
+        attention_mask_mask = pad_sequence(attention_mask_mask_list, batch_first=True, padding_value=0).to(device)
+
+        labels = torch.tensor(batch['labels'])
 
         # 前向传播
         with torch.no_grad():
