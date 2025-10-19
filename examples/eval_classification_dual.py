@@ -119,17 +119,71 @@ def load_model(model_path: str, base_model_path: str = None, use_lora: bool = Tr
         state_dict_path = os.path.join(model_path, "pytorch_model.bin")
         if os.path.exists(state_dict_path):
             print(f"Loading MoE weights from {state_dict_path}...")
-            state_dict = torch.load(state_dict_path, map_location="cpu")
-            model.load_state_dict(state_dict, strict=False)
+            # ✅ 先获取模型所在的设备
+            model_device = next(model.parameters()).device
+            print(f"Model device: {model_device}")
+
+            # ✅ 加载权重到正确的设备
+            state_dict = torch.load(state_dict_path, map_location=model_device)
+
+            # ✅ 只加载 MoE 组件的权重（不包括 llama_model）
+            moe_state_dict = {}
+            for key, value in state_dict.items():
+                if not key.startswith('llama_model.'):
+                    moe_state_dict[key] = value
+
+            # ✅ 加载权重
+            missing_keys, unexpected_keys = model.load_state_dict(moe_state_dict, strict=False)
+
             print("✅ MoE weights loaded")
+            if missing_keys:
+                print(f"   Missing keys: {len(missing_keys)}")
+            if unexpected_keys:
+                print(f"   Unexpected keys: {len(unexpected_keys)}")
         else:
             print(f"⚠️  Warning: {state_dict_path} not found")
+            print("   Trying alternative weight file names...")
+
+            # 尝试其他可能的文件名
+            alternative_paths = [
+                os.path.join(model_path, "model.safetensors"),
+                os.path.join(model_path, "pytorch_model.safetensors"),
+            ]
+
+            for alt_path in alternative_paths:
+                if os.path.exists(alt_path):
+                    print(f"   Found: {alt_path}")
+                    if alt_path.endswith('.safetensors'):
+                        from safetensors.torch import load_file
+                        state_dict = load_file(alt_path, device=str(next(model.parameters()).device))
+                    else:
+                        state_dict = torch.load(alt_path, map_location=next(model.parameters()).device)
+
+                    moe_state_dict = {k: v for k, v in state_dict.items() if not k.startswith('llama_model.')}
+                    model.load_state_dict(moe_state_dict, strict=False)
+                    print("✅ MoE weights loaded from alternative file")
+                    break
     except Exception as e:
         print(f"⚠️  Warning: Could not load MoE weights: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # ✅ 确保所有模块都在正确的设备上
+    model_device = next(model.parameters()).device
+    print(f"\nEnsuring all modules are on {model_device}...")
+    model = model.to(model_device)
 
     model.eval()
 
-    print(f"Model loaded on: {next(model.parameters()).device}")
+    print(f"✅ Model loaded on: {next(model.parameters()).device}")
+
+    # ✅ 验证各个组件的设备
+    print("\nVerifying component devices:")
+    print(f"  llama_model: {next(model.llama_model.parameters()).device}")
+    print(f"  shared: {next(model.shared.parameters()).device}")
+    print(f"  router: {next(model.router.parameters()).device}")
+    print(f"  experts_layer: {next(model.experts_layer.parameters()).device}")
+    print(f"  classifier: {next(model.classifier.parameters()).device}")
 
     return model, tokenizer
 
