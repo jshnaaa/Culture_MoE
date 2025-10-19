@@ -180,22 +180,26 @@ def load_model(model_path: str, base_model_path: str = None, use_lora: bool = Tr
         import traceback
         traceback.print_exc()
 
-    # ✅ 确保所有模块都在正确的设备上
+    # ✅ 确保所有模块都在正确的设备和数据类型上
     model_device = next(model.parameters()).device
-    print(f"\nEnsuring all modules are on {model_device}...")
-    model = model.to(model_device)
+    model_dtype = next(model.parameters()).dtype
+    print(f"\nEnsuring all modules are on {model_device} with dtype {model_dtype}...")
+
+    # ✅ 将整个模型移到正确的设备和数据类型
+    model = model.to(device=model_device, dtype=model_dtype)
 
     model.eval()
 
     print(f"✅ Model loaded on: {next(model.parameters()).device}")
+    print(f"   Model dtype: {next(model.parameters()).dtype}")
 
-    # ✅ 验证各个组件的设备
-    print("\nVerifying component devices:")
-    print(f"  llama_model: {next(model.llama_model.parameters()).device}")
-    print(f"  shared: {next(model.shared.parameters()).device}")
-    print(f"  router: {next(model.router.parameters()).device}")
-    print(f"  experts_layer: {next(model.experts_layer.parameters()).device}")
-    print(f"  classifier: {next(model.classifier.parameters()).device}")
+    # ✅ 验证各个组件的设备和数据类型
+    print("\nVerifying component devices and dtypes:")
+    print(f"  llama_model: {next(model.llama_model.parameters()).device}, {next(model.llama_model.parameters()).dtype}")
+    print(f"  shared: {next(model.shared.parameters()).device}, {next(model.shared.parameters()).dtype}")
+    print(f"  router: {next(model.router.parameters()).device}, {next(model.router.parameters()).dtype}")
+    print(f"  experts_layer: {next(model.experts_layer.parameters()).device}, {next(model.experts_layer.parameters()).dtype}")
+    print(f"  classifier: {next(model.classifier.parameters()).device}, {next(model.classifier.parameters()).dtype}")
 
     return model, tokenizer
 
