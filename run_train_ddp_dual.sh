@@ -7,7 +7,7 @@ export NCCL_DEBUG=INFO  # 调试信息（可选）
 # 训练参数
 MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
 TRAIN_FILE="/root/autodl-fs/normad_ed_merge.json"  # ✅ 使用新的双路输入数据集
-OUTPUT_DIR="/root/autodl-fs/output/classi_dual_$(date +%Y%m%d_%H%M%S)"
+OUTPUT_DIR="/root/autodl-fs/output/classi_dual_$(date +%Y%m%d_%H%M)"
 
 # ✅ 使用 torchrun 启动分布式训练（双路输入 + LLaMA LoRA 微调）
 torchrun \
@@ -17,9 +17,9 @@ torchrun \
     --model_name_or_path $MODEL_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
-    --num_train_epochs 1 \
-    --per_device_train_batch_size 2 \
-    --per_device_eval_batch_size 4 \
+    --num_train_epochs 20 \
+    --per_device_train_batch_size 4 \
+    --per_device_eval_batch_size 8 \
     --gradient_accumulation_steps 8 \
     --learning_rate 2e-5 \
     --fp16 \
@@ -32,9 +32,9 @@ torchrun \
     --llama_lora_dropout 0.05 \
     --llama_lora_target_modules "q_proj,v_proj,k_proj,o_proj,gate_proj,up_proj,down_proj" \
     --logging_steps 10 \
-    --save_steps 1000 \
+    --save_steps 500 \
     --eval_steps 500 \
-    --max_length 512 \
+    --max_length 1024 \
     --val_split 0.1 \
     --dataloader_num_workers 4
 
