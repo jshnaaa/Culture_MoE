@@ -283,10 +283,16 @@ def run_classification_training(args: ClassificationTrainingArguments):
 
     # ✅ 8. 处理参数冻结（仅在完全冻结时）
     if args.freeze_llama:
-        for param in model.llama_model.parameters():
-            param.requires_grad = False
-        if not is_distributed or local_rank == 0:
-            print("✅ Frozen LLaMA base model parameters")
+        if args.use_llama_lora:
+            if not is_distributed or local_rank == 0:
+                print("️ Warning: freeze_llama=True but use_llama_lora=True")
+                print(" LoRA parameters will remain trainable")
+        else:
+            # 只有在不使用 LoRA时才冻结
+            for param in model.llama_model.parameters():
+                param.requires_grad = False
+            if not is_distributed or local_rank == 0:
+                print(" Frozen LLaMA base model parameters")
     elif not args.use_llama_lora:
         # 不冻结且不使用 LoRA = 全参数微调
         if not is_distributed or local_rank == 0:
@@ -361,7 +367,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
 
         # 分布式训练
         local_rank=local_rank,
-        ddp_find_unused_parameters=False,
+        ddp_find_unused_parameters=True,
         ddp_backend="nccl",
 
         # 其他
