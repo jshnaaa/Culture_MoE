@@ -55,7 +55,7 @@ trainer = ClassificationTrainer(
 使用修改后的代码重新训练：
 
 ```bash
-bash run_train_ddp_dual.sh
+bash run_train_ddp_lora_dual.sh
 ```
 
 训练时会看到：

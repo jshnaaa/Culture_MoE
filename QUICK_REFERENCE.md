@@ -9,7 +9,7 @@
 ### 1. 训练（自动保存 LoRA）
 
 ```bash
-bash run_train_ddp_dual.sh
+bash run_train_ddp_lora_dual.sh
 ```
 
 ### 2. 验证 checkpoint

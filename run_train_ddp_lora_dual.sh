@@ -6,8 +6,8 @@ export NCCL_DEBUG=INFO  # 调试信息（可选）
 
 # 训练参数
 MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-TRAIN_FILE="/root/autodl-fs/normad_ed_merge.json"  # ✅ 使用新的双路输入数据集
-OUTPUT_DIR="/root/autodl-fs/output/classi_dual_$(date +%Y%m%d_%H%M)"
+TRAIN_FILE="/root/autodl-fs/CulturalBench_Hard_merge.json"  # ✅ 使用新的双路输入数据集
+OUTPUT_DIR="/root/autodl-fs/output/classi_$(date +%Y%m%d_%H%M)"
 
 # ✅ 使用 torchrun 启动分布式训练（双路输入 + LLaMA LoRA 微调）
 torchrun \
@@ -34,7 +34,7 @@ torchrun \
     --logging_steps 10 \
     --save_steps 500 \
     --eval_steps 500 \
-    --max_length 1024 \
+    --max_length 512 \
     --val_split 0.1 \
     --dataloader_num_workers 4
 

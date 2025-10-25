@@ -20,7 +20,7 @@ class ModelArgs:
     shared_hidden_dim: int = 512
     num_heads: int = 8
     classification_hidden_dim: int = 256
-    num_classes: int = 3  # TRUE/FALSE classification for culturalbench
+    num_classes: int = 2  # TRUE/FALSE classification for culturalbench
 
     # LoRA configuration
     lora_rank: int = 8

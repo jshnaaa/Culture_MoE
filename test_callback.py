@@ -101,7 +101,7 @@ def main():
     if passed == total:
         print("\n✅ All tests passed! The callback is correctly implemented.")
         print("\nNext steps:")
-        print("  1. Run training: bash run_train_ddp_dual.sh")
+        print("  1. Run training: bash run_train_ddp_lora_dual.sh")
         print("  2. Verify checkpoints: bash verify_checkpoint_save.sh <output_dir>")
         print("  3. Evaluate checkpoint: bash run_eval_dual_binary.sh")
     else:

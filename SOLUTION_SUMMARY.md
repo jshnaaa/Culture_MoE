@@ -97,7 +97,7 @@ Passed: 3/3
 ### 步骤 1：重新训练（使用新代码）
 
 ```bash
-bash run_train_ddp_dual.sh
+bash run_train_ddp_lora_dual.sh
 ```
 
 **训练时会看到**：
@@ -274,7 +274,7 @@ save_total_limit=3  # 只保留最近 3 个
 
 只需正常运行训练脚本：
 ```bash
-bash run_train_ddp_dual.sh
+bash run_train_ddp_lora_dual.sh
 ```
 
 所有 checkpoint 都会自动包含 LoRA 权重！🚀
