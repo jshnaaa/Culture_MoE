@@ -1,15 +1,41 @@
 # src/llamafactory/train/classification/trainer.py
 from typing import Dict, Tuple
 
-from transformers.modeling_utils import PreTrainedModel
 from transformers.trainer import *
+
+from .culture_loss import CultureSpecializationLoss, compute_culture_aware_loss
 
 
 class ClassificationTrainer(Trainer):
     """
     用于三分类任务的自定义 Trainer
     适配 CultureMoE 模型的输出格式
+    支持文化专注性损失
     """
+
+    def __init__(self, *args, use_culture_loss: bool = True, lambda_weight: float = 0.1, **kwargs):
+        """
+        初始化 Trainer
+
+        Args:
+            use_culture_loss: 是否使用文化专注性损失
+            lambda_weight: 文化损失权重 λ
+        """
+        super().__init__(*args, **kwargs)
+
+        self.use_culture_loss = use_culture_loss
+        self.lambda_weight = lambda_weight
+
+        # 创建文化专注性损失模块
+        if self.use_culture_loss:
+            self.culture_loss_module = CultureSpecializationLoss(
+                num_cultures=6,
+                num_experts=6,
+                lambda_weight=lambda_weight
+            )
+            # 将模块移到正确的设备
+            if torch.cuda.is_available():
+                self.culture_loss_module = self.culture_loss_module.cuda()
 
     def compute_loss(
             self,
@@ -19,11 +45,11 @@ class ClassificationTrainer(Trainer):
             num_items_in_batch: Optional[int] = None  # 忽略
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
-        重写 loss 计算逻辑
+        重写 loss 计算逻辑，支持文化专注性损失
 
         Args:
             model: CultureMoE 模型
-            inputs: 包含 input_ids, attention_mask, labels
+            inputs: 包含 input_ids, attention_mask, labels, culture_labels
             return_outputs: 是否返回模型输出
 
         Returns:
@@ -35,6 +61,9 @@ class ClassificationTrainer(Trainer):
         else:
             # 如果没有 labels，返回 None（评估时可能发生）
             labels = None
+
+        # ✅ 提取文化维度标签
+        culture_labels = inputs.pop("culture_labels", None)  # List[List[int]]
 
         # 前向传播 - CultureMoE 返回 logits_avg [B, num_classes]
         # ✅ 支持双路输入
@@ -53,12 +82,42 @@ class ClassificationTrainer(Trainer):
         # 确保 labels 是 Long 类型
         labels = labels.long()
 
-        # 计算交叉熵损失
-        loss_fct = nn.CrossEntropyLoss()
-        loss = loss_fct(logits, labels)
+        # ✅ 获取专家权重（从模型中）
+        # 需要修改模型以返回专家权重
+        expert_weights = None
+        if hasattr(model, 'get_expert_weights'):
+            expert_weights = model.get_expert_weights()
+        elif hasattr(model, 'module') and hasattr(model.module, 'get_expert_weights'):
+            # DDP 模式
+            expert_weights = model.module.get_expert_weights()
+
+        # 计算损失
+        if self.use_culture_loss and expert_weights is not None and culture_labels is not None:
+            # 使用文化感知损失
+            total_loss, ce_loss, culture_loss = compute_culture_aware_loss(
+                logits=logits,
+                labels=labels,
+                expert_weights=expert_weights,
+                culture_labels=culture_labels,
+                culture_loss_module=self.culture_loss_module,
+                lambda_weight=self.lambda_weight
+            )
+
+            # 记录损失组件（用于日志）
+            outputs = {
+                "logits": logits,
+                "ce_loss": ce_loss.detach(),
+                "culture_loss": culture_loss.detach(),
+                "total_loss": total_loss.detach()
+            }
+            loss = total_loss
+        else:
+            # 只使用交叉熵损失
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(logits, labels)
+            outputs = {"logits": logits}
 
         # 返回结果
-        outputs = {"logits": logits}
         return (loss, outputs) if return_outputs else loss
 
     def prediction_step(

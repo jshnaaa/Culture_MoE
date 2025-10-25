@@ -72,6 +72,16 @@ class ClassificationTrainingArguments:
         default=False,
         metadata={"help": "是否对 LLaMA 使用 LoRA 微调（仅在 freeze_llama=False 时生效）"}
     )
+
+    # ✅ 文化专注性损失参数
+    use_culture_loss: bool = field(
+        default=True,
+        metadata={"help": "是否使用文化专注性损失"}
+    )
+    culture_loss_lambda: float = field(
+        default=0.1,
+        metadata={"help": "文化专注性损失权重 λ"}
+    )
     llama_lora_rank: int = field(
         default=8,
         metadata={"help": "LLaMA LoRA 的 rank"}
@@ -432,6 +442,8 @@ def run_classification_training(args: ClassificationTrainingArguments):
         data_collator=data_collator,
         compute_metrics=compute_classification_metrics if (not is_distributed or local_rank == 0) else None,
         callbacks=callbacks,  # ✅ 添加回调
+        use_culture_loss=args.use_culture_loss,  # ✅ 文化专注性损失
+        lambda_weight=args.culture_loss_lambda,  # ✅ 损失权重
     )
 
     # 14. 开始训练

@@ -35,10 +35,10 @@ class DualClassificationDataProcessor:
         预处理函数，用于 dataset.map()
 
         Args:
-            examples: 包含 instruction, instruction_mask, input, output 字段的批次数据
+            examples: 包含 instruction, instruction_mask, input, output, label 字段的批次数据
 
         Returns:
-            包含 input_ids, attention_mask, input_ids_mask, attention_mask_mask, labels 的字典
+            包含 input_ids, attention_mask, input_ids_mask, attention_mask_mask, labels, culture_labels 的字典
         """
         batch_size = len(examples["instruction"])
 
@@ -88,7 +88,7 @@ class DualClassificationDataProcessor:
             return_tensors=None
         )
 
-        # 5. 转换标签
+        # 5. 转换分类标签（output 字段）
         labels = []
         for output in examples["output"]:
             if isinstance(output, str):
@@ -102,7 +102,27 @@ class DualClassificationDataProcessor:
 
             labels.append(label)
 
-        # 6. 返回结果（重命名字段以区分两组输入）
+        # 6. 处理文化维度标签（label 字段）
+        # label 是字符串，可能包含多个标签，用逗号分隔
+        # 例如："0" 或 "1,2"
+        culture_labels = []
+        if "label" in examples:
+            for label_str in examples["label"]:
+                if isinstance(label_str, str):
+                    # 解析多标签：将 "1,2" 转换为 [1, 2]
+                    label_ids = [int(x.strip()) for x in label_str.split(",") if x.strip().isdigit()]
+                    culture_labels.append(label_ids)
+                elif isinstance(label_str, int):
+                    # 如果是整数，转换为列表
+                    culture_labels.append([label_str])
+                else:
+                    # 默认为空列表
+                    culture_labels.append([])
+        else:
+            # 如果没有 label 字段，使用空列表
+            culture_labels = [[] for _ in range(batch_size)]
+
+        # 7. 返回结果（重命名字段以区分两组输入）
         result = {
             # 第一组：instruction + input (用于 h_all)
             "input_ids": tokenized_full["input_ids"],
@@ -112,8 +132,11 @@ class DualClassificationDataProcessor:
             "input_ids_mask": tokenized_mask["input_ids"],
             "attention_mask_mask": tokenized_mask["attention_mask"],
 
-            # 标签
-            "labels": labels
+            # 分类标签（output 字段）
+            "labels": labels,
+
+            # 文化维度标签（label 字段）
+            "culture_labels": culture_labels
         }
 
         return result
@@ -188,9 +211,34 @@ def load_and_process_dual_classification_data(
                 label_name = label
             label_counts[label_name] = label_counts.get(label_name, 0) + 1
 
-        print("\nLabel distribution:")
+        print("\nOutput label distribution:")
         for label, count in sorted(label_counts.items()):
             print(f"  {label}: {count} ({count/len(dataset)*100:.1f}%)")
+
+    # 打印文化维度统计
+    if "label" in dataset.column_names:
+        culture_label_counts = {}
+        multi_label_count = 0
+
+        for item in dataset:
+            label_str = item["label"]
+            if isinstance(label_str, str):
+                # 解析多标签
+                label_ids = [x.strip() for x in label_str.split(",") if x.strip()]
+
+                if len(label_ids) > 1:
+                    multi_label_count += 1
+
+                for label_id in label_ids:
+                    culture_label_counts[label_id] = culture_label_counts.get(label_id, 0) + 1
+
+        print("\nCulture dimension distribution:")
+        for label_id in sorted(culture_label_counts.keys(), key=lambda x: int(x) if x.isdigit() else 999):
+            count = culture_label_counts[label_id]
+            print(f"  Dimension {label_id}: {count} ({count/len(dataset)*100:.1f}%)")
+
+        if multi_label_count > 0:
+            print(f"\nSamples with multiple culture dimensions: {multi_label_count} ({multi_label_count/len(dataset)*100:.1f}%)")
 
     # 2. 分割训练集和验证集
     if val_split > 0:

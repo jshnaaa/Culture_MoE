@@ -42,6 +42,9 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         self.args = args
         self.config = llama_model.config
 
+        # ✅ 用于存储最近一次前向传播的专家权重
+        self._last_expert_weights = None
+
         # ✅ generation_config 从 llama_model 继承
         if hasattr(llama_model, 'generation_config'):
             self.generation_config = llama_model.generation_config
@@ -176,6 +179,9 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         pooled = shared_out.mean(dim=1)  # [B, H]
         expert_weights, _ = self.router(pooled)  # [B, E]
 
+        # ✅ 保存专家权重（用于损失计算）
+        self._last_expert_weights = expert_weights
+
         # Step 4: Experts 层
         # ✅ 确保 h_all 在正确的设备和数据类型上
         h_all = h_all.to(device=device, dtype=dtype)
@@ -198,3 +204,12 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         logits_avg = logits.mean(dim=1)  # [B, num_classes]
 
         return logits_avg
+
+    def get_expert_weights(self):
+        """
+        获取最近一次前向传播的专家权重
+
+        Returns:
+            expert_weights: [B, E]
+        """
+        return self._last_expert_weights
