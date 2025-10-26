@@ -433,6 +433,10 @@ def run_classification_training(args: ClassificationTrainingArguments):
         if not is_distributed or local_rank == 0:
             print("✅ Added SaveFullModelCallback to save LoRA weights in every checkpoint")
 
+    # ✅ 创建 compute_metrics 函数，传递 num_classes
+    def compute_metrics_fn(eval_pred):
+        return compute_classification_metrics(eval_pred, num_classes=args.num_classes)
+
     trainer = ClassificationTrainer(
         model=model,
         args=training_args,
@@ -440,7 +444,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        compute_metrics=compute_classification_metrics if (not is_distributed or local_rank == 0) else None,
+        compute_metrics=compute_metrics_fn if (not is_distributed or local_rank == 0) else None,
         callbacks=callbacks,  # ✅ 添加回调
         use_culture_loss=args.use_culture_loss,  # ✅ 文化专注性损失
         lambda_weight=args.culture_loss_lambda,  # ✅ 损失权重
