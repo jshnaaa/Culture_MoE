@@ -17,11 +17,11 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     TrainingArguments,
-    Trainer,
-    DataCollatorWithPadding
+    Trainer
 )
 from peft import get_peft_model, LoraConfig, TaskType
 from src.llamafactory.data.dual_classification_processor import load_and_process_dual_classification_data
+from src.llamafactory.data.dual_classification_collator import DualClassificationDataCollator
 import numpy as np
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
@@ -121,8 +121,17 @@ class BinaryClassificationModel(torch.nn.Module):
             torch.nn.Linear(512, num_classes)
         )
 
-    def forward(self, input_ids, attention_mask, labels=None):
-        # LLaMA 前向传播
+    def forward(self, input_ids, attention_mask, labels=None, **kwargs):
+        """
+        前向传播
+
+        Args:
+            input_ids: [B, L]
+            attention_mask: [B, L]
+            labels: [B]
+            **kwargs: 其他字段（input_ids_mask, attention_mask_mask, culture_labels）会被忽略
+        """
+        # LLaMA 前向传播（只使用第一路输入）
         outputs = self.llama_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -271,8 +280,8 @@ def train_lora_only(args: LoRATrainingArguments):
         report_to=["tensorboard"],
     )
 
-    # 7. Data Collator
-    data_collator = DataCollatorWithPadding(
+    # 7. Data Collator（使用自定义 collator）
+    data_collator = DualClassificationDataCollator(
         tokenizer=tokenizer,
         padding=True,
         max_length=args.max_length
