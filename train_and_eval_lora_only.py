@@ -228,17 +228,12 @@ def train_lora_only(args: LoRATrainingArguments):
 
     # 3. 加载基础模型
     print(f"\n3. Loading base LLaMA model from {args.model_path}...")
-
-    # ✅ 检查是否支持 BF16（更稳定）
-    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    dtype = torch.bfloat16 if use_bf16 else torch.float16
-
     llama_model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
-        torch_dtype=dtype,
+        torch_dtype=torch.float16,
         trust_remote_code=True
     )
-    print(f"   ✅ Base model loaded (using {'bfloat16' if use_bf16 else 'float16'})")
+    print("   ✅ Base model loaded")
 
     # 4. 应用 LoRA
     print(f"\n4. Applying LoRA to LLaMA model...")
