@@ -403,6 +403,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
         seed=args.seed,
         max_grad_norm=1.0,
         optim="adamw_torch",
+        lr_scheduler_type="constant_with_warmup",  # ✅ 使用常数学习率 + warmup
     )
 
     # 12. 创建 Data Collator
