@@ -84,7 +84,7 @@ class LoRATrainingArguments:
         metadata={"help": "评估批次大小"}
     )
     learning_rate: float = field(
-        default=2e-5,
+        default=5e-6,  # ✅ 降低学习率：从 2e-5 改为 5e-6
         metadata={"help": "学习率"}
     )
     gradient_accumulation_steps: int = field(
@@ -228,12 +228,17 @@ def train_lora_only(args: LoRATrainingArguments):
 
     # 3. 加载基础模型
     print(f"\n3. Loading base LLaMA model from {args.model_path}...")
+
+    # ✅ 检查是否支持 BF16（更稳定）
+    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    dtype = torch.bfloat16 if use_bf16 else torch.float16
+
     llama_model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
-        torch_dtype=torch.float16,
+        torch_dtype=dtype,
         trust_remote_code=True
     )
-    print("   ✅ Base model loaded")
+    print(f"   ✅ Base model loaded (using {'bfloat16' if use_bf16 else 'float16'})")
 
     # 4. 应用 LoRA
     print(f"\n4. Applying LoRA to LLaMA model...")
