@@ -148,7 +148,8 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         if hidden_all.dtype != dtype:
             hidden_all = hidden_all.to(dtype)
 
-        h_all = hidden_all
+        # ✅ 关键修复：立即克隆 h_all，避免后续重复使用
+        h_all = hidden_all.clone()
 
         # ✅ Step 2: LLaMA forward for h_no (instruction_mask + input)
         # 如果提供了 mask 输入，使用它；否则使用相同的输入
@@ -165,10 +166,10 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             if hidden_no.dtype != dtype:
                 hidden_no = hidden_no.to(dtype)
 
-            h_no = hidden_no
+            h_no = hidden_no.clone()
         else:
-            # ✅ 如果没有提供 mask 输入，克隆 h_all 以避免 gradient checkpointing 问题
-            h_no = h_all.detach().clone().requires_grad_(h_all.requires_grad)
+            # ✅ 如果没有提供 mask 输入，再次克隆以创建独立副本
+            h_no = h_all.clone()
 
         # Step 2: Shared 层
         # ✅ 确保 h_no 在正确的设备和数据类型上
@@ -180,7 +181,7 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         expert_weights, _ = self.router(pooled)  # [B, E]
 
         # ✅ 保存专家权重（用于损失计算）
-        self._last_expert_weights = expert_weights
+        self._last_expert_weights = expert_weights.detach()
 
         # Step 4: Experts 层
         # ✅ 确保 h_all 在正确的设备和数据类型上
