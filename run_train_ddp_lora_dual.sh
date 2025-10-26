@@ -21,7 +21,7 @@ torchrun \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 8 \
     --gradient_accumulation_steps 8 \
-    --learning_rate 2e-5 \
+    --learning_rate 5e-6 \
     --fp16 \
     --gradient_checkpointing \
     --use_dual_input True \
@@ -36,5 +36,9 @@ torchrun \
     --eval_steps 500 \
     --max_length 512 \
     --val_split 0.1 \
-    --dataloader_num_workers 4
+    --dataloader_num_workers 4 \
+    --load_best_model_at_end True \
+    --metric_for_best_model accuracy \
+    --greater_is_better True \
+    --save_total_limit 3
 
