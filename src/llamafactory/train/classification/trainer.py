@@ -103,6 +103,22 @@ class ClassificationTrainer(Trainer):
                 lambda_weight=self.lambda_weight
             )
 
+            # ✅ 调试：打印损失组件
+            if torch.distributed.get_rank() == 0 if torch.distributed.is_initialized() else True:
+                if hasattr(self, '_step_count'):
+                    self._step_count += 1
+                else:
+                    self._step_count = 1
+
+                if self._step_count % 10 == 0:  # 每10步打印一次
+                    print(f"\n[DEBUG] Step {self._step_count}:")
+                    print(f"  CE Loss: {ce_loss.item():.4f}")
+                    print(f"  Culture Loss: {culture_loss.item():.4f}")
+                    print(f"  Lambda: {self.lambda_weight}")
+                    print(f"  Total Loss: {total_loss.item():.4f}")
+                    print(f"  Logits range: [{logits.min().item():.2f}, {logits.max().item():.2f}]")
+                    print(f"  Labels: {labels[:4].tolist()}")  # 打印前4个
+
             # 记录损失组件（用于日志）
             outputs = {
                 "logits": logits,
@@ -115,6 +131,20 @@ class ClassificationTrainer(Trainer):
             # 只使用交叉熵损失
             loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(logits, labels)
+
+            # ✅ 调试：打印损失
+            if torch.distributed.get_rank() == 0 if torch.distributed.is_initialized() else True:
+                if hasattr(self, '_step_count'):
+                    self._step_count += 1
+                else:
+                    self._step_count = 1
+
+                if self._step_count % 10 == 0:
+                    print(f"\n[DEBUG] Step {self._step_count} (No culture loss):")
+                    print(f"  CE Loss: {loss.item():.4f}")
+                    print(f"  Logits range: [{logits.min().item():.2f}, {logits.max().item():.2f}]")
+                    print(f"  Labels: {labels[:4].tolist()}")
+
             outputs = {"logits": logits}
 
         # 返回结果
