@@ -375,6 +375,8 @@ def main():
                         help="训练轮数")
     parser.add_argument("--per_device_train_batch_size", type=int, default=4,
                         help="训练批次大小")
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=8,
+                        help="评估批次大小")
     parser.add_argument("--learning_rate", type=float, default=2e-5,
                         help="学习率")
     parser.add_argument("--lora_rank", type=int, default=8,
@@ -399,6 +401,7 @@ def main():
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
         learning_rate=args.learning_rate,
         lora_rank=args.lora_rank,
         max_length=args.max_length,
