@@ -114,8 +114,9 @@ class BinaryClassificationModel(torch.nn.Module):
         self.config = llama_model.config
         self.use_fp16 = use_fp16
 
-        # 分类头
+        # 分类头（添加 LayerNorm 以稳定训练）
         self.classifier = torch.nn.Sequential(
+            torch.nn.LayerNorm(self.config.hidden_size),  # ✅ 添加 LayerNorm
             torch.nn.Linear(self.config.hidden_size, 512),
             torch.nn.ReLU(),
             torch.nn.Dropout(0.1),
@@ -273,6 +274,7 @@ def train_lora_only(args: LoRATrainingArguments):
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         fp16=True,
+        fp16_full_eval=True,  # 评估时也使用 fp16
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
@@ -283,6 +285,11 @@ def train_lora_only(args: LoRATrainingArguments):
         greater_is_better=True,
         remove_unused_columns=False,
         report_to=["tensorboard"],
+        # ✅ 梯度裁剪，防止梯度爆炸
+        max_grad_norm=1.0,
+        # ✅ 使用更稳定的优化器设置
+        optim="adamw_torch",
+        warmup_steps=100,  # 添加 warmup
     )
 
     # 7. Data Collator（使用自定义 collator）
