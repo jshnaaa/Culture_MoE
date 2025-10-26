@@ -167,8 +167,8 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
             h_no = hidden_no
         else:
-            # 如果没有提供 mask 输入，使用相同的特征
-            h_no = h_all
+            # ✅ 如果没有提供 mask 输入，克隆 h_all 以避免 gradient checkpointing 问题
+            h_no = h_all.detach().clone().requires_grad_(h_all.requires_grad)
 
         # Step 2: Shared 层
         # ✅ 确保 h_no 在正确的设备和数据类型上
