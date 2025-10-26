@@ -381,7 +381,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
 
         # 最佳模型
         load_best_model_at_end=True if val_dataset else False,
-        metric_for_best_model="f1_macro" if val_dataset else None,
+        metric_for_best_model="accuracy" if val_dataset else None,  # ✅ 使用 accuracy
         greater_is_better=True,
 
         # GPU 优化和分布式训练

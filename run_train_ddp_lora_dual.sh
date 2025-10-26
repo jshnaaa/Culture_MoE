@@ -36,5 +36,9 @@ torchrun \
     --eval_steps 500 \
     --max_length 512 \
     --val_split 0.1 \
-    --dataloader_num_workers 4
+    --dataloader_num_workers 4 \
+    --culture_loss_lambda 0.01
+
+# ✅ 或者完全禁用文化损失（二选一，取消注释下面这行）
+# --use_culture_loss False
 
