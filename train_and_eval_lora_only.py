@@ -108,10 +108,11 @@ class LoRATrainingArguments:
 class BinaryClassificationModel(torch.nn.Module):
     """带分类头的 LLaMA 模型"""
 
-    def __init__(self, llama_model, num_classes=2):
+    def __init__(self, llama_model, num_classes=2, use_fp16=True):
         super().__init__()
         self.llama_model = llama_model
         self.config = llama_model.config
+        self.use_fp16 = use_fp16
 
         # 分类头
         self.classifier = torch.nn.Sequential(
@@ -120,6 +121,10 @@ class BinaryClassificationModel(torch.nn.Module):
             torch.nn.Dropout(0.1),
             torch.nn.Linear(512, num_classes)
         )
+
+        # ✅ 如果使用 fp16，将分类头转换为 float16
+        if use_fp16:
+            self.classifier = self.classifier.half()
 
     def forward(self, input_ids, attention_mask, labels=None, **kwargs):
         """
@@ -256,8 +261,8 @@ def train_lora_only(args: LoRATrainingArguments):
 
     # 5. 创建分类模型
     print(f"\n5. Creating classification model...")
-    model = BinaryClassificationModel(llama_model, num_classes=2)
-    print("   ✅ Classification model created")
+    model = BinaryClassificationModel(llama_model, num_classes=2, use_fp16=True)
+    print("   ✅ Classification model created (using fp16)")
 
     # 6. 训练参数
     training_args = TrainingArguments(
