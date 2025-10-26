@@ -6,7 +6,7 @@
 # ✅ 配置参数
 MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
 TRAIN_FILE="/root/autodl-fs/CulturalBench_Hard_merge.json"
-OUTPUT_DIR="/root/autodl-fs/output/lora_only_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/output/lora_only/lora_only_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "Training LLaMA 3.1 with LoRA (No MoE)"

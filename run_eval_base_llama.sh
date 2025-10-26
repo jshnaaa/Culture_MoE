@@ -6,7 +6,7 @@
 # ✅ 配置参数
 MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
 TEST_FILE="/root/autodl-fs/CulturalBench_Hard_merge.json"
-OUTPUT_FILE="/root/autodl-fs/eval_results_base_llama_$(date +%Y%m%d_%H%M).json"
+OUTPUT_FILE="/root/autodl-fs/output/base_llama/eval_results_base_llama_$(date +%Y%m%d_%H%M).json"
 
 echo "============================================================"
 echo "Evaluating Base LLaMA 3.1 Model (No Training)"
