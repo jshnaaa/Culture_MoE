@@ -17,7 +17,7 @@ torchrun \
     --model_path $MODEL_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
-    --num_train_epochs 3 \
+    --num_train_epochs 10 \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 8 \
     --learning_rate 5e-6 \
