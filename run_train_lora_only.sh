@@ -22,7 +22,7 @@ python train_and_eval_lora_only.py \
     --model_path $MODEL_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
-    --num_train_epochs 3 \
+    --num_train_epochs 20 \
     --per_device_train_batch_size 4 \
     --learning_rate 2e-5 \
     --lora_rank 8 \
