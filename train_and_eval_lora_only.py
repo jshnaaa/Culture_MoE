@@ -108,11 +108,10 @@ class LoRATrainingArguments:
 class BinaryClassificationModel(torch.nn.Module):
     """带分类头的 LLaMA 模型"""
 
-    def __init__(self, llama_model, num_classes=2, use_fp16=True):
+    def __init__(self, llama_model, num_classes=2):
         super().__init__()
         self.llama_model = llama_model
         self.config = llama_model.config
-        self.use_fp16 = use_fp16
 
         # 分类头（添加 LayerNorm 以稳定训练）
         self.classifier = torch.nn.Sequential(
@@ -122,10 +121,7 @@ class BinaryClassificationModel(torch.nn.Module):
             torch.nn.Dropout(0.1),
             torch.nn.Linear(512, num_classes)
         )
-
-        # ✅ 如果使用 fp16，将分类头转换为 float16
-        if use_fp16:
-            self.classifier = self.classifier.half()
+        # FP32: 不需要转换，默认就是 float32
 
     def forward(self, input_ids, attention_mask, labels=None, **kwargs):
         """
@@ -230,10 +226,10 @@ def train_lora_only(args: LoRATrainingArguments):
     print(f"\n3. Loading base LLaMA model from {args.model_path}...")
     llama_model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,  # ✅ 使用 FP32
         trust_remote_code=True
     )
-    print("   ✅ Base model loaded")
+    print("   ✅ Base model loaded (using float32)")
 
     # 4. 应用 LoRA
     print(f"\n4. Applying LoRA to LLaMA model...")
@@ -262,8 +258,8 @@ def train_lora_only(args: LoRATrainingArguments):
 
     # 5. 创建分类模型
     print(f"\n5. Creating classification model...")
-    model = BinaryClassificationModel(llama_model, num_classes=2, use_fp16=True)
-    print("   ✅ Classification model created (using fp16)")
+    model = BinaryClassificationModel(llama_model, num_classes=2)
+    print("   ✅ Classification model created (using float32)")
 
     # 6. 训练参数
     training_args = TrainingArguments(
@@ -273,8 +269,7 @@ def train_lora_only(args: LoRATrainingArguments):
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
-        fp16=True,
-        fp16_full_eval=True,  # 评估时也使用 fp16
+        # ✅ 使用 FP32，不启用 fp16
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
