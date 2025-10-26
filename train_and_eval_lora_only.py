@@ -190,9 +190,25 @@ def train_lora_only(args: LoRATrainingArguments):
     }
     """
 
-    print("="*60)
-    print("Training LLaMA 3.1 with LoRA (No MoE)")
-    print("="*60)
+    # ✅ 检测分布式训练环境
+    import torch.distributed as dist
+    local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    is_distributed = local_rank != -1
+
+    if is_distributed:
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+        world_size = dist.get_world_size()
+        print(f"[Rank {local_rank}/{world_size}] Distributed training initialized")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print("Single GPU training")
+
+    if not is_distributed or local_rank == 0:
+        print("="*60)
+        print("Training LLaMA 3.1 with LoRA (No MoE)")
+        print("="*60)
 
     # 1. 加载 tokenizer
     print(f"\n1. Loading tokenizer from {args.model_path}...")
