@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-使用 LoRA 微调 LLaMA 3.1 模型（无 MoE）
-90% 训练，10% 验证，二分类任务
+使用 LoRA 微调 LLaMA 3.1 模型（灵活标签版本）
+支持不同类别数和标签名称的数据集（如 WVS）
 """
 
 import json
 import os
+import re
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 import torch
@@ -24,9 +26,38 @@ import numpy as np
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 
-def load_simple_classification_data(data_path: str, tokenizer, max_length: int = 512, val_split: float = 0.1):
+def extract_label_info_from_text(text: str):
     """
-    简单加载分类数据（只读取 instruction, input, output）
+    从文本中提取标签信息
+
+    例如：
+    "1. Strongly agree 2. agree 3. Disagree 4. Strongly disagree"
+    返回：["Strongly agree", "agree", "Disagree", "Strongly disagree"]
+    """
+    # 先移除干扰文本
+    text = re.sub(r'You can only choose one option[.\s]*', '', text)
+    text = re.sub(r'###[.\s]*', '', text)
+
+    # 匹配模式：数字. 文本（直到下一个数字或结束）
+    pattern = r'(\d+)\.\s*([^0-9]+?)(?=\s*\d+\.|$)'
+    matches = re.findall(pattern, text)
+
+    if matches:
+        # 清理标签文本
+        labels = []
+        for num, label_text in matches:
+            # 移除末尾的标点和空格
+            cleaned = label_text.strip().rstrip('.,;:\n')
+            if cleaned:  # 确保不是空字符串
+                labels.append(cleaned)
+        return labels if labels else None
+
+    return None
+
+
+def load_flexible_classification_data(data_path: str, tokenizer, max_length: int = 512, val_split: float = 0.1):
+    """
+    加载灵活标签的分类数据（支持不同类别数和标签名称）
 
     Args:
         data_path: 数据文件路径
@@ -35,7 +66,7 @@ def load_simple_classification_data(data_path: str, tokenizer, max_length: int =
         val_split: 验证集比例
 
     Returns:
-        {'train': train_dataset, 'val': val_dataset}
+        {'train': train_dataset, 'val': val_dataset, 'num_classes': num_classes}
     """
     print(f"Loading data from {data_path}...")
 
@@ -46,13 +77,34 @@ def load_simple_classification_data(data_path: str, tokenizer, max_length: int =
 
     # 处理数据
     processed_data = []
+    label_info_stats = defaultdict(int)
+    all_num_classes = []
+
     for item in data:
-        instruction = item.get('instruction', '')
+        instruction = item['instruction']
         input_text = item.get('input', '')
-        output = item['output']  # 必须字段
+        output = item['output']
+
+        # ✅ 优先从 input 字段提取标签，如果没有则从 instruction 提取
+        label_options = None
+        if input_text:
+            label_options = extract_label_info_from_text(input_text)
+
+        if label_options is None and instruction:
+            label_options = extract_label_info_from_text(instruction)
+
+        if label_options is None:
+            print(f"Warning: Cannot extract labels from instruction or input")
+            print(f"  Instruction: {instruction[:100]}...")
+            print(f"  Input: {input_text[:100]}...")
+            continue
+
+        num_classes = len(label_options)
+        label_info_stats[num_classes] += 1
+        all_num_classes.append(num_classes)
 
         # 组合文本
-        if input_text and input_text.strip():
+        if input_text:
             full_text = f"{instruction}\n{input_text}"
         else:
             full_text = instruction
@@ -69,8 +121,20 @@ def load_simple_classification_data(data_path: str, tokenizer, max_length: int =
         processed_data.append({
             'input_ids': encoded['input_ids'],
             'attention_mask': encoded['attention_mask'],
-            'labels': output  # 注意：这里用 'labels' 而不是 'label'，因为 Trainer 需要
+            'labels': output,
+            'num_classes': num_classes,
+            'label_options': label_options
         })
+
+    print(f"\nLabel distribution:")
+    for num_classes, count in sorted(label_info_stats.items()):
+        print(f"  {num_classes}-class: {count} samples ({count/len(processed_data)*100:.1f}%)")
+
+    # 确定主要的类别数（用于模型）
+    from collections import Counter
+    num_classes_counter = Counter(all_num_classes)
+    main_num_classes = num_classes_counter.most_common(1)[0][0]
+    print(f"\nUsing {main_num_classes} classes for model (most common)")
 
     # 划分训练集和验证集
     if val_split > 0:
@@ -78,10 +142,10 @@ def load_simple_classification_data(data_path: str, tokenizer, max_length: int =
         train_data = processed_data[:split_idx]
         val_data = processed_data[split_idx:]
         print(f"Train: {len(train_data)}, Val: {len(val_data)}")
-        return {'train': train_data, 'val': val_data}
+        return {'train': train_data, 'val': val_data, 'num_classes': main_num_classes}
     else:
         print(f"Train: {len(processed_data)}")
-        return {'train': processed_data, 'val': []}
+        return {'train': processed_data, 'val': [], 'num_classes': main_num_classes}
 
 
 @dataclass
@@ -126,7 +190,7 @@ class LoRATrainingArguments:
 
     # 训练参数
     output_dir: str = field(
-        default="./output/lora_only",
+        default="./output/lora_only_flexible",
         metadata={"help": "输出目录"}
     )
     num_train_epochs: int = field(
@@ -142,7 +206,7 @@ class LoRATrainingArguments:
         metadata={"help": "评估批次大小"}
     )
     learning_rate: float = field(
-        default=5e-6,  # ✅ 降低学习率：从 2e-5 改为 5e-6
+        default=5e-6,
         metadata={"help": "学习率"}
     )
     gradient_accumulation_steps: int = field(
@@ -163,23 +227,23 @@ class LoRATrainingArguments:
     )
 
 
-class BinaryClassificationModel(torch.nn.Module):
-    """带分类头的 LLaMA 模型"""
+class FlexibleClassificationModel(torch.nn.Module):
+    """带分类头的 LLaMA 模型（支持多分类）"""
 
-    def __init__(self, llama_model, num_classes=2):
+    def __init__(self, llama_model, num_classes=4):
         super().__init__()
         self.llama_model = llama_model
         self.config = llama_model.config
+        self.num_classes = num_classes
 
-        # 分类头（添加 LayerNorm 以稳定训练）
+        # 分类头
         self.classifier = torch.nn.Sequential(
-            torch.nn.LayerNorm(self.config.hidden_size),  # ✅ 添加 LayerNorm
+            torch.nn.LayerNorm(self.config.hidden_size),
             torch.nn.Linear(self.config.hidden_size, 512),
             torch.nn.ReLU(),
             torch.nn.Dropout(0.1),
             torch.nn.Linear(512, num_classes)
         )
-        # FP32: 不需要转换，默认就是 float32
 
     def forward(self, input_ids, attention_mask, labels=None, **kwargs):
         """
@@ -189,9 +253,9 @@ class BinaryClassificationModel(torch.nn.Module):
             input_ids: [B, L]
             attention_mask: [B, L]
             labels: [B]
-            **kwargs: 其他字段（input_ids_mask, attention_mask_mask, culture_labels）会被忽略
+            **kwargs: 其他字段会被忽略
         """
-        # LLaMA 前向传播（只使用第一路输入）
+        # LLaMA 前向传播
         outputs = self.llama_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -222,8 +286,10 @@ def compute_metrics(eval_pred):
     predictions = np.argmax(predictions, axis=1)
 
     accuracy = accuracy_score(labels, predictions)
+
+    # 使用 macro 平均（适用于多分类）
     precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, predictions, average='binary', pos_label=1
+        labels, predictions, average='macro', zero_division=0
     )
 
     return {
@@ -234,15 +300,15 @@ def compute_metrics(eval_pred):
     }
 
 
-def train_lora_only(args: LoRATrainingArguments):
+def train_lora_only_flexible(args: LoRATrainingArguments):
     """
-    训练 LoRA 微调模型
+    训练 LoRA 微调模型（灵活标签版本）
 
     数据格式：
     {
-        "instruction": "...",
-        "input": "...",
-        "output": 0  # 整数：0, 1, 2, ...
+        "instruction": "Question: ...",
+        "input": "1. Option1 2. Option2 3. Option3 4. Option4",
+        "output": 0  # 0-based index
     }
     """
 
@@ -263,7 +329,7 @@ def train_lora_only(args: LoRATrainingArguments):
 
     if not is_distributed or local_rank == 0:
         print("="*60)
-        print("Training LLaMA 3.1 with LoRA (No MoE)")
+        print("Training LLaMA 3.1 with LoRA (Flexible Labels)")
         print("="*60)
 
     # 1. 加载 tokenizer
@@ -273,10 +339,10 @@ def train_lora_only(args: LoRATrainingArguments):
         tokenizer.pad_token = tokenizer.eos_token
     print("   ✅ Tokenizer loaded")
 
-    # 2. 加载数据（只读取 instruction, input, output）
+    # 2. 加载数据（灵活标签）
     print(f"\n2. Loading data from {args.train_file}...")
-    print(f"   Data format: instruction/input/output")
-    data = load_simple_classification_data(
+    print(f"   Data format: instruction/input/output (flexible labels)")
+    data = load_flexible_classification_data(
         data_path=args.train_file,
         tokenizer=tokenizer,
         max_length=args.max_length,
@@ -284,15 +350,17 @@ def train_lora_only(args: LoRATrainingArguments):
     )
     train_dataset = data['train']
     val_dataset = data['val']
+    num_classes = data['num_classes']
 
     print(f"   ✅ Train dataset size: {len(train_dataset)}")
     print(f"   ✅ Validation dataset size: {len(val_dataset)}")
+    print(f"   ✅ Number of classes: {num_classes}")
 
     # 3. 加载基础模型
     print(f"\n3. Loading base LLaMA model from {args.model_path}...")
     llama_model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
-        torch_dtype=torch.float32,  # ✅ 使用 FP32
+        torch_dtype=torch.float32,
         trust_remote_code=True
     )
     print("   ✅ Base model loaded (using float32)")
@@ -324,8 +392,8 @@ def train_lora_only(args: LoRATrainingArguments):
 
     # 5. 创建分类模型
     print(f"\n5. Creating classification model...")
-    model = BinaryClassificationModel(llama_model, num_classes=2)
-    print("   ✅ Classification model created (using float32)")
+    model = FlexibleClassificationModel(llama_model, num_classes=num_classes)
+    print(f"   ✅ Classification model created ({num_classes} classes, using float32)")
 
     # 6. 训练参数
     training_args = TrainingArguments(
@@ -335,7 +403,6 @@ def train_lora_only(args: LoRATrainingArguments):
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
-        # ✅ 使用 FP32，不启用 fp16
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
@@ -346,15 +413,12 @@ def train_lora_only(args: LoRATrainingArguments):
         greater_is_better=True,
         remove_unused_columns=False,
         report_to=["tensorboard"],
-        # ✅ 梯度裁剪，防止梯度爆炸
         max_grad_norm=1.0,
-        # ✅ 使用更稳定的优化器设置
         optim="adamw_torch",
-        warmup_steps=100,  # 添加 warmup
+        warmup_steps=100,
     )
 
-    # 7. Data Collator（使用简单的 padding collator）
-
+    # 7. Data Collator
     def simple_data_collator(features):
         """简单的数据整理器，只处理 input_ids, attention_mask, labels"""
         import torch
@@ -431,7 +495,7 @@ def train_lora_only(args: LoRATrainingArguments):
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="LoRA 微调 LLaMA 3.1（无 MoE）")
+    parser = argparse.ArgumentParser(description="LoRA 微调 LLaMA 3.1（灵活标签）")
     parser.add_argument("--model_path", type=str, required=True,
                         help="LLaMA 模型路径")
     parser.add_argument("--train_file", type=str, required=True,
@@ -444,7 +508,7 @@ def main():
                         help="训练批次大小")
     parser.add_argument("--per_device_eval_batch_size", type=int, default=8,
                         help="评估批次大小")
-    parser.add_argument("--learning_rate", type=float, default=2e-5,
+    parser.add_argument("--learning_rate", type=float, default=5e-6,
                         help="学习率")
     parser.add_argument("--lora_rank", type=int, default=8,
                         help="LoRA rank")
@@ -476,7 +540,7 @@ def main():
     )
 
     # 训练
-    metrics = train_lora_only(training_args)
+    metrics = train_lora_only_flexible(training_args)
 
 
 if __name__ == "__main__":
