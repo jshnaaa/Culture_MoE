@@ -55,15 +55,16 @@ def extract_label_info_from_text(text: str):
     return None
 
 
-def load_flexible_classification_data(data_path: str, tokenizer, max_length: int = 512, val_split: float = 0.1):
+def load_flexible_classification_data(data_path: str, tokenizer, max_length: int = 512, val_split: float = 0.1, num_classes: int = 4):
     """
-    加载灵活标签的分类数据（支持不同类别数和标签名称）
+    加载分类数据
 
     Args:
         data_path: 数据文件路径
         tokenizer: tokenizer
         max_length: 最大序列长度
         val_split: 验证集比例
+        num_classes: 类别数（默认 4）
 
     Returns:
         {'train': train_dataset, 'val': val_dataset, 'num_classes': num_classes}
@@ -77,31 +78,15 @@ def load_flexible_classification_data(data_path: str, tokenizer, max_length: int
 
     # 处理数据
     processed_data = []
-    label_info_stats = defaultdict(int)
-    all_num_classes = []
+    label_stats = defaultdict(int)
 
     for item in data:
         instruction = item['instruction']
         input_text = item.get('input', '')
         output = item['output']
 
-        # ✅ 优先从 input 字段提取标签，如果没有则从 instruction 提取
-        label_options = None
-        if input_text:
-            label_options = extract_label_info_from_text(input_text)
-
-        if label_options is None and instruction:
-            label_options = extract_label_info_from_text(instruction)
-
-        if label_options is None:
-            print(f"Warning: Cannot extract labels from instruction or input")
-            print(f"  Instruction: {instruction[:100]}...")
-            print(f"  Input: {input_text[:100]}...")
-            continue
-
-        num_classes = len(label_options)
-        label_info_stats[num_classes] += 1
-        all_num_classes.append(num_classes)
+        # 统计标签分布
+        label_stats[output] += 1
 
         # 组合文本
         if input_text:
@@ -121,20 +106,13 @@ def load_flexible_classification_data(data_path: str, tokenizer, max_length: int
         processed_data.append({
             'input_ids': encoded['input_ids'],
             'attention_mask': encoded['attention_mask'],
-            'labels': output,
-            'num_classes': num_classes,
-            'label_options': label_options
+            'labels': output
         })
 
-    print(f"\nLabel distribution:")
-    for num_classes, count in sorted(label_info_stats.items()):
-        print(f"  {num_classes}-class: {count} samples ({count/len(processed_data)*100:.1f}%)")
-
-    # 确定主要的类别数（用于模型）
-    from collections import Counter
-    num_classes_counter = Counter(all_num_classes)
-    main_num_classes = num_classes_counter.most_common(1)[0][0]
-    print(f"\nUsing {main_num_classes} classes for model (most common)")
+    print(f"\nLabel distribution ({num_classes}-class):")
+    for label in sorted(label_stats.keys()):
+        count = label_stats[label]
+        print(f"  Class {label}: {count} samples ({count/len(processed_data)*100:.1f}%)")
 
     # 划分训练集和验证集
     if val_split > 0:
@@ -142,10 +120,10 @@ def load_flexible_classification_data(data_path: str, tokenizer, max_length: int
         train_data = processed_data[:split_idx]
         val_data = processed_data[split_idx:]
         print(f"Train: {len(train_data)}, Val: {len(val_data)}")
-        return {'train': train_data, 'val': val_data, 'num_classes': main_num_classes}
+        return {'train': train_data, 'val': val_data, 'num_classes': num_classes}
     else:
         print(f"Train: {len(processed_data)}")
-        return {'train': processed_data, 'val': [], 'num_classes': main_num_classes}
+        return {'train': processed_data, 'val': [], 'num_classes': num_classes}
 
 
 @dataclass
@@ -339,18 +317,19 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
         tokenizer.pad_token = tokenizer.eos_token
     print("   ✅ Tokenizer loaded")
 
-    # 2. 加载数据（灵活标签）
+    # 2. 加载数据
     print(f"\n2. Loading data from {args.train_file}...")
-    print(f"   Data format: instruction/input/output (flexible labels)")
+    print(f"   Data format: instruction/input/output ({args.num_classes}-class)")
     data = load_flexible_classification_data(
         data_path=args.train_file,
         tokenizer=tokenizer,
         max_length=args.max_length,
-        val_split=args.val_split
+        val_split=args.val_split,
+        num_classes=args.num_classes
     )
     train_dataset = data['train']
     val_dataset = data['val']
-    num_classes = data['num_classes']
+    num_classes = args.num_classes
 
     print(f"   ✅ Train dataset size: {len(train_dataset)}")
     print(f"   ✅ Validation dataset size: {len(val_dataset)}")
@@ -512,9 +491,11 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="LoRA 微调 LLaMA 3.1（灵活标签）")
+    parser = argparse.ArgumentParser(description="LoRA 微调基座模型（灵活标签）")
     parser.add_argument("--model_path", type=str, required=True,
-                        help="LLaMA 模型路径")
+                        help="基座模型路径")
+    parser.add_argument("--backbone", type=str, default="llama", choices=["llama", "qwen"],
+                        help="基座模型类型：llama 或 qwen")
     parser.add_argument("--train_file", type=str, required=True,
                         help="训练数据文件")
     parser.add_argument("--output_dir", type=str, required=True,
@@ -535,6 +516,8 @@ def main():
                         help="验证集比例")
     parser.add_argument("--save_model", action="store_true",
                         help="是否保存模型（默认不保存，只保存评估结果）")
+    parser.add_argument("--num_classes", type=int, default=4,
+                        help="类别数（默认 4）")
 
     args = parser.parse_args()
 

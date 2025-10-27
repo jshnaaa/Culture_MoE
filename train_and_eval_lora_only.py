@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-使用 LoRA 微调 LLaMA 3.1 模型（无 MoE）
+使用 LoRA 微调基座模型（无 MoE）
+支持 LLaMA 3.1 和 Qwen 2.5
 90% 训练，10% 验证，二分类任务
 """
 
@@ -440,13 +441,15 @@ def train_lora_only(args: LoRATrainingArguments):
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="LoRA 微调 LLaMA 3.1（无 MoE）")
+    parser = argparse.ArgumentParser(description="LoRA 微调基座模型（无 MoE）")
     parser.add_argument("--model_path", type=str, required=True,
-                        help="LLaMA 模型路径")
+                        help="基座模型路径")
     parser.add_argument("--train_file", type=str, required=True,
                         help="训练数据文件")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="输出目录")
+    parser.add_argument("--backbone", type=str, default="llama", choices=["llama", "qwen"],
+                        help="基座模型类型：llama 或 qwen")
     parser.add_argument("--num_train_epochs", type=int, default=3,
                         help="训练轮数")
     parser.add_argument("--per_device_train_batch_size", type=int, default=4,

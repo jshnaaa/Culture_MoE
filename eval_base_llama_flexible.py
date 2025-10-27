@@ -50,17 +50,19 @@ def extract_label_info_from_text(text: str):
     return None
 
 
-def load_wvs_data(data_path: str, tokenizer, max_length: int = 512):
+def load_wvs_data(data_path: str, tokenizer, max_length: int = 512, num_classes: int = 4):
     """
-    加载 WVS 数据集
+    加载分类数据集
 
     数据格式：
     {
-        "instruction": "Question: ... Options: 1. Strongly agree 2. agree ...",
-        "input": "...",
-        "output": 0,  # 0-based index
-        "label": "0"
+        "instruction": "Question: ...",
+        "input": "1. Option1 2. Option2 3. Option3 4. Option4",
+        "output": 0  # 0-based index
     }
+
+    Args:
+        num_classes: 类别数（默认 4）
     """
     print(f"Loading data from {data_path}...")
 
@@ -71,29 +73,15 @@ def load_wvs_data(data_path: str, tokenizer, max_length: int = 512):
 
     # 处理数据
     processed_data = []
-    label_info_stats = defaultdict(int)
+    label_stats = defaultdict(int)
 
     for item in data:
         instruction = item['instruction']
         input_text = item.get('input', '')
         output = item['output']
 
-        # ✅ 优先从 input 字段提取标签，如果没有则从 instruction 提取
-        label_options = None
-        if input_text:
-            label_options = extract_label_info_from_text(input_text)
-
-        if label_options is None and instruction:
-            label_options = extract_label_info_from_text(instruction)
-
-        if label_options is None:
-            print(f"Warning: Cannot extract labels from instruction or input")
-            print(f"  Instruction: {instruction[:100]}...")
-            print(f"  Input: {input_text[:100]}...")
-            continue
-
-        num_classes = len(label_options)
-        label_info_stats[num_classes] += 1
+        # 统计标签分布
+        label_stats[output] += 1
 
         # 组合文本
         if input_text:
@@ -113,16 +101,13 @@ def load_wvs_data(data_path: str, tokenizer, max_length: int = 512):
         processed_data.append({
             'input_ids': encoded['input_ids'],
             'attention_mask': encoded['attention_mask'],
-            'label': output,
-            'label_options': label_options,
-            'num_classes': num_classes,
-            'instruction': instruction,
-            'input': input_text
+            'label': output
         })
 
-    print(f"\nLabel distribution:")
-    for num_classes, count in sorted(label_info_stats.items()):
-        print(f"  {num_classes}-class: {count} samples ({count/len(processed_data)*100:.1f}%)")
+    print(f"\nLabel distribution ({num_classes}-class):")
+    for label in sorted(label_stats.keys()):
+        count = label_stats[label]
+        print(f"  Class {label}: {count} samples ({count/len(processed_data)*100:.1f}%)")
 
     return processed_data
 
@@ -134,19 +119,21 @@ def evaluate_base_llama_flexible(
     max_length: int = 512,
     output_file: str = None,
     device: str = "cuda:0",
-    backbone: str = "llama"
+    backbone: str = "llama",
+    num_classes: int = 4
 ):
     """
-    灵活评估 Base 模型（支持不同类别数和标签名称）
+    评估 Base 模型（支持不同类别数）
 
     Args:
         backbone: 基座模型类型，"llama" 或 "qwen"
+        num_classes: 类别数（默认 4）
     """
     print("="*60)
     if backbone == "qwen":
-        print("Evaluating Base Qwen 2.5 Model (Flexible Labels)")
+        print(f"Evaluating Base Qwen 2.5 Model ({num_classes}-class)")
     else:
-        print("Evaluating Base LLaMA 3.1 Model (Flexible Labels)")
+        print(f"Evaluating Base LLaMA 3.1 Model ({num_classes}-class)")
     print("="*60)
 
     # 1. 加载 tokenizer
@@ -157,7 +144,7 @@ def evaluate_base_llama_flexible(
     print("   ✅ Tokenizer loaded")
 
     # 2. 加载模型
-    print(f"\n2. Loading base LLaMA model from {model_path}...")
+    print(f"\n2. Loading base model from {model_path}...")
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.float16 if device.startswith("cuda") else torch.float32,
@@ -170,16 +157,27 @@ def evaluate_base_llama_flexible(
 
     # 3. 加载测试数据
     print(f"\n3. Loading test data from {test_file}...")
-    test_data = load_wvs_data(test_file, tokenizer, max_length)
+    test_data = load_wvs_data(test_file, tokenizer, max_length, num_classes)
     print(f"   ✅ Test dataset size: {len(test_data)}")
 
     # 4. 评估
-    print(f"\n4. Evaluating on {len(test_data)} samples...")
+    print(f"\n4. Evaluating on {len(test_data)} samples ({num_classes}-class)...")
+
+    # ✅ 动态生成类别 token（使用数字 0, 1, 2, ...）
+    class_tokens = [str(i) for i in range(num_classes)]
+    class_token_ids = []
+    for token in class_tokens:
+        token_ids = tokenizer.encode(token, add_special_tokens=False)
+        if len(token_ids) > 0:
+            class_token_ids.append(token_ids[0])
+        else:
+            class_token_ids.append(0)
+
+    print(f"   Using class tokens: {class_tokens}")
+    print(f"   Token IDs: {class_token_ids}")
 
     all_predictions = []
     all_labels = []
-    all_num_classes = []
-    all_correct = []
 
     for i in tqdm(range(0, len(test_data), batch_size)):
         batch_data = test_data[i:i+batch_size]
@@ -194,8 +192,6 @@ def evaluate_base_llama_flexible(
         attention_mask = pad_sequence(attention_mask_list, batch_first=True, padding_value=0).to(device)
 
         labels = [item['label'] for item in batch_data]
-        label_options_batch = [item['label_options'] for item in batch_data]
-        num_classes_batch = [item['num_classes'] for item in batch_data]
 
         # 前向传播
         with torch.no_grad():
@@ -208,68 +204,49 @@ def evaluate_base_llama_flexible(
             # 获取下一个 token 的 logits
             logits = outputs.logits[:, -1, :]  # [B, vocab_size]
 
-            # 对每个样本单独处理（因为标签不同）
-            for j, (label_options, true_label, num_classes) in enumerate(zip(label_options_batch, labels, num_classes_batch)):
-                # 获取每个标签选项的 token ID
-                label_token_ids = []
-                for option in label_options:
-                    # 尝试多种方式编码标签
-                    # 1. 直接编码
-                    tokens = tokenizer.encode(option, add_special_tokens=False)
-                    if len(tokens) > 0:
-                        label_token_ids.append(tokens[0])
-                    else:
-                        # 2. 尝试小写
-                        tokens = tokenizer.encode(option.lower(), add_special_tokens=False)
-                        if len(tokens) > 0:
-                            label_token_ids.append(tokens[0])
-                        else:
-                            # 3. 使用默认值
-                            label_token_ids.append(0)
+            # 提取 4 个类别的 logits
+            class_logits_list = []
+            for token_id in class_token_ids:
+                class_logits_list.append(logits[:, token_id])  # [B]
 
-                # 提取对应的 logits
-                sample_logits = logits[j]  # [vocab_size]
-                class_logits = torch.tensor([sample_logits[tid].item() for tid in label_token_ids])
+            # 组合成多分类 logits
+            multi_class_logits = torch.stack(class_logits_list, dim=1)  # [B, 4]
 
-                # 预测
-                pred = torch.argmax(class_logits).item()
+            # 预测
+            preds = torch.argmax(multi_class_logits, dim=-1).cpu()  # [B]
 
-                all_predictions.append(pred)
-                all_labels.append(true_label)
-                all_num_classes.append(num_classes)
-                all_correct.append(pred == true_label)
+        all_predictions.extend(preds.tolist())
+        all_labels.extend(labels)
 
     # 5. 计算指标
     print("\n" + "="*60)
-    print("Evaluation Results")
+    print(f"Evaluation Results ({num_classes}-class)")
     print("="*60)
 
     predictions = np.array(all_predictions)
     labels = np.array(all_labels)
-    num_classes_array = np.array(all_num_classes)
 
     # 总体准确率
     overall_accuracy = accuracy_score(labels, predictions)
     print(f"\n📊 Overall Metrics:")
     print(f"   Accuracy: {overall_accuracy:.4f}")
 
-    # 按类别数分组统计
-    print(f"\n📊 Accuracy by Number of Classes:")
-    for nc in sorted(set(num_classes_array)):
-        mask = num_classes_array == nc
+    # 按类别统计
+    print(f"\n📊 Per-Class Statistics:")
+    for class_id in range(num_classes):
+        mask = labels == class_id
         if mask.sum() > 0:
-            acc = accuracy_score(labels[mask], predictions[mask])
-            print(f"   {nc}-class: {acc:.4f} ({mask.sum()} samples)")
+            class_acc = accuracy_score(labels[mask], predictions[mask])
+            print(f"   Class {class_id}: {class_acc:.4f} ({mask.sum()} samples)")
 
     # 6. 保存结果
     if output_file:
         results = {
-            "model": "base_llama_3.1_8b_flexible",
+            "model": f"base_llama_3.1_8b_{num_classes}class",
+            "num_classes": num_classes,
             "overall_accuracy": float(overall_accuracy),
             "predictions": all_predictions,
-            "labels": all_labels,
-            "num_classes": all_num_classes,
-            "correct": all_correct
+            "labels": all_labels
         }
 
         print(f"\n💾 Saving results to {output_file}...")
@@ -303,6 +280,8 @@ def main():
                         help="设备")
     parser.add_argument("--backbone", type=str, default="llama", choices=["llama", "qwen"],
                         help="基座模型类型：llama 或 qwen")
+    parser.add_argument("--num_classes", type=int, default=4,
+                        help="类别数（默认 4）")
 
     args = parser.parse_args()
 
@@ -320,7 +299,8 @@ def main():
         max_length=args.max_length,
         output_file=args.output_file,
         device=args.device,
-        backbone=args.backbone
+        backbone=args.backbone,
+        num_classes=args.num_classes
     )
 
     print("\n✅ Evaluation completed!")
