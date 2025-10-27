@@ -363,11 +363,14 @@ def train_lora_only(args: LoRATrainingArguments):
         # 提取字段
         input_ids = [torch.tensor(f['input_ids']) for f in features]
         attention_mask = [torch.tensor(f['attention_mask']) for f in features]
-        labels = torch.tensor([f['labels'] for f in features])
+        labels = [f['labels'] for f in features]
 
         # Padding
         input_ids = pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
         attention_mask = pad_sequence(attention_mask, batch_first=True, padding_value=0)
+
+        # 确保 labels 是正确的形状 [batch_size]
+        labels = torch.tensor(labels, dtype=torch.long)
 
         return {
             'input_ids': input_ids,
