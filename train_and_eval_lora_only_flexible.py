@@ -393,6 +393,11 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
     # 5. 创建分类模型
     print(f"\n5. Creating classification model...")
     model = FlexibleClassificationModel(llama_model, num_classes=num_classes)
+
+    # ✅ 将模型移到正确的设备
+    if not is_distributed:
+        model = model.to(device)
+
     print(f"   ✅ Classification model created ({num_classes} classes, using float32)")
 
     # 6. 训练参数
@@ -416,6 +421,9 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
         max_grad_norm=1.0,
         optim="adamw_torch",
         warmup_steps=100,
+        # ✅ 禁用 DataParallel，避免多 GPU 问题
+        dataloader_drop_last=False,
+        ddp_find_unused_parameters=False if is_distributed else None,
     )
 
     # 7. Data Collator

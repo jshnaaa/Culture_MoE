@@ -3,6 +3,9 @@
 # 训练 LoRA only 模型（灵活标签版本）
 # 适用于 WVS 等标签不统一的数据集
 
+# ✅ 限制只使用一个 GPU（避免 DataParallel 问题）
+export CUDA_VISIBLE_DEVICES=0
+
 # ✅ 配置参数
 MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
 TRAIN_FILE="/root/autodl-fs/wvs_all_llama_merge.json"
