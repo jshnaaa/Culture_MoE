@@ -5,8 +5,8 @@
 
 # ✅ 配置参数
 MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-TEST_FILE="/root/autodl-fs/CulturalBench_4class.json"  # 四分类数据集
-OUTPUT_FILE="/root/autodl-fs/output/base_llama/eval_results_base_llama_4class_$(date +%Y%m%d_%H%M).json"
+TEST_FILE="/root/autodl-fs/wvs_all_llama_merge.json"  # 四分类数据集
+OUTPUT_FILE="/root/autodl-fs/output/base_llama/eval_results_base_llama_wvs_$(date +%Y%m%d_%H%M).json"
 
 echo "============================================================"
 echo "Evaluating Base LLaMA 3.1 Model (4-Class Classification)"
@@ -26,7 +26,7 @@ python eval_base_llama.py \
     --max_length 512 \
     --output_file $OUTPUT_FILE \
     --device cuda:0 \
-    --num_classes 4
+    --num_classes 5
 
 if [ $? -eq 0 ]; then
     echo ""
