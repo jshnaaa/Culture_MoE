@@ -140,6 +140,8 @@ def evaluate_base_llama(
                 class_tokens = ["no", "neutral", "yes"]
             elif num_classes == 4:
                 class_tokens = ["strongly_disagree", "disagree", "agree", "strongly_agree"]
+            elif num_classes == 5:
+                class_tokens = ["strongly_disagree", "disagree", "neutral", "agree", "strongly_agree"]
             else:
                 # 通用方案：使用数字
                 class_tokens = [str(i) for i in range(num_classes)]
@@ -206,6 +208,8 @@ def evaluate_base_llama(
         target_names = ["no (0)", "neutral (1)", "yes (2)"]
     elif num_classes == 4:
         target_names = ["strongly_disagree (0)", "disagree (1)", "agree (2)", "strongly_agree (3)"]
+    elif num_classes == 5:
+        target_names = ["strongly_disagree (0)", "disagree (1)", "neutral (2)", "agree (3)", "strongly_agree (4)"]
     else:
         target_names = [f"class_{i} ({i})" for i in range(num_classes)]
 
@@ -235,6 +239,13 @@ def evaluate_base_llama(
     elif num_classes == 4:
         print("                    SD   D    A    SA")
         for i, label in enumerate(["SD", "D", "A", "SA"]):
+            row_str = f"Actual {label:2s}         "
+            for j in range(num_classes):
+                row_str += f"{cm[i][j]:3d}  "
+            print(row_str)
+    elif num_classes == 5:
+        print("                    SD   D    N    A    SA")
+        for i, label in enumerate(["SD", "D", "N", "A", "SA"]):
             row_str = f"Actual {label:2s}         "
             for j in range(num_classes):
                 row_str += f"{cm[i][j]:3d}  "
