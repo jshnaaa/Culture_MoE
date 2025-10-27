@@ -394,16 +394,19 @@ def train_lora_only(args: LoRATrainingArguments):
     print("="*60)
     train_result = trainer.train()
 
-    # 10. 保存模型
-    print(f"\n8. Saving model to {args.output_dir}...")
-    trainer.save_model()
-    trainer.save_state()
+    # 10. 保存模型（可选）
+    if args.save_model:
+        print(f"\n8. Saving model to {args.output_dir}...")
+        trainer.save_model()
+        trainer.save_state()
 
-    # 保存 LoRA 权重
-    model.llama_model.save_pretrained(args.output_dir)
-    tokenizer.save_pretrained(args.output_dir)
+        # 保存 LoRA 权重
+        model.llama_model.save_pretrained(args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
 
-    print("   ✅ Model saved")
+        print("   ✅ Model saved")
+    else:
+        print(f"\n8. Skipping model saving (--save_model not set)")
 
     # 11. 最终评估
     print(f"\n9. Final evaluation on validation set...")
@@ -418,12 +421,15 @@ def train_lora_only(args: LoRATrainingArguments):
     print(f"   F1:         {metrics['eval_f1']:.4f}")
     print("="*60)
 
-    # 保存指标
+    # 保存指标（总是保存）
+    os.makedirs(args.output_dir, exist_ok=True)
     with open(os.path.join(args.output_dir, "eval_results.json"), 'w') as f:
         json.dump(metrics, f, indent=2)
 
     print(f"\n✅ Training and evaluation completed!")
-    print(f"   Model saved to: {args.output_dir}")
+    if args.save_model:
+        print(f"   Model saved to: {args.output_dir}")
+    print(f"   Eval results saved to: {os.path.join(args.output_dir, 'eval_results.json')}")
 
     return metrics
 
@@ -452,6 +458,8 @@ def main():
                         help="最大序列长度")
     parser.add_argument("--val_split", type=float, default=0.1,
                         help="验证集比例")
+    parser.add_argument("--save_model", action="store_true",
+                        help="是否保存模型（默认不保存，只保存评估结果）")
 
     args = parser.parse_args()
 

@@ -16,6 +16,7 @@ LEARNING_RATE=5e-6
 LORA_RANK=8
 MAX_LENGTH=512
 VAL_SPLIT=0.1
+SAVE_MODEL=false  # 是否保存模型（true/false）。如果为 false，只保存评估结果
 
 echo "============================================================"
 echo "Training LoRA Only Model (Flexible Labels)"
@@ -27,12 +28,13 @@ echo "Epochs: $NUM_EPOCHS"
 echo "Batch size: $BATCH_SIZE"
 echo "Learning rate: $LEARNING_RATE"
 echo "LoRA rank: $LORA_RANK"
+echo "Save model: $SAVE_MODEL"
 echo "Note: Supports variable number of classes and label names"
 echo "============================================================"
 echo ""
 
-# ✅ 运行训练
-python train_and_eval_lora_only_flexible.py \
+# 构建命令
+CMD="python train_and_eval_lora_only_flexible.py \
     --model_path $MODEL_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
@@ -42,14 +44,25 @@ python train_and_eval_lora_only_flexible.py \
     --learning_rate $LEARNING_RATE \
     --lora_rank $LORA_RANK \
     --max_length $MAX_LENGTH \
-    --val_split $VAL_SPLIT
+    --val_split $VAL_SPLIT"
+
+# 添加可选参数
+if [ "$SAVE_MODEL" = "true" ]; then
+    CMD="$CMD --save_model"
+fi
+
+# ✅ 运行训练
+eval $CMD
 
 if [ $? -eq 0 ]; then
     echo ""
     echo "============================================================"
     echo "✅ Training completed successfully!"
     echo "============================================================"
-    echo "Model saved to: $OUTPUT_DIR"
+    if [ "$SAVE_MODEL" = "true" ]; then
+        echo "Model saved to: $OUTPUT_DIR"
+    fi
+    echo "Eval results saved to: $OUTPUT_DIR/eval_results.json"
     echo "============================================================"
 else
     echo ""
