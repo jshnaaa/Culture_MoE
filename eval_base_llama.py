@@ -26,7 +26,8 @@ def evaluate_base_llama(
     max_length: int = 512,
     output_file: str = None,
     device: str = "cuda:0",
-    use_dual_input: bool = True
+    use_dual_input: bool = True,
+    num_classes: int = 2
 ):
     """
     使用 Base LLaMA 3.1 模型评估
@@ -36,7 +37,7 @@ def evaluate_base_llama(
         "instruction": "...",
         "instruction_mask": "...",
         "input": "...",
-        "output": 0,  # 整数：0, 1, 2
+        "output": 0,  # 整数：0, 1, 2, 3, ...
         "label": "0"  # 字符串：文化维度标签
     }
 
@@ -48,6 +49,7 @@ def evaluate_base_llama(
         output_file: 输出文件路径
         device: 设备
         use_dual_input: 是否使用双路输入
+        num_classes: 分类数量（2, 3, 4, ...）
     """
     print("="*60)
     print("Evaluating Base LLaMA 3.1 Model (No Training, No MoE)")
@@ -130,27 +132,45 @@ def evaluate_base_llama(
             # 我们使用隐藏状态的均值作为特征
             pooled = hidden_states.mean(dim=1)  # [B, H]
 
-            # 使用一个简单的启发式方法：
-            # 计算 "yes" 和 "no" token 的概率
-            yes_token_id = tokenizer.encode("yes", add_special_tokens=False)[0]
-            no_token_id = tokenizer.encode("no", add_special_tokens=False)[0]
+            # ✅ 使用启发式方法：根据类别数量提取对应 token 的 logits
+            # 定义类别标签映射
+            if num_classes == 2:
+                class_tokens = ["no", "yes"]
+            elif num_classes == 3:
+                class_tokens = ["no", "neutral", "yes"]
+            elif num_classes == 4:
+                class_tokens = ["strongly_disagree", "disagree", "agree", "strongly_agree"]
+            else:
+                # 通用方案：使用数字
+                class_tokens = [str(i) for i in range(num_classes)]
+
+            # 获取每个类别 token 的 ID
+            class_token_ids = []
+            for token in class_tokens:
+                token_ids = tokenizer.encode(token, add_special_tokens=False)
+                if len(token_ids) > 0:
+                    class_token_ids.append(token_ids[0])
+                else:
+                    # 如果 token 不存在，使用一个默认值
+                    class_token_ids.append(0)
 
             # 获取下一个 token 的 logits
             logits = outputs.logits[:, -1, :]  # [B, vocab_size]
 
-            # 提取 yes 和 no 的 logits
-            yes_logits = logits[:, yes_token_id]  # [B]
-            no_logits = logits[:, no_token_id]   # [B]
+            # 提取每个类别的 logits
+            class_logits_list = []
+            for token_id in class_token_ids:
+                class_logits_list.append(logits[:, token_id])  # [B]
 
-            # 组合成二分类 logits
-            binary_logits = torch.stack([no_logits, yes_logits], dim=1)  # [B, 2]
+            # 组合成多分类 logits
+            multi_class_logits = torch.stack(class_logits_list, dim=1)  # [B, num_classes]
 
             # 预测
-            preds = torch.argmax(binary_logits, dim=-1).cpu()  # [B]
+            preds = torch.argmax(multi_class_logits, dim=-1).cpu()  # [B]
 
         all_predictions.extend(preds.tolist())
         all_labels.extend(labels.tolist())
-        all_logits.extend(binary_logits.cpu().tolist())
+        all_logits.extend(multi_class_logits.cpu().tolist())
         all_culture_labels.extend(culture_labels)
 
     # 5. 计算指标
@@ -162,9 +182,16 @@ def evaluate_base_llama(
     labels = np.array(all_labels)
 
     accuracy = accuracy_score(labels, predictions)
-    precision, recall, f1, support = precision_recall_fscore_support(
-        labels, predictions, average='binary', pos_label=1
-    )
+
+    # ✅ 根据分类数量选择平均方式
+    if num_classes == 2:
+        precision, recall, f1, support = precision_recall_fscore_support(
+            labels, predictions, average='binary', pos_label=1, zero_division=0
+        )
+    else:
+        precision, recall, f1, support = precision_recall_fscore_support(
+            labels, predictions, average='macro', zero_division=0
+        )
 
     print(f"\n📊 Overall Metrics:")
     print(f"   Accuracy:   {accuracy:.4f}")
@@ -172,20 +199,55 @@ def evaluate_base_llama(
     print(f"   Recall:     {recall:.4f}")
     print(f"   F1:         {f1:.4f}")
 
+    # ✅ 根据分类数量设置标签名称
+    if num_classes == 2:
+        target_names = ["no (0)", "yes (1)"]
+    elif num_classes == 3:
+        target_names = ["no (0)", "neutral (1)", "yes (2)"]
+    elif num_classes == 4:
+        target_names = ["strongly_disagree (0)", "disagree (1)", "agree (2)", "strongly_agree (3)"]
+    else:
+        target_names = [f"class_{i} ({i})" for i in range(num_classes)]
+
     print(f"\n📊 Classification Report:")
     print(classification_report(
         labels,
         predictions,
-        target_names=["no (0)", "yes (1)"],
-        digits=4
+        target_names=target_names,
+        digits=4,
+        zero_division=0
     ))
 
-    cm = confusion_matrix(labels, predictions)
+    cm = confusion_matrix(labels, predictions, labels=list(range(num_classes)))
     print(f"\n📊 Confusion Matrix:")
     print("           Predicted")
-    print("           no   yes")
-    print(f"Actual no  {cm[0][0]:3d}  {cm[0][1]:3d}")
-    print(f"Actual yes {cm[1][0]:3d}  {cm[1][1]:3d}")
+
+    # ✅ 动态打印混淆矩阵
+    if num_classes == 2:
+        print("           no   yes")
+        print(f"Actual no  {cm[0][0]:3d}  {cm[0][1]:3d}")
+        print(f"Actual yes {cm[1][0]:3d}  {cm[1][1]:3d}")
+    elif num_classes == 3:
+        print("              no  neutral  yes")
+        print(f"Actual no      {cm[0][0]:3d}  {cm[0][1]:3d}  {cm[0][2]:3d}")
+        print(f"Actual neutral {cm[1][0]:3d}  {cm[1][1]:3d}  {cm[1][2]:3d}")
+        print(f"Actual yes     {cm[2][0]:3d}  {cm[2][1]:3d}  {cm[2][2]:3d}")
+    elif num_classes == 4:
+        print("                    SD   D    A    SA")
+        for i, label in enumerate(["SD", "D", "A", "SA"]):
+            row_str = f"Actual {label:2s}         "
+            for j in range(num_classes):
+                row_str += f"{cm[i][j]:3d}  "
+            print(row_str)
+    else:
+        # 通用打印
+        header = "           " + "  ".join([f"C{i}" for i in range(num_classes)])
+        print(header)
+        for i in range(num_classes):
+            row_str = f"Actual C{i}  "
+            for j in range(num_classes):
+                row_str += f"{cm[i][j]:3d}  "
+            print(row_str)
 
     # 6. 保存结果
     if output_file:
@@ -236,6 +298,8 @@ def main():
                         help="输出文件路径")
     parser.add_argument("--device", type=str, default="cuda:0",
                         help="设备")
+    parser.add_argument("--num_classes", type=int, default=2,
+                        help="分类数量（2, 3, 4, ...）")
 
     args = parser.parse_args()
 
@@ -252,7 +316,8 @@ def main():
         batch_size=args.batch_size,
         max_length=args.max_length,
         output_file=args.output_file,
-        device=args.device
+        device=args.device,
+        num_classes=args.num_classes
     )
 
     print("\n✅ Evaluation completed!")
