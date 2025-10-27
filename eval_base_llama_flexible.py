@@ -20,22 +20,31 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
-def extract_label_info_from_instruction(instruction: str):
+def extract_label_info_from_text(text: str):
     """
-    从 instruction 中提取标签信息
+    从文本中提取标签信息
 
     例如：
     "1. Strongly agree 2. agree 3. Disagree 4. Strongly disagree"
     返回：["Strongly agree", "agree", "Disagree", "Strongly disagree"]
     """
-    # 匹配模式：数字. 文本
-    pattern = r'\d+\.\s*([^0-9]+?)(?=\s*\d+\.|$)'
-    matches = re.findall(pattern, instruction)
+    # 先移除干扰文本
+    text = re.sub(r'You can only choose one option[.\s]*', '', text)
+    text = re.sub(r'###[.\s]*', '', text)
+
+    # 匹配模式：数字. 文本（直到下一个数字或结束）
+    pattern = r'(\d+)\.\s*([^0-9]+?)(?=\s*\d+\.|$)'
+    matches = re.findall(pattern, text)
 
     if matches:
         # 清理标签文本
-        labels = [m.strip() for m in matches]
-        return labels
+        labels = []
+        for num, label_text in matches:
+            # 移除末尾的标点和空格
+            cleaned = label_text.strip().rstrip('.,;:\n')
+            if cleaned:  # 确保不是空字符串
+                labels.append(cleaned)
+        return labels if labels else None
 
     return None
 
@@ -68,11 +77,18 @@ def load_wvs_data(data_path: str, tokenizer, max_length: int = 512):
         input_text = item.get('input', '')
         output = item['output']
 
-        # 提取标签信息
-        label_options = extract_label_info_from_instruction(instruction)
+        # ✅ 优先从 input 字段提取标签，如果没有则从 instruction 提取
+        label_options = None
+        if input_text:
+            label_options = extract_label_info_from_text(input_text)
+
+        if label_options is None and instruction:
+            label_options = extract_label_info_from_text(instruction)
 
         if label_options is None:
-            print(f"Warning: Cannot extract labels from: {instruction[:100]}...")
+            print(f"Warning: Cannot extract labels from instruction or input")
+            print(f"  Instruction: {instruction[:100]}...")
+            print(f"  Input: {input_text[:100]}...")
             continue
 
         num_classes = len(label_options)
