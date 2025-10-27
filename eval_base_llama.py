@@ -16,7 +16,55 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from src.llamafactory.data.dual_classification_processor import load_and_process_dual_classification_data
+
+
+def load_simple_classification_data(data_path: str, tokenizer, max_length: int = 512):
+    """
+    简单加载分类数据（只读取 instruction, input, output）
+
+    Args:
+        data_path: 数据文件路径
+        tokenizer: tokenizer
+        max_length: 最大序列长度
+
+    Returns:
+        处理后的数据列表
+    """
+    print(f"Loading data from {data_path}...")
+
+    with open(data_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    print(f"Loaded {len(data)} samples")
+
+    processed_data = []
+    for item in data:
+        instruction = item.get('instruction', '')
+        input_text = item.get('input', '')
+        output = item['output']  # 必须字段
+
+        # 组合文本
+        if input_text and input_text.strip():
+            full_text = f"{instruction}\n{input_text}"
+        else:
+            full_text = instruction
+
+        # Tokenize
+        encoded = tokenizer(
+            full_text,
+            max_length=max_length,
+            truncation=True,
+            padding=False,
+            return_tensors=None
+        )
+
+        processed_data.append({
+            'input_ids': encoded['input_ids'],
+            'attention_mask': encoded['attention_mask'],
+            'label': output
+        })
+
+    return processed_data
 
 
 def evaluate_base_llama(
@@ -78,17 +126,14 @@ def evaluate_base_llama(
     model.eval()
     print(f"   ✅ Model loaded on {device}")
 
-    # 3. 加载测试数据（使用相同的数据处理器）
+    # 3. 加载测试数据（只读取 instruction, input, output）
     print(f"\n3. Loading test data from {test_file}...")
-    print(f"   Data format: instruction/instruction_mask/input/output/label")
-    data = load_and_process_dual_classification_data(
+    print(f"   Data format: instruction/input/output")
+    test_dataset = load_simple_classification_data(
         data_path=test_file,
         tokenizer=tokenizer,
-        max_length=max_length,
-        val_split=0,  # 全部作为测试集
-        num_proc=4
+        max_length=max_length
     )
-    test_dataset = data['train']
     print(f"   ✅ Test dataset size: {len(test_dataset)}")
 
     # 4. 评估
@@ -98,24 +143,21 @@ def evaluate_base_llama(
     all_predictions = []
     all_labels = []
     all_logits = []
-    all_culture_labels = []
 
     for i in tqdm(range(0, len(test_dataset), batch_size)):
-        batch_indices = list(range(i, min(i + batch_size, len(test_dataset))))
-        batch = test_dataset.select(batch_indices)
+        batch_data = test_dataset[i:i+batch_size]
 
         # 准备输入
         from torch.nn.utils.rnn import pad_sequence
 
-        # 使用第一路输入（instruction + input）
-        input_ids_list = [torch.tensor(item) for item in batch['input_ids']]
-        attention_mask_list = [torch.tensor(item) for item in batch['attention_mask']]
+        # 提取 input_ids 和 attention_mask
+        input_ids_list = [torch.tensor(item['input_ids']) for item in batch_data]
+        attention_mask_list = [torch.tensor(item['attention_mask']) for item in batch_data]
 
         input_ids = pad_sequence(input_ids_list, batch_first=True, padding_value=tokenizer.pad_token_id).to(device)
         attention_mask = pad_sequence(attention_mask_list, batch_first=True, padding_value=0).to(device)
 
-        labels = torch.tensor(batch['labels'])
-        culture_labels = batch['culture_labels']  # List[List[int]]
+        labels = [item['label'] for item in batch_data]
 
         # 前向传播
         with torch.no_grad():
@@ -175,9 +217,8 @@ def evaluate_base_llama(
             preds = torch.argmax(multi_class_logits, dim=-1).cpu()  # [B]
 
         all_predictions.extend(preds.tolist())
-        all_labels.extend(labels.tolist())
+        all_labels.extend(labels)
         all_logits.extend(multi_class_logits.cpu().tolist())
-        all_culture_labels.extend(culture_labels)
 
     # 5. 计算指标
     print("\n" + "="*60)
@@ -268,7 +309,7 @@ def evaluate_base_llama(
     if output_file:
         results = {
             "model": "base_llama_3.1_8b",
-            "data_format": "instruction/instruction_mask/input/output/label",
+            "data_format": "instruction/input/output",
             "metrics": {
                 "accuracy": float(accuracy),
                 "precision": float(precision),
@@ -277,7 +318,6 @@ def evaluate_base_llama(
             },
             "predictions": all_predictions,
             "labels": all_labels,
-            "culture_labels": all_culture_labels,
             "logits": all_logits,
             "confusion_matrix": cm.tolist()
         }
