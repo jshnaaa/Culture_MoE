@@ -27,7 +27,8 @@ def evaluate_base_llama(
     output_file: str = None,
     device: str = "cuda:0",
     use_dual_input: bool = True,
-    num_classes: int = 2
+    num_classes: int = 2,
+    backbone: str = "llama"
 ):
     """
     使用 Base LLaMA 3.1 模型评估
@@ -52,7 +53,10 @@ def evaluate_base_llama(
         num_classes: 分类数量（2, 3, 4, ...）
     """
     print("="*60)
-    print("Evaluating Base LLaMA 3.1 Model (No Training, No MoE)")
+    if backbone == "qwen":
+        print("Evaluating Base Qwen 2.5 Model (No Training, No MoE)")
+    else:
+        print("Evaluating Base LLaMA 3.1 Model (No Training, No MoE)")
     print("="*60)
 
     # 1. 加载 tokenizer
@@ -311,6 +315,8 @@ def main():
                         help="设备")
     parser.add_argument("--num_classes", type=int, default=2,
                         help="分类数量（2, 3, 4, ...）")
+    parser.add_argument("--backbone", type=str, default="llama", choices=["llama", "qwen"],
+                        help="基座模型类型：llama 或 qwen")
 
     args = parser.parse_args()
 
@@ -328,7 +334,8 @@ def main():
         max_length=args.max_length,
         output_file=args.output_file,
         device=args.device,
-        num_classes=args.num_classes
+        num_classes=args.num_classes,
+        backbone=args.backbone
     )
 
     print("\n✅ Evaluation completed!")
