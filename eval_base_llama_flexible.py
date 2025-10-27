@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-灵活的 Base LLaMA 3.1 模型评估（支持不同类别数和标签名称）
+灵活的 Base 模型评估（支持不同类别数和标签名称）
+支持 LLaMA 3.1 和 Qwen 2.5
 适用于 WVS 等标签不统一的数据集
 """
 
 import json
 import os
-import sys
 import re
+import sys
 from collections import defaultdict
 
 import numpy as np
 import torch
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix, classification_report
+from sklearn.metrics import accuracy_score
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
@@ -132,13 +133,20 @@ def evaluate_base_llama_flexible(
     batch_size: int = 8,
     max_length: int = 512,
     output_file: str = None,
-    device: str = "cuda:0"
+    device: str = "cuda:0",
+    backbone: str = "llama"
 ):
     """
-    灵活评估 Base LLaMA 模型（支持不同类别数和标签名称）
+    灵活评估 Base 模型（支持不同类别数和标签名称）
+
+    Args:
+        backbone: 基座模型类型，"llama" 或 "qwen"
     """
     print("="*60)
-    print("Evaluating Base LLaMA 3.1 Model (Flexible Labels)")
+    if backbone == "qwen":
+        print("Evaluating Base Qwen 2.5 Model (Flexible Labels)")
+    else:
+        print("Evaluating Base LLaMA 3.1 Model (Flexible Labels)")
     print("="*60)
 
     # 1. 加载 tokenizer
@@ -293,6 +301,8 @@ def main():
                         help="输出文件路径")
     parser.add_argument("--device", type=str, default="cuda:0",
                         help="设备")
+    parser.add_argument("--backbone", type=str, default="llama", choices=["llama", "qwen"],
+                        help="基座模型类型：llama 或 qwen")
 
     args = parser.parse_args()
 
@@ -309,7 +319,8 @@ def main():
         batch_size=args.batch_size,
         max_length=args.max_length,
         output_file=args.output_file,
-        device=args.device
+        device=args.device,
+        backbone=args.backbone
     )
 
     print("\n✅ Evaluation completed!")
