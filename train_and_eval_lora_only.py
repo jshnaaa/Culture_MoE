@@ -2,7 +2,7 @@
 """
 使用 LoRA 微调基座模型（无 MoE）
 支持 LLaMA 3.1 和 Qwen 2.5
-90% 训练，10% 验证，二分类任务
+90% 训练，10% 验证，支持 2/3/4/5 分类任务
 """
 
 import json
@@ -25,7 +25,7 @@ import numpy as np
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 
-def load_simple_classification_data(data_path: str, tokenizer, max_length: int = 512, val_split: float = 0.1):
+def load_simple_classification_data(data_path: str, tokenizer, max_length: int = 512, val_split: float = 0.1, num_classes: int = 2):
     """
     简单加载分类数据（只读取 instruction, input, output）
 
@@ -34,9 +34,10 @@ def load_simple_classification_data(data_path: str, tokenizer, max_length: int =
         tokenizer: tokenizer
         max_length: 最大序列长度
         val_split: 验证集比例
+        num_classes: 类别数（2/3/4/5）
 
     Returns:
-        {'train': train_dataset, 'val': val_dataset}
+        {'train': train_dataset, 'val': val_dataset, 'num_classes': num_classes}
     """
     print(f"Loading data from {data_path}...")
 
@@ -79,10 +80,10 @@ def load_simple_classification_data(data_path: str, tokenizer, max_length: int =
         train_data = processed_data[:split_idx]
         val_data = processed_data[split_idx:]
         print(f"Train: {len(train_data)}, Val: {len(val_data)}")
-        return {'train': train_data, 'val': val_data}
+        return {'train': train_data, 'val': val_data, 'num_classes': num_classes}
     else:
         print(f"Train: {len(processed_data)}")
-        return {'train': processed_data, 'val': []}
+        return {'train': processed_data, 'val': [], 'num_classes': num_classes}
 
 
 @dataclass
@@ -105,6 +106,10 @@ class LoRATrainingArguments:
     val_split: float = field(
         default=0.1,
         metadata={"help": "验证集比例"}
+    )
+    num_classes: int = field(
+        default=2,
+        metadata={"help": "分类类别数（2/3/4/5）"}
     )
 
     # LoRA 参数
@@ -164,8 +169,8 @@ class LoRATrainingArguments:
     )
 
 
-class BinaryClassificationModel(torch.nn.Module):
-    """带分类头的 LLaMA 模型"""
+class ClassificationModel(torch.nn.Module):
+    """带分类头的 LLaMA 模型（支持多分类）"""
 
     def __init__(self, llama_model, num_classes=2):
         super().__init__()
@@ -276,15 +281,17 @@ def train_lora_only(args: LoRATrainingArguments):
 
     # 2. 加载数据（只读取 instruction, input, output）
     print(f"\n2. Loading data from {args.train_file}...")
-    print(f"   Data format: instruction/input/output")
+    print(f"   Data format: instruction/input/output ({args.num_classes}-class)")
     data = load_simple_classification_data(
         data_path=args.train_file,
         tokenizer=tokenizer,
         max_length=args.max_length,
-        val_split=args.val_split
+        val_split=args.val_split,
+        num_classes=args.num_classes
     )
     train_dataset = data['train']
     val_dataset = data['val']
+    num_classes = data['num_classes']
 
     print(f"   ✅ Train dataset size: {len(train_dataset)}")
     print(f"   ✅ Validation dataset size: {len(val_dataset)}")
@@ -325,8 +332,8 @@ def train_lora_only(args: LoRATrainingArguments):
 
     # 5. 创建分类模型
     print(f"\n5. Creating classification model...")
-    model = BinaryClassificationModel(llama_model, num_classes=2)
-    print("   ✅ Classification model created (using float32)")
+    model = ClassificationModel(llama_model, num_classes=num_classes)
+    print(f"   ✅ Classification model created ({num_classes} classes, using float32)")
 
     # 6. 训练参数
     training_args = TrainingArguments(
@@ -464,6 +471,8 @@ def main():
                         help="最大序列长度")
     parser.add_argument("--val_split", type=float, default=0.1,
                         help="验证集比例")
+    parser.add_argument("--num_classes", type=int, default=2,
+                        help="分类类别数（2/3/4/5）")
     parser.add_argument("--save_model", action="store_true",
                         help="是否保存模型（默认不保存，只保存评估结果）")
 
@@ -487,6 +496,7 @@ def main():
         lora_rank=args.lora_rank,
         max_length=args.max_length,
         val_split=args.val_split,
+        num_classes=args.num_classes,
     )
 
     # 训练

@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
 """
-使用 LoRA 微调 LLaMA 3.1 模型（灵活标签版本）
+训练 CultureMoE 模型（灵活标签版本）
 支持不同类别数和标签名称的数据集（如 WVS）
 """
 
-import json
 import os
-import re
 import sys
-from collections import defaultdict
+
+# 添加项目路径
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
+
+import json
+import re
 from dataclasses import dataclass, field
+from collections import defaultdict
 
 import torch
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
-
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
-    TrainingArguments,
-    Trainer
+    TrainingArguments
 )
-from peft import get_peft_model, LoraConfig, TaskType
+
+from src.llamafactory.train.classification.callbacks import SaveFullModelCallback
+from src.llamafactory.train.classification.trainer import ClassificationTrainer
+from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
+from src.llamafactory.model.moe_args import ModelArgs
 import numpy as np
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
@@ -127,135 +131,87 @@ def load_flexible_classification_data(data_path: str, tokenizer, max_length: int
 
 
 @dataclass
-class LoRATrainingArguments:
-    """LoRA 微调参数"""
+class CultureMoEFlexibleTrainingArguments:
+    """CultureMoE 灵活标签训练参数"""
 
     # 模型参数
-    model_path: str = field(
-        metadata={"help": "LLaMA 模型路径"}
+    model_name_or_path: str = field(
+        metadata={"help": "预训练模型路径"}
     )
 
     # 数据参数
     train_file: str = field(
-        metadata={"help": "训练数据文件"}
-    )
-    max_length: int = field(
-        default=512,
-        metadata={"help": "最大序列长度"}
+        metadata={"help": "训练数据文件路径"}
     )
     val_split: float = field(
         default=0.1,
         metadata={"help": "验证集比例"}
     )
+    max_length: int = field(
+        default=512,
+        metadata={"help": "最大序列长度"}
+    )
 
-    # LoRA 参数
-    lora_rank: int = field(
+    # MoE 参数
+    num_experts: int = field(default=6, metadata={"help": "专家数量"})
+    shared_hidden_dim: int = field(default=2048, metadata={"help": "Shared 层隐藏维度"})
+    router_hidden_dim: int = field(default=1024, metadata={"help": "Router 隐藏维度"})
+    experts_hidden_dim: int = field(default=2048, metadata={"help": "Experts 隐藏维度"})
+    lora_rank: int = field(default=16, metadata={"help": "Experts 的 LoRA rank"})
+    classification_hidden_dim: int = field(default=512, metadata={"help": "分类头隐藏维度"})
+    dropout: float = field(default=0.1, metadata={"help": "Dropout 率"})
+    num_heads: int = field(default=8, metadata={"help": "注意力头数"})
+
+    # LLaMA LoRA 参数
+    freeze_llama: bool = field(
+        default=True,
+        metadata={"help": "是否冻结 LLaMA 基础模型参数"}
+    )
+    use_llama_lora: bool = field(
+        default=False,
+        metadata={"help": "是否对 LLaMA 使用 LoRA 微调"}
+    )
+    llama_lora_rank: int = field(
         default=8,
-        metadata={"help": "LoRA rank"}
+        metadata={"help": "LLaMA LoRA 的 rank"}
     )
-    lora_alpha: int = field(
+    llama_lora_alpha: int = field(
         default=16,
-        metadata={"help": "LoRA alpha"}
+        metadata={"help": "LLaMA LoRA 的 alpha"}
     )
-    lora_dropout: float = field(
+    llama_lora_dropout: float = field(
         default=0.05,
-        metadata={"help": "LoRA dropout"}
+        metadata={"help": "LLaMA LoRA 的 dropout"}
     )
-    lora_target_modules: str = field(
+    llama_lora_target_modules: str = field(
         default="q_proj,v_proj,k_proj,o_proj,gate_proj,up_proj,down_proj",
-        metadata={"help": "LoRA 目标模块"}
+        metadata={"help": "LLaMA LoRA 的目标模块"}
     )
 
     # 训练参数
     output_dir: str = field(
-        default="./output/lora_only_flexible",
+        default="./output/culturemoe_flexible",
         metadata={"help": "输出目录"}
     )
-    num_train_epochs: int = field(
-        default=3,
-        metadata={"help": "训练轮数"}
-    )
-    per_device_train_batch_size: int = field(
-        default=4,
-        metadata={"help": "训练批次大小"}
-    )
-    per_device_eval_batch_size: int = field(
-        default=8,
-        metadata={"help": "评估批次大小"}
-    )
-    learning_rate: float = field(
-        default=5e-6,
-        metadata={"help": "学习率"}
-    )
-    gradient_accumulation_steps: int = field(
-        default=4,
-        metadata={"help": "梯度累积步数"}
-    )
-    logging_steps: int = field(
-        default=10,
-        metadata={"help": "日志步数"}
-    )
-    save_steps: int = field(
-        default=500,
-        metadata={"help": "保存步数"}
-    )
-    eval_steps: int = field(
-        default=500,
-        metadata={"help": "评估步数"}
-    )
+    num_train_epochs: int = field(default=3, metadata={"help": "训练轮数"})
+    per_device_train_batch_size: int = field(default=4, metadata={"help": "训练批次大小"})
+    per_device_eval_batch_size: int = field(default=8, metadata={"help": "评估批次大小"})
+    learning_rate: float = field(default=2e-5, metadata={"help": "学习率"})
+    weight_decay: float = field(default=0.01, metadata={"help": "权重衰减"})
+    warmup_ratio: float = field(default=0.1, metadata={"help": "warmup 比例"})
+    logging_steps: int = field(default=10, metadata={"help": "日志步数"})
+    save_steps: int = field(default=500, metadata={"help": "保存步数"})
+    eval_steps: int = field(default=500, metadata={"help": "评估步数"})
+    save_total_limit: int = field(default=3, metadata={"help": "最多保存的检查点数量"})
+    gradient_accumulation_steps: int = field(default=4, metadata={"help": "梯度累积步数"})
 
+    # GPU 优化参数
+    fp16: bool = field(default=True, metadata={"help": "是否使用 FP16"})
+    gradient_checkpointing: bool = field(default=True, metadata={"help": "是否使用梯度检查点"})
+    dataloader_num_workers: int = field(default=4, metadata={"help": "数据加载器工作进程数"})
 
-class FlexibleClassificationModel(torch.nn.Module):
-    """带分类头的 LLaMA 模型（支持多分类）"""
-
-    def __init__(self, llama_model, num_classes=4):
-        super().__init__()
-        self.llama_model = llama_model
-        self.config = llama_model.config
-        self.num_classes = num_classes
-
-        # 分类头
-        self.classifier = torch.nn.Sequential(
-            torch.nn.LayerNorm(self.config.hidden_size),
-            torch.nn.Linear(self.config.hidden_size, 512),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(0.1),
-            torch.nn.Linear(512, num_classes)
-        )
-
-    def forward(self, input_ids, attention_mask, labels=None, **kwargs):
-        """
-        前向传播
-
-        Args:
-            input_ids: [B, L]
-            attention_mask: [B, L]
-            labels: [B]
-            **kwargs: 其他字段会被忽略
-        """
-        # LLaMA 前向传播
-        outputs = self.llama_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True
-        )
-
-        # 使用最后一层隐藏状态
-        hidden_states = outputs.hidden_states[-1]  # [B, L, H]
-
-        # 池化：使用平均池化
-        pooled = hidden_states.mean(dim=1)  # [B, H]
-
-        # 分类
-        logits = self.classifier(pooled)  # [B, num_classes]
-
-        # 计算损失
-        loss = None
-        if labels is not None:
-            loss_fct = torch.nn.CrossEntropyLoss()
-            loss = loss_fct(logits, labels)
-
-        return {"loss": loss, "logits": logits}
+    # 其他参数
+    seed: int = field(default=42, metadata={"help": "随机种子"})
 
 
 def compute_metrics(eval_pred):
@@ -278,19 +234,11 @@ def compute_metrics(eval_pred):
     }
 
 
-def train_lora_only_flexible(args: LoRATrainingArguments):
+def train_culturemoe_flexible(args: CultureMoEFlexibleTrainingArguments):
     """
-    训练 LoRA 微调模型（灵活标签版本）
-
-    数据格式：
-    {
-        "instruction": "Question: ...",
-        "input": "1. Option1 2. Option2 3. Option3 4. Option4",
-        "output": 0  # 0-based index
-    }
+    训练 CultureMoE 模型（灵活标签版本）
     """
-
-    # ✅ 检测分布式训练环境
+    # 检测分布式训练环境
     import torch.distributed as dist
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
     is_distributed = local_rank != -1
@@ -307,12 +255,12 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
 
     if not is_distributed or local_rank == 0:
         print("="*60)
-        print("Training LLaMA 3.1 with LoRA (Flexible Labels)")
+        print("Training CultureMoE Model (Flexible Labels)")
         print("="*60)
 
     # 1. 加载 tokenizer
-    print(f"\n1. Loading tokenizer from {args.model_path}...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    print(f"\n1. Loading tokenizer from {args.model_name_or_path}...")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     print("   ✅ Tokenizer loaded")
@@ -336,48 +284,69 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
     print(f"   ✅ Number of classes: {num_classes}")
 
     # 3. 加载基础模型
-    print(f"\n3. Loading base LLaMA model from {args.model_path}...")
+    print(f"\n3. Loading base LLaMA model from {args.model_name_or_path}...")
     llama_model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
-        torch_dtype=torch.float32,
+        args.model_name_or_path,
+        torch_dtype=torch.float16 if args.fp16 else torch.float32,
         trust_remote_code=True
     )
-    print("   ✅ Base model loaded (using float32)")
+    print("   ✅ Base model loaded")
 
-    # 4. 应用 LoRA
-    print(f"\n4. Applying LoRA to LLaMA model...")
-    target_modules = [m.strip() for m in args.lora_target_modules.split(",")]
+    # 4. 应用 LLaMA LoRA（如果需要）
+    if not args.freeze_llama and args.use_llama_lora:
+        print(f"\n4. Applying LoRA to LLaMA model...")
+        from peft import get_peft_model, LoraConfig, TaskType
 
-    lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        target_modules=target_modules,
-        bias="none",
-        inference_mode=False,
+        target_modules = [m.strip() for m in args.llama_lora_target_modules.split(",")]
+
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=args.llama_lora_rank,
+            lora_alpha=args.llama_lora_alpha,
+            lora_dropout=args.llama_lora_dropout,
+            target_modules=target_modules,
+            bias="none",
+            inference_mode=False,
+        )
+
+        llama_model = get_peft_model(llama_model, lora_config)
+
+        print("   LoRA Configuration:")
+        print(f"     Rank: {args.llama_lora_rank}")
+        print(f"     Alpha: {args.llama_lora_alpha}")
+        print(f"     Dropout: {args.llama_lora_dropout}")
+        print(f"     Target modules: {target_modules}")
+        print("\n   Trainable Parameters:")
+        llama_model.print_trainable_parameters()
+        print("   ✅ LoRA applied")
+
+    # 5. 创建 CultureMoE 模型
+    print(f"\n5. Creating CultureMoE model...")
+    moe_args = ModelArgs(
+        num_experts=args.num_experts,
+        shared_hidden_dim=args.shared_hidden_dim,
+        router_hidden_dim=args.router_hidden_dim,
+        experts_hidden_dim=args.experts_hidden_dim,
+        lora_rank=args.lora_rank,
+        num_classes=num_classes,  # 使用动态检测的类别数
+        classification_hidden_dim=args.classification_hidden_dim,
+        dropout=args.dropout,
+        num_heads=args.num_heads,
+        freeze_llama=args.freeze_llama,
     )
 
-    llama_model = get_peft_model(llama_model, lora_config)
+    model = LlamaSharedRouterExpertsModel(
+        llama_model=llama_model,
+        args=moe_args
+    )
 
-    print("   LoRA Configuration:")
-    print(f"     Rank: {args.lora_rank}")
-    print(f"     Alpha: {args.lora_alpha}")
-    print(f"     Dropout: {args.lora_dropout}")
-    print(f"     Target modules: {target_modules}")
-    print("\n   Trainable Parameters:")
-    llama_model.print_trainable_parameters()
-    print("   ✅ LoRA applied")
-
-    # 5. 创建分类模型
-    print(f"\n5. Creating classification model...")
-    model = FlexibleClassificationModel(llama_model, num_classes=num_classes)
-
-    # ✅ 将模型移到正确的设备
-    if not is_distributed:
-        model = model.to(device)
-
-    print(f"   ✅ Classification model created ({num_classes} classes, using float32)")
+    print(f"   ✅ CultureMoE model created ({num_classes} classes)")
+    print(f"   MoE Configuration:")
+    print(f"     Num experts: {args.num_experts}")
+    print(f"     Shared hidden dim: {args.shared_hidden_dim}")
+    print(f"     Router hidden dim: {args.router_hidden_dim}")
+    print(f"     Experts hidden dim: {args.experts_hidden_dim}")
+    print(f"     LoRA rank: {args.lora_rank}")
 
     # 6. 训练参数
     training_args = TrainingArguments(
@@ -387,41 +356,35 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        warmup_ratio=args.warmup_ratio,
+        fp16=args.fp16,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
         eval_strategy="steps",
-        save_total_limit=3,
+        save_total_limit=args.save_total_limit,
         load_best_model_at_end=True,
         metric_for_best_model="f1",
         greater_is_better=True,
         remove_unused_columns=False,
         report_to=["tensorboard"],
-        max_grad_norm=1.0,
-        optim="adamw_torch",
-        warmup_steps=100,
-        # ✅ 禁用 DataParallel，避免多 GPU 问题
-        dataloader_drop_last=False,
-        ddp_find_unused_parameters=False if is_distributed else None,
+        gradient_checkpointing=args.gradient_checkpointing,
+        dataloader_num_workers=args.dataloader_num_workers,
     )
 
     # 7. Data Collator
     def simple_data_collator(features):
-        """简单的数据整理器，只处理 input_ids, attention_mask, labels"""
+        """简单的数据整理器"""
         import torch
         from torch.nn.utils.rnn import pad_sequence
 
-        # 提取字段
         input_ids = [torch.tensor(f['input_ids']) for f in features]
         attention_mask = [torch.tensor(f['attention_mask']) for f in features]
-        labels = [f['labels'] for f in features]
+        labels = torch.tensor([f['labels'] for f in features])
 
-        # Padding
         input_ids = pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
         attention_mask = pad_sequence(attention_mask, batch_first=True, padding_value=0)
-
-        # 确保 labels 是正确的形状 [batch_size]
-        labels = torch.tensor(labels, dtype=torch.long)
 
         return {
             'input_ids': input_ids,
@@ -433,7 +396,7 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
 
     # 8. 创建 Trainer
     print(f"\n6. Creating trainer...")
-    trainer = Trainer(
+    trainer = ClassificationTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -441,6 +404,7 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
+        callbacks=[SaveFullModelCallback()],
     )
 
     # 9. 训练
@@ -453,11 +417,7 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
         print(f"\n8. Saving model to {args.output_dir}...")
         trainer.save_model()
         trainer.save_state()
-
-        # 保存 LoRA 权重
-        model.llama_model.save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
-
         print("   ✅ Model saved")
     else:
         print(f"\n8. Skipping model saving (--save_model not set)")
@@ -475,8 +435,7 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
     print(f"   F1:         {metrics['eval_f1']:.4f}")
     print("="*60)
 
-    # 保存指标（总是保存）
-    os.makedirs(args.output_dir, exist_ok=True)
+    # 保存指标
     with open(os.path.join(args.output_dir, "eval_results.json"), 'w') as f:
         json.dump(metrics, f, indent=2)
 
@@ -491,33 +450,25 @@ def train_lora_only_flexible(args: LoRATrainingArguments):
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="LoRA 微调基座模型（灵活标签）")
-    parser.add_argument("--model_path", type=str, required=True,
-                        help="基座模型路径")
+    parser = argparse.ArgumentParser(description="训练 CultureMoE 模型（灵活标签）")
+    parser.add_argument("--model_path", type=str, required=True, help="基座模型路径")
+    parser.add_argument("--train_file", type=str, required=True, help="训练数据文件")
+    parser.add_argument("--output_dir", type=str, required=True, help="输出目录")
     parser.add_argument("--backbone", type=str, default="llama", choices=["llama", "qwen"],
                         help="基座模型类型：llama 或 qwen")
-    parser.add_argument("--train_file", type=str, required=True,
-                        help="训练数据文件")
-    parser.add_argument("--output_dir", type=str, required=True,
-                        help="输出目录")
-    parser.add_argument("--num_train_epochs", type=int, default=3,
-                        help="训练轮数")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=4,
-                        help="训练批次大小")
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=8,
-                        help="评估批次大小")
-    parser.add_argument("--learning_rate", type=float, default=5e-6,
-                        help="学习率")
-    parser.add_argument("--lora_rank", type=int, default=8,
-                        help="LoRA rank")
-    parser.add_argument("--max_length", type=int, default=512,
-                        help="最大序列长度")
-    parser.add_argument("--val_split", type=float, default=0.1,
-                        help="验证集比例")
-    parser.add_argument("--save_model", action="store_true",
-                        help="是否保存模型（默认不保存，只保存评估结果）")
-    parser.add_argument("--num_classes", type=int, default=4,
-                        help="类别数（默认 4）")
+    parser.add_argument("--num_train_epochs", type=int, default=3, help="训练轮数")
+    parser.add_argument("--per_device_train_batch_size", type=int, default=4, help="训练批次大小")
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=8, help="评估批次大小")
+    parser.add_argument("--learning_rate", type=float, default=2e-5, help="学习率")
+    parser.add_argument("--num_experts", type=int, default=6, help="专家数量")
+    parser.add_argument("--lora_rank", type=int, default=16, help="LoRA rank")
+    parser.add_argument("--max_length", type=int, default=512, help="最大序列长度")
+    parser.add_argument("--val_split", type=float, default=0.1, help="验证集比例")
+    parser.add_argument("--num_classes", type=int, default=4, help="类别数（默认 4）")
+    parser.add_argument("--freeze_llama", action="store_true", help="是否冻结 LLaMA")
+    parser.add_argument("--use_llama_lora", action="store_true", help="是否对 LLaMA 使用 LoRA")
+    parser.add_argument("--llama_lora_rank", type=int, default=8, help="LLaMA LoRA rank")
+    parser.add_argument("--save_model", action="store_true", help="是否保存模型权重（默认不保存，只保存评估结果）")
 
     args = parser.parse_args()
 
@@ -528,21 +479,26 @@ def main():
     print(f"Using GPU: {torch.cuda.get_device_name(0)}\n")
 
     # 创建训练参数
-    training_args = LoRATrainingArguments(
-        model_path=args.model_path,
+    training_args = CultureMoEFlexibleTrainingArguments(
+        model_name_or_path=args.model_path,
         train_file=args.train_file,
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         learning_rate=args.learning_rate,
+        num_experts=args.num_experts,
         lora_rank=args.lora_rank,
         max_length=args.max_length,
         val_split=args.val_split,
+        num_classes=args.num_classes,
+        freeze_llama=args.freeze_llama,
+        use_llama_lora=args.use_llama_lora,
+        llama_lora_rank=args.llama_lora_rank,
     )
 
     # 训练
-    metrics = train_lora_only_flexible(training_args)
+    metrics = train_culturemoe_flexible(training_args)
 
 
 if __name__ == "__main__":

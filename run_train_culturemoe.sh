@@ -1,13 +1,32 @@
 #!/bin/bash
 
-# 训练 CultureMoE 模型（支持不同类别数）
+# 训练 CultureMoE 模型（支持 2/3/4/5 分类）
 # 支持 LLaMA 3.1 和 Qwen 2.5
-# 适用于 WVS 等多分类数据集
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"  # 默认使用 llama，可以通过第一个参数指定 qwen
-NUM_CLASSES="${2:-4}"   # 默认 4 分类，可以通过第二个参数指定其他值（如 5）
-TRAIN_FILE="/root/autodl-fs/wvs_all_llama_merge.json"
+NUM_CLASSES="${2:-4}"   # 默认 4 分类，可以通过第二个参数指定其他值（2/3/4/5）
+SAVE_MODEL="${3:-false}"  # 默认不保存模型，可以通过第三个参数指定 true/false
+
+# 根据 num_classes 选择数据集
+case $NUM_CLASSES in
+    2)
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_Hard_merge.json"
+        ;;
+    3)
+        TRAIN_FILE="/root/autodl-fs/normad_ed_merge.json"
+        ;;
+    4)
+        TRAIN_FILE="/root/autodl-fs/wvs_all_llama_merge_4.json"
+        ;;
+    5)
+        TRAIN_FILE="/root/autodl-fs/wvs_all_llama_merge_5.json"
+        ;;
+    *)
+        echo "❌ Error: Invalid num_classes=$NUM_CLASSES. Must be 2, 3, 4, or 5."
+        exit 1
+        ;;
+esac
 
 # 根据 backbone 选择模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -54,11 +73,12 @@ echo "Num experts: $NUM_EXPERTS"
 echo "LoRA rank: $LORA_RANK"
 echo "Freeze LLaMA: $FREEZE_LLAMA"
 echo "Use LLaMA LoRA: $USE_LLAMA_LORA"
+echo "Save model: $SAVE_MODEL"
 echo "============================================================"
 echo ""
 
 # 构建命令
-CMD="python train_culturemoe_flexible.py \
+CMD="python train_culturemoe.py \
     --model_path $MODEL_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
@@ -71,8 +91,8 @@ CMD="python train_culturemoe_flexible.py \
     --lora_rank $LORA_RANK \
     --max_length $MAX_LENGTH \
     --val_split $VAL_SPLIT \
-    --llama_lora_rank $LLAMA_LORA_RANK \
-    --num_classes $NUM_CLASSES"
+    --num_classes $NUM_CLASSES \
+    --llama_lora_rank $LLAMA_LORA_RANK"
 
 # 添加可选参数
 if [ "$FREEZE_LLAMA" = "true" ]; then
@@ -83,6 +103,10 @@ if [ "$USE_LLAMA_LORA" = "true" ]; then
     CMD="$CMD --use_llama_lora"
 fi
 
+if [ "$SAVE_MODEL" = "true" ]; then
+    CMD="$CMD --save_model"
+fi
+
 # ✅ 运行训练
 eval $CMD
 
@@ -91,7 +115,10 @@ if [ $? -eq 0 ]; then
     echo "============================================================"
     echo "✅ Training completed successfully!"
     echo "============================================================"
-    echo "Model saved to: $OUTPUT_DIR"
+    if [ "$SAVE_MODEL" = "true" ]; then
+        echo "Model saved to: $OUTPUT_DIR"
+    fi
+    echo "Eval results saved to: $OUTPUT_DIR/eval_results.json"
     echo "============================================================"
 else
     echo ""
