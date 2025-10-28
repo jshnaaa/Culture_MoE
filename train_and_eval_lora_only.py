@@ -340,30 +340,52 @@ def train_lora_only(args: LoRATrainingArguments):
     print(f"   ✅ Classification model created ({num_classes} classes, using float32)")
 
     # 6. 训练参数
-    training_args = TrainingArguments(
-        output_dir=args.output_dir,
-        num_train_epochs=args.num_train_epochs,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=args.per_device_eval_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.learning_rate,
-        # ✅ 使用 FP32，不启用 fp16
-        logging_steps=args.logging_steps,
-        save_steps=args.save_steps,
-        eval_steps=args.eval_steps,
-        eval_strategy="steps",
-        save_total_limit=3,
-        load_best_model_at_end=True,
-        metric_for_best_model="f1",
-        greater_is_better=True,
-        remove_unused_columns=False,
-        report_to=["tensorboard"],
-        # ✅ 梯度裁剪，防止梯度爆炸
-        max_grad_norm=1.0,
-        # ✅ 使用更稳定的优化器设置
-        optim="adamw_torch",
-        warmup_steps=100,  # 添加 warmup
-    )
+    # ✅ 根据 save_model 参数决定是否保存 checkpoint
+    if args.save_model:
+        # 保存模型：正常的保存策略
+        training_args = TrainingArguments(
+            output_dir=args.output_dir,
+            num_train_epochs=args.num_train_epochs,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            per_device_eval_batch_size=args.per_device_eval_batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            learning_rate=args.learning_rate,
+            logging_steps=args.logging_steps,
+            save_steps=args.save_steps,
+            eval_steps=args.eval_steps,
+            eval_strategy="steps",
+            save_strategy="steps",
+            save_total_limit=3,
+            load_best_model_at_end=True,
+            metric_for_best_model="f1",
+            greater_is_better=True,
+            remove_unused_columns=False,
+            report_to=["tensorboard"],
+            max_grad_norm=1.0,
+            optim="adamw_torch",
+            warmup_steps=100,
+        )
+    else:
+        # 不保存模型：禁用所有保存操作
+        training_args = TrainingArguments(
+            output_dir=args.output_dir,
+            num_train_epochs=args.num_train_epochs,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            per_device_eval_batch_size=args.per_device_eval_batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            learning_rate=args.learning_rate,
+            logging_steps=args.logging_steps,
+            eval_steps=args.eval_steps,
+            eval_strategy="steps",
+            save_strategy="no",  # ✅ 禁用保存
+            save_total_limit=0,  # ✅ 不保存任何 checkpoint
+            load_best_model_at_end=False,  # ✅ 不加载最佳模型（因为没保存）
+            remove_unused_columns=False,
+            report_to=["tensorboard"],
+            max_grad_norm=1.0,
+            optim="adamw_torch",
+            warmup_steps=100,
+        )
 
     # 7. Data Collator（使用简单的 padding collator）
 

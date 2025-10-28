@@ -45,31 +45,17 @@ sh run_train_lora_only.sh qwen 4 false
 ### 2. CultureMoE 训练
 
 ```bash
-# 默认：LLaMA + 4分类 + 不保存模型
-sh run_train_culturemoe.sh
+# 命令格式
+sh run_train_ddp_lora_dual.sh [backbone] [num_classes] [use_culture_loss] [save_model]
 
-# LLaMA + 2分类 + 不保存模型
-sh run_train_culturemoe.sh llama 2
+# 不保存模型（默认）
+sh run_train_ddp_lora_dual.sh llama 3 True false
+sh run_train_ddp_lora_dual.sh llama 3 True  # 等价于上面
 
-# LLaMA + 2分类 + 保存模型
-sh run_train_culturemoe.sh llama 2 true
-
-# Qwen + 5分类 + 不保存模型
-sh run_train_culturemoe.sh qwen 5 false
+# 保存模型
+sh run_train_ddp_lora_dual.sh llama 3 True true
 ```
 
-### 3. DDP 训练（多 GPU）
-
-```bash
-# 默认：LLaMA + 2分类（DDP 训练总是保存模型）
-sh run_train_ddp_lora_dual.sh
-
-# LLaMA + 4分类
-sh run_train_ddp_lora_dual.sh llama 4
-
-# Qwen + 5分类
-sh run_train_ddp_lora_dual.sh qwen 5
-```
 #### 禁用文化损失
 
 ```bash

@@ -147,6 +147,10 @@ class ClassificationTrainingArguments:
         default="steps",
         metadata={"help": "评估策略: 'steps' 或 'epoch'"}
     )
+    save_model: bool = field(
+        default=False,
+        metadata={"help": "是否保存模型权重（默认不保存，只保存评估结果）"}
+    )
 
     # 多卡训练参数
     local_rank: int = field(
@@ -361,50 +365,94 @@ def run_classification_training(args: ClassificationTrainingArguments):
         print(f"{'=' * 60}\n")
 
     # 11. 创建 TrainingArguments
-    training_args = TrainingArguments(
-        output_dir=args.output_dir,
-        num_train_epochs=args.num_train_epochs,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=args.per_device_eval_batch_size,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        warmup_ratio=args.warmup_ratio,
+    # ✅ 根据 save_model 参数决定是否保存 checkpoint
+    if args.save_model:
+        # 保存模型：正常的保存策略
+        training_args = TrainingArguments(
+            output_dir=args.output_dir,
+            num_train_epochs=args.num_train_epochs,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            per_device_eval_batch_size=args.per_device_eval_batch_size,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            warmup_ratio=args.warmup_ratio,
 
-        # 日志和保存
-        logging_dir=os.path.join(args.output_dir, "logs"),
-        logging_steps=args.logging_steps,
-        save_steps=args.save_steps,
-        eval_steps=args.eval_steps,
-        eval_strategy=args.evaluation_strategy if val_dataset else "no",
-        save_strategy="steps",
-        save_total_limit=args.save_total_limit,
+            # 日志和保存
+            logging_dir=os.path.join(args.output_dir, "logs"),
+            logging_steps=args.logging_steps,
+            save_steps=args.save_steps,
+            eval_steps=args.eval_steps,
+            eval_strategy=args.evaluation_strategy if val_dataset else "no",
+            save_strategy="steps",
+            save_total_limit=args.save_total_limit,
 
-        # 最佳模型
-        load_best_model_at_end=True if val_dataset else False,
-        metric_for_best_model="accuracy" if val_dataset else None,  # ✅ 使用 accuracy
-        greater_is_better=True,
+            # 最佳模型
+            load_best_model_at_end=True if val_dataset else False,
+            metric_for_best_model="accuracy" if val_dataset else None,
+            greater_is_better=True,
 
-        # GPU 优化和分布式训练
-        fp16=args.fp16,
-        bf16=args.bf16,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        gradient_checkpointing=args.gradient_checkpointing,
-        dataloader_num_workers=args.dataloader_num_workers,
-        dataloader_pin_memory=args.dataloader_pin_memory,
+            # GPU 优化和分布式训练
+            fp16=args.fp16,
+            bf16=args.bf16,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            gradient_checkpointing=args.gradient_checkpointing,
+            dataloader_num_workers=args.dataloader_num_workers,
+            dataloader_pin_memory=args.dataloader_pin_memory,
 
-        # 分布式训练
-        local_rank=local_rank,
-        ddp_find_unused_parameters=True,
-        ddp_backend="nccl",
+            # 分布式训练
+            local_rank=local_rank,
+            ddp_find_unused_parameters=True,
+            ddp_backend="nccl",
 
-        # 其他
-        remove_unused_columns=False,
-        report_to=["tensorboard"] if (not is_distributed or local_rank == 0) else [],
-        seed=args.seed,
-        max_grad_norm=1.0,
-        optim="adamw_torch",
-        lr_scheduler_type="constant_with_warmup",  # ✅ 使用常数学习率 + warmup
-    )
+            # 其他
+            remove_unused_columns=False,
+            report_to=["tensorboard"] if (not is_distributed or local_rank == 0) else [],
+            seed=args.seed,
+            max_grad_norm=1.0,
+            optim="adamw_torch",
+            lr_scheduler_type="constant_with_warmup",
+        )
+    else:
+        # 不保存模型：禁用所有保存操作
+        training_args = TrainingArguments(
+            output_dir=args.output_dir,
+            num_train_epochs=args.num_train_epochs,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            per_device_eval_batch_size=args.per_device_eval_batch_size,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            warmup_ratio=args.warmup_ratio,
+
+            # 日志和保存
+            logging_dir=os.path.join(args.output_dir, "logs"),
+            logging_steps=args.logging_steps,
+            eval_steps=args.eval_steps,
+            eval_strategy=args.evaluation_strategy if val_dataset else "no",
+            save_strategy="no",  # ✅ 禁用保存
+            save_total_limit=0,  # ✅ 不保存任何 checkpoint
+            load_best_model_at_end=False,  # ✅ 不加载最佳模型
+
+            # GPU 优化和分布式训练
+            fp16=args.fp16,
+            bf16=args.bf16,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            gradient_checkpointing=args.gradient_checkpointing,
+            dataloader_num_workers=args.dataloader_num_workers,
+            dataloader_pin_memory=args.dataloader_pin_memory,
+
+            # 分布式训练
+            local_rank=local_rank,
+            ddp_find_unused_parameters=True,
+            ddp_backend="nccl",
+
+            # 其他
+            remove_unused_columns=False,
+            report_to=["tensorboard"] if (not is_distributed or local_rank == 0) else [],
+            seed=args.seed,
+            max_grad_norm=1.0,
+            optim="adamw_torch",
+            lr_scheduler_type="constant_with_warmup",
+        )
 
     # 12. 创建 Data Collator
     # ✅ 根据 use_dual_input 选择 DataCollator
@@ -470,11 +518,15 @@ def run_classification_training(args: ClassificationTrainingArguments):
 
     train_result = trainer.train()
 
-    # 15. 保存模型
+    # 15. 保存模型（可选）
     if not is_distributed or local_rank == 0:
-        print(f"\nSaving model to {args.output_dir}...")
-        trainer.save_model()
-        trainer.save_state()
+        if args.save_model:
+            print(f"\nSaving model to {args.output_dir}...")
+            trainer.save_model()
+            trainer.save_state()
+            print("   ✅ Model saved")
+        else:
+            print(f"\nSkipping model saving (--save_model not set)")
 
         # 保存训练指标
         metrics = train_result.metrics
@@ -490,6 +542,9 @@ def run_classification_training(args: ClassificationTrainingArguments):
 
         print("\n" + "=" * 60)
         print("Training completed successfully! ✅")
+        if args.save_model:
+            print(f"Model saved to: {args.output_dir}")
+        print(f"Eval results saved to: {os.path.join(args.output_dir, 'eval_results.json')}")
         print("=" * 60)
 
     return trainer

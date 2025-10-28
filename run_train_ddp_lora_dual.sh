@@ -8,6 +8,7 @@ export NCCL_DEBUG=INFO  # 调试信息（可选）
 BACKBONE="${1:-llama}"  # 默认使用 llama，可以通过第一个参数指定 qwen
 NUM_CLASSES="${2:-2}"   # 默认 2 分类，可以通过第二个参数指定其他值（2/3/4/5）
 USE_CULTURE_LOSS="${3:-True}"  # 默认使用文化损失，可以通过第三个参数指定 True/False
+SAVE_MODEL="${4:-false}"  # 默认不保存模型，可以通过第四个参数指定 true/false
 
 # 根据 num_classes 选择数据集
 case $NUM_CLASSES in
@@ -68,5 +69,15 @@ torchrun \
     --dataloader_num_workers 4 \
     --culture_loss_lambda 0.01 \
     --num_classes $NUM_CLASSES \
-    --use_culture_loss $USE_CULTURE_LOSS
+    --use_culture_loss $USE_CULTURE_LOSS \
+    $([ "$SAVE_MODEL" = "true" ] && echo "--save_model" || echo "")
+
+echo ""
+echo "============================================================"
+if [ "$SAVE_MODEL" = "true" ]; then
+    echo "✅ Model will be saved to: $OUTPUT_DIR"
+else
+    echo "⚠️  Model will NOT be saved (only eval results)"
+fi
+echo "============================================================"
 
