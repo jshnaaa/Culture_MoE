@@ -167,6 +167,10 @@ class LoRATrainingArguments:
         default=500,
         metadata={"help": "评估步数"}
     )
+    save_model: bool = field(
+        default=False,
+        metadata={"help": "是否保存模型权重（默认不保存，只保存评估结果）"}
+    )
 
 
 class ClassificationModel(torch.nn.Module):
@@ -497,6 +501,7 @@ def main():
         max_length=args.max_length,
         val_split=args.val_split,
         num_classes=args.num_classes,
+        save_model=args.save_model,
     )
 
     # 训练
