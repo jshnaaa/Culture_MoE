@@ -38,9 +38,6 @@ sh run_train_lora_only.sh llama 3
 # LLaMA + 3分类 + 保存模型
 sh run_train_lora_only.sh llama 3 true
 
-# Qwen + 5分类 + 保存模型
-sh run_train_lora_only.sh qwen 5 true
-
 # Qwen + 4分类 + 不保存模型
 sh run_train_lora_only.sh qwen 4 false
 ```
@@ -57,9 +54,6 @@ sh run_train_culturemoe.sh llama 2
 # LLaMA + 2分类 + 保存模型
 sh run_train_culturemoe.sh llama 2 true
 
-# Qwen + 3分类 + 保存模型
-sh run_train_culturemoe.sh qwen 3 true
-
 # Qwen + 5分类 + 不保存模型
 sh run_train_culturemoe.sh qwen 5 false
 ```
@@ -75,6 +69,21 @@ sh run_train_ddp_lora_dual.sh llama 4
 
 # Qwen + 5分类
 sh run_train_ddp_lora_dual.sh qwen 5
+```
+#### 禁用文化损失
+
+```bash
+# LLaMA + 2 分类 + 不使用文化损失
+sh run_train_ddp_lora_dual.sh llama 2 False
+
+# Qwen + 4 分类 + 不使用文化损失
+sh run_train_ddp_lora_dual.sh qwen 4 False
+
+# LLaMA + 3 分类 + 使用文化损失
+sh run_train_ddp_lora_dual.sh llama 3 True
+
+# Qwen + 5 分类 + 不使用文化损失
+sh run_train_ddp_lora_dual.sh qwen 5 False
 ```
 
 **注意**：DDP 训练脚本目前总是保存模型，不支持 `save_model` 参数。
@@ -121,20 +130,6 @@ sh run_train_lora_only.sh qwen 3 false
 ```bash
 # 训练并保存最佳模型
 sh run_train_lora_only.sh llama 3 true
-sh run_train_culturemoe.sh llama 3 true
-```
-
-### 场景 3：完整的实验流程
-
-```bash
-# 1. 评估 Base 模型（未训练）
-sh run_eval_base_llama.sh llama 3
-
-# 2. 快速实验不同方法（不保存模型）
-sh run_train_lora_only.sh llama 3 false
-sh run_train_culturemoe.sh llama 3 false
-
-# 3. 选择最佳方法，正式训练并保存
 sh run_train_culturemoe.sh llama 3 true
 ```
 
@@ -215,21 +210,4 @@ sh run_train5 true
 # 示例 5：使用默认 backbone，指定其他参数
 sh run_train_lora_only.sh llama 3 true
 ```
-
-## ✨ 总结
-
-现在你可以：
-
-1. ✅ 指定基座模型（llama/qwen）
-2. ✅ 指定分类类别数（2/3/4/5）
-3. ✅ 指定是否保存模型（true/false）
-4. ✅ 自动选择对应的数据集
-5. ✅ 始终保存评估结果
-6. ✅ 灵活控制磁盘空间使用
-
-**推荐工作流程**：
-1. 使用 `save_model=false` 快速实验多个配置
-2. 对比评估结果，选择最佳配置
-3. 使用 `save_model=true` 训练最终模型
-4. 保存的模型可用于后续推理或部署
 
