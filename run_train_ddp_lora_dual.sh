@@ -7,6 +7,7 @@ export NCCL_DEBUG=INFO  # 调试信息（可选）
 # ✅ 配置参数
 BACKBONE="${1:-llama}"  # 默认使用 llama，可以通过第一个参数指定 qwen
 NUM_CLASSES="${2:-2}"   # 默认 2 分类，可以通过第二个参数指定其他值（2/3/4/5）
+USE_CULTURE_LOSS="${3:-True}"  # 默认使用文化损失，可以通过第三个参数指定 True/False
 
 # 根据 num_classes 选择数据集
 case $NUM_CLASSES in
@@ -66,8 +67,6 @@ torchrun \
     --val_split 0.1 \
     --dataloader_num_workers 4 \
     --culture_loss_lambda 0.01 \
-    --num_classes $NUM_CLASSES
-
-# ✅ 或者完全禁用文化损失（二选一，取消注释下面这行）
-# --use_culture_loss False
+    --num_classes $NUM_CLASSES \
+    --use_culture_loss $USE_CULTURE_LOSS
 
