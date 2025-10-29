@@ -227,14 +227,24 @@ class ClassificationModel(torch.nn.Module):
 
 
 def compute_metrics(eval_pred):
-    """计算评估指标"""
+    """计算评估指标（支持 2/3/4/5 分类）"""
     predictions, labels = eval_pred
     predictions = np.argmax(predictions, axis=1)
 
     accuracy = accuracy_score(labels, predictions)
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, predictions, average='binary', pos_label=1
-    )
+
+    # ✅ 自动检测是二分类还是多分类
+    num_classes = len(np.unique(labels))
+    if num_classes == 2:
+        # 二分类：使用 binary
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            labels, predictions, average='binary', pos_label=1, zero_division=0
+        )
+    else:
+        # 多分类（3/4/5）：使用 macro
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            labels, predictions, average='macro', zero_division=0
+        )
 
     return {
         "accuracy": accuracy,
