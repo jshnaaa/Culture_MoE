@@ -110,14 +110,14 @@ class ClassificationTrainer(Trainer):
                 else:
                     self._step_count = 1
 
-                if self._step_count % 10 == 0:  # 每10步打印一次
-                    print(f"\n[DEBUG] Step {self._step_count}:")
-                    print(f"  CE Loss: {ce_loss.item():.4f}")
-                    print(f"  Culture Loss: {culture_loss.item():.4f}")
-                    print(f"  Lambda: {self.lambda_weight}")
-                    print(f"  Total Loss: {total_loss.item():.4f}")
-                    print(f"  Logits range: [{logits.min().item():.2f}, {logits.max().item():.2f}]")
-                    print(f"  Labels: {labels[:4].tolist()}")  # 打印前4个
+                # if self._step_count % 10 == 0:  # 每10步打印一次
+                #     print(f"\n[DEBUG] Step {self._step_count}:")
+                #     print(f"  CE Loss: {ce_loss.item():.4f}")
+                #     print(f"  Culture Loss: {culture_loss.item():.4f}")
+                #     print(f"  Lambda: {self.lambda_weight}")
+                #     print(f"  Total Loss: {total_loss.item():.4f}")
+                #     print(f"  Logits range: [{logits.min().item():.2f}, {logits.max().item():.2f}]")
+                #     print(f"  Labels: {labels[:4].tolist()}")  # 打印前4个
 
             # 记录损失组件（用于日志）
             outputs = {
@@ -139,11 +139,11 @@ class ClassificationTrainer(Trainer):
                 else:
                     self._step_count = 1
 
-                if self._step_count % 10 == 0:
-                    print(f"\n[DEBUG] Step {self._step_count} (No culture loss):")
-                    print(f"  CE Loss: {loss.item():.4f}")
-                    print(f"  Logits range: [{logits.min().item():.2f}, {logits.max().item():.2f}]")
-                    print(f"  Labels: {labels[:4].tolist()}")
+                # if self._step_count % 10 == 0:
+                #     print(f"\n[DEBUG] Step {self._step_count} (No culture loss):")
+                #     print(f"  CE Loss: {loss.item():.4f}")
+                #     print(f"  Logits range: [{logits.min().item():.2f}, {logits.max().item():.2f}]")
+                #     print(f"  Labels: {labels[:4].tolist()}")
 
             outputs = {"logits": logits}
 

@@ -228,6 +228,14 @@ def evaluate_base_llama(
     predictions = np.array(all_predictions)
     labels = np.array(all_labels)
 
+    # ✅ 检查数据集中实际的类别数
+    actual_num_classes = len(np.unique(labels))
+    if actual_num_classes != num_classes:
+        print(f"\n⚠️  Warning: Expected {num_classes} classes, but found {actual_num_classes} unique classes in the dataset")
+        print(f"   Unique labels in data: {sorted(np.unique(labels).tolist())}")
+        print(f"   Missing classes: {sorted(set(range(num_classes)) - set(np.unique(labels).tolist()))}")
+        print(f"   This is acceptable - metrics will be computed for all {num_classes} classes with zero_division=0\n")
+
     accuracy = accuracy_score(labels, predictions)
 
     # ✅ 根据分类数量选择平均方式
@@ -259,12 +267,14 @@ def evaluate_base_llama(
         target_names = [f"class_{i} ({i})" for i in range(num_classes)]
 
     print(f"\n📊 Classification Report:")
+    # ✅ 显式指定所有类别标签，即使某些类别在数据中不存在
     print(classification_report(
         labels,
         predictions,
+        labels=list(range(num_classes)),  # 显式指定所有类别 [0, 1, 2, ..., num_classes-1]
         target_names=target_names,
         digits=4,
-        zero_division=0
+        zero_division=0  # 避免除零警告
     ))
 
     cm = confusion_matrix(labels, predictions, labels=list(range(num_classes)))

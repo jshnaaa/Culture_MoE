@@ -47,7 +47,7 @@ torchrun \
     --model_name_or_path $MODEL_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
-    --num_train_epochs 5 \
+    --num_train_epochs 2 \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 8 \
     --gradient_accumulation_steps 8 \
@@ -67,7 +67,7 @@ torchrun \
     --max_length 512 \
     --val_split 0.1 \
     --dataloader_num_workers 4 \
-    --culture_loss_lambda 0.01 \
+    --culture_loss_lambda 0.1 \
     --num_classes $NUM_CLASSES \
     --use_culture_loss $USE_CULTURE_LOSS \
     $([ "$SAVE_MODEL" = "true" ] && echo "--save_model" || echo "")
