@@ -15,6 +15,9 @@ import sys
 from datetime import datetime
 from typing import Dict
 
+# ✅ 限制只使用一个 GPU（避免 DataParallel 导致的设备不匹配问题）
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 import torch
 import torch.nn as nn
 from transformers import (
