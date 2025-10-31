@@ -18,11 +18,31 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     TrainingArguments,
-    Trainer
+    Trainer,
+    TrainerCallback
 )
 from peft import get_peft_model, LoraConfig, TaskType
 import numpy as np
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+
+
+class BestModelCallback(TrainerCallback):
+    """跟踪并保存验证集准确率最高的模型"""
+
+    def __init__(self):
+        self.best_accuracy = 0.0
+        self.best_model_state = None
+
+    def on_evaluate(self, args, state, control, metrics=None, model=None, **kwargs):
+        """评估后检查是否是最佳模型"""
+        if metrics is not None:
+            current_accuracy = metrics.get('eval_accuracy', 0)
+            if current_accuracy > self.best_accuracy:
+                self.best_accuracy = current_accuracy
+                # 保存最佳模型的状态
+                import copy
+                self.best_model_state = copy.deepcopy(model.state_dict())
+                print(f"\n🏆 New best model! Accuracy: {current_accuracy:.4f}")
 
 
 def load_simple_classification_data(data_path: str, tokenizer, max_length: int = 512, val_split: float = 0.1, num_classes: int = 2):
@@ -352,7 +372,7 @@ def train_lora_only(args: LoRATrainingArguments):
     # 6. 训练参数
     # ✅ 根据 save_model 参数决定是否保存 checkpoint
     if args.save_model:
-        # 保存模型：保存验证准确率最高的 checkpoint
+        # 保存模型：只保存验证准确率最高的最佳模型（不保存中间 checkpoint）
         training_args = TrainingArguments(
             output_dir=args.output_dir,
             num_train_epochs=args.num_train_epochs,
@@ -363,12 +383,9 @@ def train_lora_only(args: LoRATrainingArguments):
             logging_steps=args.logging_steps,
             save_steps=args.save_steps,
             eval_steps=args.eval_steps,
-            eval_strategy="steps",
-            save_strategy="steps",
-            save_total_limit=3,  # 只保留最近3个 checkpoint
-            load_best_model_at_end=True,  # 训练结束后加载最佳模型
-            metric_for_best_model="accuracy",  # ✅ 使用 accuracy 作为最佳模型指标
-            greater_is_better=True,
+            eval_strategy="steps",  # 每隔一定步数评估
+            save_strategy="no",  # ✅ 不保存中间 checkpoint
+            load_best_model_at_end=False,  # ✅ 不需要加载（因为没保存）
             remove_unused_columns=False,
             report_to=["tensorboard"],
             max_grad_norm=1.0,
@@ -424,7 +441,14 @@ def train_lora_only(args: LoRATrainingArguments):
 
     data_collator = simple_data_collator
 
-    # 8. 创建 Trainer
+    # 8. 创建 Callback（如果需要保存模型）
+    best_model_callback = None
+    callbacks = []
+    if args.save_model:
+        best_model_callback = BestModelCallback()
+        callbacks.append(best_model_callback)
+
+    # 9. 创建 Trainer
     print(f"\n6. Creating trainer...")
     trainer = Trainer(
         model=model,
@@ -434,24 +458,29 @@ def train_lora_only(args: LoRATrainingArguments):
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
+        callbacks=callbacks,
     )
 
-    # 9. 训练
+    # 10. 训练
     print(f"\n7. Starting training...")
     print("="*60)
     train_result = trainer.train()
 
-    # 10. 保存模型（可选）
-    if args.save_model:
-        print(f"\n8. Saving model to {args.output_dir}...")
-        trainer.save_model()
-        trainer.save_state()
+    # 11. 保存最佳模型（可选）
+    if args.save_model and best_model_callback is not None:
+        print(f"\n8. Saving best model to {args.output_dir}...")
+        print(f"   Best accuracy: {best_model_callback.best_accuracy:.4f}")
+
+        # 加载最佳模型状态
+        if best_model_callback.best_model_state is not None:
+            model.load_state_dict(best_model_callback.best_model_state)
+            print("   ✅ Loaded best model state")
 
         # 保存 LoRA 权重
         model.llama_model.save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
 
-        print("   ✅ Model saved")
+        print("   ✅ Best model saved")
     else:
         print(f"\n8. Skipping model saving (--save_model not set)")
 
