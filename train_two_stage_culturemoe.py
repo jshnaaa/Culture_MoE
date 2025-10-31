@@ -5,21 +5,23 @@
 阶段 2：冻结 LLM，训练 MoE 部分
 """
 
+import argparse
+import json
 import os
 import sys
-import json
-import torch
-import argparse
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict
 
+import torch
+import torch.nn as nn
+from peft import get_peft_model, LoraConfig, TaskType
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     TrainingArguments,
-    TrainerCallback
+    TrainerCallback,
+    Trainer
 )
-from peft import get_peft_model, LoraConfig, TaskType
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +32,36 @@ from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
 from src.llamafactory.model.moe_args import ModelArgs
 from src.llamafactory.train.classification.trainer import ClassificationTrainer
 from src.llamafactory.train.classification.metrics import compute_classification_metrics
+
+
+class LoRAClassificationTrainer(Trainer):
+    """用于阶段1 LoRA 微调的自定义 Trainer"""
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        """计算损失 - 处理 LoRA 模型的输出"""
+        labels = inputs.pop("labels")
+
+        # 前向传播
+        outputs = model(
+            input_ids=inputs.get("input_ids"),
+            attention_mask=inputs.get("attention_mask")
+        )
+
+        # 获取最后一层的隐藏状态
+        if hasattr(outputs, 'hidden_states') and outputs.hidden_states is not None:
+            hidden_states = outputs.hidden_states[-1]
+        else:
+            # 如果没有 hidden_states，使用 last_hidden_state
+            hidden_states = outputs.last_hidden_state if hasattr(outputs, 'last_hidden_state') else outputs[0]
+
+        # 使用分类头
+        logits = model.classification_head(hidden_states[:, -1, :])  # [B, num_classes]
+
+        # 计算交叉熵损失
+        loss_fct = nn.CrossEntropyLoss()
+        loss = loss_fct(logits, labels.long())
+
+        return (loss, {"logits": logits}) if return_outputs else loss
 
 
 class EpochEvalCallback(TrainerCallback):
@@ -106,7 +138,8 @@ def stage1_train_lora(args):
         args.model_path,
         torch_dtype=torch.float16,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        output_hidden_states=True  # 确保输出 hidden states
     )
     print("   ✅ Base model loaded")
 
@@ -195,8 +228,8 @@ def stage1_train_lora(args):
 
     # 10. Trainer
     print("\n7. Creating trainer...")
-    # 阶段1不使用文化损失（因为没有 MoE）
-    trainer = ClassificationTrainer(
+    # 阶段1使用自定义的 LoRAClassificationTrainer
+    trainer = LoRAClassificationTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -204,9 +237,7 @@ def stage1_train_lora(args):
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics_fn,
-        callbacks=[epoch_callback],
-        use_culture_loss=False,  # 阶段1不使用文化损失
-        lambda_weight=0.0
+        callbacks=[epoch_callback]
     )
 
     # 11. Train
