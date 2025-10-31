@@ -39,6 +39,8 @@ class EpochEvalCallback(TrainerCallback):
         self.output_dir = output_dir
         self.stage = stage
         self.epoch_results = []
+        self.best_accuracy = 0.0
+        self.best_epoch = 0
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         """评估结束后保存结果"""
@@ -56,12 +58,20 @@ class EpochEvalCallback(TrainerCallback):
             with open(results_file, 'w', encoding='utf-8') as f:
                 json.dump(self.epoch_results, f, indent=2, ensure_ascii=False)
 
+            # 跟踪最佳准确率
+            current_accuracy = metrics.get('eval_accuracy', 0)
+            if current_accuracy > self.best_accuracy:
+                self.best_accuracy = current_accuracy
+                self.best_epoch = int(state.epoch)
+
             print(f"\n📊 [{self.stage.upper()}] Epoch {int(state.epoch)} Evaluation Results:")
-            print(f"   Accuracy:  {metrics.get('eval_accuracy', 0):.4f}")
+            print(f"   Accuracy:  {current_accuracy:.4f}")
             print(f"   Precision: {metrics.get('eval_precision', 0):.4f}")
             print(f"   Recall:    {metrics.get('eval_recall', 0):.4f}")
             print(f"   F1:        {metrics.get('eval_f1', 0):.4f}")
             print(f"   Loss:      {metrics.get('eval_loss', 0):.4f}")
+            if current_accuracy > self.best_accuracy - 0.0001:  # 当前是最佳
+                print(f"   🏆 New best accuracy!")
             print(f"   Saved to: {results_file}\n")
 
 
@@ -152,9 +162,11 @@ def stage1_train_lora(args):
         weight_decay=args.weight_decay,
         warmup_ratio=args.warmup_ratio,
 
-        # 评估策略
+        # 评估和保存策略
         eval_strategy="epoch",
-        save_strategy="no",  # 不保存 checkpoint
+        save_strategy="epoch",  # 每个 epoch 保存 checkpoint
+        save_total_limit=args.stage1_epochs,  # 保留所有 checkpoint
+        load_best_model_at_end=False,  # 不自动加载最佳模型
 
         # 日志
         logging_dir=os.path.join(stage1_output, "logs"),
@@ -199,25 +211,81 @@ def stage1_train_lora(args):
     print("="*80)
     trainer.train()
 
-    # 12. 最终评估
-    print("\n9. Final evaluation...")
-    final_metrics = trainer.evaluate()
+    # 12. 找到最佳 checkpoint
+    print("\n9. Finding best checkpoint...")
+    best_epoch = epoch_callback.best_epoch
+    best_accuracy = epoch_callback.best_accuracy
 
-    # 保存最终评估结果
-    with open(os.path.join(args.output_dir, "stage1_final_eval.json"), 'w') as f:
-        json.dump(final_metrics, f, indent=2)
+    print(f"   🏆 Best epoch: {best_epoch}")
+    print(f"   🏆 Best accuracy: {best_accuracy:.4f}")
+
+    # 找到最佳 checkpoint 路径
+    best_checkpoint_dir = os.path.join(stage1_output, f"checkpoint-{best_epoch * len(train_dataset) // (args.batch_size * args.gradient_accumulation_steps)}")
+
+    # 如果找不到精确的 checkpoint，尝试找最接近的
+    if not os.path.exists(best_checkpoint_dir):
+        checkpoints = [d for d in os.listdir(stage1_output) if d.startswith("checkpoint-")]
+        if checkpoints:
+            # 按 checkpoint 编号排序
+            checkpoints.sort(key=lambda x: int(x.split("-")[1]))
+            # 选择对应 epoch 的 checkpoint（假设每个 epoch 一个 checkpoint）
+            if best_epoch <= len(checkpoints):
+                best_checkpoint_dir = os.path.join(stage1_output, checkpoints[best_epoch - 1])
+            else:
+                best_checkpoint_dir = os.path.join(stage1_output, checkpoints[-1])
+
+    print(f"   Loading best checkpoint from: {best_checkpoint_dir}")
+
+    # 13. 加载最佳 checkpoint
+    if os.path.exists(best_checkpoint_dir):
+        # 重新加载模型
+        print("\n10. Loading best checkpoint...")
+        best_model = get_peft_model(base_model, lora_config)
+
+        # 加载 checkpoint 的权重
+        checkpoint_path = os.path.join(best_checkpoint_dir, "pytorch_model.bin")
+        if os.path.exists(checkpoint_path):
+            state_dict = torch.load(checkpoint_path, map_location="cpu")
+            best_model.load_state_dict(state_dict, strict=False)
+            print("   ✅ Best checkpoint loaded")
+        else:
+            print("   ⚠️  Checkpoint file not found, using final model")
+            best_model = model
+
+        # 加载分类头
+        classification_head_path = os.path.join(best_checkpoint_dir, "classification_head.pt")
+        if os.path.exists(classification_head_path):
+            best_model.classification_head = torch.nn.Linear(hidden_size, args.num_classes)
+            best_model.classification_head.load_state_dict(torch.load(classification_head_path))
+            best_model.classification_head = best_model.classification_head.to(base_model.device)
+            print("   ✅ Best classification head loaded")
+        else:
+            best_model.classification_head = model.classification_head
+    else:
+        print("   ⚠️  Best checkpoint not found, using final model")
+        best_model = model
+
+    # 14. 评估最佳模型
+    print("\n11. Evaluating best model...")
+    trainer.model = best_model
+    best_metrics = trainer.evaluate()
+
+    # 保存最佳模型评估结果
+    with open(os.path.join(args.output_dir, "stage1_best_eval.json"), 'w') as f:
+        json.dump(best_metrics, f, indent=2)
 
     print("\n" + "="*80)
     print("Stage 1 Completed!")
     print("="*80)
-    print(f"   Final Accuracy: {final_metrics.get('eval_accuracy', 0):.4f}")
-    print(f"   Final F1:       {final_metrics.get('eval_f1', 0):.4f}")
+    print(f"   Best Epoch:     {best_epoch}")
+    print(f"   Best Accuracy:  {best_metrics.get('eval_accuracy', 0):.4f}")
+    print(f"   Best F1:        {best_metrics.get('eval_f1', 0):.4f}")
     print("="*80)
     print("")
 
-    # 13. 合并 LoRA 权重
-    print("\n10. Merging LoRA weights...")
-    merged_model = model.merge_and_unload()
+    # 15. 合并 LoRA 权重（使用最佳模型）
+    print("\n12. Merging LoRA weights (best model)...")
+    merged_model = best_model.merge_and_unload()
     print("   ✅ LoRA weights merged")
 
     # 14. 保存合并后的模型（临时，用于阶段2）
@@ -235,7 +303,18 @@ def stage1_train_lora(args):
     print(f"   ✅ Merged model saved to: {merged_model_path}")
     print("")
 
-    return merged_model_path, final_metrics
+    # 清理 checkpoints（如果不保存模型）
+    if not args.save_model:
+        print("\n13. Cleaning up checkpoints...")
+        import shutil
+        checkpoints = [d for d in os.listdir(stage1_output) if d.startswith("checkpoint-")]
+        for checkpoint in checkpoints:
+            checkpoint_path = os.path.join(stage1_output, checkpoint)
+            if os.path.isdir(checkpoint_path):
+                shutil.rmtree(checkpoint_path)
+        print(f"   ✅ Removed {len(checkpoints)} checkpoints")
+
+    return merged_model_path, best_metrics
 
 
 def stage2_train_moe(args, merged_model_path: str, stage1_metrics: Dict):
