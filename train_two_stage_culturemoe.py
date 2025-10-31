@@ -123,13 +123,14 @@ def stage1_train_lora(args):
 
     # 5. 加载数据
     print("\n5. Loading dataset...")
-    train_dataset, val_dataset = load_and_process_dual_classification_data(
+    datasets = load_and_process_dual_classification_data(
         data_path=args.train_file,
         tokenizer=tokenizer,
         max_length=args.max_length,
-        val_split=args.val_split,
-        num_classes=args.num_classes
+        val_split=args.val_split
     )
+    train_dataset = datasets['train']
+    val_dataset = datasets['validation']
     print(f"   ✅ Train: {len(train_dataset)}, Val: {len(val_dataset)}")
 
     # 6. Data collator
@@ -316,13 +317,14 @@ def stage2_train_moe(args, merged_model_path: str, stage1_metrics: Dict):
 
     # 4. 加载数据
     print("\n4. Loading dataset...")
-    train_dataset, val_dataset = load_and_process_dual_classification_data(
+    datasets = load_and_process_dual_classification_data(
         data_path=args.train_file,
         tokenizer=tokenizer,
         max_length=args.max_length,
-        val_split=args.val_split,
-        num_classes=args.num_classes
+        val_split=args.val_split
     )
+    train_dataset = datasets['train']
+    val_dataset = datasets['validation']
     print(f"   ✅ Train: {len(train_dataset)}, Val: {len(val_dataset)}")
 
     # 5. Data collator
@@ -375,6 +377,9 @@ def stage2_train_moe(args, merged_model_path: str, stage1_metrics: Dict):
 
     # 9. Trainer
     print("\n6. Creating trainer...")
+    print(f"   Use culture loss: {args.use_culture_loss}")
+    print(f"   Culture loss lambda: {args.culture_loss_lambda}")
+
     trainer = ClassificationTrainer(
         model=model,
         args=training_args,
@@ -383,7 +388,9 @@ def stage2_train_moe(args, merged_model_path: str, stage1_metrics: Dict):
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics_fn,
-        callbacks=[epoch_callback]
+        callbacks=[epoch_callback],
+        use_culture_loss=args.use_culture_loss,
+        lambda_weight=args.culture_loss_lambda
     )
 
     # 10. Train
@@ -418,6 +425,9 @@ def main():
     parser.add_argument("--train_file", type=str, required=True, help="训练数据文件")
     parser.add_argument("--output_dir", type=str, required=True, help="输出目录")
     parser.add_argument("--num_classes", type=int, default=2, help="分类数量")
+    parser.add_argument("--use_culture_loss", type=lambda x: x.lower() == 'true', default=True, help="是否使用文化损失")
+    parser.add_argument("--culture_loss_lambda", type=float, default=0.05, help="文化损失权重")
+    parser.add_argument("--save_model", type=lambda x: x.lower() == 'true', default=False, help="是否保存模型")
 
     # 阶段1参数（LoRA）
     parser.add_argument("--stage1_epochs", type=int, default=3, help="阶段1训练轮数")

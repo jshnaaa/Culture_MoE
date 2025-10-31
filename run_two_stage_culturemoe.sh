@@ -9,7 +9,9 @@
 # ✅ 配置参数
 BACKBONE="${1:-llama}"  # 默认使用 llama
 NUM_CLASSES="${2:-2}"   # 默认 2 分类
-NUM_EXPERTS="${3:-6}"   # 默认 6 个专家
+USE_CULTURE_LOSS="${3:-True}"  # 默认使用文化损失
+SAVE_MODEL="${4:-false}"  # 默认不保存模型
+NUM_EXPERTS="${5:-6}"   # 默认 6 个专家
 
 # 根据 num_classes 选择数据集
 case $NUM_CLASSES in
@@ -45,6 +47,8 @@ echo "Two-Stage CultureMoE Training"
 echo "============================================================"
 echo "Backbone: $BACKBONE"
 echo "Num classes: $NUM_CLASSES"
+echo "Use culture loss: $USE_CULTURE_LOSS"
+echo "Save model: $SAVE_MODEL"
 echo "Num experts: $NUM_EXPERTS"
 echo "Model: $MODEL_PATH"
 echo "Dataset: $TRAIN_FILE"
@@ -58,6 +62,9 @@ python train_two_stage_culturemoe.py \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
     --num_classes $NUM_CLASSES \
+    --use_culture_loss $USE_CULTURE_LOSS \
+    --culture_loss_lambda 0.05 \
+    --save_model $SAVE_MODEL \
     \
     --stage1_epochs 3 \
     --lora_rank 16 \
