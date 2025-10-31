@@ -34,11 +34,11 @@ esac
 # 根据 backbone 选择模型路径
 if [ "$BACKBONE" = "qwen" ]; then
     MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-    OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/qwen_lora_only"
+    OUTPUT_DIR="/root/autodl-fs/model/qwen_lora_only"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
 else
     MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-    OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/llama_lora_only"
+    OUTPUT_DIR="/root/autodl-fs/model/llama_lora_only"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
 fi
 
