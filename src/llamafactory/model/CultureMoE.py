@@ -132,7 +132,8 @@ class LlamaSharedRouterExpertsModel(nn.Module):
     def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None, **kwargs):
         # ✅ 获取输入的设备和数据类型
         device = input_ids.device
-        dtype = next(self.parameters()).dtype  # 使用模型参数的 dtype
+        # 使用 shared_layer 的 dtype（MoE 层总是有参数的）
+        dtype = self.shared_layer.weight.dtype
 
         # ✅ Step 1: LLaMA forward for h_all (instruction + input)
         outputs_all = self.llama_model(
