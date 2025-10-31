@@ -195,6 +195,7 @@ def stage1_train_lora(args):
 
     # 10. Trainer
     print("\n7. Creating trainer...")
+    # 阶段1不使用文化损失（因为没有 MoE）
     trainer = ClassificationTrainer(
         model=model,
         args=training_args,
@@ -203,7 +204,9 @@ def stage1_train_lora(args):
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics_fn,
-        callbacks=[epoch_callback]
+        callbacks=[epoch_callback],
+        use_culture_loss=False,  # 阶段1不使用文化损失
+        lambda_weight=0.0
     )
 
     # 11. Train

@@ -36,10 +36,10 @@ esac
 # 根据 backbone 选择模型路径
 if [ "$BACKBONE" = "qwen" ]; then
     MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-    OUTPUT_DIR="/root/autodl-fs/output/two_stage_moe/qwen_${NUM_CLASSES}class_experts${NUM_EXPERTS}_$(date +%Y%m%d_%H%M)"
+    OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/two_stage_moe/qwen_${NUM_CLASSES}class_experts${NUM_EXPERTS}_$(date +%Y%m%d_%H%M)"
 else
     MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-    OUTPUT_DIR="/root/autodl-fs/output/two_stage_moe/llama_${NUM_CLASSES}class_experts${NUM_EXPERTS}_$(date +%Y%m%d_%H%M)"
+    OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/two_stage_moe/llama_${NUM_CLASSES}class_experts${NUM_EXPERTS}_$(date +%Y%m%d_%H%M)"
 fi
 
 echo "============================================================"
@@ -63,7 +63,7 @@ python train_two_stage_culturemoe.py \
     --output_dir $OUTPUT_DIR \
     --num_classes $NUM_CLASSES \
     --use_culture_loss $USE_CULTURE_LOSS \
-    --culture_loss_lambda 0.05 \
+    --culture_loss_lambda 0.5 \
     --save_model $SAVE_MODEL \
     \
     --stage1_epochs 3 \
