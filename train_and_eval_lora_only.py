@@ -352,7 +352,7 @@ def train_lora_only(args: LoRATrainingArguments):
     # 6. 训练参数
     # ✅ 根据 save_model 参数决定是否保存 checkpoint
     if args.save_model:
-        # 保存模型：正常的保存策略
+        # 保存模型：保存验证准确率最高的 checkpoint
         training_args = TrainingArguments(
             output_dir=args.output_dir,
             num_train_epochs=args.num_train_epochs,
@@ -365,9 +365,9 @@ def train_lora_only(args: LoRATrainingArguments):
             eval_steps=args.eval_steps,
             eval_strategy="steps",
             save_strategy="steps",
-            save_total_limit=3,
-            load_best_model_at_end=True,
-            metric_for_best_model="f1",
+            save_total_limit=3,  # 只保留最近3个 checkpoint
+            load_best_model_at_end=True,  # 训练结束后加载最佳模型
+            metric_for_best_model="accuracy",  # ✅ 使用 accuracy 作为最佳模型指标
             greater_is_better=True,
             remove_unused_columns=False,
             report_to=["tensorboard"],
