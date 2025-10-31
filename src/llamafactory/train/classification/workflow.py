@@ -1,6 +1,7 @@
 # src/llamafactory/train/classification/workflow.py
 # src/llamafactory/train/classification/workflow.py
 import os
+import json
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -9,7 +10,8 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     TrainingArguments,
-    DataCollatorWithPadding
+    DataCollatorWithPadding,
+    TrainerCallback
 )
 
 from .callbacks import SaveFullModelCallback
@@ -20,6 +22,37 @@ from ...data.dual_classification_collator import DualClassificationDataCollator
 from ...data.dual_classification_processor import load_and_process_dual_classification_data
 from ...model.CultureMoE import LlamaSharedRouterExpertsModel
 from ...model.moe_args import ModelArgs
+
+
+class EpochEvalCallback(TrainerCallback):
+    """每个 epoch 结束后保存评估结果的回调"""
+
+    def __init__(self, output_dir: str):
+        self.output_dir = output_dir
+        self.epoch_results = []
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """评估结束后保存结果"""
+        if metrics is not None and state.epoch is not None:
+            epoch_result = {
+                "epoch": int(state.epoch),
+                "step": state.global_step,
+                **{k: float(v) if isinstance(v, (int, float)) else v for k, v in metrics.items()}
+            }
+            self.epoch_results.append(epoch_result)
+
+            # 保存到文件
+            results_file = os.path.join(self.output_dir, "epoch_eval_results.json")
+            with open(results_file, 'w', encoding='utf-8') as f:
+                json.dump(self.epoch_results, f, indent=2, ensure_ascii=False)
+
+            print(f"\n📊 Epoch {int(state.epoch)} Evaluation Results:")
+            print(f"   Accuracy:  {metrics.get('eval_accuracy', 0):.4f}")
+            print(f"   Precision: {metrics.get('eval_precision', 0):.4f}")
+            print(f"   Recall:    {metrics.get('eval_recall', 0):.4f}")
+            print(f"   F1:        {metrics.get('eval_f1', 0):.4f}")
+            print(f"   Loss:      {metrics.get('eval_loss', 0):.4f}")
+            print(f"   Saved to: {results_file}\n")
 
 
 @dataclass
@@ -381,8 +414,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
             logging_dir=os.path.join(args.output_dir, "logs"),
             logging_steps=args.logging_steps,
             save_steps=args.save_steps,
-            eval_steps=args.eval_steps,
-            eval_strategy=args.evaluation_strategy if val_dataset else "no",
+            eval_strategy="epoch" if val_dataset else "no",  # ✅ 每个 epoch 评估一次
             save_strategy="steps",
             save_total_limit=args.save_total_limit,
 
@@ -410,7 +442,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
             seed=args.seed,
             max_grad_norm=1.0,
             optim="adamw_torch",
-            lr_scheduler_type="constant_with_warmup",
+            lr_scheduler_type="cosine",  # ✅ 改为 cosine 学习率衰减
         )
     else:
         # 不保存模型：禁用所有保存操作
@@ -426,8 +458,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
             # 日志和保存
             logging_dir=os.path.join(args.output_dir, "logs"),
             logging_steps=args.logging_steps,
-            eval_steps=args.eval_steps,
-            eval_strategy=args.evaluation_strategy if val_dataset else "no",
+            eval_strategy="epoch" if val_dataset else "no",  # ✅ 每个 epoch 评估一次
             save_strategy="no",  # ✅ 禁用保存
             save_total_limit=0,  # ✅ 不保存任何 checkpoint
             load_best_model_at_end=False,  # ✅ 不加载最佳模型
@@ -451,7 +482,7 @@ def run_classification_training(args: ClassificationTrainingArguments):
             seed=args.seed,
             max_grad_norm=1.0,
             optim="adamw_torch",
-            lr_scheduler_type="constant_with_warmup",
+            lr_scheduler_type="cosine",  # ✅ 改为 cosine 学习率衰减
         )
 
     # 12. 创建 Data Collator
@@ -475,6 +506,12 @@ def run_classification_training(args: ClassificationTrainingArguments):
 
     # ✅ 创建回调列表
     callbacks = []
+
+    # ✅ 添加每个 epoch 评估结果保存回调
+    epoch_eval_callback = EpochEvalCallback(args.output_dir)
+    callbacks.append(epoch_eval_callback)
+    if not is_distributed or local_rank == 0:
+        print("✅ Added EpochEvalCallback to save evaluation results after each epoch")
 
     # ✅ 如果使用了 LoRA，添加保存回调
     if args.use_llama_lora and not args.freeze_llama:

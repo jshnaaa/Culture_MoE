@@ -47,27 +47,29 @@ torchrun \
     --model_name_or_path $MODEL_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
-    --num_train_epochs 2 \
+    --num_train_epochs 3 \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 8 \
     --gradient_accumulation_steps 8 \
-    --learning_rate 5e-6 \
+    --learning_rate 1e-5 \
+    --weight_decay 0.01 \
+    --warmup_ratio 0.1 \
     --fp16 \
     --gradient_checkpointing \
     --use_dual_input True \
     --freeze_llama False \
     --use_llama_lora True \
-    --llama_lora_rank 8 \
-    --llama_lora_alpha 16 \
-    --llama_lora_dropout 0.05 \
+    --llama_lora_rank 16 \
+    --llama_lora_alpha 32 \
+    --llama_lora_dropout 0.1 \
     --llama_lora_target_modules "q_proj,v_proj,k_proj,o_proj,gate_proj,up_proj,down_proj" \
     --logging_steps 10 \
     --save_steps 500 \
-    --eval_steps 500 \
+    --eval_steps 100 \
     --max_length 512 \
     --val_split 0.1 \
     --dataloader_num_workers 4 \
-    --culture_loss_lambda 0.1 \
+    --culture_loss_lambda 0.05 \
     --num_classes $NUM_CLASSES \
     --use_culture_loss $USE_CULTURE_LOSS \
     $([ "$SAVE_MODEL" = "true" ] && echo "--save_model" || echo "")
