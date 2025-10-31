@@ -241,13 +241,48 @@ def train_culturemoe(args):
     with open(os.path.join(args.output_dir, "final_eval_results.json"), 'w') as f:
         json.dump(final_metrics, f, indent=2)
 
+    # 生成训练总结
+    training_summary = {
+        "training_config": {
+            "num_epochs": args.num_epochs,
+            "num_experts": args.num_experts,
+            "learning_rate": args.learning_rate,
+            "batch_size": args.batch_size,
+            "use_culture_loss": args.use_culture_loss,
+            "culture_loss_lambda": args.culture_loss_lambda,
+        },
+        "best_epoch": epoch_callback.best_epoch,
+        "best_accuracy": epoch_callback.best_accuracy,
+        "final_metrics": {
+            "accuracy": final_metrics.get('eval_accuracy', 0),
+            "precision": final_metrics.get('eval_precision', 0),
+            "recall": final_metrics.get('eval_recall', 0),
+            "f1": final_metrics.get('eval_f1', 0),
+            "loss": final_metrics.get('eval_loss', 0),
+        },
+        "epoch_results": epoch_callback.epoch_results,
+    }
+
+    # 保存训练总结
+    with open(os.path.join(args.output_dir, "training_summary.json"), 'w') as f:
+        json.dump(training_summary, f, indent=2, ensure_ascii=False)
+
     print("\n" + "="*80)
     print("Training Completed!")
     print("="*80)
     print(f"   Final Accuracy: {final_metrics.get('eval_accuracy', 0):.4f}")
-    print(f"   Final F1:       {final_metrics.get('eval_f1', 0):.4f}")
-    print(f"   Best Epoch:     {epoch_callback.best_epoch}")
-    print(f"   Best Accuracy:  {epoch_callback.best_accuracy:.4f}")
+    print(f"   Final Precision: {final_metrics.get('eval_precision', 0):.4f}")
+    print(f"   Final Recall:    {final_metrics.get('eval_recall', 0):.4f}")
+    print(f"   Final F1:        {final_metrics.get('eval_f1', 0):.4f}")
+    print(f"   Final Loss:      {final_metrics.get('eval_loss', 0):.4f}")
+    print("")
+    print(f"   Best Epoch:      {epoch_callback.best_epoch}")
+    print(f"   Best Accuracy:   {epoch_callback.best_accuracy:.4f}")
+    print("")
+    print("   Files saved:")
+    print(f"     - epoch_eval_results.json (每个 epoch 的评估结果)")
+    print(f"     - final_eval_results.json (最终评估结果)")
+    print(f"     - training_summary.json (完整训练总结)")
     print("="*80)
     print("")
 
