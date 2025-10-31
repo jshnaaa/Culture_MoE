@@ -408,7 +408,7 @@ def stage2_train_moe(args, merged_model_path: str, stage1_metrics: Dict):
 
     model = LlamaSharedRouterExpertsModel(
         llama_model=llama_model,
-        tokenizer=tokenizer,
+        config=llama_model.config,
         args=moe_args
     )
 
