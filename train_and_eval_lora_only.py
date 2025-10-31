@@ -160,11 +160,11 @@ class LoRATrainingArguments:
         metadata={"help": "日志步数"}
     )
     save_steps: int = field(
-        default=500,
+        default=1000,
         metadata={"help": "保存步数"}
     )
     eval_steps: int = field(
-        default=500,
+        default=1000,
         metadata={"help": "评估步数"}
     )
     save_model: bool = field(
