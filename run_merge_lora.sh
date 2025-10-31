@@ -7,27 +7,6 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"  # 默认使用 llama
-#="${2}"   # LoRA 模型目录（必须提供）
-#OUTPUT_DIR="${3}"       # 输出目录（必须提供）
-
-# 检查参数
-if [ -z "$LORA_MODEL_DIR" ]; then
-    echo "❌ Error: LoRA model directory not provided"
-    echo ""
-    echo "Usage: sh run_merge_lora.sh [backbone] [lora_model_dir] [output_dir]"
-    echo ""
-    echo "Example:"
-    echo "  sh run_merge_lora.sh llama /path/to/lora_model /path/to/output"
-    echo "  sh run_merge_lora.sh qwen /path/to/lora_model /path/to/output"
-    exit 1
-fi
-
-if [ -z "$OUTPUT_DIR" ]; then
-    echo "❌ Error: Output directory not provided"
-    echo ""
-    echo "Usage: sh run_merge_lora.sh [backbone] [lora_model_dir] [output_dir]"
-    exit 1
-fi
 
 # 根据 backbone 选择 base 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
