@@ -14,6 +14,7 @@ BACKBONE="${1:-llama}"  # 默认使用 llama
 NUM_CLASSES="${2:-2}"     # 默认 2 分类
 USE_CULTURE_LOSS="${3:-True}"  # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"     # 默认 6 个专家
+SAVE_MODEL="${5:-false}"  # 默认不保存模型
 
 # 根据 backbone 选择 合并后的 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -56,13 +57,14 @@ echo "Merged model: $MERGED_MODEL_PATH"
 echo "Num classes: $NUM_CLASSES"
 echo "Use culture loss: $USE_CULTURE_LOSS"
 echo "Num experts: $NUM_EXPERTS"
+echo "Save model: $SAVE_MODEL"
 echo "Dataset: $TRAIN_FILE"
 echo "Output: $OUTPUT_DIR"
 echo "============================================================"
 echo ""
 
-# 运行训练
-python train_culturemoe_from_merged.py \
+# 构建训练命令
+TRAIN_CMD="python train_culturemoe_from_merged.py \
     --merged_model_path $MERGED_MODEL_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
@@ -89,7 +91,18 @@ python train_culturemoe_from_merged.py \
     --max_length 512 \
     --val_split 0.1 \
     --logging_steps 10 \
-    --num_workers 4
+    --num_workers 4"
+
+# 添加 save_model 参数
+if [ "$SAVE_MODEL" = "true" ]; then
+    MODEL_SAVE_PATH="/root/autodl-fs/model/moe_${BACKBONE}_${NUM_CLASSES}"
+    TRAIN_CMD="$TRAIN_CMD --save_model --model_save_path $MODEL_SAVE_PATH"
+    echo "Model will be saved to: $MODEL_SAVE_PATH"
+    echo ""
+fi
+
+# 运行训练
+eval $TRAIN_CMD
 
 if [ $? -eq 0 ]; then
     echo ""

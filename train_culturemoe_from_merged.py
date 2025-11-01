@@ -41,13 +41,15 @@ from src.llamafactory.train.classification.metrics import compute_classification
 class EpochEvalCallback(TrainerCallback):
     """每个 epoch 结束后保存评估结果的回调"""
 
-    def __init__(self, output_dir: str):
+    def __init__(self, output_dir: str, save_model: bool = False):
         self.output_dir = output_dir
         self.epoch_results = []
         self.best_accuracy = 0.0
         self.best_epoch = 0
+        self.save_model = save_model
+        self.best_model_state = None  # 保存最佳模型状态
 
-    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+    def on_evaluate(self, args, state, control, metrics=None, model=None, **kwargs):
         """评估结束后保存结果"""
         if metrics is not None and state.epoch is not None:
             epoch_result = {
@@ -67,6 +69,12 @@ class EpochEvalCallback(TrainerCallback):
             if current_accuracy > self.best_accuracy:
                 self.best_accuracy = current_accuracy
                 self.best_epoch = int(state.epoch)
+
+                # 如果需要保存模型，保存最佳模型状态
+                if self.save_model and model is not None:
+                    import copy
+                    self.best_model_state = copy.deepcopy(model.state_dict())
+                    print(f"   💾 Saved best model state (in memory)")
 
             print(f"\n📊 Epoch {int(state.epoch)} Evaluation Results:")
             print(f"   Accuracy:  {current_accuracy:.4f}")
@@ -204,7 +212,8 @@ def train_culturemoe(args):
     )
 
     # 7. Callback
-    epoch_callback = EpochEvalCallback(args.output_dir)
+    save_model = getattr(args, 'save_model', False)
+    epoch_callback = EpochEvalCallback(args.output_dir, save_model=save_model)
 
     # 8. Compute metrics
     def compute_metrics_fn(eval_pred):
@@ -267,6 +276,49 @@ def train_culturemoe(args):
     with open(os.path.join(args.output_dir, "training_summary.json"), 'w') as f:
         json.dump(training_summary, f, indent=2, ensure_ascii=False)
 
+    # 12. 保存最佳模型（如果需要）
+    if save_model and epoch_callback.best_model_state is not None:
+        model_save_path = getattr(args, 'model_save_path', None)
+        if model_save_path:
+            print("\n9. Saving best model...")
+            print(f"   Best epoch: {epoch_callback.best_epoch}")
+            print(f"   Best accuracy: {epoch_callback.best_accuracy:.4f}")
+            print(f"   Save path: {model_save_path}")
+
+            # 加载最佳模型状态
+            model.load_state_dict(epoch_callback.best_model_state)
+
+            # 创建保存目录
+            os.makedirs(model_save_path, exist_ok=True)
+
+            # 保存模型
+            torch.save(model.state_dict(), os.path.join(model_save_path, "pytorch_model.bin"))
+
+            # 保存配置
+            model_config = {
+                "num_experts": args.num_experts,
+                "shared_hidden_dim": args.shared_hidden_dim,
+                "router_hidden_dim": args.router_hidden_dim,
+                "experts_hidden_dim": args.experts_hidden_dim,
+                "moe_lora_rank": args.moe_lora_rank,
+                "num_classes": args.num_classes,
+                "classification_hidden_dim": args.classification_hidden_dim,
+                "dropout": args.dropout,
+                "num_heads": args.num_heads,
+                "best_epoch": epoch_callback.best_epoch,
+                "best_accuracy": epoch_callback.best_accuracy,
+            }
+            with open(os.path.join(model_save_path, "model_config.json"), 'w') as f:
+                json.dump(model_config, f, indent=2)
+
+            # 保存 tokenizer
+            tokenizer.save_pretrained(model_save_path)
+
+            print("   ✅ Best model saved")
+            print(f"      - pytorch_model.bin (模型权重)")
+            print(f"      - model_config.json (模型配置)")
+            print(f"      - tokenizer files (Tokenizer)")
+
     print("\n" + "="*80)
     print("Training Completed!")
     print("="*80)
@@ -283,6 +335,8 @@ def train_culturemoe(args):
     print(f"     - epoch_eval_results.json (每个 epoch 的评估结果)")
     print(f"     - final_eval_results.json (最终评估结果)")
     print(f"     - training_summary.json (完整训练总结)")
+    if save_model and epoch_callback.best_model_state is not None:
+        print(f"     - Best model saved to: {getattr(args, 'model_save_path', 'N/A')}")
     print("="*80)
     print("")
 
@@ -322,6 +376,10 @@ def main():
     parser.add_argument("--val_split", type=float, default=0.1, help="验证集比例")
     parser.add_argument("--logging_steps", type=int, default=10, help="日志步数")
     parser.add_argument("--num_workers", type=int, default=4, help="数据加载线程数")
+
+    # 模型保存参数
+    parser.add_argument("--save_model", action="store_true", help="是否保存最佳模型")
+    parser.add_argument("--model_save_path", type=str, default=None, help="模型保存路径")
 
     args = parser.parse_args()
 
