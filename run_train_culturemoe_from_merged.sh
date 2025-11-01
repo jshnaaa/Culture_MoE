@@ -48,7 +48,7 @@ case $NUM_CLASSES in
 esac
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/culturemoe_output/culturemoe_${NUM_CLASSES}class_experts${NUM_EXPERTS}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/culturemoe_output/culturemoe_${BACKBONE}_${NUM_CLASSES}class_experts${NUM_EXPERTS}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "CultureMoE Training (From Merged Model)"
