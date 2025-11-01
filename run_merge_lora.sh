@@ -7,18 +7,19 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"  # 默认使用 llama
+NUM_CLASSES="${2:-2}"
 
 # 根据 backbone 选择 base 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
-    LORA_MODEL_DIR="/root/autodl-fs/model/qwen_lora_only"
-    OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/qwen_merge"
+    LORA_MODEL_DIR="/root/autodl-fs/model/qwen_lora_only_${NUM_CLASSES}"
+    OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/qwen_merge_${NUM_CLASSES}"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    LORA_MODEL_DIR="/root/autodl-fs/model/llama_lora_only"
-    OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/llama_merge"
+    LORA_MODEL_DIR="/root/autodl-fs/model/llama_lora_only_${NUM_CLASSES}"
+    OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/llama_merge_${NUM_CLASSES}"
 fi
 
 echo "============================================================"

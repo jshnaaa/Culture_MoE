@@ -2,9 +2,10 @@
 
 # 训练 LoRA only 模型（支持 2/3/4/5 分类）
 # 支持 LLaMA 3.1 和 Qwen 2.5
+# 支持双卡训练
 
-# ✅ 限制只使用一个 GPU（避免 DataParallel 问题）
-export CUDA_VISIBLE_DEVICES=0
+# ✅ 使用两张 GPU（0 和 1）
+export CUDA_VISIBLE_DEVICES=0,1
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"  # 默认使用 llama，可以通过第一个参数指定 qwen
@@ -34,11 +35,11 @@ esac
 # 根据 backbone 选择模型路径
 if [ "$BACKBONE" = "qwen" ]; then
     MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-    OUTPUT_DIR="/root/autodl-fs/model/qwen_lora_only"
+    OUTPUT_DIR="/root/autodl-fs/model/qwen_lora_only_${NUM_CLASSES}"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
 else
     MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-    OUTPUT_DIR="/root/autodl-fs/model/llama_lora_only"
+    OUTPUT_DIR="/root/autodl-fs/model/llama_lora_only_${NUM_CLASSES}"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
 fi
 
@@ -67,9 +68,8 @@ echo "Save model: $SAVE_MODEL"
 echo "============================================================"
 echo ""
 
-# 构建命令
-CMD="python train_and_eval_lora_only.py \
-    --model_path $MODEL_PATH \
+# 构建命令参数
+TRAIN_ARGS="--model_path $MODEL_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
     --backbone $BACKBONE \
@@ -84,11 +84,11 @@ CMD="python train_and_eval_lora_only.py \
 
 # 添加可选参数
 if [ "$SAVE_MODEL" = "true" ]; then
-    CMD="$CMD --save_model"
+    TRAIN_ARGS="$TRAIN_ARGS --save_model"
 fi
 
-# ✅ 运行训练
-eval $CMD
+# ✅ 使用 torchrun 启动双卡分布式训练
+torchrun --nproc_per_node=2 --master_port=29500 train_and_eval_lora_only.py $TRAIN_ARGS
 
 if [ $? -eq 0 ]; then
     echo ""

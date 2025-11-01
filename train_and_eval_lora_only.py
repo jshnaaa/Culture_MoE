@@ -332,12 +332,28 @@ def train_lora_only(args: LoRATrainingArguments):
 
     # 3. 加载基础模型
     print(f"\n3. Loading base LLaMA model from {args.model_path}...")
-    llama_model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
-        torch_dtype=torch.float32,  # ✅ 使用 FP32
-        trust_remote_code=True
-    )
-    print("   ✅ Base model loaded (using float32)")
+
+    # ✅ 分布式训练时不使用 device_map，让 DDP 自动处理
+    if is_distributed:
+        # 分布式训练：先加载到 CPU，再移动到对应的 GPU
+        llama_model = AutoModelForCausalLM.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.float16,  # ✅ 使用 FP16 节省显存
+            trust_remote_code=True,
+            low_cpu_mem_usage=True  # ✅ 减少 CPU 内存使用
+        )
+        # 确保模型在正确的设备上
+        llama_model = llama_model.to(device)
+        print(f"   ✅ Base model loaded (using float16) on device {device}")
+    else:
+        # 单卡训练：使用 device_map
+        llama_model = AutoModelForCausalLM.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.float16,  # ✅ 使用 FP16 节省显存
+            device_map="auto",  # ✅ 自动分配设备
+            trust_remote_code=True
+        )
+        print("   ✅ Base model loaded (using float16)")
 
     # 4. 应用 LoRA
     print(f"\n4. Applying LoRA to LLaMA model...")
@@ -367,7 +383,13 @@ def train_lora_only(args: LoRATrainingArguments):
     # 5. 创建分类模型
     print(f"\n5. Creating classification model...")
     model = ClassificationModel(llama_model, num_classes=num_classes)
-    print(f"   ✅ Classification model created ({num_classes} classes, using float32)")
+
+    # ✅ 确保分类头在正确的设备上
+    if is_distributed:
+        model = model.to(device)
+        print(f"   ✅ Classification model created ({num_classes} classes) on device {device}")
+    else:
+        print(f"   ✅ Classification model created ({num_classes} classes)")
 
     # 6. 训练参数
     # ✅ 根据 save_model 参数决定是否保存 checkpoint
@@ -391,6 +413,12 @@ def train_lora_only(args: LoRATrainingArguments):
             max_grad_norm=1.0,
             optim="adamw_torch",
             warmup_steps=100,
+            # ✅ FP16 训练
+            fp16=True,
+            fp16_full_eval=False,  # 评估时使用 FP32 更稳定
+            # ✅ 分布式训练设置
+            ddp_find_unused_parameters=False,
+            dataloader_pin_memory=True,
         )
     else:
         # 不保存模型：禁用所有保存操作
@@ -412,6 +440,12 @@ def train_lora_only(args: LoRATrainingArguments):
             max_grad_norm=1.0,
             optim="adamw_torch",
             warmup_steps=100,
+            # ✅ FP16 训练
+            fp16=True,
+            fp16_full_eval=False,  # 评估时使用 FP32 更稳定
+            # ✅ 分布式训练设置
+            ddp_find_unused_parameters=False,
+            dataloader_pin_memory=True,
         )
 
     # 7. Data Collator（使用简单的 padding collator）

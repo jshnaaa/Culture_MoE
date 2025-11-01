@@ -21,13 +21,13 @@ echo "============================================================"
 echo "Running: sh run_two_stage_culturemoe.sh qwen 2 True 6"
 echo ""
 
-sh run_two_stage_culturemoe.sh qwen 2 True 6
+#sh run_two_stage_culturemoe.sh qwen 2 True 6
 
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "❌ Task 1 failed!"
-    exit 1
-fi
+#if [ $? -ne 0 ]; then
+#    echo ""
+#    echo "❌ Task 1 failed!"
+#    exit 1
+#fi
 
 echo ""
 echo "✅ Task 1 completed successfully"
@@ -45,13 +45,13 @@ echo "============================================================"
 echo "Running: sh run_two_stage_culturemoe.sh qwen 4 True 6"
 echo ""
 
-sh run_two_stage_culturemoe.sh qwen 4 True 6
+#sh run_two_stage_culturemoe.sh qwen 4 True 6
 
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "❌ Task 2 failed!"
-    exit 1
-fi
+#if [ $? -ne 0 ]; then
+#    echo ""
+#    echo "❌ Task 2 failed!"
+#    exit 1
+#fi
 
 echo ""
 echo "✅ Task 2 completed successfully"
@@ -64,12 +64,12 @@ echo ""
 # 任务 3：Qwen + 4分类 + 6个专家（重复）
 # ============================================================
 echo "============================================================"
-echo "TASK 3/3: Qwen + 4-class + 6 experts (repeat)"
+echo "TASK 3/3: llama + 4-class + 6 experts (repeat)"
 echo "============================================================"
-echo "Running: sh run_two_stage_culturemoe.sh qwen 4 True 6"
+echo "Running: sh run_two_stage_culturemoe.sh llama 4 True 6"
 echo ""
 
-sh run_two_stage_culturemoe.sh qwen 4 True 6
+sh run_two_stage_culturemoe.sh llama 4 True 6
 
 if [ $? -ne 0 ]; then
     echo ""
@@ -92,7 +92,7 @@ echo ""
 echo "Summary:"
 echo "  Task 1: Qwen + 2-class + 6 experts ✅"
 echo "  Task 2: Qwen + 4-class + 6 experts ✅"
-echo "  Task 3: Qwen + 4-class + 6 experts (repeat) ✅"
+echo "  Task 3: llama + 4-class + 6 experts (repeat) ✅"
 echo ""
 echo "Output locations:"
 echo "  Task 1: /root/autodl-tmp/CultureMoE/Culture_Alignment/culturemoe_output/culturemoe_2class_experts6_*"
