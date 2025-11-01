@@ -280,7 +280,7 @@ def train_culturemoe(args):
     if save_model and epoch_callback.best_model_state is not None:
         model_save_path = getattr(args, 'model_save_path', None)
         if model_save_path:
-            print("\n9. Saving best model...")
+            print("\n9. Saving best MoE weights (only trainable parts)...")
             print(f"   Best epoch: {epoch_callback.best_epoch}")
             print(f"   Best accuracy: {epoch_callback.best_accuracy:.4f}")
             print(f"   Save path: {model_save_path}")
@@ -291,11 +291,33 @@ def train_culturemoe(args):
             # 创建保存目录
             os.makedirs(model_save_path, exist_ok=True)
 
-            # 保存模型
-            torch.save(model.state_dict(), os.path.join(model_save_path, "pytorch_model.bin"))
+            # ✅ 只保存 MoE 部分的权重（排除 llama_model）
+            moe_state_dict = {}
+            total_params = 0
+            moe_params = 0
 
-            # 保存配置
+            for name, param in model.state_dict().items():
+                total_params += param.numel()
+                # 只保存非 llama_model 的权重
+                if not name.startswith('llama_model.'):
+                    moe_state_dict[name] = param
+                    moe_params += param.numel()
+
+            # 保存 MoE 权重
+            torch.save(moe_state_dict, os.path.join(model_save_path, "moe_weights.bin"))
+
+            print(f"   📊 Model statistics:")
+            print(f"      Total parameters: {total_params:,}")
+            print(f"      MoE parameters: {moe_params:,}")
+            print(f"      Saved ratio: {100 * moe_params / total_params:.2f}%")
+            print(f"      Space saved: {100 * (1 - moe_params / total_params):.2f}%")
+
+            # 保存配置（包含依赖的 LLM 路径）
             model_config = {
+                "model_type": "CultureMoE",
+                "architecture": "LlamaSharedRouterExpertsModel",
+
+                # MoE 配置
                 "num_experts": args.num_experts,
                 "shared_hidden_dim": args.shared_hidden_dim,
                 "router_hidden_dim": args.router_hidden_dim,
@@ -305,19 +327,46 @@ def train_culturemoe(args):
                 "classification_hidden_dim": args.classification_hidden_dim,
                 "dropout": args.dropout,
                 "num_heads": args.num_heads,
+
+                # 训练信息
                 "best_epoch": epoch_callback.best_epoch,
                 "best_accuracy": epoch_callback.best_accuracy,
+
+                # ✅ 依赖信息（重要！）
+                "merged_llm_path": args.merged_model_path,
+                "base_model_config": {
+                    "hidden_size": llama_model.config.hidden_size,
+                    "num_hidden_layers": llama_model.config.num_hidden_layers,
+                    "num_attention_heads": llama_model.config.num_attention_heads,
+                },
+
+                # 使用说明
+                "usage": {
+                    "description": "This file contains only MoE weights. To use, load the merged LLM first, then load these weights.",
+                    "load_example": "See load_culturemoe.py for loading instructions"
+                }
             }
-            with open(os.path.join(model_save_path, "model_config.json"), 'w') as f:
-                json.dump(model_config, f, indent=2)
+            with open(os.path.join(model_save_path, "moe_config.json"), 'w') as f:
+                json.dump(model_config, f, indent=2, ensure_ascii=False)
 
             # 保存 tokenizer
             tokenizer.save_pretrained(model_save_path)
 
-            print("   ✅ Best model saved")
-            print(f"      - pytorch_model.bin (模型权重)")
-            print(f"      - model_config.json (模型配置)")
+            # 保存 MoE 层的名称列表（方便加载时验证）
+            moe_layer_names = list(moe_state_dict.keys())
+            with open(os.path.join(model_save_path, "moe_layer_names.json"), 'w') as f:
+                json.dump(moe_layer_names, f, indent=2)
+
+            print("   ✅ Best MoE weights saved")
+            print(f"      - moe_weights.bin ({moe_params:,} parameters, ~{moe_params * 4 / 1024 / 1024:.1f} MB)")
+            print(f"      - moe_config.json (MoE configuration + dependencies)")
+            print(f"      - moe_layer_names.json (Layer names for verification)")
             print(f"      - tokenizer files (Tokenizer)")
+            print("")
+            print(f"   💡 To load the complete model:")
+            print(f"      1. Load merged LLM: {args.merged_model_path}")
+            print(f"      2. Load MoE weights: {model_save_path}/moe_weights.bin")
+            print(f"      3. Use load_culturemoe.py script")
 
     print("\n" + "="*80)
     print("Training Completed!")

@@ -95,7 +95,7 @@ TRAIN_CMD="python train_culturemoe_from_merged.py \
 
 # 添加 save_model 参数
 if [ "$SAVE_MODEL" = "true" ]; then
-    MODEL_SAVE_PATH="/root/autodl-fs/model/moe_${BACKBONE}_${NUM_CLASSES}"
+    MODEL_SAVE_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/model_moe_${BACKBONE}_${NUM_CLASSES}"
     TRAIN_CMD="$TRAIN_CMD --save_model --model_save_path $MODEL_SAVE_PATH"
     echo "Model will be saved to: $MODEL_SAVE_PATH"
     echo ""
