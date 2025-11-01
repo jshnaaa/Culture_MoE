@@ -19,11 +19,11 @@ NUM_EXPERTS="${4:-6}"     # 默认 6 个专家
 if [ "$BACKBONE" = "qwen" ]; then
 #    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
-    MERGED_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/qwen_merge"
+    MERGED_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/qwen_merge_${NUM_CLASSES}"
 else
 #    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    MERGED_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/llama_merge"
+    MERGED_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/llama_merge_${NUM_CLASSES}"
 fi
 
 # 根据 num_classes 选择数据集
