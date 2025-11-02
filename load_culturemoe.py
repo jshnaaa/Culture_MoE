@@ -21,12 +21,12 @@ import os
 import sys
 from datetime import datetime
 
-import torch
 import numpy as np
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -211,13 +211,23 @@ def evaluate_model(model, tokenizer, test_dataset, device, batch_size=8, num_cla
     all_culture_labels = []
 
     print("Running evaluation...")
+
+    # ✅ 获取模型的实际设备（处理 device_map="auto" 的情况）
+    model_device = next(model.parameters()).device
+
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating"):
-            # 移动到设备
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            labels = batch['labels'].to(device)
-            culture_labels = batch['culture_labels'].to(device)
+            # ✅ 移动到模型所在的设备
+            input_ids = batch['input_ids'].to(model_device)
+            attention_mask = batch['attention_mask'].to(model_device)
+
+            # ✅ 处理标签（可能是张量或列表）
+            if isinstance(batch['labels'], torch.Tensor):
+                labels = batch['labels']
+                culture_labels = batch['culture_labels']
+            else:
+                labels = torch.tensor(batch['labels'])
+                culture_labels = torch.tensor(batch['culture_labels'])
 
             # 前向传播
             outputs = model(
@@ -232,11 +242,11 @@ def evaluate_model(model, tokenizer, test_dataset, device, batch_size=8, num_cla
             preds = torch.argmax(logits, dim=-1)
             culture_preds = torch.argmax(culture_logits, dim=-1)
 
-            # 收集结果
+            # 收集结果（移到 CPU）
             all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy() if isinstance(labels, torch.Tensor) else labels.numpy())
             all_culture_preds.extend(culture_preds.cpu().numpy())
-            all_culture_labels.extend(culture_labels.cpu().numpy())
+            all_culture_labels.extend(culture_labels.cpu().numpy() if isinstance(culture_labels, torch.Tensor) else culture_labels.numpy())
 
     # 转换为 numpy 数组
     all_preds = np.array(all_preds)
