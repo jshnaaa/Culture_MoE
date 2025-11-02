@@ -43,40 +43,40 @@ else
     exit 1
 fi
 
-# 任务 3
-echo "============================================================" | tee -a $BATCH_LOG
-echo "Task 3" | tee -a $BATCH_LOG
-echo "============================================================" | tee -a $BATCH_LOG
-echo "" | tee -a $BATCH_LOG
-
-sh run_eval_base_llama.sh llama 441 2>&1 | tee -a $BATCH_LOG
-TASK3_STATUS=$?
-
-if [ $TASK3_STATUS -eq 0 ]; then
-    echo "" | tee -a $BATCH_LOG
-    echo "✅ Task 3 completed successfully!" | tee -a $BATCH_LOG
-else
-    echo "" | tee -a $BATCH_LOG
-    exit 1
-fi
-
-# 任务 4
-echo "============================================================" | tee -a $BATCH_LOG
-echo "Task 4" | tee -a $BATCH_LOG
-echo "============================================================" | tee -a $BATCH_LOG
-echo "" | tee -a $BATCH_LOG
-
-sh run_eval_base_llama.sh qwen 441 2>&1 | tee -a $BATCH_LOG
-TASK4_STATUS=$?
-
-if [ $TASK3_STATUS -eq 0 ]; then
-    echo "" | tee -a $BATCH_LOG
-    echo "✅ Task 4 completed successfully!" | tee -a $BATCH_LOG
-else
-    echo "" | tee -a $BATCH_LOG
-    echo "❌ Task 4 failed with exit code $TASK3_STATUS" | tee -a $BATCH_LOG
-    exit 1
-fi
+## 任务 3
+#echo "============================================================" | tee -a $BATCH_LOG
+#echo "Task 3" | tee -a $BATCH_LOG
+#echo "============================================================" | tee -a $BATCH_LOG
+#echo "" | tee -a $BATCH_LOG
+#
+#sh run_eval_base_llama.sh llama 441 2>&1 | tee -a $BATCH_LOG
+#TASK3_STATUS=$?
+#
+#if [ $TASK3_STATUS -eq 0 ]; then
+#    echo "" | tee -a $BATCH_LOG
+#    echo "✅ Task 3 completed successfully!" | tee -a $BATCH_LOG
+#else
+#    echo "" | tee -a $BATCH_LOG
+#    exit 1
+#fi
+#
+## 任务 4
+#echo "============================================================" | tee -a $BATCH_LOG
+#echo "Task 4" | tee -a $BATCH_LOG
+#echo "============================================================" | tee -a $BATCH_LOG
+#echo "" | tee -a $BATCH_LOG
+#
+#sh run_eval_base_llama.sh qwen 441 2>&1 | tee -a $BATCH_LOG
+#TASK4_STATUS=$?
+#
+#if [ $TASK4_STATUS -eq 0 ]; then
+#    echo "" | tee -a $BATCH_LOG
+#    echo "✅ Task 4 completed successfully!" | tee -a $BATCH_LOG
+#else
+#    echo "" | tee -a $BATCH_LOG
+#    echo "❌ Task 4 failed with exit code $TASK3_STATUS" | tee -a $BATCH_LOG
+#    exit 1
+#fi
 
 
 echo "" | tee -a $BATCH_LOG
