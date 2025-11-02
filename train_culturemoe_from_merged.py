@@ -293,8 +293,20 @@ def train_culturemoe(args):
             print(f"   Best accuracy: {epoch_callback.best_accuracy:.4f}")
             print(f"   Save path: {model_save_path}")
 
-            # 加载最佳模型状态
-            model.load_state_dict(epoch_callback.best_model_state)
+            # 加载最佳模型状态（strict=False 允许只加载 MoE 部分）
+            missing_keys, unexpected_keys = model.load_state_dict(epoch_callback.best_model_state, strict=False)
+
+            # 验证：missing_keys 应该都是 llama_model 的键
+            llama_missing = [k for k in missing_keys if k.startswith('llama_model.')]
+            non_llama_missing = [k for k in missing_keys if not k.startswith('llama_model.')]
+
+            if non_llama_missing:
+                print(f"   ⚠️  Warning: Missing non-LLM keys: {len(non_llama_missing)}")
+                print(f"      {non_llama_missing[:5]}...")
+
+            print(f"   ✅ Loaded best model state")
+            print(f"      Missing LLM keys: {len(llama_missing)} (expected)")
+            print(f"      Missing MoE keys: {len(non_llama_missing)} (should be 0)")
 
             # 创建保存目录
             os.makedirs(model_save_path, exist_ok=True)
