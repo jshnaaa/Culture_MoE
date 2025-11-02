@@ -304,6 +304,22 @@ def evaluate_model(model, tokenizer, test_dataset, device, batch_size=8, num_cla
             all_culture_preds.extend(to_flat_list(culture_preds))
             all_culture_labels.extend(to_flat_list(culture_labels))
 
+    # ✅ 调试：打印长度
+    print(f"\nDebug - Collected samples:")
+    print(f"  all_preds: {len(all_preds)}")
+    print(f"  all_labels: {len(all_labels)}")
+    print(f"  all_culture_preds: {len(all_culture_preds)}")
+    print(f"  all_culture_labels: {len(all_culture_labels)}")
+
+    # ✅ 确保所有列表长度一致（取最小长度）
+    min_len = min(len(all_preds), len(all_labels), len(all_culture_preds), len(all_culture_labels))
+    if not (len(all_preds) == len(all_labels) == len(all_culture_preds) == len(all_culture_labels)):
+        print(f"\n⚠️  Warning: Inconsistent lengths detected! Truncating to {min_len} samples")
+        all_preds = all_preds[:min_len]
+        all_labels = all_labels[:min_len]
+        all_culture_preds = all_culture_preds[:min_len]
+        all_culture_labels = all_culture_labels[:min_len]
+
     # 转换为 numpy 数组
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
