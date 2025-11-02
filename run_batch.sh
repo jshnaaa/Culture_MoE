@@ -1,22 +1,9 @@
 #!/bin/bash
 
-# 批量运行 CultureMoE 训练脚本
-# 依次执行 qwen 2分类、4分类、5分类
-
-echo "============================================================"
-echo "Batch Training: CultureMoE with Qwen"
-echo "============================================================"
-echo "Tasks:"
-echo "  1. Qwen + 2-class + Culture Loss"
-echo "  2. Qwen + 4-class + Culture Loss"
-echo "  3. Qwen + 5-class + Culture Loss"
-echo "============================================================"
-echo ""
-
 # 记录开始时间
 START_TIME=$(date +%s)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG_DIR="/root/autodl-fs/output/batch_logs"
+LOG_DIR="/root/autodl-fs/output/batch_base_test_logs"
 mkdir -p $LOG_DIR
 BATCH_LOG="$LOG_DIR/batch_training_${TIMESTAMP}.log"
 
@@ -25,13 +12,12 @@ echo ""
 
 # 任务 1: Qwen + 2分类
 echo "============================================================" | tee -a $BATCH_LOG
-echo "[Task 1/3] Training: Qwen + 2-class + Culture Loss" | tee -a $BATCH_LOG
 echo "Start time: $(date)" | tee -a $BATCH_LOG
 echo "============================================================" | tee -a $BATCH_LOG
 echo "" | tee -a $BATCH_LOG
 
 TASK1_START=$(date +%s)
-sh run_train_ddp_lora_dual.sh qwen 2 True false 2>&1 | tee -a $BATCH_LOG
+sh run_eval_base_llama.sh llama 221 2>&1 | tee -a $BATCH_LOG
 TASK1_STATUS=$?
 TASK1_END=$(date +%s)
 TASK1_DURATION=$((TASK1_END - TASK1_START))
@@ -48,19 +34,14 @@ else
     exit 1
 fi
 
-echo "" | tee -a $BATCH_LOG
-echo "Waiting 30 seconds before next task..." | tee -a $BATCH_LOG
-sleep 30
-
 # 任务 2: Qwen + 4分类
 echo "============================================================" | tee -a $BATCH_LOG
-echo "[Task 2/3] Training: Qwen + 4-class + Culture Loss" | tee -a $BATCH_LOG
 echo "Start time: $(date)" | tee -a $BATCH_LOG
 echo "============================================================" | tee -a $BATCH_LOG
 echo "" | tee -a $BATCH_LOG
 
 TASK2_START=$(date +%s)
-sh run_train_ddp_lora_dual.sh qwen 4 True false 2>&1 | tee -a $BATCH_LOG
+sh run_eval_base_llama.sh qwen 221 2>&1 | tee -a $BATCH_LOG
 TASK2_STATUS=$?
 TASK2_END=$(date +%s)
 TASK2_DURATION=$((TASK2_END - TASK2_START))
@@ -77,13 +58,8 @@ else
     exit 1
 fi
 
-echo "" | tee -a $BATCH_LOG
-echo "Waiting 30 seconds before next task..." | tee -a $BATCH_LOG
-sleep 30
-
 # 任务 3: Qwen + 5分类
 echo "============================================================" | tee -a $BATCH_LOG
-echo "[Task 3/3] Training: Qwen + 5-class + Culture Loss" | tee -a $BATCH_LOG
 echo "Start time: $(date)" | tee -a $BATCH_LOG
 echo "============================================================" | tee -a $BATCH_LOG
 echo "" | tee -a $BATCH_LOG
