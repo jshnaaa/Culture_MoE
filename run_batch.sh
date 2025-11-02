@@ -13,7 +13,7 @@ echo "Task 1" | tee -a $BATCH_LOG
 echo "============================================================" | tee -a $BATCH_LOG
 echo "" | tee -a $BATCH_LOG
 
-sh run_eval_base_llama.sh llama 222 2>&1 | tee -a $BATCH_LOG
+sh run_eval_base_llama.sh llama 22 2>&1 | tee -a $BATCH_LOG
 TASK1_STATUS=$?
 
 if [ $TASK1_STATUS -eq 0 ]; then
@@ -31,7 +31,7 @@ echo "Task 2" | tee -a $BATCH_LOG
 echo "============================================================" | tee -a $BATCH_LOG
 echo "" | tee -a $BATCH_LOG
 
-sh run_eval_base_llama.sh qwen 222 2>&1 | tee -a $BATCH_LOG
+sh run_eval_base_llama.sh qwen 22 2>&1 | tee -a $BATCH_LOG
 TASK2_STATUS=$?
 
 if [ $TASK2_STATUS -eq 0 ]; then
@@ -49,7 +49,7 @@ echo "Task 3" | tee -a $BATCH_LOG
 echo "============================================================" | tee -a $BATCH_LOG
 echo "" | tee -a $BATCH_LOG
 
-sh run_eval_base_llama.sh llama 441 2>&1 | tee -a $BATCH_LOG
+sh run_eval_base_llama.sh llama 42 2>&1 | tee -a $BATCH_LOG
 TASK3_STATUS=$?
 
 if [ $TASK3_STATUS -eq 0 ]; then
@@ -66,7 +66,7 @@ echo "Task 4" | tee -a $BATCH_LOG
 echo "============================================================" | tee -a $BATCH_LOG
 echo "" | tee -a $BATCH_LOG
 
-sh run_eval_base_llama.sh qwen 441 2>&1 | tee -a $BATCH_LOG
+sh run_eval_base_llama.sh qwen 42 2>&1 | tee -a $BATCH_LOG
 TASK4_STATUS=$?
 
 if [ $TASK4_STATUS -eq 0 ]; then
@@ -75,41 +75,6 @@ if [ $TASK4_STATUS -eq 0 ]; then
 else
     echo "" | tee -a $BATCH_LOG
     echo "❌ Task 4 failed with exit code $TASK3_STATUS" | tee -a $BATCH_LOG
-    exit 1
-fi
-
-# 任务 5
-echo "============================================================" | tee -a $BATCH_LOG
-echo "Task 5" | tee -a $BATCH_LOG
-echo "============================================================" | tee -a $BATCH_LOG
-echo "" | tee -a $BATCH_LOG
-
-sh run_eval_base_llama.sh llama 442 2>&1 | tee -a $BATCH_LOG
-TASK5_STATUS=$?
-
-if [ $TASK5_STATUS -eq 0 ]; then
-    echo "" | tee -a $BATCH_LOG
-    echo "✅ Task 5 completed successfully!" | tee -a $BATCH_LOG
-else
-    echo "" | tee -a $BATCH_LOG
-    exit 1
-fi
-
-# 任务 6
-echo "============================================================" | tee -a $BATCH_LOG
-echo "Task 6" | tee -a $BATCH_LOG
-echo "============================================================" | tee -a $BATCH_LOG
-echo "" | tee -a $BATCH_LOG
-
-sh run_eval_base_llama.sh qwen 442 2>&1 | tee -a $BATCH_LOG
-TASK6_STATUS=$?
-
-if [ $TASK6_STATUS -eq 0 ]; then
-    echo "" | tee -a $BATCH_LOG
-    echo "✅ Task 6 completed successfully!" | tee -a $BATCH_LOG
-else
-    echo "" | tee -a $BATCH_LOG
-    echo "❌ Task 6 failed with exit code $TASK3_STATUS" | tee -a $BATCH_LOG
     exit 1
 fi
 
