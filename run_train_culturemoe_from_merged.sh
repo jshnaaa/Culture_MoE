@@ -72,7 +72,7 @@ TRAIN_CMD="python train_culturemoe_from_merged.py \
     --use_culture_loss $USE_CULTURE_LOSS \
     --culture_loss_lambda 0.5 \
     \
-    --num_epochs 20 \
+    --num_epochs 15 \
     --num_experts $NUM_EXPERTS \
     --shared_hidden_dim 2048 \
     --router_hidden_dim 1024 \
