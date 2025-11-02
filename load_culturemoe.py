@@ -253,9 +253,15 @@ def evaluate_model(model, tokenizer, test_dataset, device, batch_size=8, num_cla
                 attention_mask=attention_mask
             )
 
-            # 获取预测
-            logits = outputs['logits']
-            culture_logits = outputs['culture_logits']
+            # ✅ 处理模型输出（可能是字典或张量）
+            if isinstance(outputs, dict):
+                # 如果是字典，提取 logits 和 culture_logits
+                logits = outputs['logits']
+                culture_logits = outputs.get('culture_logits', logits)  # 如果没有 culture_logits，使用 logits
+            else:
+                # 如果是张量，直接使用
+                logits = outputs
+                culture_logits = outputs  # 使用相同的 logits
 
             preds = torch.argmax(logits, dim=-1)
             culture_preds = torch.argmax(culture_logits, dim=-1)
