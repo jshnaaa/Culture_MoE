@@ -268,9 +268,23 @@ def evaluate_model(model, tokenizer, test_dataset, device, batch_size=8, num_cla
 
             # 收集结果（移到 CPU）
             all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy() if isinstance(labels, torch.Tensor) else labels.numpy())
+
+            # ✅ 处理标签（可能是张量、numpy 数组或列表）
+            if isinstance(labels, torch.Tensor):
+                all_labels.extend(labels.cpu().numpy())
+            elif isinstance(labels, np.ndarray):
+                all_labels.extend(labels)
+            else:
+                all_labels.extend(labels)  # 列表
+
             all_culture_preds.extend(culture_preds.cpu().numpy())
-            all_culture_labels.extend(culture_labels.cpu().numpy() if isinstance(culture_labels, torch.Tensor) else culture_labels.numpy())
+
+            if isinstance(culture_labels, torch.Tensor):
+                all_culture_labels.extend(culture_labels.cpu().numpy())
+            elif isinstance(culture_labels, np.ndarray):
+                all_culture_labels.extend(culture_labels)
+            else:
+                all_culture_labels.extend(culture_labels)  # 列表
 
     # 转换为 numpy 数组
     all_preds = np.array(all_preds)
