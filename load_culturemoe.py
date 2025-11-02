@@ -267,24 +267,40 @@ def evaluate_model(model, tokenizer, test_dataset, device, batch_size=8, num_cla
             culture_preds = torch.argmax(culture_logits, dim=-1)
 
             # 收集结果（移到 CPU）
-            all_preds.extend(preds.cpu().numpy())
+            preds_np = preds.cpu().numpy()
+            if preds_np.ndim > 1:
+                preds_np = preds_np.flatten()
+            all_preds.extend(preds_np.tolist())
 
             # ✅ 处理标签（可能是张量、numpy 数组或列表）
             if isinstance(labels, torch.Tensor):
-                all_labels.extend(labels.cpu().numpy())
+                labels_np = labels.cpu().numpy()
             elif isinstance(labels, np.ndarray):
-                all_labels.extend(labels)
+                labels_np = labels
             else:
-                all_labels.extend(labels)  # 列表
+                labels_np = np.array(labels)  # 列表转数组
 
-            all_culture_preds.extend(culture_preds.cpu().numpy())
+            # 确保是一维数组
+            if labels_np.ndim > 1:
+                labels_np = labels_np.flatten()
+            all_labels.extend(labels_np.tolist())
+
+            culture_preds_np = culture_preds.cpu().numpy()
+            if culture_preds_np.ndim > 1:
+                culture_preds_np = culture_preds_np.flatten()
+            all_culture_preds.extend(culture_preds_np.tolist())
 
             if isinstance(culture_labels, torch.Tensor):
-                all_culture_labels.extend(culture_labels.cpu().numpy())
+                culture_labels_np = culture_labels.cpu().numpy()
             elif isinstance(culture_labels, np.ndarray):
-                all_culture_labels.extend(culture_labels)
+                culture_labels_np = culture_labels
             else:
-                all_culture_labels.extend(culture_labels)  # 列表
+                culture_labels_np = np.array(culture_labels)  # 列表转数组
+
+            # 确保是一维数组
+            if culture_labels_np.ndim > 1:
+                culture_labels_np = culture_labels_np.flatten()
+            all_culture_labels.extend(culture_labels_np.tolist())
 
     # 转换为 numpy 数组
     all_preds = np.array(all_preds)
