@@ -144,13 +144,14 @@ def train_culturemoe(args):
 
     # ✅ 根据 GPU 数量选择加载策略
     if num_gpus > 1:
-        # 多卡：不使用 device_map，让 Trainer 处理分布式
+        # 多卡：使用 device_map="auto" 让模型自动分布到多个 GPU
         llama_model = AutoModelForCausalLM.from_pretrained(
             args.merged_model_path,
             torch_dtype=torch.float16,
+            device_map="auto",  # ✅ 关键：使用 device_map 自动分布
             trust_remote_code=True
         )
-        print(f"   Multi-GPU mode: Model will be distributed by Trainer")
+        print(f"   Multi-GPU mode: Model distributed across GPUs using device_map='auto'")
     else:
         # 单卡：使用 device_map="auto"
         llama_model = AutoModelForCausalLM.from_pretrained(
