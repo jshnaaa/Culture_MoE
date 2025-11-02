@@ -144,14 +144,16 @@ def train_culturemoe(args):
 
     # ✅ 根据 GPU 数量选择加载策略
     if num_gpus > 1:
-        # 多卡：使用 device_map="auto" 让模型自动分布到多个 GPU
+        # 多卡：先加载到 CPU，让 Trainer 的 DataParallel 处理分布
         llama_model = AutoModelForCausalLM.from_pretrained(
             args.merged_model_path,
             torch_dtype=torch.float16,
-            device_map="auto",  # ✅ 关键：使用 device_map 自动分布
+            low_cpu_mem_usage=True,  # ✅ 减少 CPU 内存使用
             trust_remote_code=True
         )
-        print(f"   Multi-GPU mode: Model distributed across GPUs using device_map='auto'")
+        # 手动移到 GPU 0，Trainer 会自动用 DataParallel 复制到其他 GPU
+        llama_model = llama_model.to("cuda:0")
+        print(f"   Multi-GPU mode: Model loaded to cuda:0, will be replicated by Trainer")
     else:
         # 单卡：使用 device_map="auto"
         llama_model = AutoModelForCausalLM.from_pretrained(
