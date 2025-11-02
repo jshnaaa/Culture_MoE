@@ -272,50 +272,37 @@ def evaluate_model(model, tokenizer, test_dataset, device, batch_size=8, num_cla
                 preds_np = preds_np.flatten()
             all_preds.extend(preds_np.tolist())
 
-            # ✅ 处理标签（可能是张量、numpy 数组或列表）
-            if isinstance(labels, torch.Tensor):
-                labels_np = labels.cpu().numpy()
-            elif isinstance(labels, np.ndarray):
-                labels_np = labels
-            else:
-                labels_np = np.array(labels)  # 列表转数组
-
-            # 确保是一维数组
-            if labels_np.ndim > 1:
-                labels_np = labels_np.flatten()
-            all_labels.extend(labels_np.tolist())
-
-            culture_preds_np = culture_preds.cpu().numpy()
-            if culture_preds_np.ndim > 1:
-                culture_preds_np = culture_preds_np.flatten()
-            all_culture_preds.extend(culture_preds_np.tolist())
-
-            if isinstance(culture_labels, torch.Tensor):
-                culture_labels_np = culture_labels.cpu().numpy()
-            elif isinstance(culture_labels, np.ndarray):
-                culture_labels_np = culture_labels
-            else:
-                # ✅ 处理嵌套列表：先展平
-                if isinstance(culture_labels, list):
-                    # 检查是否是嵌套列表
-                    if culture_labels and isinstance(culture_labels[0], (list, tuple)):
-                        # 展平嵌套列表
-                        culture_labels_flat = []
-                        for item in culture_labels:
+            # ✅ 统一处理函数：将任何格式转换为一维列表
+            def to_flat_list(data):
+                """将张量/数组/列表转换为一维列表"""
+                if isinstance(data, torch.Tensor):
+                    data = data.cpu().numpy()
+                elif isinstance(data, list):
+                    # 尝试转换为数组
+                    try:
+                        data = np.array(data)
+                    except (ValueError, TypeError):
+                        # 如果失败，手动展平
+                        flat = []
+                        for item in data:
                             if isinstance(item, (list, tuple)):
-                                culture_labels_flat.extend(item)
+                                flat.extend(item)
                             else:
-                                culture_labels_flat.append(item)
-                        culture_labels_np = np.array(culture_labels_flat)
-                    else:
-                        culture_labels_np = np.array(culture_labels)
-                else:
-                    culture_labels_np = np.array(culture_labels)
+                                flat.append(item)
+                        return flat
 
-            # 确保是一维数组
-            if culture_labels_np.ndim > 1:
-                culture_labels_np = culture_labels_np.flatten()
-            all_culture_labels.extend(culture_labels_np.tolist())
+                # 现在 data 应该是 numpy 数组
+                if isinstance(data, np.ndarray):
+                    if data.ndim > 1:
+                        data = data.flatten()
+                    return data.tolist()
+
+                return data
+
+            # 处理所有数据
+            all_labels.extend(to_flat_list(labels))
+            all_culture_preds.extend(to_flat_list(culture_preds))
+            all_culture_labels.extend(to_flat_list(culture_labels))
 
     # 转换为 numpy 数组
     all_preds = np.array(all_preds)
