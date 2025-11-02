@@ -18,7 +18,7 @@ NUM_CLASSES="${2:-2}"       # 默认 2 分类
 # 根据 backbone 和 num_classes 构建路径
 MERGED_LLM_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/${BACKBONE}_merge_${NUM_CLASSES}"
 MOE_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/model_moe_${BACKBONE}_${NUM_CLASSES}"
-TEST_FILE="/root/autodl-fs/wvs_${NUM_CLASSES}_merge"
+TEST_FILE="/root/autodl-fs/wvs_${NUM_CLASSES}_merge.json"
 OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/eval_results/${BACKBONE}_${NUM_CLASSES}class_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"

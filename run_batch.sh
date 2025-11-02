@@ -65,7 +65,7 @@ echo "============================================================" | tee -a $BA
 echo "" | tee -a $BATCH_LOG
 
 TASK3_START=$(date +%s)
-sh run_train_ddp_lora_dual.sh qwen 5 True false 2>&1 | tee -a $BATCH_LOG
+sh run_eval_base_llama.sh qwen 5 True false 2>&1 | tee -a $BATCH_LOG
 TASK3_STATUS=$?
 TASK3_END=$(date +%s)
 TASK3_DURATION=$((TASK3_END - TASK3_START))
