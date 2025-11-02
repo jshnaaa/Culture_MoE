@@ -295,7 +295,22 @@ def evaluate_model(model, tokenizer, test_dataset, device, batch_size=8, num_cla
             elif isinstance(culture_labels, np.ndarray):
                 culture_labels_np = culture_labels
             else:
-                culture_labels_np = np.array(culture_labels)  # 列表转数组
+                # ✅ 处理嵌套列表：先展平
+                if isinstance(culture_labels, list):
+                    # 检查是否是嵌套列表
+                    if culture_labels and isinstance(culture_labels[0], (list, tuple)):
+                        # 展平嵌套列表
+                        culture_labels_flat = []
+                        for item in culture_labels:
+                            if isinstance(item, (list, tuple)):
+                                culture_labels_flat.extend(item)
+                            else:
+                                culture_labels_flat.append(item)
+                        culture_labels_np = np.array(culture_labels_flat)
+                    else:
+                        culture_labels_np = np.array(culture_labels)
+                else:
+                    culture_labels_np = np.array(culture_labels)
 
             # 确保是一维数组
             if culture_labels_np.ndim > 1:
