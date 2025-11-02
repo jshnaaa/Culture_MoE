@@ -6,21 +6,45 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"  # 默认使用 llama，可以通过第一个参数指定 qwen
-NUM_CLASSES="${2:-4}"   # 默认 4 分类，可以通过第二个参数指定其他值（2/3/4/5）
+NUM_CLASSES="${2:-21}"   # 默认 4 分类，可以通过第二个参数指定其他值（2/3/4/5）
 
 # 根据 num_classes 选择数据集
 case $NUM_CLASSES in
-    2)
+    21)
         TEST_FILE="/root/autodl-fs/CulturalBench_Hard_merge.json"
         ;;
-    3)
+    31)
         TEST_FILE="/root/autodl-fs/normad_ed_merge.json"
         ;;
-    4)
+    41)
         TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_4.json"
         ;;
-    5)
+    51)
         TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_5.json"
+        ;;
+    221)
+        TEST_FILE="/root/autodl-fs/wvs_2_merge.json"
+        ;;
+    441)
+        TEST_FILE="/root/autodl-fs/wvs_4_merge.json"
+        ;;
+    22)
+        TEST_FILE="/root/autodl-fs/CulturalBench_Hard_merge_rp.json"
+        ;;
+    32)
+        TEST_FILE="/root/autodl-fs/normad_ed_merge_rp.json"
+        ;;
+    42)
+        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_4_rp.json"
+        ;;
+    52)
+        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_5_rp.json"
+        ;;
+    222)
+        TEST_FILE="/root/autodl-fs/wvs_2_merge_rp.json"
+        ;;
+    442)
+        TEST_FILE="/root/autodl-fs/wvs_4_merge_rp.json"
         ;;
     *)
         echo "❌ Error: Invalid num_classes=$NUM_CLASSES. Must be 2, 3, 4, or 5."

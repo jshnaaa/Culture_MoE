@@ -1,41 +1,52 @@
 #!/usr/bin/env python3
 """
-加载 CultureMoE 模型（从 MoE 权重 + 合并后的 LLM）
+加载 CultureMoE 模型（从 MoE 权重 + 合并后的 LLM）并在测试集上评估
 
 使用方法：
-    python load_culturemoe.py --moe_weights_path /path/to/moe_weights
+    python load_culturemoe.py \
+        --moe_weights_path /path/to/moe_weights \
+        --test_file /path/to/test_data.json \
+        --output_dir /path/to/output
 
 示例：
     python load_culturemoe.py \
-        --moe_weights_path /root/autodl-fs/model/moe_llama_2 \
-        --test_input "Your test input here"
+        --moe_weights_path /root/autodl-tmp/CultureMoE/Culture_Alignment/model_moe_llama_2 \
+        --test_file /root/autodl-fs/wvs_2_merged \
+        --output_dir /root/autodl-tmp/CultureMoE/Culture_Alignment/eval_results
 """
 
 import argparse
 import json
 import os
 import sys
+from datetime import datetime
 
 import torch
+import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
 from src.llamafactory.model.moe_args import ModelArgs
+from src.llamafactory.data.dual_classification_processor import load_and_process_dual_classification_data
+from src.llamafactory.data.dual_classification_collator import DualClassificationDataCollator
 
 
-def load_culturemoe(moe_weights_path: str, device: str = "cuda"):
+def load_culturemoe_model(moe_weights_path: str, device: str = "cuda"):
     """
-    从 MoE 权重加载完整的 CultureMoE 模型
+    加载 CultureMoE 模型
 
     Args:
         moe_weights_path: MoE 权重目录路径
-        device: 设备（cuda 或 cpu）
+        device: 设备
 
     Returns:
-        model: 完整的 CultureMoE 模型
+        model: CultureMoE 模型
         tokenizer: Tokenizer
         config: MoE 配置
     """
@@ -117,132 +128,305 @@ def load_culturemoe(moe_weights_path: str, device: str = "cuda"):
 
     # 5. 加载 MoE 权重
     print("\n5. Loading MoE weights...")
-    moe_weights_file = os.path.join(moe_weights_path, "moe_weights.bin")
-    if not os.path.exists(moe_weights_file):
-        raise FileNotFoundError(f"MoE weights not found: {moe_weights_file}")
+    weights_path = os.path.join(moe_weights_path, "moe_weights.bin")
+    if not os.path.exists(weights_path):
+        raise FileNotFoundError(f"MoE weights not found: {weights_path}")
 
-    moe_state_dict = torch.load(moe_weights_file, map_location="cpu")
+    moe_state_dict = torch.load(weights_path, map_location="cpu")
 
-    # 加载权重（strict=False 允许只加载 MoE 部分）
+    # 加载权重（strict=False 因为我们只加载 MoE 部分）
     missing_keys, unexpected_keys = model.load_state_dict(moe_state_dict, strict=False)
 
-    # 验证：missing_keys 应该都是 llama_model 的键
+    # 验证加载
     llama_missing = [k for k in missing_keys if k.startswith('llama_model.')]
     non_llama_missing = [k for k in missing_keys if not k.startswith('llama_model.')]
 
     if non_llama_missing:
-        print(f"   ⚠️  Warning: Missing non-LLM keys: {non_llama_missing[:5]}...")
+        print(f"   ⚠️  Warning: Missing non-LLM keys: {len(non_llama_missing)}")
+        print(f"      {non_llama_missing[:5]}...")
 
-    print("   ✅ MoE weights loaded")
-    print(f"      Loaded parameters: {len(moe_state_dict):,}")
-    print(f"      Missing LLM keys: {len(llama_missing):,} (expected)")
-    print(f"      Missing MoE keys: {len(non_llama_missing):,} (should be 0)")
-    print(f"      Unexpected keys: {len(unexpected_keys):,} (should be 0)")
+    print(f"   ✅ MoE weights loaded")
+    print(f"      Missing LLM keys: {len(llama_missing)} (expected)")
+    print(f"      Missing MoE keys: {len(non_llama_missing)} (should be 0)")
+    print(f"      Unexpected keys: {len(unexpected_keys)}")
 
     # 6. 设置为评估模式
     model.eval()
 
-    # 7. 打印模型统计
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    print("\n6. Model statistics:")
-    print(f"   Total parameters: {total_params:,}")
-    print(f"   Trainable parameters: {trainable_params:,}")
-    print(f"   Frozen parameters: {total_params - trainable_params:,}")
-
     print("\n" + "="*80)
     print("✅ CultureMoE Model Loaded Successfully!")
+    print("="*80)
+    print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     print("="*80)
     print("")
 
     return model, tokenizer, moe_config
 
 
-def test_model(model, tokenizer, test_input: str, num_classes: int):
+def evaluate_model(model, tokenizer, test_dataset, device, batch_size=8, num_classes=2):
     """
-    测试模型推理
+    在测试集上评估模型
 
     Args:
         model: CultureMoE 模型
         tokenizer: Tokenizer
-        test_input: 测试输入文本
+        test_dataset: 测试数据集
+        device: 设备
+        batch_size: 批次大小
         num_classes: 分类数量
+
+    Returns:
+        dict: 评估结果
     """
     print("\n" + "="*80)
-    print("Testing Model Inference")
+    print("Evaluating Model on Test Set")
     print("="*80)
-    print(f"Input: {test_input}")
+    print(f"Test dataset size: {len(test_dataset)}")
+    print(f"Batch size: {batch_size}")
+    print(f"Device: {device}")
+    print("="*80)
     print("")
 
-    # Tokenize
-    inputs = tokenizer(
-        test_input,
-        return_tensors="pt",
+    # 创建 DataLoader
+    data_collator = DualClassificationDataCollator(
+        tokenizer=tokenizer,
         max_length=512,
-        truncation=True,
         padding=True
     )
 
-    # 移动到模型所在设备
-    device = next(model.parameters()).device
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=data_collator,
+        num_workers=2
+    )
 
-    # 推理
+    # 评估
+    model.eval()
+    all_preds = []
+    all_labels = []
+    all_culture_preds = []
+    all_culture_labels = []
+
+    print("Running evaluation...")
     with torch.no_grad():
-        outputs = model(
-            input_ids=inputs['input_ids'],
-            attention_mask=inputs['attention_mask']
-        )
-        logits = outputs  # CultureMoE 直接返回 logits
+        for batch in tqdm(test_loader, desc="Evaluating"):
+            # 移动到设备
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
+            culture_labels = batch['culture_labels'].to(device)
 
-        # 获取预测
-        probs = torch.softmax(logits, dim=-1)
-        pred_class = torch.argmax(logits, dim=-1).item()
+            # 前向传播
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask
+            )
 
-    print("Results:")
-    print(f"   Predicted class: {pred_class}")
-    print(f"   Probabilities:")
-    for i in range(num_classes):
-        print(f"      Class {i}: {probs[0, i].item():.4f}")
+            # 获取预测
+            logits = outputs['logits']
+            culture_logits = outputs['culture_logits']
 
+            preds = torch.argmax(logits, dim=-1)
+            culture_preds = torch.argmax(culture_logits, dim=-1)
+
+            # 收集结果
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_culture_preds.extend(culture_preds.cpu().numpy())
+            all_culture_labels.extend(culture_labels.cpu().numpy())
+
+    # 转换为 numpy 数组
+    all_preds = np.array(all_preds)
+    all_labels = np.array(all_labels)
+    all_culture_preds = np.array(all_culture_preds)
+    all_culture_labels = np.array(all_culture_labels)
+
+    # 计算指标
+    print("\n" + "="*80)
+    print("Evaluation Results")
     print("="*80)
-    print("")
+
+    # 主任务指标
+    accuracy = accuracy_score(all_labels, all_preds)
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        all_labels, all_preds, average='macro', zero_division=0
+    )
+
+    print("\n📊 Main Task (Classification):")
+    print(f"   Accuracy:  {accuracy:.4f}")
+    print(f"   Precision: {precision:.4f}")
+    print(f"   Recall:    {recall:.4f}")
+    print(f"   F1:        {f1:.4f}")
+
+    # 文化任务指标
+    culture_accuracy = accuracy_score(all_culture_labels, all_culture_preds)
+    culture_precision, culture_recall, culture_f1, _ = precision_recall_fscore_support(
+        all_culture_labels, all_culture_preds, average='macro', zero_division=0
+    )
+
+    print("\n📊 Culture Task:")
+    print(f"   Accuracy:  {culture_accuracy:.4f}")
+    print(f"   Precision: {culture_precision:.4f}")
+    print(f"   Recall:    {culture_recall:.4f}")
+    print(f"   F1:        {culture_f1:.4f}")
+
+    # 详细分类报告
+    print("\n📋 Detailed Classification Report (Main Task):")
+    print(classification_report(all_labels, all_preds, zero_division=0))
+
+    print("\n📋 Detailed Classification Report (Culture Task):")
+    print(classification_report(all_culture_labels, all_culture_preds, zero_division=0))
+
+    # 返回结果
+    results = {
+        "main_task": {
+            "accuracy": float(accuracy),
+            "precision": float(precision),
+            "recall": float(recall),
+            "f1": float(f1),
+            "predictions": all_preds.tolist(),
+            "labels": all_labels.tolist()
+        },
+        "culture_task": {
+            "accuracy": float(culture_accuracy),
+            "precision": float(culture_precision),
+            "recall": float(culture_recall),
+            "f1": float(culture_f1),
+            "predictions": all_culture_preds.tolist(),
+            "labels": all_culture_labels.tolist()
+        },
+        "num_samples": len(all_labels),
+        "num_classes": num_classes
+    }
+
+    return results
 
 
 def main():
-    parser = argparse.ArgumentParser(description="加载 CultureMoE 模型")
+    parser = argparse.ArgumentParser(description="加载 CultureMoE 模型并在测试集上评估")
     parser.add_argument("--moe_weights_path", type=str, required=True,
-                        help="MoE 权重目录路径")
-    parser.add_argument("--test_input", type=str, default=None,
-                        help="测试输入文本（可选）")
-    parser.add_argument("--device", type=str, default="cuda",
-                        choices=["cuda", "cpu"],
+                        help="MoE 权重路径")
+    parser.add_argument("--test_file", type=str, required=True,
+                        help="测试数据文件路径")
+    parser.add_argument("--output_dir", type=str, required=True,
+                        help="评估结果输出目录")
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="设备")
+    parser.add_argument("--batch_size", type=int, default=8,
+                        help="评估批次大小")
+    parser.add_argument("--max_length", type=int, default=512,
+                        help="最大序列长度")
 
     args = parser.parse_args()
 
-    # 加载模型
-    model, tokenizer, moe_config = load_culturemoe(
+    # 创建输出目录
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    print("\n" + "="*80)
+    print("CultureMoE Model Evaluation")
+    print("="*80)
+    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"MoE weights: {args.moe_weights_path}")
+    print(f"Test file: {args.test_file}")
+    print(f"Output directory: {args.output_dir}")
+    print("="*80)
+    print("")
+
+    # 1. 加载模型
+    model, tokenizer, moe_config = load_culturemoe_model(
         moe_weights_path=args.moe_weights_path,
         device=args.device
     )
 
-    # 测试推理（如果提供了测试输入）
-    if args.test_input:
-        test_model(
-            model=model,
-            tokenizer=tokenizer,
-            test_input=args.test_input,
-            num_classes=moe_config['num_classes']
-        )
-    else:
-        print("💡 Tip: Use --test_input to test model inference")
-        print("   Example: python load_culturemoe.py --moe_weights_path /path/to/moe --test_input 'Your text here'")
+    num_classes = moe_config['num_classes']
 
-    return model, tokenizer, moe_config
+    # 2. 加载测试数据
+    print("\n" + "="*80)
+    print("Loading Test Dataset")
+    print("="*80)
+    print(f"Test file: {args.test_file}")
+    print("="*80)
+    print("")
+
+    # 检查测试文件是否存在
+    if not os.path.exists(args.test_file):
+        raise FileNotFoundError(f"Test file not found: {args.test_file}")
+
+    # 加载测试数据（不分割，全部作为测试集）
+    datasets = load_and_process_dual_classification_data(
+        data_path=args.test_file,
+        tokenizer=tokenizer,
+        max_length=args.max_length,
+        val_split=0.0  # 不分割，全部作为测试集
+    )
+    test_dataset = datasets['train']  # val_split=0 时，所有数据在 train 中
+
+    print(f"✅ Test dataset loaded: {len(test_dataset)} samples")
+
+    # 3. 评估模型
+    results = evaluate_model(
+        model=model,
+        tokenizer=tokenizer,
+        test_dataset=test_dataset,
+        device=args.device,
+        batch_size=args.batch_size,
+        num_classes=num_classes
+    )
+
+    # 4. 保存评估结果
+    print("\n" + "="*80)
+    print("Saving Evaluation Results")
+    print("="*80)
+
+    # 保存详细结果
+    results_file = os.path.join(args.output_dir, "evaluation_results.json")
+    with open(results_file, 'w', encoding='utf-8') as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    print(f"✅ Detailed results saved to: {results_file}")
+
+    # 保存摘要
+    summary = {
+        "evaluation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        "moe_weights_path": args.moe_weights_path,
+        "test_file": args.test_file,
+        "num_samples": results['num_samples'],
+        "num_classes": results['num_classes'],
+        "main_task": {
+            "accuracy": results['main_task']['accuracy'],
+            "precision": results['main_task']['precision'],
+            "recall": results['main_task']['recall'],
+            "f1": results['main_task']['f1']
+        },
+        "culture_task": {
+            "accuracy": results['culture_task']['accuracy'],
+            "precision": results['culture_task']['precision'],
+            "recall": results['culture_task']['recall'],
+            "f1": results['culture_task']['f1']
+        }
+    }
+
+    summary_file = os.path.join(args.output_dir, "evaluation_summary.json")
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    print(f"✅ Summary saved to: {summary_file}")
+
+    print("\n" + "="*80)
+    print("✅ Evaluation Completed Successfully!")
+    print("="*80)
+    print(f"Results saved to: {args.output_dir}")
+    print("")
+    print("📊 Summary:")
+    print(f"   Main Task Accuracy:    {results['main_task']['accuracy']:.4f}")
+    print(f"   Main Task F1:          {results['main_task']['f1']:.4f}")
+    print(f"   Culture Task Accuracy: {results['culture_task']['accuracy']:.4f}")
+    print(f"   Culture Task F1:       {results['culture_task']['f1']:.4f}")
+    print("="*80)
+    print("")
 
 
 if __name__ == "__main__":
-    model, tokenizer, config = main()
+    main()
 
