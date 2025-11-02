@@ -1,6 +1,6 @@
 #!/bin/bash
 
-LOG_DIR="/root/autodl-fs/output/batch_base_test_logs"
+LOG_DIR="/root/autodl-fs/output/batch_base_test1_logs"
 mkdir -p $LOG_DIR
 BATCH_LOG="$LOG_DIR/batch_training_${TIMESTAMP}.log"
 
