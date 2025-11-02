@@ -150,7 +150,25 @@ def load_culturemoe_model(moe_weights_path: str, device: str = "cuda"):
     print(f"      Missing MoE keys: {len(non_llama_missing)} (should be 0)")
     print(f"      Unexpected keys: {len(unexpected_keys)}")
 
-    # 6. 设置为评估模式
+    # 6. 将 MoE 层移到与 LLM 相同的设备
+    print("\n6. Moving MoE layers to correct device...")
+    llm_device = next(llama_model.parameters()).device
+
+    # 只移动 MoE 层（不移动 llama_model）
+    if hasattr(model, 'shared'):
+        model.shared = model.shared.to(llm_device)
+    if hasattr(model, 'router'):
+        model.router = model.router.to(llm_device)
+    if hasattr(model, 'experts_layer'):
+        model.experts_layer = model.experts_layer.to(llm_device)
+    if hasattr(model, 'classifier'):
+        model.classifier = model.classifier.to(llm_device)
+    if hasattr(model, 'culture_classifier'):
+        model.culture_classifier = model.culture_classifier.to(llm_device)
+
+    print(f"   ✅ MoE layers moved to {llm_device}")
+
+    # 7. 设置为评估模式
     model.eval()
 
     print("\n" + "="*80)
