@@ -15,6 +15,7 @@ NUM_CLASSES="${2:-2}"     # 默认 2 分类
 USE_CULTURE_LOSS="${3:-True}"  # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"     # 默认 6 个专家
 SAVE_MODEL="${5:-false}"  # 默认不保存模型
+NUM_GPUS="${6:-2}"        # 默认使用 2 个 GPU
 
 # 根据 backbone 选择 合并后的 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -50,6 +51,18 @@ esac
 # 输出目录
 OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/culturemoe_output/culturemoe_${BACKBONE}_${NUM_CLASSES}class_experts${NUM_EXPERTS}_$(date +%Y%m%d_%H%M)"
 
+# 设置 GPU
+if [ "$NUM_GPUS" = "1" ]; then
+    export CUDA_VISIBLE_DEVICES=0
+    GPU_INFO="Single GPU (GPU 0)"
+elif [ "$NUM_GPUS" = "2" ]; then
+    export CUDA_VISIBLE_DEVICES=0,1
+    GPU_INFO="Dual GPUs (GPU 0,1)"
+else
+    export CUDA_VISIBLE_DEVICES=0,1
+    GPU_INFO="Dual GPUs (GPU 0,1)"
+fi
+
 echo "============================================================"
 echo "CultureMoE Training (From Merged Model)"
 echo "============================================================"
@@ -58,6 +71,7 @@ echo "Num classes: $NUM_CLASSES"
 echo "Use culture loss: $USE_CULTURE_LOSS"
 echo "Num experts: $NUM_EXPERTS"
 echo "Save model: $SAVE_MODEL"
+echo "GPUs: $GPU_INFO"
 echo "Dataset: $TRAIN_FILE"
 echo "Output: $OUTPUT_DIR"
 echo "============================================================"
@@ -82,7 +96,7 @@ TRAIN_CMD="python train_culturemoe_from_merged.py \
     --dropout 0.1 \
     --num_heads 8 \
     \
-    --batch_size 2 \
+    --batch_size 4 \
     --eval_batch_size 4 \
     --gradient_accumulation_steps 16 \
     --learning_rate 1e-5 \

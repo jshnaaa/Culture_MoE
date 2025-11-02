@@ -14,8 +14,12 @@ import os
 import sys
 from datetime import datetime
 
-# ✅ 限制只使用一个 GPU（避免 DataParallel 导致的设备不匹配问题）
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# ✅ GPU 配置（可以通过环境变量控制）
+# 如果需要单卡：export CUDA_VISIBLE_DEVICES=0
+# 如果需要双卡：export CUDA_VISIBLE_DEVICES=0,1
+# 默认使用所有可用 GPU
+if "CUDA_VISIBLE_DEVICES" not in os.environ:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"  # 默认使用双卡
 
 import torch
 from transformers import (
@@ -70,16 +74,27 @@ class EpochEvalCallback(TrainerCallback):
 
                 # 如果需要保存模型，保存最佳模型状态
                 if self.save_model and model is not None:
-                    import copy
                     import torch
+
                     # ✅ 先清理显存
                     torch.cuda.empty_cache()
+
+                    # ✅ 获取模型的 state_dict（处理 DataParallel）
+                    if hasattr(model, 'module'):
+                        # DataParallel 或 DistributedDataParallel
+                        state_dict = model.module.state_dict()
+                    else:
+                        state_dict = model.state_dict()
+
                     # ✅ 只保存 MoE 部分的状态（不保存 llama_model）
                     moe_state = {}
-                    for name, param in model.state_dict().items():
+                    for name, param in state_dict.items():
                         if not name.startswith('llama_model.'):
-                            moe_state[name] = copy.deepcopy(param.cpu())  # 移到 CPU
+                            # 移到 CPU 并 detach
+                            moe_state[name] = param.detach().cpu().clone()
+
                     self.best_model_state = moe_state
+
                     # ✅ 再次清理显存
                     torch.cuda.empty_cache()
                     print(f"   💾 Saved best MoE state (in CPU memory, {len(moe_state)} params)")
@@ -122,12 +137,29 @@ def train_culturemoe(args):
 
     # 2. 加载合并后的 LLM（冻结）
     print("\n2. Loading merged LLM (will be frozen)...")
-    llama_model = AutoModelForCausalLM.from_pretrained(
-        args.merged_model_path,
-        torch_dtype=torch.float16,
-        device_map="auto",
-        trust_remote_code=True
-    )
+
+    # ✅ 检测可用 GPU 数量
+    num_gpus = torch.cuda.device_count()
+    print(f"   Available GPUs: {num_gpus}")
+
+    # ✅ 根据 GPU 数量选择加载策略
+    if num_gpus > 1:
+        # 多卡：不使用 device_map，让 Trainer 处理分布式
+        llama_model = AutoModelForCausalLM.from_pretrained(
+            args.merged_model_path,
+            torch_dtype=torch.float16,
+            trust_remote_code=True
+        )
+        print(f"   Multi-GPU mode: Model will be distributed by Trainer")
+    else:
+        # 单卡：使用 device_map="auto"
+        llama_model = AutoModelForCausalLM.from_pretrained(
+            args.merged_model_path,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True
+        )
+        print(f"   Single-GPU mode: Using device_map='auto'")
 
     # 冻结 LLM
     for param in llama_model.parameters():
@@ -311,16 +343,23 @@ def train_culturemoe(args):
             # 创建保存目录
             os.makedirs(model_save_path, exist_ok=True)
 
+            # ✅ 获取模型的 state_dict（处理 DataParallel）
+            if hasattr(model, 'module'):
+                # DataParallel 或 DistributedDataParallel
+                state_dict = model.module.state_dict()
+            else:
+                state_dict = model.state_dict()
+
             # ✅ 只保存 MoE 部分的权重（排除 llama_model）
             moe_state_dict = {}
             total_params = 0
             moe_params = 0
 
-            for name, param in model.state_dict().items():
+            for name, param in state_dict.items():
                 total_params += param.numel()
                 # 只保存非 llama_model 的权重
                 if not name.startswith('llama_model.'):
-                    moe_state_dict[name] = param
+                    moe_state_dict[name] = param.detach().cpu()  # 移到 CPU
                     moe_params += param.numel()
 
             # 保存 MoE 权重
