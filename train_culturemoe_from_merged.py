@@ -326,7 +326,12 @@ def train_culturemoe(args):
             print(f"   Save path: {model_save_path}")
 
             # 加载最佳模型状态（strict=False 允许只加载 MoE 部分）
-            missing_keys, unexpected_keys = model.load_state_dict(epoch_callback.best_model_state, strict=False)
+            # ✅ 处理 DataParallel：需要加载到正确的模型
+            if hasattr(model, 'module'):
+                # 如果是 DataParallel，加载到 module
+                missing_keys, unexpected_keys = model.module.load_state_dict(epoch_callback.best_model_state, strict=False)
+            else:
+                missing_keys, unexpected_keys = model.load_state_dict(epoch_callback.best_model_state, strict=False)
 
             # 验证：missing_keys 应该都是 llama_model 的键
             llama_missing = [k for k in missing_keys if k.startswith('llama_model.')]
