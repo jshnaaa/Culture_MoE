@@ -82,16 +82,16 @@ TRAIN_CMD="python train_culturemoe_from_merged.py \
     --dropout 0.1 \
     --num_heads 8 \
     \
-    --batch_size 4 \
-    --eval_batch_size 8 \
-    --gradient_accumulation_steps 8 \
+    --batch_size 2 \
+    --eval_batch_size 4 \
+    --gradient_accumulation_steps 16 \
     --learning_rate 1e-5 \
     --weight_decay 0.01 \
     --warmup_ratio 0.1 \
     --max_length 512 \
     --val_split 0.1 \
     --logging_steps 10 \
-    --num_workers 4"
+    --num_workers 2"
 
 # 添加 save_model 参数
 if [ "$SAVE_MODEL" = "true" ]; then

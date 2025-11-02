@@ -69,11 +69,22 @@ def merge_lora_weights(
     merged_model = model.merge_and_unload()
     print("   ✅ Weights merged")
 
-    # 5. 保存合并后的模型
+    # 5. 保存合并后的模型（保持 FP16 格式）
     print(f"\n5. Saving merged model to {output_path}...")
     os.makedirs(output_path, exist_ok=True)
-    merged_model.save_pretrained(output_path)
+
+    # ✅ 确保保存为 FP16 格式
+    merged_model.save_pretrained(
+        output_path,
+        safe_serialization=True,  # 使用 safetensors 格式
+        max_shard_size="5GB"      # 分片保存
+    )
     tokenizer.save_pretrained(output_path)
+
+    # 打印保存的模型信息
+    print("   ✅ Merged model saved (FP16 format)")
+    print(f"      Format: safetensors")
+    print(f"      Precision: float16")
     print("   ✅ Merged model saved")
 
     print("\n" + "="*80)

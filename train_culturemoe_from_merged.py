@@ -13,13 +13,11 @@ import json
 import os
 import sys
 from datetime import datetime
-from typing import Dict
 
 # ✅ 限制只使用一个 GPU（避免 DataParallel 导致的设备不匹配问题）
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import torch
-import torch.nn as nn
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -73,8 +71,18 @@ class EpochEvalCallback(TrainerCallback):
                 # 如果需要保存模型，保存最佳模型状态
                 if self.save_model and model is not None:
                     import copy
-                    self.best_model_state = copy.deepcopy(model.state_dict())
-                    print(f"   💾 Saved best model state (in memory)")
+                    import torch
+                    # ✅ 先清理显存
+                    torch.cuda.empty_cache()
+                    # ✅ 只保存 MoE 部分的状态（不保存 llama_model）
+                    moe_state = {}
+                    for name, param in model.state_dict().items():
+                        if not name.startswith('llama_model.'):
+                            moe_state[name] = copy.deepcopy(param.cpu())  # 移到 CPU
+                    self.best_model_state = moe_state
+                    # ✅ 再次清理显存
+                    torch.cuda.empty_cache()
+                    print(f"   💾 Saved best MoE state (in CPU memory, {len(moe_state)} params)")
 
             print(f"\n📊 Epoch {int(state.epoch)} Evaluation Results:")
             print(f"   Accuracy:  {current_accuracy:.4f}")
