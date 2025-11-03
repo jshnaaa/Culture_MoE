@@ -20,7 +20,8 @@
 
 ## 📝 使用示例
 
-### 1. LoRA Only 训练+验证
+### 1. LoRA Only 
+#### 训练+验证
 
 ```bash
 # LLaMA + 2分类 + 保存模型
@@ -30,7 +31,34 @@ sh run_train_lora_only.sh llama 3 true
 sh run_train_lora_only.sh qwen 4 false
 ```
 
-### 2. CultureMoE 训练+验证
+#### 测试
+
+```bash
+# LLaMA + 2分类
+sh run_train_lora_only.sh llama 3 true
+
+# Qwen + 4分类
+sh run_train_lora_only.sh qwen 4 false
+```
+
+#### 生成式的训练+验证
+
+```bash
+# sh run_train_lora_only_gen.sh <BACKBONE>
+
+sh run_train_lora_only_gen.sh llama
+sh run_train_lora_only_gen.sh qwen
+```
+
+#### 生成式的测试
+
+```bash
+# sh run_eval_lora_only_gen.sh <BACKBONE>
+sh run_eval_lora_only_gen.sh llama
+sh run_eval_lora_only_gen.sh qwen
+```
+
+### 2. CultureMoE
 
 #### 端到端训练
 
@@ -56,23 +84,46 @@ sh run_merge_lora.sh llama 2
 # 最后训练MoE
 # 参数：BACKBONE, NUM_CLASSES, USE_CULTURE_LOSS, NUM_EXPERTS, SAVE_MODEL, NUM_GPUS
 sh run_train_culturemoe_from_merged.sh llama 2 True 6 false 1
+```
+
+#### 测试
+
+```bash
+# sh run_load_culturemoe.sh <BACKBONE> <NUM_CLASSES>
+sh run_load_culturemoe.sh llama 2
+sh run_load_culturemoe.sh qwen 4
+```
+#### 生成式
+```bash
 
 ```
 
 ### 3. Base 模型评估
-
 ```bash
+# 最后一个参数指定数据集，最后一个数字为1，前面的数字：2和4表示验证集/22和44表示测试集，选择：21/41/221/441
 # LLaMA + 4分类
-sh run_eval_base_llama.sh llama 4
+sh run_eval_base_llama.sh llama 41
 
 # Qwen + 2分类
-sh run_eval_base_llama.sh qwen 2
+sh run_eval_base_llama.sh qwen 221
 ```
+
+### 4. Role-Play 模型评估
+```bash
+# 最后一个参数指定数据集，最后一个数字为2，前面的数字：2和4表示验证集/22和44表示测试集，选择：22/42/222/442
+# LLaMA + 4分类
+sh run_eval_base_llama.sh llama 42
+
+# Qwen + 2分类
+sh run_eval_base_llama.sh qwen 222
+```
+
 
 ## 🎯 分析实验
 
-### 场景 1：VSM13 文化一致性测试
+### 1：VSM13 文化一致性测试
 
+```bash
 # 使用方法：
    sh run_eval_vsm13.sh <MODEL> <BACKBONE> [NUM_CLASSES]
 
@@ -80,4 +131,20 @@ sh run_eval_base_llama.sh qwen 2
    sh run_eval_vsm13.sh base llama
    sh run_eval_vsm13.sh lora qwen 2
    sh run_eval_vsm13.sh moe llama 4
+```
 
+### 2：消融实验
+```bash
+# 使用方法：
+   
+
+# 示例：
+```
+
+### 3：实验
+```bash
+# 使用方法：
+   
+
+# 示例：
+```

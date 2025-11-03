@@ -13,7 +13,7 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"
-NUM_CLASSES="${2:-1}" # 生成式测试数据
+NUM_CLASSES="${2:-1}" # 生成式数据
 
 # 根据 backbone 选择模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -27,11 +27,11 @@ fi
 # 根据 num_classes 选择数据集
 case $NUM_CLASSES in
     1)
-        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen.json"  # 生成式测试数据
+        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen.json"  # 生成式验证数据
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_cultureLLM_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
     2)
-        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen.json"  # 生成式测试数据
+        TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"  # 生成式测试数据
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_wvs_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
     *)

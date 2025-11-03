@@ -13,6 +13,7 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"      # 默认使用 llama
+NUM_CLASSES="${2:-1}" # 生成式测试数据
 
 # 根据 backbone 选择 base 模型路径和数据路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -25,7 +26,8 @@ else
     DATA_PATH="/root/autodl-fs/wvs_gen_merged"  # 生成式数据集
 fi
 
-OUTPUT_DIR="/root/autodl-fs/output/lora_only_gen_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen.json"  # 生成式验证数据
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/%lora_only_gen_cultureLLM_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "Training LoRA Only Model (Generative Version)"
