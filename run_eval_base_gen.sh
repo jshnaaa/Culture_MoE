@@ -13,6 +13,7 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"
+NUM_CLASSES="${2:-1}" # 生成式测试数据
 
 # 根据 backbone 选择模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -22,8 +23,6 @@ else
     MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
 fi
-
-NUM_CLASSES="${2:-1}" # 生成式测试数据
 
 # 根据 num_classes 选择数据集
 case $NUM_CLASSES in
