@@ -27,11 +27,11 @@ fi
 # 根据 num_classes 选择数据集
 case $NUM_CLASSES in
     1)
-        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen"  # 生成式测试数据
+        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen.json"  # 生成式测试数据
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_cultureLLM_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
     2)
-        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen"  # 生成式测试数据
+        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen.json"  # 生成式测试数据
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_wvs_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
     *)
