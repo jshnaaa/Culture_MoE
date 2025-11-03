@@ -17,7 +17,7 @@ NUM_CLASSES="${2:-2}"       # 默认 2 分类
 
 # 根据 backbone 和 num_classes 构建路径
 MERGED_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/${BACKBONE}_merge_${NUM_CLASSES}"
-TEST_FILE="/root/autodl-fs/wvs_${NUM_CLASSES}_merge.json"
+TEST_FILE="/root/autodl-fs/wvs_${NUM_CLASSES}c_merge.json"
 OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/lora_only_test_results/${BACKBONE}_${NUM_CLASSES}class_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
