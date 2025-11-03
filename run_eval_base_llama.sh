@@ -26,7 +26,7 @@ case $NUM_CLASSES in
         TEST_FILE="/root/autodl-fs/wvs_2_merge.json"
         ;;
     2221)
-        TEST_FILE="/root/autodl-fs/wvs_2_merge_v2.json"
+        TEST_FILE="/root/autodl-fs/wvs_2c_merge.json"
         ;;
     441)
         TEST_FILE="/root/autodl-fs/wvs_4_merge.json"
@@ -47,7 +47,7 @@ case $NUM_CLASSES in
         TEST_FILE="/root/autodl-fs/wvs_2_merge_rp.json"
         ;;
     2222)
-        TEST_FILE="/root/autodl-fs/wvs_2_merge_rp_v2.json"
+        TEST_FILE="/root/autodl-fs/wvs_2c_merge_rp.json"
         ;;
     442)
         TEST_FILE="/root/autodl-fs/wvs_4_merge_rp.json"
