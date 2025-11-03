@@ -23,8 +23,23 @@ else
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
 fi
 
-TEST_FILE="/root/autodl-fs/wvs_gen_merged"  # 生成式测试数据
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_test_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
+NUM_CLASSES="${2:-1}" # 生成式测试数据
+
+# 根据 num_classes 选择数据集
+case $NUM_CLASSES in
+    1)
+        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen"  # 生成式测试数据
+        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_cultureLLM_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        ;;
+    2)
+        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen"  # 生成式测试数据
+        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_wvs_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        ;;
+    *)
+        echo "❌ Error: Invalid num_classes=$NUM_CLASSES. Must be 2, 3, 4, or 5."
+        exit 1
+        ;;
+esac
 
 echo "============================================================"
 echo "Base Model Evaluation (Generative Version)"
