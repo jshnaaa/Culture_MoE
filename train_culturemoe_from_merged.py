@@ -207,11 +207,13 @@ def train_culturemoe(args):
         data_path=args.train_file,
         tokenizer=tokenizer,
         max_length=args.max_length,
-        val_split=args.val_split
+        val_split=args.val_split,
+        use_instruction_mask=args.use_instruction_mask
     )
     train_dataset = datasets['train']
     val_dataset = datasets['validation']
     print(f"   ✅ Train: {len(train_dataset)}, Val: {len(val_dataset)}")
+    print(f"   ✅ Using instruction_mask: {args.use_instruction_mask}")
 
     # 5. Data collator
     data_collator = DualClassificationDataCollator(
@@ -277,7 +279,8 @@ def train_culturemoe(args):
         compute_metrics=compute_metrics_fn,
         callbacks=[epoch_callback],
         use_culture_loss=args.use_culture_loss,
-        lambda_weight=args.culture_loss_lambda
+        lambda_weight=args.culture_loss_lambda,
+        num_experts=args.num_experts  # 传递专家数量
     )
 
     # 10. Train
@@ -469,6 +472,7 @@ def main():
     parser.add_argument("--num_classes", type=int, default=2, help="分类数量")
     parser.add_argument("--use_culture_loss", type=lambda x: x.lower() == 'true', default=True, help="是否使用文化损失")
     parser.add_argument("--culture_loss_lambda", type=float, default=0.5, help="文化损失权重")
+    parser.add_argument("--use_instruction_mask", type=lambda x: x.lower() == 'true', default=True, help="是否使用instruction_mask字段")
 
     # MoE 参数
     parser.add_argument("--num_epochs", type=int, default=5, help="训练轮数")

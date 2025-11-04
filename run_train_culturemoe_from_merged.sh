@@ -16,16 +16,27 @@ USE_CULTURE_LOSS="${3:-True}"  # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"     # 默认 6 个专家
 SAVE_MODEL="${5:-false}"  # 默认不保存模型
 NUM_GPUS="${6:-2}"        # 默认使用 2 个 GPU
+MASK_USE="${7:-true}"     # 默认使用 instruction_mask
+LORA_USE="${8:-true}"     # 默认使用合并后的 LoRA 模型
 
-# 根据 backbone 选择 合并后的 模型路径
+# 根据 LORA_USE 和 backbone 选择模型路径
 if [ "$BACKBONE" = "qwen" ]; then
-#    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
+    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
     MERGED_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/qwen_merge_${NUM_CLASSES}"
 else
-#    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
+    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
     MERGED_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/llama_merge_${NUM_CLASSES}"
+fi
+
+# 根据 LORA_USE 决定使用哪个模型
+if [ "$LORA_USE" = "true" ]; then
+    MODEL_PATH=$MERGED_MODEL_PATH
+    MODEL_TYPE="Merged LoRA"
+else
+    MODEL_PATH=$BASE_MODEL_PATH
+    MODEL_TYPE="Base"
 fi
 
 # 根据 num_classes 选择数据集
@@ -64,13 +75,16 @@ else
 fi
 
 echo "============================================================"
-echo "CultureMoE Training (From Merged Model)"
+echo "CultureMoE Training"
 echo "============================================================"
-echo "Merged model: $MERGED_MODEL_PATH"
+echo "Model type: $MODEL_TYPE"
+echo "Model path: $MODEL_PATH"
 echo "Num classes: $NUM_CLASSES"
 echo "Use culture loss: $USE_CULTURE_LOSS"
 echo "Num experts: $NUM_EXPERTS"
 echo "Save model: $SAVE_MODEL"
+echo "Use instruction_mask: $MASK_USE"
+echo "Use LoRA: $LORA_USE"
 echo "GPUs: $GPU_INFO"
 echo "Dataset: $TRAIN_FILE"
 echo "Output: $OUTPUT_DIR"
@@ -79,12 +93,13 @@ echo ""
 
 # 构建训练命令
 TRAIN_CMD="python train_culturemoe_from_merged.py \
-    --merged_model_path $MERGED_MODEL_PATH \
+    --merged_model_path $MODEL_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
     --num_classes $NUM_CLASSES \
     --use_culture_loss $USE_CULTURE_LOSS \
     --culture_loss_lambda 0.5 \
+    --use_instruction_mask $MASK_USE \
     \
     --num_epochs 10 \
     --num_experts $NUM_EXPERTS \

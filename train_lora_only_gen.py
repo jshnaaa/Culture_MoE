@@ -211,12 +211,44 @@ def main():
         remove_unused_columns=False
     )
 
-    # 数据整理器
-    data_collator = DataCollatorForSeq2Seq(
-        tokenizer=tokenizer,
-        model=model,
-        padding=True
-    )
+    # 数据整理器 - 使用自定义的 collator
+    from transformers import default_data_collator
+
+    def custom_data_collator(features):
+        """自定义数据整理器，正确处理 labels"""
+        import torch
+
+        # 获取最大长度
+        max_length = max(len(f["input_ids"]) for f in features)
+
+        batch = {
+            "input_ids": [],
+            "attention_mask": [],
+            "labels": []
+        }
+
+        for feature in features:
+            input_ids = feature["input_ids"]
+            attention_mask = feature["attention_mask"]
+            labels = feature["labels"]
+
+            # Padding
+            padding_length = max_length - len(input_ids)
+
+            input_ids = input_ids + [tokenizer.pad_token_id] * padding_length
+            attention_mask = attention_mask + [0] * padding_length
+            labels = labels + [-100] * padding_length  # padding 的 labels 也用 -100
+
+            batch["input_ids"].append(input_ids)
+            batch["attention_mask"].append(attention_mask)
+            batch["labels"].append(labels)
+
+        # 转换为 tensor
+        batch = {k: torch.tensor(v) for k, v in batch.items()}
+
+        return batch
+
+    data_collator = custom_data_collator
 
     # 创建 Trainer
     trainer = Trainer(

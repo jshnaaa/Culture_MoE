@@ -82,8 +82,16 @@ sh run_train_ddp_lora_dual.sh llama 3 True true
 sh run_merge_lora.sh llama 2
 
 # 最后训练MoE
-# 参数：BACKBONE, NUM_CLASSES, USE_CULTURE_LOSS, NUM_EXPERTS, SAVE_MODEL, NUM_GPUS
-sh run_train_culturemoe_from_merged.sh llama 2 True 6 false 1
+# 参数：BACKBONE, NUM_CLASSES, USE_CULTURE_LOSS, NUM_EXPERTS, SAVE_MODEL, NUM_GPUS, MASK_USE, LORA_USE
+# MASK_USE: true=使用instruction_mask字段, false=两路都用instruction字段
+# LORA_USE: true=从合并后的LoRA开始训练, false=从Base模型开始训练
+sh run_train_culturemoe_from_merged.sh llama 2 True 6 false 1 true true
+
+# 消融实验：不使用 instruction_mask
+sh run_train_culturemoe_from_merged.sh llama 2 True 6 false 1 false true
+
+# 消融实验：不使用 LoRA（从 Base 模型开始）
+sh run_train_culturemoe_from_merged.sh llama 2 True 6 false 1 true false
 ```
 
 #### 测试
@@ -145,7 +153,7 @@ sh run_eval_base_gen.sh qwen 22
 ### 2：消融实验
 ```bash
 # 使用方法：
-   
+
 
 # 示例：
 ```
