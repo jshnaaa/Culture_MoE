@@ -16,7 +16,7 @@ BACKBONE="${1:-llama}"
 
 # 根据 backbone 构建路径
 MERGED_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/${BACKBONE}_merge_gen"
-TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen.json"  # 生成式验证数据
+TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"  # 生成式验证数据
 OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/%lora_only_gen_wvs_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"

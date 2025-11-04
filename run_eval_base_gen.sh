@@ -4,11 +4,11 @@
 # 评估 Base 模型（生成式版本）
 #
 # 使用方法：
-#   sh run_eval_base_gen.sh <BACKBONE>
+#   sh run_eval_base_gen.sh <BACKBONE> <NUM_CLASSES>
 #
 # 示例：
-#   sh run_eval_base_gen.sh llama
-#   sh run_eval_base_gen.sh qwen
+#   sh run_eval_base_gen.sh llama 11
+#   sh run_eval_base_gen.sh qwen 21
 # ============================================================
 
 # ✅ 配置参数
@@ -27,7 +27,7 @@ fi
 # 根据 num_classes 选择数据集
 case $NUM_CLASSES in
     11)
-        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen.json"  # 生成式验证数据
+        TEST_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"  # 生成式验证数据
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_cultureLLM_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
     21)
@@ -35,12 +35,12 @@ case $NUM_CLASSES in
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_wvs_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
     12)
-        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_rp_gen.json"  # 生成式验证数据
-        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_cultureLLM_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        TEST_FILE="/root/autodl-fs/cultureLLM_merge_rp_gen.json"  # 生成式验证数据
+        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/rp_gen_cultureLLM_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
     22)
         TEST_FILE="/root/autodl-fs/wvs_merge_rp_gen.json"  # 生成式测试数据
-        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_wvs_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/rp_gen_wvs_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
     *)
         echo "❌ Error: Invalid num_classes=$NUM_CLASSES. Must be 11,21,12,22."

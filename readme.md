@@ -98,7 +98,7 @@ sh run_load_culturemoe.sh qwen 4
 
 ```
 
-### 3. Base 模型评估
+### 3. Base 模型评估+测试
 ```bash
 # 最后一个参数指定数据集，最后一个数字为1，前面的数字：2和4表示验证集/22和44表示测试集，选择：21/41/221/441
 # LLaMA + 4分类
@@ -106,9 +106,14 @@ sh run_eval_base_llama.sh llama 41
 
 # Qwen + 2分类
 sh run_eval_base_llama.sh qwen 221
+
+# sh run_eval_base_gen.sh <BACKBONE> <NUM_CLASSES>
+sh run_eval_base_gen.sh llama 11
+sh run_eval_base_gen.sh qwen 21
 ```
 
-### 4. Role-Play 模型评估
+
+### 4. Role-Play 模型评估+测试
 ```bash
 # 最后一个参数指定数据集，最后一个数字为2，前面的数字：2和4表示验证集/22和44表示测试集，选择：22/42/222/442
 # LLaMA + 4分类
@@ -116,6 +121,10 @@ sh run_eval_base_llama.sh llama 42
 
 # Qwen + 2分类
 sh run_eval_base_llama.sh qwen 222
+
+# sh run_eval_base_gen.sh <BACKBONE> <NUM_CLASSES>
+sh run_eval_base_gen.sh llama 12
+sh run_eval_base_gen.sh qwen 22
 ```
 
 

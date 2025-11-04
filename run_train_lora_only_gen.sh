@@ -19,14 +19,12 @@ NUM_CLASSES="${2:-1}" # 生成式测试数据
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
-    DATA_PATH="/root/autodl-fs/wvs_gen_merged"  # 生成式数据集
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    DATA_PATH="/root/autodl-fs/wvs_gen_merged"  # 生成式数据集
 fi
 
-TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_gen.json"  # 生成式验证数据
+DATA_PATH="/root/autodl-fs/cultureLLM_merge_gen.json"  # 生成式验证数据
 OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/%lora_only_gen_cultureLLM_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
