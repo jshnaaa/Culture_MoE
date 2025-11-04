@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def load_and_process_data(data_path: str, tokenizer, max_length: int = 512):
-    """加载并处理生成式数据"""
+    """加载并处理生成式数据（只计算答案部分的损失）"""
     print(f"Loading data from: {data_path}")
 
     with open(data_path, 'r', encoding='utf-8') as f:
@@ -44,38 +44,49 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512):
     print(f"Loaded {len(data)} samples")
 
     def preprocess_function(examples):
-        """预处理函数"""
-        # 构建输入文本
-        inputs = []
-        targets = []
+        """预处理函数 - 只计算答案部分的损失"""
+        model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
 
         for i in range(len(examples['instruction'])):
             instruction = examples['instruction'][i]
             input_text = examples['input'][i]
             output = str(examples['output'][i])  # 确保是字符串
 
-            # 构建完整的输入
-            full_input = f"{instruction}\n{input_text}"
-            inputs.append(full_input)
-            targets.append(output)
+            # 构建 prompt（不包含答案）
+            prompt = f"{instruction}\n{input_text}\nAnswer:"
 
-        # Tokenize inputs
-        model_inputs = tokenizer(
-            inputs,
-            max_length=max_length,
-            truncation=True,
-            padding=False
-        )
+            # 构建完整文本（包含答案）
+            full_text = f"{prompt} {output}"
 
-        # Tokenize targets
-        labels = tokenizer(
-            targets,
-            max_length=32,  # 输出很短，只是一个数字
-            truncation=True,
-            padding=False
-        )
+            # Tokenize prompt（用于确定忽略的位置）
+            prompt_tokens = tokenizer(
+                prompt,
+                add_special_tokens=True,
+                truncation=True,
+                max_length=max_length - 10  # 留空间给答案
+            )
 
-        model_inputs["labels"] = labels["input_ids"]
+            # Tokenize 完整文本
+            full_tokens = tokenizer(
+                full_text,
+                add_special_tokens=True,
+                truncation=True,
+                max_length=max_length
+            )
+
+            # 创建 labels：prompt 部分用 -100（忽略），答案部分正常
+            prompt_len = len(prompt_tokens["input_ids"])
+            labels = [-100] * prompt_len + full_tokens["input_ids"][prompt_len:]
+
+            # 确保 labels 和 input_ids 长度一致
+            if len(labels) < len(full_tokens["input_ids"]):
+                labels.extend(full_tokens["input_ids"][len(labels):])
+            elif len(labels) > len(full_tokens["input_ids"]):
+                labels = labels[:len(full_tokens["input_ids"])]
+
+            model_inputs["input_ids"].append(full_tokens["input_ids"])
+            model_inputs["attention_mask"].append(full_tokens["attention_mask"])
+            model_inputs["labels"].append(labels)
 
         return model_inputs
 
@@ -91,8 +102,10 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512):
         preprocess_function,
         batched=True,
         remove_columns=dataset.column_names,
-        desc="Processing data"
+        desc="Processing data (answer-only loss)"
     )
+
+    print("✅ Using answer-only loss (prompt tokens will be ignored)")
 
     return processed_dataset
 
