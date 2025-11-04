@@ -172,46 +172,67 @@ def load_moe_model(backbone: str, num_classes: int, device: str = "cuda"):
     return model, tokenizer
 
 
-def generate_answer(model, tokenizer, question: str, max_new_tokens: int = 50):
+def generate_answer(model, tokenizer, question: str, max_new_tokens: int = 5):
     """生成答案"""
     device = next(model.parameters()).device
 
+    # 构建更明确的 prompt
+    prompt = f"{question}\n\nPlease answer with ONLY ONE NUMBER (1, 2, 3, 4, or 5). Your answer:"
+
     # Tokenize
     inputs = tokenizer(
-        question,
+        prompt,
         return_tensors="pt",
         truncation=True,
         max_length=512
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    # Generate
+    # Generate - 严格限制生成长度
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=1,
             do_sample=False,  # 使用贪婪解码
             pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id
+            eos_token_id=tokenizer.eos_token_id,
+            temperature=1.0,
+            top_p=1.0,
+            repetition_penalty=1.0
         )
 
     # Decode
-    answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-    # 提取生成的部分（去掉输入的问题）
-    answer = answer[len(question):].strip()
+    # 提取生成的部分（去掉输入的 prompt）
+    answer = full_output[len(prompt):].strip()
 
     return answer
 
 
 def extract_score(answer: str):
     """从答案中提取分数（1-5）"""
-    # 尝试匹配数字
+    # 清理答案，去掉多余的空格和换行
+    answer = answer.strip()
+
+    # 方法1：尝试直接匹配开头的数字
+    match = re.match(r'^\s*([1-5])\s*$', answer)
+    if match:
+        return int(match.group(1))
+
+    # 方法2：尝试匹配第一个出现的 1-5 的数字
     match = re.search(r'\b([1-5])\b', answer)
     if match:
         return int(match.group(1))
 
-    # 如果没有找到，返回 None
+    # 方法3：尝试匹配任何数字（可能没有边界）
+    match = re.search(r'([1-5])', answer)
+    if match:
+        return int(match.group(1))
+
+    # 如果都没有找到，返回 None
+    print(f"⚠️  Warning: Could not extract score from answer: '{answer}'")
     return None
 
 
