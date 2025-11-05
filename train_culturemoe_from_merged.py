@@ -203,11 +203,13 @@ def train_culturemoe(args):
 
     # 4. 加载数据
     print("\n4. Loading dataset...")
+    print(f"   use_instruction_mask={args.use_instruction_mask}")
     datasets = load_and_process_dual_classification_data(
         data_path=args.train_file,
         tokenizer=tokenizer,
         max_length=args.max_length,
-        val_split=args.val_split
+        val_split=args.val_split,
+        use_instruction_mask=args.use_instruction_mask
     )
     train_dataset = datasets['train']
     val_dataset = datasets['validation']
@@ -469,6 +471,7 @@ def main():
     parser.add_argument("--num_classes", type=int, default=2, help="分类数量")
     parser.add_argument("--use_culture_loss", type=lambda x: x.lower() == 'true', default=True, help="是否使用文化损失")
     parser.add_argument("--culture_loss_lambda", type=float, default=0.5, help="文化损失权重")
+    parser.add_argument("--use_instruction_mask", type=lambda x: x.lower() == 'true', default=False, help="是否使用 instruction_mask 字段")
 
     # MoE 参数
     parser.add_argument("--num_epochs", type=int, default=5, help="训练轮数")

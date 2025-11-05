@@ -16,8 +16,8 @@ USE_CULTURE_LOSS="${3:-True}"  # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"     # 默认 6 个专家
 SAVE_MODEL="${5:-false}"  # 默认不保存模型
 NUM_GPUS="${6:-2}"        # 默认使用 2 个 GPU
-MASK_USE="${7:-true}"     # 默认使用 instruction_mask
-LORA_USE="${8:-true}"     # 默认使用合并后的 LoRA 模型
+MASK_USE="${7:-true}"     # 默认使用 instruction_mask（参数7）
+LORA_USE="${8:-true}"     # 默认使用合并后的 LoRA 模型（参数8）
 
 # 根据 LORA_USE 和 backbone 选择模型路径
 if [ "$BACKBONE" = "qwen" ]; then

@@ -15,10 +15,12 @@ class DualClassificationDataProcessor:
         self,
         tokenizer: PreTrainedTokenizer,
         max_length: int = 512,
-        label_map: Optional[Dict[str, int]] = None
+        label_map: Optional[Dict[str, int]] = None,
+        use_instruction_mask: bool = True
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.use_instruction_mask = use_instruction_mask  # 是否使用 instruction_mask 字段
 
         # 标签映射
         self.label_map = label_map or {
@@ -56,10 +58,18 @@ class DualClassificationDataProcessor:
 
             texts_full.append(text)
 
-        # 2. 构建第二组输入文本（instruction_mask + input）
+        # 2. 构建第二组输入文本
+        # 如果 use_instruction_mask=True，使用 instruction_mask 字段
+        # 如果 use_instruction_mask=False，使用 instruction 字段（两路都是 instruction）
         texts_mask = []
         for i in range(batch_size):
-            instruction_mask = examples["instruction_mask"][i]
+            if self.use_instruction_mask and "instruction_mask" in examples:
+                # 使用 instruction_mask 字段
+                instruction_mask = examples["instruction_mask"][i]
+            else:
+                # 使用 instruction 字段（两路都是 instruction）
+                instruction_mask = examples["instruction"][i]
+
             input_text = examples.get("input", [""] * batch_size)[i]
 
             # 拼接 instruction_mask 和 input
@@ -172,7 +182,8 @@ def load_and_process_dual_classification_data(
     tokenizer: PreTrainedTokenizer,
     max_length: int = 512,
     val_split: float = 0.1,
-    num_proc: int = 4
+    num_proc: int = 4,
+    use_instruction_mask: bool = True
 ) -> Dict[str, Dataset]:
     """
     加载并处理双路输入的分类数据集
@@ -252,7 +263,8 @@ def load_and_process_dual_classification_data(
 
     # 3. 处理数据
     print("\nTokenizing dataset...")
-    processor = DualClassificationDataProcessor(tokenizer, max_length)
+    print(f"   use_instruction_mask={use_instruction_mask}")
+    processor = DualClassificationDataProcessor(tokenizer, max_length, use_instruction_mask=use_instruction_mask)
 
     train_dataset = processor.process_dataset(train_dataset, num_proc)
     if val_dataset is not None:

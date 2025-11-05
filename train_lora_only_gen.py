@@ -20,15 +20,14 @@ import sys
 from datetime import datetime
 
 import torch
+from datasets import Dataset
+from peft import LoraConfig, get_peft_model, TaskType
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     TrainingArguments,
-    Trainer,
-    DataCollatorForSeq2Seq
+    Trainer
 )
-from peft import LoraConfig, get_peft_model, TaskType
-from datasets import Dataset
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -167,11 +166,12 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
         torch_dtype=torch.float16,
-        device_map="auto",
         trust_remote_code=True,
-        # 禁用 tensor parallel（需要 torch >= 2.5）
-        attn_implementation="eager"  # 使用标准注意力实现
+        low_cpu_mem_usage=True  # 减少 CPU 内存使用
     )
+    # 移动到 GPU
+    if torch.cuda.is_available():
+        model = model.to("cuda")
     print("✅ Base model loaded\n")
 
     # 配置 LoRA
@@ -217,7 +217,6 @@ def main():
     )
 
     # 数据整理器 - 使用自定义的 collator
-    from transformers import default_data_collator
 
     def custom_data_collator(features):
         """自定义数据整理器，正确处理 labels（支持多卡训练）"""
