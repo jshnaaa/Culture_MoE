@@ -136,6 +136,12 @@ def load_culturemoe_from_components(
 
     moe_state_dict = torch.load(moe_state_dict_path, map_location="cpu")
 
+    # 将 MoE 权重转换为与 LLaMA 模型相同的 dtype (float16)
+    model_dtype = next(merged_model.parameters()).dtype
+    for key in moe_state_dict:
+        if isinstance(moe_state_dict[key], torch.Tensor):
+            moe_state_dict[key] = moe_state_dict[key].to(model_dtype)
+
     # 加载 MoE 部分的权重
     missing_keys, unexpected_keys = culturemoe_model.load_state_dict(moe_state_dict, strict=False)
 
@@ -145,7 +151,7 @@ def load_culturemoe_from_components(
     if unexpected_keys:
         print(f"   ⚠️  Unexpected keys: {len(unexpected_keys)}")
 
-    print("   ✅ MoE weights loaded")
+    print("   ✅ MoE weights loaded and converted to {model_dtype}")
 
     # 7. 移动到设备
     print(f"\n7. Moving model to {device}...")

@@ -13,7 +13,7 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"           # 默认使用 llama
-NUM_CLASSES="${2:-2}"            # 默认 2 分类
+NUM_CLASSES="${2:-4}"            # 默认 2 分类
 
 
 # 根据 backbone 选择 base 模型路径
@@ -30,14 +30,6 @@ LORA_WEIGHTS_PATH="/root/autodl-fs/model/llama_lora_only_${NUM_CLASSES}"
 
 # 根据 num_classes 选择测试数据集
 case $NUM_CLASSES in
-    2)
-        TEST_FILE="/root/autodl-fs/CulturalBench_Hard_merge.json"
-        DATASET_NAME="CulturalBench_Hard"
-        ;;
-    3)
-        TEST_FILE="/root/autodl-fs/normad_ed_merge.json"
-        DATASET_NAME="NormAD_ED"
-        ;;
     4)
         TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_4.json"
         DATASET_NAME="WVS_4class"

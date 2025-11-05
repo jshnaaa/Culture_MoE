@@ -13,22 +13,8 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"           # 默认使用 llama
-NUM_CLASSES="${2:-2}"            # 默认 2 分类
-# LORA_OUTPUT_DIR="${3}"           # LoRA 训练输出目录
+NUM_CLASSES="${2:-4}"            # 默认 2 分类
 MOE_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/culturemoe_output/culturemoe_${BACKBONE}_${NUM_CLASSES}class_experts${NUM_EXPERTS}_20251105_2216)"          # MoE 权重路径
-
-# 检查必需参数
-if [ -z "$LORA_OUTPUT_DIR" ]; then
-    echo "❌ Error: LORA_OUTPUT_DIR is required"
-    echo ""
-    echo "Usage: sh run_eval_culturemoe_from_components.sh <BACKBONE> <NUM_CLASSES> <LORA_DIR> <MOE_DIR>"
-    echo ""
-    echo "Example:"
-    echo "  sh run_eval_culturemoe_from_components.sh llama 2 \\"
-    echo "    /root/autodl-tmp/.../lora_only_output \\"
-    echo "    /root/autodl-tmp/.../model_moe_llama_2"
-    exit 1
-fi
 
 if [ -z "$MOE_WEIGHTS_PATH" ]; then
     echo "❌ Error: MOE_WEIGHTS_PATH is required"
@@ -51,14 +37,6 @@ LORA_WEIGHTS_PATH="/root/autodl-fs/model/llama_lora_only_${NUM_CLASSES}"
 
 # 根据 num_classes 选择测试数据集
 case $NUM_CLASSES in
-    2)
-        TEST_FILE="/root/autodl-fs/CulturalBench_Hard_merge.json"
-        DATASET_NAME="CulturalBench_Hard"
-        ;;
-    3)
-        TEST_FILE="/root/autodl-fs/normad_ed_merge.json"
-        DATASET_NAME="NormAD_ED"
-        ;;
     4)
         TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_4.json"
         DATASET_NAME="WVS_4class"
@@ -96,21 +74,6 @@ echo ""
 # 检查路径
 if [ ! -d "$BASE_MODEL_PATH" ]; then
     echo "❌ Error: Base model not found: $BASE_MODEL_PATH"
-    exit 1
-fi
-
-if [ ! -d "$LORA_WEIGHTS_PATH" ]; then
-    echo "❌ Error: LoRA weights not found: $LORA_WEIGHTS_PATH"
-    echo ""
-    echo "Expected path: ${LORA_OUTPUT_DIR}/best_lora"
-    echo ""
-    echo "Please ensure you have completed:"
-    echo "  sh run_train_lora_only.sh $BACKBONE $NUM_CLASSES true"
-    echo ""
-    echo "The training should create a 'best_lora' directory containing:"
-    echo "  - adapter_config.json"
-    echo "  - adapter_model.safetensors"
-    echo "  - tokenizer files"
     exit 1
 fi
 

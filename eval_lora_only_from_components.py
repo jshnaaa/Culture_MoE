@@ -115,9 +115,17 @@ class ClassificationModel(torch.nn.Module):
         self.llama_model = llama_model
         self.num_classes = num_classes
 
-        # 分类头
+        # 分类头（使用与模型相同的 dtype）
         hidden_size = llama_model.config.hidden_size
         self.classifier = torch.nn.Linear(hidden_size, num_classes)
+
+        # 将分类头转换为与 LLaMA 模型相同的 dtype
+        if hasattr(llama_model, 'dtype'):
+            self.classifier = self.classifier.to(llama_model.dtype)
+        else:
+            # 获取模型的第一个参数的 dtype
+            model_dtype = next(llama_model.parameters()).dtype
+            self.classifier = self.classifier.to(model_dtype)
 
     def forward(self, input_ids, attention_mask):
         # 获取 LLaMA 输出
