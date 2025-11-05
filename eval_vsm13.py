@@ -40,10 +40,22 @@ HOFSTEDE_SCORES = {
 }
 
 
-def load_vsm13_questions(file_path: str = "/root/autodl-fs/vsm13_questions.json"):
-    """加载 VSM13 问题"""
+def load_vsm13_questions(file_path: str = "/root/autodl-fs/vsm13_test.json"):
+    """
+    加载 VSM13 问题
+
+    文件格式：
+    [
+        {"id": "Q01", "Question": "...", "Answer": null},
+        ...
+    ]
+    """
     with open(file_path, 'r', encoding='utf-8') as f:
-        questions = json.load(f)
+        data = json.load(f)
+
+    # 提取问题列表
+    questions = [item['Question'] for item in data]
+
     return questions
 
 
