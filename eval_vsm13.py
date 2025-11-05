@@ -293,7 +293,7 @@ def main():
     else:  # moe
         # MoE 需要加载 merged model + MoE 权重
         merged_model_path = f"/root/autodl-tmp/CultureMoE/Culture_Alignment/{args.backbone}_merge_{args.num_classes}"
-        moe_weights_path = f"/root/autodl-tmp/CultureMoE/Culture_Alignment/culturemoe_{args.backbone}_{args.num_classes}"
+        moe_weights_path = f"/root/autodl-tmp/CultureMoE/Culture_Alignment/model_moe_{args.backbone}_{args.num_classes}"
         model_path = merged_model_path  # 先用这个加载 LLM
         model_name = f"{args.model}_{args.backbone}_{args.num_classes}"
         use_moe = True
