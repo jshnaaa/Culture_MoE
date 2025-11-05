@@ -60,7 +60,7 @@ case $NUM_CLASSES in
 esac
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/culturemoe_output/culturemoe_${BACKBONE}_${NUM_CLASSES}class_experts${NUM_EXPERTS}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/culturemoe_output/culturemoe_${BACKBONE}_${NUM_CLASSES}class_experts${NUM_EXPERTS}_USE_CULTURE_LOSS${USE_CULTURE_LOSS}_MASK_USE${MASK_USE}_LORA_USE${LORA_USE}_$(date +%Y%m%d_%H%M)"
 
 # 设置 GPU
 if [ "$NUM_GPUS" = "1" ]; then
