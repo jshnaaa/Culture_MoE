@@ -208,14 +208,17 @@ def main():
         save_total_limit=3,
         fp16=True,
         report_to="none",
-        remove_unused_columns=False
+        remove_unused_columns=False,
+        # 多卡训练配置
+        ddp_find_unused_parameters=False,  # 加速训练
+        dataloader_pin_memory=True,        # 加速数据加载
     )
 
     # 数据整理器 - 使用自定义的 collator
     from transformers import default_data_collator
 
     def custom_data_collator(features):
-        """自定义数据整理器，正确处理 labels"""
+        """自定义数据整理器，正确处理 labels（支持多卡训练）"""
         import torch
 
         # 获取最大长度
@@ -243,8 +246,8 @@ def main():
             batch["attention_mask"].append(attention_mask)
             batch["labels"].append(labels)
 
-        # 转换为 tensor
-        batch = {k: torch.tensor(v) for k, v in batch.items()}
+        # 转换为 tensor（不指定设备，让 Trainer 自动处理）
+        batch = {k: torch.tensor(v, dtype=torch.long) for k, v in batch.items()}
 
         return batch
 

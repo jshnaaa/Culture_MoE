@@ -13,7 +13,6 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"      # 默认使用 llama
-NUM_CLASSES="${2:-1}" # 生成式测试数据
 
 # 根据 backbone 选择 base 模型路径和数据路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -25,7 +24,7 @@ else
 fi
 
 DATA_PATH="/root/autodl-fs/cultureLLM_merge_gen.json"  # 生成式验证数据
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/%lora_only_gen_cultureLLM_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "Training LoRA Only Model (Generative Version)"
@@ -48,20 +47,52 @@ if [ ! -f "$DATA_PATH" ]; then
     exit 1
 fi
 
-# 运行训练脚本
-python train_lora_only_gen.py \
-    --model_name_or_path $BASE_MODEL_PATH \
-    --data_path $DATA_PATH \
-    --output_dir $OUTPUT_DIR \
-    --lora_rank 8 \
-    --lora_alpha 16 \
-    --lora_dropout 0.05 \
-    --learning_rate 1e-4 \
-    --num_train_epochs 3 \
-    --per_device_train_batch_size 4 \
-    --gradient_accumulation_steps 4 \
-    --max_length 512 \
-    --save_steps 500
+# 检测可用 GPU 数量
+NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
+echo "Detected $NUM_GPUS GPUs"
+echo ""
+
+# 运行训练脚本（支持多卡）
+if [ $NUM_GPUS -gt 1 ]; then
+    echo "Using multi-GPU training with $NUM_GPUS GPUs"
+    echo ""
+
+    # 使用 torchrun 进行多卡训练
+    torchrun \
+        --nproc_per_node=$NUM_GPUS \
+        --master_port=29500 \
+        train_lora_only_gen.py \
+        --model_name_or_path $BASE_MODEL_PATH \
+        --data_path $DATA_PATH \
+        --output_dir $OUTPUT_DIR \
+        --lora_rank 8 \
+        --lora_alpha 16 \
+        --lora_dropout 0.05 \
+        --learning_rate 1e-4 \
+        --num_train_epochs 3 \
+        --per_device_train_batch_size 4 \
+        --gradient_accumulation_steps 4 \
+        --max_length 512 \
+        --save_steps 500
+else
+    echo "Using single-GPU training"
+    echo ""
+
+    # 单卡训练
+    python train_lora_only_gen.py \
+        --model_name_or_path $BASE_MODEL_PATH \
+        --data_path $DATA_PATH \
+        --output_dir $OUTPUT_DIR \
+        --lora_rank 8 \
+        --lora_alpha 16 \
+        --lora_dropout 0.05 \
+        --learning_rate 1e-4 \
+        --num_train_epochs 3 \
+        --per_device_train_batch_size 4 \
+        --gradient_accumulation_steps 4 \
+        --max_length 512 \
+        --save_steps 500
+fi
 
 if [ $? -eq 0 ]; then
     echo ""
