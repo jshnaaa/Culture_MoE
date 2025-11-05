@@ -14,18 +14,7 @@
 # ✅ 配置参数
 BACKBONE="${1:-llama}"           # 默认使用 llama
 NUM_CLASSES="${2:-2}"            # 默认 2 分类
-# LORA_OUTPUT_DIR="${3}"           # LoRA 训练输出目录
 
-# 检查必需参数
-if [ -z "$LORA_OUTPUT_DIR" ]; then
-    echo "❌ Error: LORA_OUTPUT_DIR is required"
-    echo ""
-    echo "Usage: sh run_eval_lora_only_from_components.sh <BACKBONE> <NUM_CLASSES> <LORA_DIR>"
-    echo ""
-    echo "Example:"
-    echo "  sh run_eval_lora_only_from_components.sh llama 2 /root/autodl-tmp/.../lora_only_output"
-    exit 1
-fi
 
 # 根据 backbone 选择 base 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -85,21 +74,6 @@ echo ""
 # 检查路径
 if [ ! -d "$BASE_MODEL_PATH" ]; then
     echo "❌ Error: Base model not found: $BASE_MODEL_PATH"
-    exit 1
-fi
-
-if [ ! -d "$LORA_WEIGHTS_PATH" ]; then
-    echo "❌ Error: LoRA weights not found: $LORA_WEIGHTS_PATH"
-    echo ""
-    echo "Expected path: ${LORA_OUTPUT_DIR}/best_lora"
-    echo ""
-    echo "Please ensure you have completed:"
-    echo "  sh run_train_lora_only.sh $BACKBONE $NUM_CLASSES true"
-    echo ""
-    echo "The training should create a 'best_lora' directory containing:"
-    echo "  - adapter_config.json"
-    echo "  - adapter_model.safetensors"
-    echo "  - tokenizer files"
     exit 1
 fi
 
