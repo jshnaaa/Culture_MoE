@@ -275,14 +275,29 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # 确定设备
+    if args.device.startswith("cuda"):
+        device = args.device if ":" in args.device else "cuda:0"
+        device_map = "auto"
+        torch_dtype = torch.float16
+    else:
+        device = "cpu"
+        device_map = None
+        torch_dtype = torch.float32
+
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.float16 if args.device.startswith("cuda") else torch.float32,
-        device_map=args.device,
+        torch_dtype=torch_dtype,
+        device_map=device_map,
         trust_remote_code=True
     )
+
+    # 如果没有使用 device_map，手动移动到设备
+    if device_map is None:
+        model = model.to(device)
+
     model.eval()
-    print("✅ Model loaded\n")
+    print(f"✅ Model loaded on {device}\n")
 
     # 加载问题
     questions = load_vsm13_questions()
