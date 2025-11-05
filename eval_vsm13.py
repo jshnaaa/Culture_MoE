@@ -330,8 +330,7 @@ def main():
     if use_moe:
         # 加载 CultureMoE 模型（LLM + MoE）
         print(f"Loading CultureMoE model...")
-        print(f"  LLM (merged): {model_path}")
-        print(f"  MoE weights: {moe_weights_path}")
+        print(f"  MoE weights path: {moe_weights_path}")
 
         # 导入 CultureMoE 相关模块
         import sys
@@ -339,73 +338,102 @@ def main():
         from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
         from src.llamafactory.model.moe_args import ModelArgs
 
-        # 1. 加载 LLM
+        # 1. 加载 MoE 配置
+        moe_config_path = os.path.join(moe_weights_path, "moe_config.json")
+        if not os.path.exists(moe_config_path):
+            raise FileNotFoundError(f"MoE config not found: {moe_config_path}")
+
+        with open(moe_config_path, 'r') as f:
+            moe_config = json.load(f)
+
+        print(f"  ✅ MoE config loaded")
+        print(f"     Num experts: {moe_config['num_experts']}")
+        print(f"     Num classes: {moe_config['num_classes']}")
+
+        # 2. 从配置中获取 merged LLM 路径
+        merged_llm_path = moe_config.get('merged_llm_path', model_path)
+        print(f"  LLM (merged): {merged_llm_path}")
+
+        if not os.path.exists(merged_llm_path):
+            raise FileNotFoundError(f"Merged LLM not found: {merged_llm_path}")
+
+        # 3. 加载 LLM
         llama_model = AutoModelForCausalLM.from_pretrained(
-            model_path,
+            merged_llm_path,
             torch_dtype=torch_dtype,
             device_map=device_map,
             trust_remote_code=True
         )
 
-        # 2. 创建 MoE 模型结构
-        # 需要从保存的配置中读取 MoE 参数
-        moe_config_path = os.path.join(moe_weights_path, "moe_config.json")
-        if os.path.exists(moe_config_path):
-            with open(moe_config_path, 'r') as f:
-                moe_config = json.load(f)
+        # 冻结 LLM
+        for param in llama_model.parameters():
+            param.requires_grad = False
 
-            moe_args = ModelArgs(
-                num_experts=moe_config.get('num_experts', 6),
-                shared_hidden_dim=moe_config.get('shared_hidden_dim', 2048),
-                router_hidden_dim=moe_config.get('router_hidden_dim', 1024),
-                experts_hidden_dim=moe_config.get('experts_hidden_dim', 2048),
-                lora_rank=moe_config.get('lora_rank', 16),
-                num_classes=args.num_classes,
-                classification_hidden_dim=moe_config.get('classification_hidden_dim', 512),
-                dropout=moe_config.get('dropout', 0.1),
-                num_heads=moe_config.get('num_heads', 8)
-            )
-        else:
-            # 使用默认配置
-            print("⚠️  Warning: moe_config.json not found, using default config")
-            moe_args = ModelArgs(
-                num_experts=6,
-                shared_hidden_dim=2048,
-                router_hidden_dim=1024,
-                experts_hidden_dim=2048,
-                lora_rank=16,
-                num_classes=args.num_classes,
-                classification_hidden_dim=512,
-                dropout=0.1,
-                num_heads=8
-            )
+        print(f"  ✅ Merged LLM loaded and frozen")
 
-        # 3. 创建 CultureMoE 模型
+        # 4. 创建 MoE 模型结构
+        moe_args = ModelArgs(
+            num_experts=moe_config['num_experts'],
+            shared_hidden_dim=moe_config['shared_hidden_dim'],
+            router_hidden_dim=moe_config['router_hidden_dim'],
+            experts_hidden_dim=moe_config['experts_hidden_dim'],
+            lora_rank=moe_config['moe_lora_rank'],
+            num_classes=moe_config['num_classes'],
+            classification_hidden_dim=moe_config['classification_hidden_dim'],
+            dropout=moe_config['dropout'],
+            num_heads=moe_config['num_heads']
+        )
+
         model = LlamaSharedRouterExpertsModel(
             llama_model=llama_model,
             config=llama_model.config,
             args=moe_args
         )
 
-        # 4. 加载 MoE 权重
-        moe_weights_file = os.path.join(moe_weights_path, "moe_weights.pt")
-        if os.path.exists(moe_weights_file):
-            print(f"  Loading MoE weights from: {moe_weights_file}")
-            moe_state_dict = torch.load(moe_weights_file, map_location='cpu')
-            model.load_state_dict(moe_state_dict, strict=False)
-            print("  ✅ MoE weights loaded")
-        else:
+        print(f"  ✅ CultureMoE architecture created")
+
+        # 5. 加载 MoE 权重（注意：是 .bin 文件，不是 .pt）
+        moe_weights_file = os.path.join(moe_weights_path, "moe_weights.bin")
+        if not os.path.exists(moe_weights_file):
             print(f"  ❌ Error: MoE weights not found: {moe_weights_file}")
             print(f"  Available files in {moe_weights_path}:")
             if os.path.exists(moe_weights_path):
                 print(f"    {os.listdir(moe_weights_path)}")
             raise FileNotFoundError(f"MoE weights not found: {moe_weights_file}")
 
-        # 5. 移动到设备
-        if device_map is None:
-            model = model.to(device)
+        print(f"  Loading MoE weights from: {moe_weights_file}")
+        moe_state_dict = torch.load(moe_weights_file, map_location='cpu')
 
-        print(f"✅ CultureMoE model loaded on {device}")
+        # 加载权重（strict=False 因为我们只加载 MoE 部分）
+        missing_keys, unexpected_keys = model.load_state_dict(moe_state_dict, strict=False)
+
+        # 验证加载
+        llama_missing = [k for k in missing_keys if k.startswith('llama_model.')]
+        non_llama_missing = [k for k in missing_keys if not k.startswith('llama_model.')]
+
+        if non_llama_missing:
+            print(f"  ⚠️  Warning: Missing non-LLM keys: {len(non_llama_missing)}")
+
+        print(f"  ✅ MoE weights loaded")
+        print(f"     Missing LLM keys: {len(llama_missing)} (expected)")
+        print(f"     Missing MoE keys: {len(non_llama_missing)} (should be 0)")
+
+        # 6. 将 MoE 层移到与 LLM 相同的设备
+        llm_device = next(llama_model.parameters()).device
+
+        # 只移动 MoE 层（不移动 llama_model）
+        if hasattr(model, 'shared'):
+            model.shared = model.shared.to(llm_device)
+        if hasattr(model, 'router'):
+            model.router = model.router.to(llm_device)
+        if hasattr(model, 'experts_layer'):
+            model.experts_layer = model.experts_layer.to(llm_device)
+        if hasattr(model, 'classifier'):
+            model.classifier = model.classifier.to(llm_device)
+        if hasattr(model, 'culture_classifier'):
+            model.culture_classifier = model.culture_classifier.to(llm_device)
+
+        print(f"✅ CultureMoE model loaded on {llm_device}")
     else:
         # 加载普通模型（base 或 lora）
         model = AutoModelForCausalLM.from_pretrained(
