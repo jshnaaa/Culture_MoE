@@ -285,13 +285,18 @@ def main():
         else:
             model_path = "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
         model_name = f"{args.model}_{args.backbone}"
+        use_moe = False
     elif args.model == "lora":
         model_path = f"/root/autodl-tmp/CultureMoE/Culture_Alignment/{args.backbone}_merge_{args.num_classes}"
         model_name = f"{args.model}_{args.backbone}_{args.num_classes}"
+        use_moe = False
     else:  # moe
-        # MoE 需要特殊处理，这里先用 merged model
-        model_path = f"/root/autodl-tmp/CultureMoE/Culture_Alignment/{args.backbone}_merge_{args.num_classes}"
+        # MoE 需要加载 merged model + MoE 权重
+        merged_model_path = f"/root/autodl-tmp/CultureMoE/Culture_Alignment/{args.backbone}_merge_{args.num_classes}"
+        moe_weights_path = f"/root/autodl-tmp/CultureMoE/Culture_Alignment/culturemoe_{args.backbone}_{args.num_classes}"
+        model_path = merged_model_path  # 先用这个加载 LLM
         model_name = f"{args.model}_{args.backbone}_{args.num_classes}"
+        use_moe = True
 
     # 输出目录
     output_dir = f"/root/autodl-fs/vsm13_output/{model_name}"
@@ -322,19 +327,102 @@ def main():
         device_map = None
         torch_dtype = torch.float32
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch_dtype,
-        device_map=device_map,
-        trust_remote_code=True
-    )
+    if use_moe:
+        # 加载 CultureMoE 模型（LLM + MoE）
+        print(f"Loading CultureMoE model...")
+        print(f"  LLM (merged): {model_path}")
+        print(f"  MoE weights: {moe_weights_path}")
 
-    # 如果没有使用 device_map，手动移动到设备
-    if device_map is None:
-        model = model.to(device)
+        # 导入 CultureMoE 相关模块
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
+        from src.llamafactory.model.moe_args import ModelArgs
+
+        # 1. 加载 LLM
+        llama_model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch_dtype,
+            device_map=device_map,
+            trust_remote_code=True
+        )
+
+        # 2. 创建 MoE 模型结构
+        # 需要从保存的配置中读取 MoE 参数
+        moe_config_path = os.path.join(moe_weights_path, "moe_config.json")
+        if os.path.exists(moe_config_path):
+            with open(moe_config_path, 'r') as f:
+                moe_config = json.load(f)
+
+            moe_args = ModelArgs(
+                num_experts=moe_config.get('num_experts', 6),
+                shared_hidden_dim=moe_config.get('shared_hidden_dim', 2048),
+                router_hidden_dim=moe_config.get('router_hidden_dim', 1024),
+                experts_hidden_dim=moe_config.get('experts_hidden_dim', 2048),
+                lora_rank=moe_config.get('lora_rank', 16),
+                num_classes=args.num_classes,
+                classification_hidden_dim=moe_config.get('classification_hidden_dim', 512),
+                dropout=moe_config.get('dropout', 0.1),
+                num_heads=moe_config.get('num_heads', 8)
+            )
+        else:
+            # 使用默认配置
+            print("⚠️  Warning: moe_config.json not found, using default config")
+            moe_args = ModelArgs(
+                num_experts=6,
+                shared_hidden_dim=2048,
+                router_hidden_dim=1024,
+                experts_hidden_dim=2048,
+                lora_rank=16,
+                num_classes=args.num_classes,
+                classification_hidden_dim=512,
+                dropout=0.1,
+                num_heads=8
+            )
+
+        # 3. 创建 CultureMoE 模型
+        model = LlamaSharedRouterExpertsModel(
+            llama_model=llama_model,
+            config=llama_model.config,
+            args=moe_args
+        )
+
+        # 4. 加载 MoE 权重
+        moe_weights_file = os.path.join(moe_weights_path, "moe_weights.pt")
+        if os.path.exists(moe_weights_file):
+            print(f"  Loading MoE weights from: {moe_weights_file}")
+            moe_state_dict = torch.load(moe_weights_file, map_location='cpu')
+            model.load_state_dict(moe_state_dict, strict=False)
+            print("  ✅ MoE weights loaded")
+        else:
+            print(f"  ❌ Error: MoE weights not found: {moe_weights_file}")
+            print(f"  Available files in {moe_weights_path}:")
+            if os.path.exists(moe_weights_path):
+                print(f"    {os.listdir(moe_weights_path)}")
+            raise FileNotFoundError(f"MoE weights not found: {moe_weights_file}")
+
+        # 5. 移动到设备
+        if device_map is None:
+            model = model.to(device)
+
+        print(f"✅ CultureMoE model loaded on {device}")
+    else:
+        # 加载普通模型（base 或 lora）
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch_dtype,
+            device_map=device_map,
+            trust_remote_code=True
+        )
+
+        # 如果没有使用 device_map，手动移动到设备
+        if device_map is None:
+            model = model.to(device)
+
+        print(f"✅ Model loaded on {device}")
 
     model.eval()
-    print(f"✅ Model loaded on {device}\n")
+    print("")
 
     # 加载问题
     questions = load_vsm13_questions()
