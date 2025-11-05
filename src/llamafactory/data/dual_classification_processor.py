@@ -15,12 +15,10 @@ class DualClassificationDataProcessor:
         self,
         tokenizer: PreTrainedTokenizer,
         max_length: int = 512,
-        label_map: Optional[Dict[str, int]] = None,
-        use_instruction_mask: bool = True
+        label_map: Optional[Dict[str, int]] = None
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.use_instruction_mask = use_instruction_mask
 
         # 标签映射
         self.label_map = label_map or {
@@ -58,18 +56,13 @@ class DualClassificationDataProcessor:
 
             texts_full.append(text)
 
-        # 2. 构建第二组输入文本（instruction_mask + input 或 instruction + input）
+        # 2. 构建第二组输入文本（instruction_mask + input）
         texts_mask = []
         for i in range(batch_size):
-            # 如果 use_instruction_mask=False，使用 instruction 而不是 instruction_mask
-            if self.use_instruction_mask:
-                instruction_mask = examples["instruction_mask"][i]
-            else:
-                instruction_mask = examples["instruction"][i]
-
+            instruction_mask = examples["instruction_mask"][i]
             input_text = examples.get("input", [""] * batch_size)[i]
 
-            # 拼接 instruction_mask/instruction 和 input
+            # 拼接 instruction_mask 和 input
             if input_text and input_text.strip():
                 text = f"{instruction_mask}\n{input_text}"
             else:
@@ -179,8 +172,7 @@ def load_and_process_dual_classification_data(
     tokenizer: PreTrainedTokenizer,
     max_length: int = 512,
     val_split: float = 0.1,
-    num_proc: int = 4,
-    use_instruction_mask: bool = True
+    num_proc: int = 4
 ) -> Dict[str, Dataset]:
     """
     加载并处理双路输入的分类数据集
@@ -191,7 +183,6 @@ def load_and_process_dual_classification_data(
         max_length: 最大序列长度
         val_split: 验证集比例
         num_proc: 并行处理进程数
-        use_instruction_mask: 是否使用 instruction_mask 字段（False 则两路都用 instruction）
 
     Returns:
         包含 train 和 validation 的数据集字典
@@ -261,11 +252,7 @@ def load_and_process_dual_classification_data(
 
     # 3. 处理数据
     print("\nTokenizing dataset...")
-    processor = DualClassificationDataProcessor(
-        tokenizer,
-        max_length,
-        use_instruction_mask=use_instruction_mask
-    )
+    processor = DualClassificationDataProcessor(tokenizer, max_length)
 
     train_dataset = processor.process_dataset(train_dataset, num_proc)
     if val_dataset is not None:
