@@ -3,12 +3,14 @@
 VSM13 文化一致性测试 - 使用正确的公式
 
 正确的 VSM13 计算公式：
-- PDI = 35(μQ7 − μQ2) + 25(μQ20 − μQ23) + 3
-- IDV = 35(μQ4 − μQ1) + 35(μQ9 − μQ6) + 3
-- MAS = 35(μQ5 − μQ3) + 25(μQ8 − μQ10) + 3
-- UAI = 40(μQ18 − μQ15) + 25(μQ21 − μQ24) + 3
-- LTO = 40(μQ13 − μQ14) + 25(μQ19 − μQ22) + 3
-- IVR = 35(μQ12 − μQ11) + 40(μQ17 − μQ16) + 3
+- PDI = 35(μQ7 − μQ2) + 25(μQ20 − μQ23) + 50
+- IDV = 35(μQ4 − μQ1) + 35(μQ9 − μQ6) + 50
+- MAS = 35(μQ5 − μQ3) + 25(μQ8 − μQ10) + 50
+- UAI = 40(μQ18 − μQ15) + 25(μQ21 − μQ24) + 50
+- LTO = 40(μQ13 − μQ14) + 25(μQ19 − μQ22) + 50
+- IVR = 35(μQ12 − μQ11) + 40(μQ17 − μQ16) + 50
+
+常量设为 50 确保分数在合理范围内（通常 0-100）
 """
 
 import argparse
@@ -33,6 +35,8 @@ HOFSTEDE_SCORES = {
     "Germany": [35, 79, 66, 65, 57, 40],
     "Portugal": [63, 59, 31, 99, 42, 33],
     "Spain": [57, 67, 42, 86, 47, 44],
+    "England": [35, 76, 66, 35, 60, 69],
+    "Greece": [60, 59, 57, 100, 51, 50],
 }
 
 # 国家名到形容词的映射
@@ -45,6 +49,8 @@ COUNTRY_TO_ADJECTIVE = {
     "Germany": "German",
     "Portugal": "Portuguese",
     "Spain": "Spanish",
+    "England": "English",
+    "Greece": "Greek",
 }
 
 
@@ -142,13 +148,15 @@ def calculate_vsm_scores(answers: list):
     """
     根据 VSM13 问卷的答案计算 6 个文化维度分数
 
-    正确的公式：
-    - PDI = 35(μQ7 − μQ2) + 25(μQ20 − μQ23) + 3
-    - IDV = 35(μQ4 − μQ1) + 35(μQ9 − μQ6) + 3
-    - MAS = 35(μQ5 − μQ3) + 25(μQ8 − μQ10) + 3
-    - UAI = 40(μQ18 − μQ15) + 25(μQ21 − μQ24) + 3
-    - LTO = 40(μQ13 − μQ14) + 25(μQ19 − μQ22) + 3
-    - IVR = 35(μQ12 − μQ11) + 40(μQ17 − μQ16) + 3
+    正确的公式（常量 = 50）：
+    - PDI = 35(μQ7 − μQ2) + 25(μQ20 − μQ23) + 50
+    - IDV = 35(μQ4 − μQ1) + 35(μQ9 − μQ6) + 50
+    - MAS = 35(μQ5 − μQ3) + 25(μQ8 − μQ10) + 50
+    - UAI = 40(μQ18 − μQ15) + 25(μQ21 − μQ24) + 50
+    - LTO = 40(μQ13 − μQ14) + 25(μQ19 − μQ22) + 50
+    - IVR = 35(μQ12 − μQ11) + 40(μQ17 − μQ16) + 50
+
+    常量设为 50 确保分数在合理范围内（0-100）
 
     Args:
         answers: 24 个答案的列表
@@ -175,16 +183,22 @@ def calculate_vsm_scores(answers: list):
         print(f"\n⚠️  Warning: {failed_count}/{len(answers)} answers failed to extract, using default value 3")
         print(f"   This may cause inaccurate results!")
 
-    # 常量
-    C = 3
+    # 常量（根据 Hofstede VSM13 官方文档）
+    # 这些常量确保分数在合理范围内（通常 0-100）
+    C_PDI = 50
+    C_IDV = 50
+    C_MAS = 50
+    C_UAI = 50
+    C_LTO = 50
+    C_IVR = 50
 
     # 计算 6 个维度（注意：Python 索引从 0 开始，Q1 = scores[0]）
-    pdi = 35 * (scores[6] - scores[1]) + 25 * (scores[19] - scores[22]) + C
-    idv = 35 * (scores[3] - scores[0]) + 35 * (scores[8] - scores[5]) + C
-    mas = 35 * (scores[4] - scores[2]) + 25 * (scores[7] - scores[9]) + C
-    uai = 40 * (scores[17] - scores[14]) + 25 * (scores[20] - scores[23]) + C
-    lto = 40 * (scores[12] - scores[13]) + 25 * (scores[18] - scores[21]) + C
-    ivr = 35 * (scores[11] - scores[10]) + 40 * (scores[16] - scores[15]) + C
+    pdi = 35 * (scores[6] - scores[1]) + 25 * (scores[19] - scores[22]) + C_PDI
+    idv = 35 * (scores[3] - scores[0]) + 35 * (scores[8] - scores[5]) + C_IDV
+    mas = 35 * (scores[4] - scores[2]) + 25 * (scores[7] - scores[9]) + C_MAS
+    uai = 40 * (scores[17] - scores[14]) + 25 * (scores[20] - scores[23]) + C_UAI
+    lto = 40 * (scores[12] - scores[13]) + 25 * (scores[18] - scores[21]) + C_LTO
+    ivr = 35 * (scores[11] - scores[10]) + 40 * (scores[16] - scores[15]) + C_IVR
 
     return [pdi, idv, mas, uai, lto, ivr]
 
