@@ -13,7 +13,7 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"
-NUM_CLASSES="${2:-11}" # 生成式数据
+DATASET_ID="${2:-11}"  # 数据集标识符（不是实际的分类数量）
 
 # 根据 backbone 选择模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -24,8 +24,8 @@ else
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
 fi
 
-# 根据 num_classes 选择数据集
-case $NUM_CLASSES in
+# 根据数据集标识符选择数据集
+case $DATASET_ID in
     11)
         TEST_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"  # 生成式验证数据
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/base_gen_cultureLLM_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
@@ -43,7 +43,7 @@ case $NUM_CLASSES in
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/rp_gen_wvs_results/${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
     *)
-        echo "❌ Error: Invalid num_classes=$NUM_CLASSES. Must be 11,21,12,22."
+        echo "❌ Error: Invalid dataset_id=$DATASET_ID. Must be 11,21,12,22."
         exit 1
         ;;
 esac
@@ -69,12 +69,11 @@ if [ ! -f "$TEST_FILE" ]; then
     exit 1
 fi
 
-# 运行评估脚本
+# 运行评估脚本（num_classes 将从数据文件中自动推断）
 python eval_base_gen.py \
     --model_path $MODEL_PATH \
     --test_file $TEST_FILE \
     --output_dir $OUTPUT_DIR \
-    --num_classes $NUM_CLASSES \
     --device cuda
 
 if [ $? -eq 0 ]; then

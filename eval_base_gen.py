@@ -280,8 +280,8 @@ def main():
                         help="测试数据文件路径")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="评估结果输出目录")
-    parser.add_argument("--num_classes", type=int, default=5,
-                        help="类别数量")
+    parser.add_argument("--num_classes", type=int, default=None,
+                        help="类别数量（如果不指定，将从数据中自动推断）")
     parser.add_argument("--device", type=str, default="cuda",
                         help="设备")
     parser.add_argument("--save_answers", action="store_true", default=True,
@@ -309,7 +309,21 @@ def main():
     print(f"Loading test data from: {args.test_file}")
     with open(args.test_file, 'r', encoding='utf-8') as f:
         test_data = json.load(f)
-    print(f"✅ Loaded {len(test_data)} test samples\n")
+    print(f"✅ Loaded {len(test_data)} test samples")
+
+    # 从数据中自动推断 num_classes
+    unique_labels = set(int(item['output']) for item in test_data)
+    inferred_num_classes = max(unique_labels) + 1  # 假设标签从 0 开始
+
+    # 如果用户指定了 num_classes，使用用户指定的；否则使用推断的
+    if args.num_classes is None:
+        args.num_classes = inferred_num_classes
+        print(f"✅ Auto-inferred num_classes: {args.num_classes}")
+    else:
+        print(f"✅ Using specified num_classes: {args.num_classes}")
+
+    print(f"   Unique labels in data: {sorted(unique_labels)}")
+    print("")
 
     # 评估模型
     results = evaluate_model(
