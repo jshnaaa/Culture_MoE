@@ -26,14 +26,66 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     TrainingArguments,
-    Trainer
+    Trainer,
+    TrainerCallback
 )
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def load_and_process_data(data_path: str, tokenizer, max_length: int = 512):
+class EpochEvalCallback(TrainerCallback):
+    """每个 epoch 结束后保存评估结果，并保存最佳 LoRA 权重"""
+
+    def __init__(self, output_dir):
+        self.output_dir = output_dir
+        self.epoch_results = []
+        self.best_eval_loss = float('inf')
+        self.best_epoch = 0
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        """Epoch 结束时保存结果和最佳 LoRA 权重"""
+        # 获取当前 epoch 的评估指标
+        if state.log_history:
+            # 找到最近的评估结果
+            for log in reversed(state.log_history):
+                if 'eval_loss' in log:
+                    current_eval_loss = log.get('eval_loss', float('inf'))
+                    epoch_result = {
+                        'epoch': int(state.epoch),
+                        'eval_loss': current_eval_loss,
+                        'train_loss': log.get('loss', None),
+                    }
+                    self.epoch_results.append(epoch_result)
+
+                    # 保存到文件
+                    results_file = os.path.join(self.output_dir, "epoch_eval_results.json")
+                    with open(results_file, 'w', encoding='utf-8') as f:
+                        json.dump(self.epoch_results, f, indent=2, ensure_ascii=False)
+
+                    print(f"\n📊 Epoch {int(state.epoch)} Results:")
+                    print(f"   Train Loss: {epoch_result['train_loss']:.4f}" if epoch_result['train_loss'] else "   Train Loss: N/A")
+                    print(f"   Eval Loss:  {current_eval_loss:.4f}")
+
+                    # 如果是最佳模型，保存 LoRA 权重
+                    if current_eval_loss < self.best_eval_loss:
+                        self.best_eval_loss = current_eval_loss
+                        self.best_epoch = int(state.epoch)
+
+                        # 只保存 LoRA 权重
+                        best_lora_dir = os.path.join(self.output_dir, "best_lora")
+                        os.makedirs(best_lora_dir, exist_ok=True)
+
+                        if model is not None:
+                            model.save_pretrained(best_lora_dir)
+                            print(f"   🏆 New best model! Eval Loss: {current_eval_loss:.4f}")
+                            print(f"   ✅ Best LoRA weights saved to: {best_lora_dir}")
+
+                    print(f"   Best so far: Epoch {self.best_epoch}, Eval Loss: {self.best_eval_loss:.4f}\n")
+                    break
+
+
+def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_split: float = 0.1):
     """加载并处理生成式数据（只计算答案部分的损失）"""
     print(f"Loading data from: {data_path}")
 
@@ -41,6 +93,17 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512):
         data = json.load(f)
 
     print(f"Loaded {len(data)} samples")
+
+    # 划分训练集和验证集
+    if val_split > 0:
+        split_idx = int(len(data) * (1 - val_split))
+        train_data = data[:split_idx]
+        val_data = data[split_idx:]
+        print(f"Split: Train={len(train_data)}, Val={len(val_data)} (val_split={val_split})")
+    else:
+        train_data = data
+        val_data = []
+        print(f"No validation split")
 
     def preprocess_function(examples):
         """预处理函数 - 只计算答案部分的损失"""
@@ -90,23 +153,40 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512):
         return model_inputs
 
     # 转换为 Dataset
-    dataset = Dataset.from_dict({
-        'instruction': [item['instruction'] for item in data],
-        'input': [item['input'] for item in data],
-        'output': [item['output'] for item in data]
+    train_dataset = Dataset.from_dict({
+        'instruction': [item['instruction'] for item in train_data],
+        'input': [item['input'] for item in train_data],
+        'output': [item['output'] for item in train_data]
     })
 
-    # 预处理
-    processed_dataset = dataset.map(
+    # 预处理训练集
+    train_dataset = train_dataset.map(
         preprocess_function,
         batched=True,
-        remove_columns=dataset.column_names,
-        desc="Processing data (answer-only loss)"
+        remove_columns=train_dataset.column_names,
+        desc="Processing train data (answer-only loss)"
     )
+
+    # 处理验证集
+    if val_data:
+        val_dataset = Dataset.from_dict({
+            'instruction': [item['instruction'] for item in val_data],
+            'input': [item['input'] for item in val_data],
+            'output': [item['output'] for item in val_data]
+        })
+
+        val_dataset = val_dataset.map(
+            preprocess_function,
+            batched=True,
+            remove_columns=val_dataset.column_names,
+            desc="Processing val data (answer-only loss)"
+        )
+    else:
+        val_dataset = None
 
     print("✅ Using answer-only loss (prompt tokens will be ignored)")
 
-    return processed_dataset
+    return {'train': train_dataset, 'val': val_dataset}
 
 
 def main():
@@ -191,23 +271,29 @@ def main():
 
     # 加载数据
     print("Loading and processing data...")
-    train_dataset = load_and_process_data(
+    datasets = load_and_process_data(
         args.data_path,
         tokenizer,
-        args.max_length
+        args.max_length,
+        val_split=0.1  # 9:1 划分
     )
-    print(f"✅ Processed {len(train_dataset)} training samples\n")
+    train_dataset = datasets['train']
+    val_dataset = datasets['val']
+    print(f"✅ Train: {len(train_dataset)}, Val: {len(val_dataset) if val_dataset else 0} samples\n")
 
     # 配置训练参数
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_train_batch_size,  # 评估批次大小
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         logging_steps=10,
-        save_steps=args.save_steps,
-        save_total_limit=3,
+        # 评估策略
+        eval_strategy="epoch",  # 每个 epoch 评估一次
+        save_strategy="no",  # 不自动保存 checkpoint（由 Callback 手动保存最佳 LoRA）
+        load_best_model_at_end=False,  # 不需要自动加载（Callback 已保存最佳）
         fp16=True,
         report_to="none",
         remove_unused_columns=False,
@@ -254,12 +340,17 @@ def main():
 
     data_collator = custom_data_collator
 
+    # 创建 Callback
+    epoch_callback = EpochEvalCallback(args.output_dir)
+
     # 创建 Trainer
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        data_collator=data_collator
+        eval_dataset=val_dataset,  # 添加验证集
+        data_collator=data_collator,
+        callbacks=[epoch_callback]  # 添加 callback
     )
 
     # 训练
@@ -270,17 +361,18 @@ def main():
 
     trainer.train()
 
-    # 保存模型
+    # 保存最佳 LoRA 权重和配置
     print("\n" + "="*80)
-    print("Saving model...")
+    print("Saving best LoRA weights...")
     print("="*80)
 
-    trainer.save_model(args.output_dir)
-    tokenizer.save_pretrained(args.output_dir)
+    best_lora_dir = os.path.join(args.output_dir, "best_lora")
 
-    print(f"✅ Model saved to: {args.output_dir}")
+    # 保存 tokenizer 到 best_lora 目录
+    tokenizer.save_pretrained(best_lora_dir)
+    print(f"✅ Tokenizer saved to: {best_lora_dir}")
 
-    # 保存训练配置
+    # 保存训练配置和最佳结果
     config = {
         "model_type": "LoRA_Only_Generative",
         "base_model": args.model_name_or_path,
@@ -289,6 +381,8 @@ def main():
         "lora_dropout": args.lora_dropout,
         "learning_rate": args.learning_rate,
         "num_train_epochs": args.num_train_epochs,
+        "best_epoch": epoch_callback.best_epoch,
+        "best_eval_loss": epoch_callback.best_eval_loss,
         "training_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
 
@@ -297,10 +391,21 @@ def main():
         json.dump(config, f, indent=2, ensure_ascii=False)
 
     print(f"✅ Config saved to: {config_file}")
+    print(f"\n📊 Training Summary:")
+    print(f"   Best Epoch: {epoch_callback.best_epoch}")
+    print(f"   Best Eval Loss: {epoch_callback.best_eval_loss:.4f}")
+    print(f"   Best LoRA weights: {best_lora_dir}")
 
     print("\n" + "="*80)
     print("✅ Training completed successfully!")
     print("="*80)
+    print(f"\n💡 Next steps:")
+    print(f"   1. Merge LoRA with base model:")
+    print(f"      python merge_lora.py \\")
+    print(f"        --base_model {args.model_name_or_path} \\")
+    print(f"        --lora_weights {best_lora_dir} \\")
+    print(f"        --output_dir /path/to/merged_model")
+    print(f"\n   2. Or use LoRA directly for inference")
     print("")
 
 
