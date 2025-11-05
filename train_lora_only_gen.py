@@ -168,7 +168,9 @@ def main():
         args.model_name_or_path,
         torch_dtype=torch.float16,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        # 禁用 tensor parallel（需要 torch >= 2.5）
+        attn_implementation="eager"  # 使用标准注意力实现
     )
     print("✅ Base model loaded\n")
 
