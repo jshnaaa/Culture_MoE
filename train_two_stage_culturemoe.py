@@ -326,8 +326,7 @@ def stage2_train_moe(args, merged_model_path: str, stage1_metrics: Dict):
         compute_metrics=compute_metrics_fn,
         callbacks=[epoch_callback],
         use_culture_loss=args.use_culture_loss,
-        lambda_weight=args.culture_loss_lambda,
-        num_experts=args.num_experts  # 传递专家数量
+        lambda_weight=args.culture_loss_lambda
     )
 
     # 10. Train

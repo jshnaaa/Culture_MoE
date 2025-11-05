@@ -13,26 +13,24 @@ class ClassificationTrainer(Trainer):
     支持文化专注性损失
     """
 
-    def __init__(self, *args, use_culture_loss: bool = True, lambda_weight: float = 0.1, num_experts: int = 6, **kwargs):
+    def __init__(self, *args, use_culture_loss: bool = True, lambda_weight: float = 0.1, **kwargs):
         """
         初始化 Trainer
 
         Args:
             use_culture_loss: 是否使用文化专注性损失
             lambda_weight: 文化损失权重 λ
-            num_experts: MoE 专家数量
         """
         super().__init__(*args, **kwargs)
 
         self.use_culture_loss = use_culture_loss
         self.lambda_weight = lambda_weight
-        self.num_experts = num_experts
 
         # 创建文化专注性损失模块
         if self.use_culture_loss:
             self.culture_loss_module = CultureSpecializationLoss(
                 num_cultures=6,
-                num_experts=num_experts,  # 使用传入的专家数量
+                num_experts=6,
                 lambda_weight=lambda_weight
             )
             # 将模块移到正确的设备
