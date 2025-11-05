@@ -363,8 +363,8 @@ def main():
                         help="输出文件路径")
     parser.add_argument("--device", type=str, default="cuda:0",
                         help="设备")
-    parser.add_argument("--num_classes", type=int, default=2,
-                        help="分类数量（2, 3, 4, ...）")
+    parser.add_argument("--num_classes", type=int, default=None,
+                        help="分类数量（如果不指定，将从数据中自动推断）")
     parser.add_argument("--backbone", type=str, default="llama", choices=["llama", "qwen"],
                         help="基座模型类型：llama 或 qwen")
 
@@ -376,6 +376,18 @@ def main():
 
     if args.device.startswith("cuda"):
         print(f"Using GPU: {torch.cuda.get_device_name(0)}\n")
+
+    # 从数据中自动推断 num_classes（如果未指定）
+    if args.num_classes is None:
+        print("Auto-inferring num_classes from data...")
+        with open(args.test_file, 'r', encoding='utf-8') as f:
+            test_data = json.load(f)
+        unique_labels = set(int(item['output']) for item in test_data)
+        args.num_classes = max(unique_labels) + 1
+        print(f"✅ Auto-inferred num_classes: {args.num_classes}")
+        print(f"   Unique labels in data: {sorted(unique_labels)}\n")
+    else:
+        print(f"✅ Using specified num_classes: {args.num_classes}\n")
 
     metrics = evaluate_base_llama(
         model_path=args.model_path,

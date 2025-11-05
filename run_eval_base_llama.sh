@@ -6,10 +6,10 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"  # 默认使用 llama，可以通过第一个参数指定 qwen
-NUM_CLASSES="${2:-21}"   # 默认 4 分类，可以通过第二个参数指定其他值（2/3/4/5）
+DATASET_ID="${2:-21}"   # 数据集标识符（不是实际的分类数量）
 
-# 根据 num_classes 选择数据集
-case $NUM_CLASSES in
+# 根据数据集标识符选择数据集
+case $DATASET_ID in
     21)
         TEST_FILE="/root/autodl-fs/CulturalBench_Hard_merge.json"
         ;;
@@ -53,7 +53,7 @@ case $NUM_CLASSES in
         TEST_FILE="/root/autodl-fs/wvs_4_merge_rp.json"
         ;;
     *)
-        echo "❌ Error: Invalid num_classes=$NUM_CLASSES. Must be 2, 3, 4, or 5."
+        echo "❌ Error: Invalid dataset_id=$DATASET_ID."
         exit 1
         ;;
 esac
@@ -61,26 +61,26 @@ esac
 # 根据 backbone 选择模型路径
 if [ "$BACKBONE" = "qwen" ]; then
     MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-    OUTPUT_FILE="/root/autodl-fs/output/base_qwen/eval_results_base_qwen_${NUM_CLASSES}class_$(date +%Y%m%d_%H%M).json"
+    OUTPUT_FILE="/root/autodl-fs/output/base_qwen/eval_results_base_qwen_${DATASET_ID}_$(date +%Y%m%d_%H%M).json"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
 else
     MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-    OUTPUT_FILE="/root/autodl-fs/output/base_llama/eval_results_base_llama_${NUM_CLASSES}class_$(date +%Y%m%d_%H%M).json"
+    OUTPUT_FILE="/root/autodl-fs/output/base_llama/eval_results_base_llama_${DATASET_ID}_$(date +%Y%m%d_%H%M).json"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
 fi
 
 echo "============================================================"
-echo "Evaluating Base $MODEL_NAME Model (${NUM_CLASSES}-class)"
+echo "Evaluating Base $MODEL_NAME Model"
 echo "============================================================"
 echo "Backbone: $BACKBONE"
-echo "Num classes: $NUM_CLASSES"
+echo "Dataset ID: $DATASET_ID"
 echo "Model: $MODEL_PATH"
 echo "Test file: $TEST_FILE"
 echo "Output: $OUTPUT_FILE"
 echo "============================================================"
 echo ""
 
-# ✅ 运行评估
+# ✅ 运行评估（num_classes 将从数据中自动推断）
 python eval_base_llama.py \
     --model_path $MODEL_PATH \
     --test_file $TEST_FILE \
@@ -88,8 +88,7 @@ python eval_base_llama.py \
     --max_length 512 \
     --output_file $OUTPUT_FILE \
     --device cuda:0 \
-    --backbone $BACKBONE \
-    --num_classes $NUM_CLASSES
+    --backbone $BACKBONE
 
 if [ $? -eq 0 ]; then
     echo ""
