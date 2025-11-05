@@ -74,6 +74,7 @@ python eval_base_gen.py \
     --model_path $MODEL_PATH \
     --test_file $TEST_FILE \
     --output_dir $OUTPUT_DIR \
+    --num_classes $NUM_CLASSES \
     --device cuda
 
 if [ $? -eq 0 ]; then
