@@ -19,6 +19,7 @@ import os
 import sys
 from datetime import datetime
 
+import numpy as np
 import torch
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, TaskType
@@ -32,6 +33,42 @@ from transformers import (
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def compute_metrics(eval_preds):
+    """
+    计算评估指标（准确率、困惑度等）
+
+    对于生成式任务，我们计算：
+    - Perplexity (困惑度)
+    - Accuracy (token-level 准确率)
+    """
+    predictions, labels = eval_preds
+
+    # predictions 是 logits，shape: (batch_size, seq_len, vocab_size)
+    # labels 是真实标签，shape: (batch_size, seq_len)
+
+    # 将 logits 转换为预测的 token IDs
+    if isinstance(predictions, tuple):
+        predictions = predictions[0]
+
+    # 获取预测的 token IDs
+    pred_ids = np.argmax(predictions, axis=-1)
+
+    # 只计算非 -100 位置的准确率（即答案部分）
+    mask = labels != -100
+
+    # Token-level 准确率
+    correct = (pred_ids == labels) & mask
+    accuracy = correct.sum() / mask.sum() if mask.sum() > 0 else 0.0
+
+    # 计算困惑度（基于 loss）
+    # 注意：这里我们使用 cross entropy 来计算 perplexity
+    # 但 Trainer 会自动计算 loss，所以这里只返回 accuracy
+
+    return {
+        "accuracy": float(accuracy),
+    }
 
 
 class EpochEvalCallback(TrainerCallback):
@@ -51,9 +88,12 @@ class EpochEvalCallback(TrainerCallback):
             for log in reversed(state.log_history):
                 if 'eval_loss' in log:
                     current_eval_loss = log.get('eval_loss', float('inf'))
+                    eval_accuracy = log.get('eval_accuracy', None)
+
                     epoch_result = {
                         'epoch': int(state.epoch),
                         'eval_loss': current_eval_loss,
+                        'eval_accuracy': eval_accuracy,
                         'train_loss': log.get('loss', None),
                     }
                     self.epoch_results.append(epoch_result)
@@ -66,6 +106,8 @@ class EpochEvalCallback(TrainerCallback):
                     print(f"\n📊 Epoch {int(state.epoch)} Results:")
                     print(f"   Train Loss: {epoch_result['train_loss']:.4f}" if epoch_result['train_loss'] else "   Train Loss: N/A")
                     print(f"   Eval Loss:  {current_eval_loss:.4f}")
+                    if eval_accuracy is not None:
+                        print(f"   Eval Accuracy: {eval_accuracy:.4f}")
 
                     # 如果是最佳模型，保存 LoRA 权重
                     if current_eval_loss < self.best_eval_loss:
@@ -294,6 +336,9 @@ def main():
         eval_strategy="epoch",  # 每个 epoch 评估一次
         save_strategy="no",  # 不自动保存 checkpoint（由 Callback 手动保存最佳 LoRA）
         load_best_model_at_end=False,  # 不需要自动加载（Callback 已保存最佳）
+        # 评估配置
+        include_inputs_for_metrics=False,  # 不需要输入用于计算指标
+        prediction_loss_only=False,  # 需要返回 logits 用于计算准确率
         fp16=True,
         report_to="none",
         remove_unused_columns=False,
@@ -350,6 +395,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=val_dataset,  # 添加验证集
         data_collator=data_collator,
+        compute_metrics=compute_metrics,  # 添加评估指标计算
         callbacks=[epoch_callback]  # 添加 callback
     )
 
