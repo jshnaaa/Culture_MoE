@@ -52,19 +52,27 @@ def compute_metrics(eval_preds):
     if isinstance(predictions, tuple):
         predictions = predictions[0]
 
-    # 获取预测的 token IDs
-    pred_ids = np.argmax(predictions, axis=-1)
+    # 为了节省内存，分批处理
+    batch_size = 1000  # 每次处理 1000 个样本
+    total_correct = 0
+    total_tokens = 0
 
-    # 只计算非 -100 位置的准确率（即答案部分）
-    mask = labels != -100
+    for i in range(0, len(predictions), batch_size):
+        batch_preds = predictions[i:i+batch_size]
+        batch_labels = labels[i:i+batch_size]
 
-    # Token-level 准确率
-    correct = (pred_ids == labels) & mask
-    accuracy = correct.sum() / mask.sum() if mask.sum() > 0 else 0.0
+        # 获取预测的 token IDs
+        pred_ids = np.argmax(batch_preds, axis=-1)
 
-    # 计算困惑度（基于 loss）
-    # 注意：这里我们使用 cross entropy 来计算 perplexity
-    # 但 Trainer 会自动计算 loss，所以这里只返回 accuracy
+        # 只计算非 -100 位置的准确率（即答案部分）
+        mask = batch_labels != -100
+
+        # Token-level 准确率
+        correct = (pred_ids == batch_labels) & mask
+        total_correct += correct.sum()
+        total_tokens += mask.sum()
+
+    accuracy = total_correct / total_tokens if total_tokens > 0 else 0.0
 
     return {
         "accuracy": float(accuracy),
@@ -328,7 +336,7 @@ def main():
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=args.per_device_train_batch_size,  # 评估批次大小
+        per_device_eval_batch_size=2,  # 评估批次大小（减小以节省内存）
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         logging_steps=10,
@@ -339,6 +347,7 @@ def main():
         # 评估配置
         include_inputs_for_metrics=False,  # 不需要输入用于计算指标
         prediction_loss_only=False,  # 需要返回 logits 用于计算准确率
+        eval_accumulation_steps=1,  # 每步清理一次内存
         fp16=True,
         report_to="none",
         remove_unused_columns=False,
@@ -389,13 +398,14 @@ def main():
     epoch_callback = EpochEvalCallback(args.output_dir)
 
     # 创建 Trainer
+    # 注意：如果评估太慢，可以暂时注释掉 compute_metrics
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,  # 添加验证集
         data_collator=data_collator,
-        compute_metrics=compute_metrics,  # 添加评估指标计算
+        compute_metrics=compute_metrics,  # 添加评估指标计算（如果太慢可以注释掉）
         callbacks=[epoch_callback]  # 添加 callback
     )
 
