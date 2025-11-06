@@ -225,7 +225,18 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
             output = str(examples['output'][i])  # 确保是字符串
 
             # 构建 prompt（不包含答案）
-            prompt = f"{instruction}\n{input_text}\nAnswer:"
+            # 注意：如果 input_text 已经包含了提示语（如 "Your answer is:"），则不需要额外添加
+            if output_type == "text":
+                # 文本类型：检查 input 是否已包含提示语
+                if "your answer is:" in input_text.lower() or "answer one of" in input_text.lower():
+                    # input 已包含提示语，直接使用
+                    prompt = f"{instruction}\n{input_text}"
+                else:
+                    # input 不包含提示语，添加标准提示
+                    prompt = f"{instruction}\n{input_text}\nAnswer one of 'yes', 'no', or 'neutral'. Your answer is:"
+            else:
+                # 数字类型
+                prompt = f"{instruction}\n{input_text}\nAnswer:"
 
             # 构建完整文本（包含答案）
             full_text = f"{prompt} {output}"
