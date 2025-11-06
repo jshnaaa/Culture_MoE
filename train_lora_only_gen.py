@@ -336,7 +336,7 @@ def main():
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=2,  # 评估批次大小（减小以节省内存）
+        per_device_eval_batch_size=args.per_device_train_batch_size,  # 评估批次大小
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         logging_steps=10,
@@ -344,10 +344,8 @@ def main():
         eval_strategy="epoch",  # 每个 epoch 评估一次
         save_strategy="no",  # 不自动保存 checkpoint（由 Callback 手动保存最佳 LoRA）
         load_best_model_at_end=False,  # 不需要自动加载（Callback 已保存最佳）
-        # 评估配置
-        include_inputs_for_metrics=False,  # 不需要输入用于计算指标
-        prediction_loss_only=False,  # 需要返回 logits 用于计算准确率
-        eval_accumulation_steps=1,  # 每步清理一次内存
+        # 评估配置 - 只计算 loss，不计算 accuracy（加快评估速度）
+        prediction_loss_only=True,  # 只计算 loss，不返回 logits（大幅加速）
         fp16=True,
         report_to="none",
         remove_unused_columns=False,
@@ -398,14 +396,14 @@ def main():
     epoch_callback = EpochEvalCallback(args.output_dir)
 
     # 创建 Trainer
-    # 注意：如果评估太慢，可以暂时注释掉 compute_metrics
+    # 注意：由于设置了 prediction_loss_only=True，不使用 compute_metrics（加快评估速度）
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,  # 添加验证集
         data_collator=data_collator,
-        compute_metrics=compute_metrics,  # 添加评估指标计算（如果太慢可以注释掉）
+        # compute_metrics=compute_metrics,  # 暂时禁用以加快评估速度
         callbacks=[epoch_callback]  # 添加 callback
     )
 
