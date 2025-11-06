@@ -430,14 +430,20 @@ def main():
 
     trainer.train()
 
+    # 确保保存最终的 LoRA 权重（如果 Callback 没有保存）
+    best_lora_dir = os.path.join(args.output_dir, "best_lora")
+    if not os.path.exists(os.path.join(best_lora_dir, "adapter_config.json")):
+        print("\n⚠️  Best LoRA weights not found, saving current model...")
+        os.makedirs(best_lora_dir, exist_ok=True)
+        model.save_pretrained(best_lora_dir)
+        tokenizer.save_pretrained(best_lora_dir)
+        print(f"✅ LoRA weights saved to: {best_lora_dir}")
+
     # 训练结束后，在验证集上进行完整评估
     print("\n" + "="*80)
     print("Final Evaluation on Validation Set")
     print("="*80)
     print("")
-
-    # 加载最佳模型进行评估
-    best_lora_dir = os.path.join(args.output_dir, "best_lora")
 
     print("Loading best LoRA weights for final evaluation...")
     from peft import PeftModel
