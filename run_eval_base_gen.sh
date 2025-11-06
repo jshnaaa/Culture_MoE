@@ -128,12 +128,20 @@ if [ ! -f "$TEST_FILE" ]; then
     exit 1
 fi
 
-# 运行评估脚本（num_classes 将从数据文件中自动推断）
+# 运行评估脚本
+# 对于 CultureLLM 数据集（DATA_ID=41/42），手动指定 num_classes=10
+if [ "$DATA_ID" = "41" ] || [ "$DATA_ID" = "42" ]; then
+    NUM_CLASSES_ARG="--num_classes 10"
+else
+    NUM_CLASSES_ARG=""
+fi
+
 python eval_base_gen.py \
     --model_path $MODEL_PATH \
     --test_file $TEST_FILE \
     --output_dir $OUTPUT_DIR \
-    --device cuda
+    --device cuda \
+    $NUM_CLASSES_ARG
 
 if [ $? -eq 0 ]; then
     echo ""

@@ -152,11 +152,19 @@ def extract_label(answer: str, num_classes: int = 5, output_type: str = "number"
         # 方法1：尝试直接转换为整数
         try:
             label = int(answer)
-            # 标签范围检查（支持 1-indexed）
+            # 标签范围检查
+            # 如果标签在 1 到 num_classes 范围内（1-indexed），转换为 0-indexed
             if 1 <= label <= num_classes:
-                return label - 1  # 转换为 0-indexed
+                return label - 1
+            # 如果标签在 0 到 num_classes-1 范围内（0-indexed），直接返回
             elif 0 <= label < num_classes:
                 return label
+            # 如果标签超出范围，尝试映射到有效范围
+            elif label > num_classes:
+                # 可能是 1-indexed 但 num_classes 推断错误
+                # 例如：label=10, num_classes=9，应该返回 9（对应 0-indexed 的 9）
+                print(f"⚠️  Warning: Label {label} exceeds num_classes {num_classes}, clamping to {num_classes - 1}")
+                return num_classes - 1
         except ValueError:
             pass
 
@@ -165,9 +173,12 @@ def extract_label(answer: str, num_classes: int = 5, output_type: str = "number"
         if match:
             label = int(match.group(1))
             if 1 <= label <= num_classes:
-                return label - 1  # 转换为 0-indexed
+                return label - 1
             elif 0 <= label < num_classes:
                 return label
+            elif label > num_classes:
+                print(f"⚠️  Warning: Label {label} exceeds num_classes {num_classes}, clamping to {num_classes - 1}")
+                return num_classes - 1
 
         # 方法3：默认返回中间类别
         print(f"⚠️  Warning: Failed to extract label from '{answer}', using default {num_classes // 2}")
@@ -189,6 +200,15 @@ def evaluate_model(model, tokenizer, test_data, device, num_classes: int = 5, sa
     """
     print("Running evaluation...")
 
+    # 检测输出类型（从第一个样本推断）
+    first_output = str(test_data[0]['output']).lower().strip()
+    if first_output in ['yes', 'no', 'neutral']:
+        output_type = "text"
+        print(f"✅ Detected output type: text (yes/no/neutral)")
+    else:
+        output_type = "number"
+        print(f"✅ Detected output type: number (1-{num_classes})")
+
     all_preds = []
     all_labels = []
     all_culture_preds = []
@@ -200,11 +220,28 @@ def evaluate_model(model, tokenizer, test_data, device, num_classes: int = 5, sa
     for item in tqdm(test_data, desc="Evaluating"):
         instruction = item['instruction']
         input_text = item['input']
-        label = int(item['output'])
+
+        # 处理标签（文本类型需要转换）
+        if output_type == "text":
+            output_str = str(item['output']).lower().strip()
+            if output_str == 'yes':
+                label = 0
+            elif output_str == 'no':
+                label = 1
+            elif output_str == 'neutral':
+                label = 2
+            else:
+                label = 2  # 默认 neutral
+        else:
+            label = int(item['output'])
+            # 转换为 0-indexed
+            if label >= 1:
+                label = label - 1
+
         culture_label = int(item.get('label', label))
 
         # 生成答案
-        raw_answer, pred = generate_answer(model, tokenizer, instruction, input_text, num_classes)
+        raw_answer, pred = generate_answer(model, tokenizer, instruction, input_text, num_classes, output_type)
 
         # 统计失败
         if pred == num_classes // 2 and raw_answer and not raw_answer.isdigit():
@@ -345,27 +382,47 @@ def main():
     print(f"✅ Loaded {len(test_data)} test samples")
 
     # 从数据中自动推断 num_classes
-    unique_labels = set(int(item['output']) for item in test_data)
-    min_label = min(unique_labels)
-    max_label = max(unique_labels)
-
-    # 判断标签是从 0 开始还是从 1 开始
-    if min_label == 0:
-        # 标签从 0 开始：0, 1, 2, ..., n-1
-        inferred_num_classes = max_label + 1
+    # 检查是否为文本类型标签
+    first_output = str(test_data[0]['output']).lower().strip()
+    if first_output in ['yes', 'no', 'neutral']:
+        # 文本类型：yes/no/neutral
+        unique_labels = set(str(item['output']).lower().strip() for item in test_data)
+        inferred_num_classes = 3  # yes/no/neutral 固定为 3 类
+        print(f"✅ Auto-inferred num_classes: {inferred_num_classes} (text type)")
+        print(f"   Unique labels: {sorted(unique_labels)}")
     else:
-        # 标签从 1 开始：1, 2, 3, ..., n
-        inferred_num_classes = max_label
+        # 数字类型 - 注意：标签是字符串，需要转换为整数
+        try:
+            unique_labels = set(int(item['output']) for item in test_data)
+            min_label = min(unique_labels)
+            max_label = max(unique_labels)
+
+            # 判断标签是从 0 开始还是从 1 开始
+            if min_label == 0:
+                # 标签从 0 开始：0, 1, 2, ..., n-1
+                inferred_num_classes = max_label + 1
+            else:
+                # 标签从 1 开始：1, 2, 3, ..., n
+                # 注意：这里 num_classes 应该等于 max_label（因为标签是 1-indexed）
+                inferred_num_classes = max_label
+
+            print(f"✅ Auto-inferred num_classes: {inferred_num_classes}")
+            print(f"   Label range: {min_label} to {max_label}")
+            print(f"   Unique labels: {sorted(unique_labels)}")
+        except ValueError as e:
+            print(f"⚠️  Warning: Could not parse labels as integers: {e}")
+            # 尝试作为字符串处理
+            unique_labels = set(str(item['output']).strip() for item in test_data)
+            inferred_num_classes = len(unique_labels)
+            print(f"✅ Auto-inferred num_classes: {inferred_num_classes} (from unique count)")
+            print(f"   Unique labels: {sorted(unique_labels)}")
 
     # 如果用户指定了 num_classes，使用用户指定的；否则使用推断的
     if args.num_classes is None:
         args.num_classes = inferred_num_classes
-        print(f"✅ Auto-inferred num_classes: {args.num_classes}")
-        print(f"   Label range: {min_label} to {max_label}")
     else:
         print(f"✅ Using specified num_classes: {args.num_classes}")
 
-    print(f"   Unique labels in data: {sorted(unique_labels)}")
     print("")
 
     # 评估模型

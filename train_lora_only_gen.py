@@ -160,31 +160,47 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
     print(f"Total: {len(data)} samples")
 
     # 分析数据集标签分布（用于信息展示）
+    output_type = "number"  # 默认为数字类型
     try:
-        unique_labels = set()
-        for item in data:
-            try:
-                label = int(item['output'])
-                unique_labels.add(label)
-            except (ValueError, KeyError):
-                pass  # 跳过无法转换的标签
-
-        if unique_labels:
-            min_label = min(unique_labels)
-            max_label = max(unique_labels)
-
-            # 判断标签范围
-            if min_label == 0:
-                num_classes = max_label + 1
-                label_type = "0-indexed"
-            else:
-                num_classes = max_label
-                label_type = "1-indexed"
-
+        # 检查第一个样本的输出类型
+        first_output = str(data[0]['output']).lower().strip()
+        if first_output in ['yes', 'no', 'neutral']:
+            # 文本类型
+            output_type = "text"
+            unique_labels = set(str(item['output']).lower().strip() for item in data)
+            num_classes = 3
             print(f"📊 Dataset Statistics:")
-            print(f"   Label range: {min_label} to {max_label} ({label_type})")
+            print(f"   Output type: text (yes/no/neutral)")
             print(f"   Inferred num_classes: {num_classes}")
             print(f"   Unique labels: {sorted(unique_labels)}")
+        else:
+            # 数字类型
+            output_type = "number"
+            unique_labels = set()
+            for item in data:
+                try:
+                    label = int(item['output'])
+                    unique_labels.add(label)
+                except (ValueError, KeyError):
+                    pass
+
+            if unique_labels:
+                min_label = min(unique_labels)
+                max_label = max(unique_labels)
+
+                # 判断标签范围
+                if min_label == 0:
+                    num_classes = max_label + 1
+                    label_type = "0-indexed"
+                else:
+                    num_classes = max_label
+                    label_type = "1-indexed"
+
+                print(f"📊 Dataset Statistics:")
+                print(f"   Output type: number")
+                print(f"   Label range: {min_label} to {max_label} ({label_type})")
+                print(f"   Inferred num_classes: {num_classes}")
+                print(f"   Unique labels: {sorted(unique_labels)}")
     except Exception as e:
         print(f"⚠️  Could not analyze label distribution: {e}")
 
@@ -576,52 +592,45 @@ def main():
         # 保存 tokenizer 到 best_lora 目录
         tokenizer.save_pretrained(best_lora_dir)
         print(f"✅ Tokenizer saved to: {best_lora_dir}")
-    else:
-        # 非主进程：使用默认值
-        best_lora_dir = os.path.join(args.output_dir, "best_lora")
-        final_eval_loss = 0.0
-        final_eval_accuracy = 0.0
-        final_eval_perplexity = 0.0
+        # 保存训练配置和最佳结果
+        config = {
+            "model_type": "LoRA_Only_Generative",
+            "base_model": args.model_name_or_path,
+            "lora_rank": args.lora_rank,
+            "lora_alpha": args.lora_alpha,
+            "lora_dropout": args.lora_dropout,
+            "learning_rate": args.learning_rate,
+            "num_train_epochs": args.num_train_epochs,
+            "best_epoch": epoch_callback.best_epoch,
+            "best_eval_loss": epoch_callback.best_eval_loss,
+            "final_eval_loss": final_eval_loss,
+            "final_eval_accuracy": final_eval_accuracy,
+            "final_eval_perplexity": final_eval_perplexity,
+            "training_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
 
-    # 保存训练配置和最佳结果
-    config = {
-        "model_type": "LoRA_Only_Generative",
-        "base_model": args.model_name_or_path,
-        "lora_rank": args.lora_rank,
-        "lora_alpha": args.lora_alpha,
-        "lora_dropout": args.lora_dropout,
-        "learning_rate": args.learning_rate,
-        "num_train_epochs": args.num_train_epochs,
-        "best_epoch": epoch_callback.best_epoch,
-        "best_eval_loss": epoch_callback.best_eval_loss,
-        "final_eval_loss": final_eval_loss,
-        "final_eval_accuracy": final_eval_accuracy,
-        "final_eval_perplexity": final_eval_perplexity,
-        "training_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
+        config_file = os.path.join(args.output_dir, "training_config.json")
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
 
-    config_file = os.path.join(args.output_dir, "training_config.json")
-    with open(config_file, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"✅ Config saved to: {config_file}")
+        print(f"\n📊 Training Summary:")
+        print(f"   Best Epoch: {epoch_callback.best_epoch}")
+        print(f"   Best Eval Loss: {epoch_callback.best_eval_loss:.4f}")
+        print(f"   Final Eval Accuracy: {final_eval_accuracy:.4f}")
+        print(f"   Best LoRA weights: {best_lora_dir}")
 
-    print(f"✅ Config saved to: {config_file}")
-    print(f"\n📊 Training Summary:")
-    print(f"   Best Epoch: {epoch_callback.best_epoch}")
-    print(f"   Best Eval Loss: {epoch_callback.best_eval_loss:.4f}")
-    print(f"   Final Eval Accuracy: {final_eval_accuracy:.4f}")
-    print(f"   Best LoRA weights: {best_lora_dir}")
-
-    print("\n" + "="*80)
-    print("✅ Training completed successfully!")
-    print("="*80)
-    print(f"\n💡 Next steps:")
-    print(f"   1. Merge LoRA with base model:")
-    print(f"      python merge_lora.py \\")
-    print(f"        --base_model {args.model_name_or_path} \\")
-    print(f"        --lora_weights {best_lora_dir} \\")
-    print(f"        --output_dir /path/to/merged_model")
-    print(f"\n   2. Or use LoRA directly for inference")
-    print("")
+        print("\n" + "="*80)
+        print("✅ Training completed successfully!")
+        print("="*80)
+        print(f"\n💡 Next steps:")
+        print(f"   1. Merge LoRA with base model:")
+        print(f"      python merge_lora.py \\")
+        print(f"        --base_model {args.model_name_or_path} \\")
+        print(f"        --lora_weights {best_lora_dir} \\")
+        print(f"        --output_dir /path/to/merged_model")
+        print(f"\n   2. Or use LoRA directly for inference")
+        print("")
 
 
 if __name__ == "__main__":
