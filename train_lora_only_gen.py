@@ -23,6 +23,7 @@ import numpy as np
 import torch
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, TaskType
+from tqdm import tqdm
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -136,13 +137,27 @@ class EpochEvalCallback(TrainerCallback):
 
 
 def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_split: float = 0.1):
-    """加载并处理生成式数据（只计算答案部分的损失）"""
-    print(f"Loading data from: {data_path}")
+    """加载并处理生成式数据（只计算答案部分的损失）
 
-    with open(data_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    支持单个文件或多个文件（用逗号分隔）
+    """
+    # 支持多个数据文件（用逗号分隔）
+    data_files = [f.strip() for f in data_path.split(',')]
 
-    print(f"Loaded {len(data)} samples")
+    print(f"Loading data from {len(data_files)} file(s):")
+    for f in data_files:
+        print(f"  - {f}")
+
+    # 加载所有数据文件
+    all_data = []
+    for file_path in data_files:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            file_data = json.load(f)
+            all_data.extend(file_data)
+            print(f"  Loaded {len(file_data)} samples from {os.path.basename(file_path)}")
+
+    data = all_data
+    print(f"Total: {len(data)} samples")
 
     # 划分训练集和验证集
     if val_split > 0:
