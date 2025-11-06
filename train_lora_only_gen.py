@@ -31,6 +31,7 @@ from transformers import (
     Trainer,
     TrainerCallback
 )
+import argparse
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -432,8 +433,8 @@ def main():
         eval_strategy="epoch",  # 每个 epoch 评估一次
         save_strategy="no",  # 不自动保存 checkpoint（由 Callback 手动保存最佳 LoRA）
         load_best_model_at_end=False,  # 不需要自动加载（Callback 已保存最佳）
-        # 评估配置 - 只计算 loss，不计算 accuracy（加快评估速度）
-        prediction_loss_only=True,  # 只计算 loss，不返回 logits（大幅加速）
+        prediction_loss_only=False,  # 返回 predictions 以计算 accuracy
+        # 评估配置 - 需要返回 predictions 以计算 accuracy
         fp16=True,
         report_to="none",
         remove_unused_columns=False,
