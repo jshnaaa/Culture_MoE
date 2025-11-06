@@ -4,10 +4,10 @@
 # 从 Base 模型 + LoRA 权重训练 CultureMoE（生成式版本）
 #
 # 使用方法：
-#   sh run_train_culturemoe_from_base_gen.sh <BACKBONE> <NUM_CLASSES> <USE_CULTURE_LOSS> <NUM_EXPERTS> <SAVE_MODEL> <NUM_GPUS> <MASK_USE> <LORA_DIR>
+#   sh run_train_culturemoe_from_base_gen.sh <BACKBONE> <NUM_CLASSES> <USE_CULTURE_LOSS> <NUM_EXPERTS> <NUM_GPUS> <MASK_USE>
 #
 # 示例：
-#   sh run_train_culturemoe_from_base_gen.sh llama 5 True 6 false 1 true /path/to/lora_output
+#   sh run_train_culturemoe_from_base_gen.sh llama 5 True 6 1 true
 # ============================================================
 
 # ✅ 配置参数
@@ -15,34 +15,19 @@ BACKBONE="${1:-llama}"              # 默认使用 llama
 NUM_CLASSES="${2:-5}"               # 默认 5 分类
 USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"               # 默认 6 个专家
-SAVE_MODEL="${5:-false}"            # 默认不保存完整模型
-NUM_GPUS="${6:-1}"                  # 默认使用 1 个 GPU
-MASK_USE="${7:-true}"               # 默认使用 instruction_mask
-LORA_OUTPUT_DIR="${8}"              # LoRA 训练输出目录
+NUM_GPUS="${5:-1}"                  # 默认使用 1 个 GPU
+MASK_USE="${6:-true}"               # 默认使用 instruction_mask
 
-# 检查必需参数
-if [ -z "$LORA_OUTPUT_DIR" ]; then
-    echo "❌ Error: LORA_OUTPUT_DIR is required"
-    echo ""
-    echo "Usage: sh run_train_culturemoe_from_base_gen.sh <BACKBONE> <NUM_CLASSES> <USE_CULTURE_LOSS> <NUM_EXPERTS> <SAVE_MODEL> <NUM_GPUS> <MASK_USE> <LORA_DIR>"
-    echo ""
-    echo "Example:"
-    echo "  sh run_train_culturemoe_from_base_gen.sh llama 5 True 6 false 1 true \\"
-    echo "    /root/autodl-tmp/.../lora_only_gen_cultureLLM_llama_20251105_1234"
-    exit 1
-fi
-
-# 根据 backbone 选择 base 模型路径
+# 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
+    LORA_WEIGHTS_PATH="/root/autodl-fs/model/qwen_lora_only_gen"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
+    LORA_WEIGHTS_PATH="/root/autodl-fs/model/llama_lora_only_gen"
 fi
-
-# LoRA 权重路径（best_lora 目录）
-LORA_WEIGHTS_PATH="${LORA_OUTPUT_DIR}/best_lora"
 
 # 根据 num_classes 选择数据集
 case $NUM_CLASSES in
@@ -69,7 +54,7 @@ case $NUM_CLASSES in
 esac
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/culturemoe_gen_output/culturemoe_gen_${BACKBONE}_${NUM_CLASSES}class_experts${NUM_EXPERTS}_USE_CULTURE_LOSS${USE_CULTURE_LOSS}_MASK_USE${MASK_USE}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen_test_results/moe_${BACKBONE}_experts${NUM_EXPERTS}_USE_CULTURE_LOSS${USE_CULTURE_LOSS}_MASK_USE${MASK_USE}_$(date +%Y%m%d_%H%M)"
 
 # 设置 GPU
 if [ "$NUM_GPUS" = "1" ]; then
@@ -91,7 +76,6 @@ echo "Num classes: $NUM_CLASSES"
 echo "Dataset: $DATASET_NAME"
 echo "Use culture loss: $USE_CULTURE_LOSS"
 echo "Num experts: $NUM_EXPERTS"
-echo "Save model: $SAVE_MODEL"
 echo "Use instruction_mask: $MASK_USE"
 echo "GPUs: $GPU_INFO"
 echo ""
@@ -113,10 +97,8 @@ fi
 if [ ! -d "$LORA_WEIGHTS_PATH" ]; then
     echo "❌ Error: LoRA weights not found: $LORA_WEIGHTS_PATH"
     echo ""
-    echo "Expected path: ${LORA_OUTPUT_DIR}/best_lora"
-    echo ""
     echo "Please ensure you have completed:"
-    echo "  sh run_train_lora_only_gen.sh $BACKBONE"
+    echo "  sh run_train_lora_only_gen.sh $BACKBONE <DATA_ID>"
     echo ""
     echo "The training should create a 'best_lora' directory containing:"
     echo "  - adapter_config.json"
@@ -162,14 +144,6 @@ TRAIN_CMD="python train_culturemoe_from_base_gen.py \
     --val_split 0.1 \
     --num_workers 2"
 
-# 添加 save_model 参数
-if [ "$SAVE_MODEL" = "true" ]; then
-    MODEL_SAVE_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/model_moe_gen_${BACKBONE}_${NUM_CLASSES}"
-    TRAIN_CMD="$TRAIN_CMD --save_model --model_save_path $MODEL_SAVE_PATH"
-    echo "Model will be saved to: $MODEL_SAVE_PATH"
-    echo ""
-fi
-
 # 运行训练
 eval $TRAIN_CMD
 
@@ -185,21 +159,17 @@ if [ $? -eq 0 ]; then
     echo "    - moe_config.json"
     echo "    - moe_state_dict.pt"
     echo "  - epoch_eval_results.json (Epoch-by-epoch results)"
+    echo "  - final_eval_results.json (Final evaluation results)"
     echo "  - config.json (Training configuration)"
     echo ""
     echo "💡 Next steps:"
-    echo "  1. Evaluate the model:"
-    echo "     sh run_eval_culturemoe_from_components.sh $BACKBONE $NUM_CLASSES \\"
-    echo "       $LORA_OUTPUT_DIR \\"
-    echo "       $OUTPUT_DIR/best_moe"
-    echo ""
-    echo "  2. Or load from components:"
-    echo "     python load_culturemoe_gen.py \\"
+    echo "  1. Evaluate on test set:"
+    echo "     python eval_culturemoe_from_components_gen.py \\"
     echo "       --base_model_path $BASE_MODEL_PATH \\"
     echo "       --lora_weights_path $LORA_WEIGHTS_PATH \\"
     echo "       --moe_weights_path $OUTPUT_DIR/best_moe \\"
     echo "       --test_file /path/to/test.json \\"
-    echo "       --output_file /path/to/results.json"
+    echo "       --output_dir /path/to/eval_output"
     echo "============================================================"
 else
     echo ""

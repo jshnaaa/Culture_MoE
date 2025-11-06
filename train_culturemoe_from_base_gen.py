@@ -305,14 +305,10 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--max_length", type=int, default=512)
     parser.add_argument("--val_split", type=float, default=0.1)
-    parser.add_argument("--num_workers", type=int, default=2)
+parser.add_argument("--num_workers", type=int, default=2)
 
-    # 保存选项
-    parser.add_argument("--save_model", action='store_true')
-    parser.add_argument("--model_save_path", type=str, default=None)
-
-    # 设备
-    parser.add_argument("--device", type=str, default="cuda")
+# 设备
+parser.add_argument("--device", type=str, default="cuda")
 
     args = parser.parse_args()
 
@@ -477,6 +473,59 @@ def main():
         with open(os.path.join(args.output_dir, "epoch_eval_results.json"), 'w') as f:
             json.dump(epoch_results, f, indent=2, ensure_ascii=False)
 
+    # 训练结束后，加载最佳模型进行最终评估
+    print("\n" + "="*80)
+    print("Final Evaluation on Validation Set")
+    print("="*80)
+    print("")
+
+    print("Loading best MoE weights for final evaluation...")
+    best_moe_dir = os.path.join(args.output_dir, "best_moe")
+
+    # 加载最佳 MoE 权重
+    best_state_dict = torch.load(os.path.join(best_moe_dir, "moe_state_dict.pt"))
+    model.load_state_dict(best_state_dict)
+    model.eval()
+    print("✅ Best model loaded")
+
+    # 在验证集上进行最终评估
+    print("\nEvaluating on validation set...")
+    final_val_metrics = evaluate(
+        model=model,
+        val_loader=val_loader,
+        device=args.device,
+        num_classes=args.num_classes,
+        use_culture_loss=args.use_culture_loss,
+        culture_loss_lambda=args.culture_loss_lambda
+    )
+
+    print("\n" + "="*80)
+    print("Final Evaluation Results")
+    print("="*80)
+    print(f"Loss:       {final_val_metrics['loss']:.4f}")
+    print(f"Accuracy:   {final_val_metrics['accuracy']:.4f}")
+    print(f"Precision:  {final_val_metrics['precision']:.4f}")
+    print(f"Recall:     {final_val_metrics['recall']:.4f}")
+    print(f"F1:         {final_val_metrics['f1']:.4f}")
+    print("="*80)
+
+    # 保存最终评估结果
+    final_eval_results = {
+        "best_epoch": best_epoch,
+        "best_accuracy": best_accuracy,
+        "final_eval_loss": final_val_metrics['loss'],
+        "final_eval_accuracy": final_val_metrics['accuracy'],
+        "final_eval_precision": final_val_metrics['precision'],
+        "final_eval_recall": final_val_metrics['recall'],
+        "final_eval_f1": final_val_metrics['f1'],
+        "num_val_samples": len(val_dataset),
+        "evaluation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+
+    with open(os.path.join(args.output_dir, "final_eval_results.json"), 'w') as f:
+        json.dump(final_eval_results, f, indent=2, ensure_ascii=False)
+    print(f"\n✅ Final evaluation results saved to: {os.path.join(args.output_dir, 'final_eval_results.json')}")
+
     # 保存最终配置
     final_config = {
         'base_model': args.base_model_path,
@@ -487,6 +536,7 @@ def main():
         'num_epochs': args.num_epochs,
         'best_epoch': best_epoch,
         'best_accuracy': best_accuracy,
+        'final_eval_accuracy': final_val_metrics['accuracy'],
         'training_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
 
@@ -498,7 +548,12 @@ def main():
     print("="*80)
     print(f"Best Epoch: {best_epoch}")
     print(f"Best Accuracy: {best_accuracy:.4f}")
-    print(f"Results saved to: {args.output_dir}")
+    print(f"Final Eval Accuracy: {final_val_metrics['accuracy']:.4f}")
+    print(f"\n📁 Output Files:")
+    print(f"   Best MoE weights: {best_moe_dir}")
+    print(f"   Epoch eval results: {os.path.join(args.output_dir, 'epoch_eval_results.json')}")
+    print(f"   Final eval results: {os.path.join(args.output_dir, 'final_eval_results.json')}")
+    print(f"   Training config: {os.path.join(args.output_dir, 'config.json')}")
     print("="*80)
     print("")
 
