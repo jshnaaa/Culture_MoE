@@ -415,12 +415,108 @@ def main():
 
     trainer.train()
 
-    # 保存最佳 LoRA 权重和配置
+    # 训练结束后，在验证集上进行完整评估
     print("\n" + "="*80)
-    print("Saving best LoRA weights...")
+    print("Final Evaluation on Validation Set")
+    print("="*80)
+    print("")
+
+    # 加载最佳模型进行评估
+    best_lora_dir = os.path.join(args.output_dir, "best_lora")
+
+    print("Loading best LoRA weights for final evaluation...")
+    from peft import PeftModel
+
+    # 重新加载 base 模型
+    eval_base_model = AutoModelForCausalLM.from_pretrained(
+        args.model_name_or_path,
+        torch_dtype=torch.float16,
+        device_map="auto",
+        trust_remote_code=True
+    )
+
+    # 加载最佳 LoRA 权重
+    eval_model = PeftModel.from_pretrained(
+        eval_base_model,
+        best_lora_dir,
+        is_trainable=False
+    )
+    eval_model.eval()
+
+    print("✅ Best model loaded for evaluation")
+
+    # 在验证集上评估
+    print("\nEvaluating on validation set...")
+
+    from torch.utils.data import DataLoader
+
+    eval_dataloader = DataLoader(
+        val_dataset,
+        batch_size=args.per_device_train_batch_size,
+        collate_fn=data_collator
+    )
+
+    total_correct = 0
+    total_tokens = 0
+    total_loss = 0
+    num_batches = 0
+
+    with torch.no_grad():
+        for batch in tqdm(eval_dataloader, desc="Evaluating"):
+            # 移动到设备
+            input_ids = batch['input_ids'].to(eval_model.device)
+            attention_mask = batch['attention_mask'].to(eval_model.device)
+            labels = batch['labels'].to(eval_model.device)
+
+            # 前向传播
+            outputs = eval_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels
+            )
+
+            # 累积 loss
+            total_loss += outputs.loss.item()
+            num_batches += 1
+
+            # 计算 accuracy
+            logits = outputs.logits
+            predictions = torch.argmax(logits, dim=-1)
+
+            # 只计算非 -100 位置的准确率
+            mask = labels != -100
+            correct = (predictions == labels) & mask
+            total_correct += correct.sum().item()
+            total_tokens += mask.sum().item()
+
+    # 计算最终指标
+    final_eval_loss = total_loss / num_batches
+    final_eval_accuracy = total_correct / total_tokens if total_tokens > 0 else 0.0
+    final_eval_perplexity = np.exp(final_eval_loss)
+
+    print("\n" + "="*80)
+    print("Final Evaluation Results")
+    print("="*80)
+    print(f"Eval Loss:       {final_eval_loss:.4f}")
+    print(f"Eval Accuracy:   {final_eval_accuracy:.4f}")
+    print(f"Eval Perplexity: {final_eval_perplexity:.4f}")
     print("="*80)
 
-    best_lora_dir = os.path.join(args.output_dir, "best_lora")
+    # 保存评估结果
+    eval_results = {
+        "eval_loss": final_eval_loss,
+        "eval_accuracy": final_eval_accuracy,
+        "eval_perplexity": final_eval_perplexity,
+        "num_eval_samples": len(val_dataset),
+        "num_eval_tokens": total_tokens,
+        "evaluation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+
+    eval_results_file = os.path.join(args.output_dir, "final_eval_results.json")
+    with open(eval_results_file, 'w', encoding='utf-8') as f:
+        json.dump(eval_results, f, indent=2, ensure_ascii=False)
+
+    print(f"\n✅ Evaluation results saved to: {eval_results_file}")
 
     # 保存 tokenizer 到 best_lora 目录
     tokenizer.save_pretrained(best_lora_dir)
@@ -437,6 +533,9 @@ def main():
         "num_train_epochs": args.num_train_epochs,
         "best_epoch": epoch_callback.best_epoch,
         "best_eval_loss": epoch_callback.best_eval_loss,
+        "final_eval_loss": final_eval_loss,
+        "final_eval_accuracy": final_eval_accuracy,
+        "final_eval_perplexity": final_eval_perplexity,
         "training_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
 
@@ -448,6 +547,7 @@ def main():
     print(f"\n📊 Training Summary:")
     print(f"   Best Epoch: {epoch_callback.best_epoch}")
     print(f"   Best Eval Loss: {epoch_callback.best_eval_loss:.4f}")
+    print(f"   Final Eval Accuracy: {final_eval_accuracy:.4f}")
     print(f"   Best LoRA weights: {best_lora_dir}")
 
     print("\n" + "="*80)
