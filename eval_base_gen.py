@@ -313,12 +313,22 @@ def main():
 
     # 从数据中自动推断 num_classes
     unique_labels = set(int(item['output']) for item in test_data)
-    inferred_num_classes = max(unique_labels) + 1  # 假设标签从 0 开始
+    min_label = min(unique_labels)
+    max_label = max(unique_labels)
+
+    # 判断标签是从 0 开始还是从 1 开始
+    if min_label == 0:
+        # 标签从 0 开始：0, 1, 2, ..., n-1
+        inferred_num_classes = max_label + 1
+    else:
+        # 标签从 1 开始：1, 2, 3, ..., n
+        inferred_num_classes = max_label
 
     # 如果用户指定了 num_classes，使用用户指定的；否则使用推断的
     if args.num_classes is None:
         args.num_classes = inferred_num_classes
         print(f"✅ Auto-inferred num_classes: {args.num_classes}")
+        print(f"   Label range: {min_label} to {max_label}")
     else:
         print(f"✅ Using specified num_classes: {args.num_classes}")
 
