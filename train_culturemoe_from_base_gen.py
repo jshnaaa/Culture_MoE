@@ -73,6 +73,7 @@ def load_model_from_components(
     base_model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
         torch_dtype=torch.float16,
+        device_map="cuda:0",  # 强制使用单GPU，避免DTensor问题
         trust_remote_code=True,
         low_cpu_mem_usage=True
     )

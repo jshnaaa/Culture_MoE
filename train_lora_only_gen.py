@@ -23,7 +23,7 @@ import numpy as np
 import torch
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, TaskType
-from tqdm import tqdm
+
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -484,14 +484,13 @@ def main():
     epoch_callback = EpochEvalCallback(args.output_dir)
 
     # 创建 Trainer
-    # 注意：由于设置了 prediction_loss_only=True，不使用 compute_metrics（加快评估速度）
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,  # 添加验证集
         data_collator=data_collator,
-        # compute_metrics=compute_metrics,  # 暂时禁用以加快评估速度
+        compute_metrics=compute_metrics,  # 计算准确率
         callbacks=[epoch_callback]  # 添加 callback
     )
 
@@ -517,177 +516,16 @@ def main():
             tokenizer.save_pretrained(best_lora_dir)
             print(f"✅ LoRA weights saved to: {best_lora_dir}")
 
-        # 训练结束后，先合并 LoRA 权重到 base 模型
+        # 训练完成
         print("\n" + "="*80)
-        print("Merging LoRA Weights to Base Model")
+        print("✅ Training Completed!")
         print("="*80)
-        print("")
-
-        print("Step 1: Loading base model and LoRA weights...")
-        from peft import PeftModel
-
-        # 加载 base 模型
-        merge_base_model = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=True
-        )
-
-        # 加载 LoRA 权重
-        merge_model = PeftModel.from_pretrained(
-            merge_base_model,
-            best_lora_dir,
-            is_trainable=False
-        )
-
-        print("Step 2: Merging LoRA weights into base model...")
-        # 合并 LoRA 权重到 base 模型（仅用于评估，不保存）
-        eval_model = merge_model.merge_and_unload()
-
-        # 清理内存
-        del merge_base_model
-        del merge_model
-        torch.cuda.empty_cache()
-
-        print("✅ LoRA weights merged successfully (in-memory only)")
-        print("")
-
-        # 使用合并后的模型进行评估
+        print(f"Best LoRA weights saved to: {best_lora_dir}")
+        print(f"\n💡 To evaluate the model, run:")
+        print(f"   sh run_eval_lora_only_from_components.sh llama")
         print("="*80)
-        print("Final Evaluation on Validation Set")
-        print("="*80)
-        print("")
-
-        eval_model.eval()
-
-        # 在验证集上评估
-        print("\nEvaluating on validation set...")
-
-        from torch.utils.data import DataLoader
-
-        eval_dataloader = DataLoader(
-            val_dataset,
-            batch_size=args.per_device_train_batch_size,
-            collate_fn=data_collator
-        )
-
-        total_correct = 0
-        total_tokens = 0
-        total_loss = 0
-        num_batches = 0
-
-        with torch.no_grad():
-            for batch in tqdm(eval_dataloader, desc="Evaluating"):
-                # 移动到设备
-                input_ids = batch['input_ids'].to(eval_model.device)
-                attention_mask = batch['attention_mask'].to(eval_model.device)
-                labels = batch['labels'].to(eval_model.device)
-
-                # 前向传播
-                outputs = eval_model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels
-                )
-
-                # 累积 loss
-                total_loss += outputs.loss.item()
-                num_batches += 1
-
-                # 计算 accuracy
-                logits = outputs.logits
-                predictions = torch.argmax(logits, dim=-1)
-
-                # 只计算非 -100 位置的准确率
-                mask = labels != -100
-                correct = (predictions == labels) & mask
-                total_correct += correct.sum().item()
-                total_tokens += mask.sum().item()
-
-        # 计算最终指标
-        final_eval_loss = total_loss / num_batches
-        final_eval_accuracy = total_correct / total_tokens if total_tokens > 0 else 0.0
-        final_eval_perplexity = np.exp(final_eval_loss)
-
-        print("\n" + "="*80)
-        print("Final Evaluation Results")
-        print("="*80)
-        print(f"Eval Loss:       {final_eval_loss:.4f}")
-        print(f"Eval Accuracy:   {final_eval_accuracy:.4f}")
-        print(f"Eval Perplexity: {final_eval_perplexity:.4f}")
-        print("="*80)
-
-        # 保存评估结果
-        eval_results = {
-            "eval_loss": final_eval_loss,
-            "eval_accuracy": final_eval_accuracy,
-            "eval_perplexity": final_eval_perplexity,
-            "num_eval_samples": len(val_dataset),
-            "num_eval_tokens": total_tokens,
-            "evaluation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-
-        eval_results_file = os.path.join(args.output_dir, "final_eval_results.json")
-        with open(eval_results_file, 'w', encoding='utf-8') as f:
-            json.dump(eval_results, f, indent=2, ensure_ascii=False)
-
-        print(f"\n✅ Evaluation results saved to: {eval_results_file}")
-
-        # 保存 tokenizer 到 best_lora 目录
-        tokenizer.save_pretrained(best_lora_dir)
-        print(f"✅ Tokenizer saved to: {best_lora_dir}")
-        # 保存训练配置和最佳结果
-        config = {
-            "model_type": "LoRA_Only_Generative",
-            "base_model": args.model_name_or_path,
-            "lora_rank": args.lora_rank,
-            "lora_alpha": args.lora_alpha,
-            "lora_dropout": args.lora_dropout,
-            "learning_rate": args.learning_rate,
-            "num_train_epochs": args.num_train_epochs,
-            "best_epoch": epoch_callback.best_epoch,
-            "best_eval_loss": epoch_callback.best_eval_loss,
-            "final_eval_loss": final_eval_loss,
-            "final_eval_accuracy": final_eval_accuracy,
-            "final_eval_perplexity": final_eval_perplexity,
-            "best_lora_dir": best_lora_dir,
-            "training_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-
-        config_file = os.path.join(args.output_dir, "training_config.json")
-        with open(config_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-
-        print(f"✅ Config saved to: {config_file}")
-        print(f"\n📊 Training Summary:")
-        print(f"   Best Epoch: {epoch_callback.best_epoch}")
-        print(f"   Best Eval Loss: {epoch_callback.best_eval_loss:.4f}")
-        print(f"   Final Eval Accuracy: {final_eval_accuracy:.4f}")
-        print(f"   Final Eval Perplexity: {final_eval_perplexity:.4f}")
-        print(f"\n📁 Output Files:")
-        print(f"   Best LoRA weights: {best_lora_dir}")
-        print(f"   Epoch eval results: {os.path.join(args.output_dir, 'epoch_eval_results.json')}")
-        print(f"   Final eval results: {os.path.join(args.output_dir, 'final_eval_results.json')}")
-        print(f"   Training config: {config_file}")
-
-        print("\n" + "="*80)
-        print("✅ Training completed successfully!")
-        print("="*80)
-        print(f"\n💡 Next steps:")
-        print(f"   1. Merge LoRA with base model (if needed):")
-        print(f"      sh run_merge_lora.sh {args.model_name_or_path.split('/')[-1].lower().replace('meta-', '').split('-')[0]} <num_classes>")
-        print(f"\n   2. Evaluate with LoRA weights:")
-        print(f"      python eval_lora_only_from_components.py \\")
-        print(f"        --base_model_path {args.model_name_or_path} \\")
-        print(f"        --lora_weights_path {best_lora_dir} \\")
-        print(f"        --test_file /path/to/test.json \\")
-        print(f"        --output_dir /path/to/output")
-        print(f"\n   3. Use for CultureMoE training:")
-        print(f"      First merge LoRA, then use merged model for training")
         print("")
 
 
 if __name__ == "__main__":
     main()
-
