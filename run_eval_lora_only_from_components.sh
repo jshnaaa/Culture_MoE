@@ -1,51 +1,37 @@
 #!/bin/bash
 
 # ============================================================
-# 从 Base 模型 + LoRA 权重还原模型并评估
+# 从 Base 模型 + LoRA 权重还原模型并评估（生成式版本）
 #
 # 使用方法：
-#   sh run_eval_lora_only_from_components.sh <BACKBONE> <NUM_CLASSES> <LORA_DIR>
+#   sh run_eval_lora_only_from_components.sh <BACKBONE>
 #
 # 示例：
-#   sh run_eval_lora_only_from_components.sh llama 2 /path/to/lora_output
-#   sh run_eval_lora_only_from_components.sh qwen 4 /path/to/lora_output
+#   sh run_eval_lora_only_from_components.sh llama
+#   sh run_eval_lora_only_from_components.sh qwen
 # ============================================================
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"           # 默认使用 llama
-NUM_CLASSES="${2:-4}"            # 默认 2 分类
-
 
 # 根据 backbone 选择 base 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_all_qwen_$(date +%Y%m%d_%H%M)/best_lora"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_all_llama_$(date +%Y%m%d_%H%M)/best_lora"
 fi
 
-# LoRA 权重路径（best_lora 目录）
-LORA_WEIGHTS_PATH="/root/autodl-fs/model/llama_lora_only_${NUM_CLASSES}"
-
-# 根据 num_classes 选择测试数据集
-case $NUM_CLASSES in
-    4)
-        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_4.json"
-        DATASET_NAME="WVS_4class"
-        ;;
-    5)
-        TEST_FILE="/root/autodl-fs/wvs_all_llama_merge_5.json"
-        DATASET_NAME="WVS_5class"
-        ;;
-    *)
-        echo "❌ Error: Invalid num_classes=$NUM_CLASSES. Must be 2, 3, 4, or 5."
-        exit 1
-        ;;
-esac
+# 测试数据集（WVS 生成式数据集，标签 1-10）
+TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
+DATASET_NAME="WVS_Gen"
+NUM_CLASSES=10  # 1-10 共 10 个类别
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/lora_only_test_results/${BACKBONE}_${NUM_CLASSES}class_from_components_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen_test_results/lora_only_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "LoRA Only Model Evaluation (From Components)"
@@ -84,8 +70,6 @@ python eval_lora_only_from_components.py \
     --test_file $TEST_FILE \
     --output_dir $OUTPUT_DIR \
     --num_classes $NUM_CLASSES \
-    --batch_size 8 \
-    --max_length 512 \
     --device cuda
 
 if [ $? -eq 0 ]; then
@@ -107,8 +91,8 @@ if [ $? -eq 0 ]; then
     echo "💡 To view results:"
     echo "   cat $OUTPUT_DIR/evaluation_summary.json | python -m json.tool"
     echo ""
-    echo "💡 To compare with merged model evaluation:"
-    echo "   sh run_eval_lora_only.sh $BACKBONE $NUM_CLASSES"
+    echo "💡 To view detailed answers:"
+    echo "   cat $OUTPUT_DIR/generated_answers.json | python -m json.tool | head -100"
     echo "============================================================"
 else
     echo ""
