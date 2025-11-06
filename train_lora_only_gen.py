@@ -173,6 +173,15 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
             print(f"   Output type: text (yes/no/neutral)")
             print(f"   Inferred num_classes: {num_classes}")
             print(f"   Unique labels: {sorted(unique_labels)}")
+        elif first_output in ['true', 'false']:
+            # 布尔类型
+            output_type = "bool"
+            unique_labels = set(str(item['output']).upper().strip() for item in data)
+            num_classes = 2
+            print(f"📊 Dataset Statistics:")
+            print(f"   Output type: bool (TRUE/FALSE)")
+            print(f"   Inferred num_classes: {num_classes}")
+            print(f"   Unique labels: {sorted(unique_labels)}")
         else:
             # 数字类型
             output_type = "number"
@@ -234,6 +243,14 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
                 else:
                     # input 不包含提示语，添加标准提示
                     prompt = f"{instruction}\n{input_text}\nAnswer one of 'yes', 'no', or 'neutral'. Your answer is:"
+            elif output_type == "bool":
+                # 布尔类型：检查 input 是否已包含提示语
+                if "your answer is:" in input_text.lower() or ("true" in input_text.lower() and "false" in input_text.lower()):
+                    # input 已包含提示语，直接使用
+                    prompt = f"{instruction}\n{input_text}"
+                else:
+                    # input 不包含提示语，添加标准提示
+                    prompt = f"{instruction}\n{input_text}\nAnswer one of 'TRUE' or 'FALSE'. Your answer is:"
             else:
                 # 数字类型
                 prompt = f"{instruction}\n{input_text}\nAnswer:"
@@ -500,32 +517,49 @@ def main():
             tokenizer.save_pretrained(best_lora_dir)
             print(f"✅ LoRA weights saved to: {best_lora_dir}")
 
-        # 训练结束后，在验证集上进行完整评估
+        # 训练结束后，先合并 LoRA 权重到 base 模型
         print("\n" + "="*80)
-        print("Final Evaluation on Validation Set")
+        print("Merging LoRA Weights to Base Model")
         print("="*80)
         print("")
 
-        print("Loading best LoRA weights for final evaluation...")
+        print("Step 1: Loading base model and LoRA weights...")
         from peft import PeftModel
 
-        # 重新加载 base 模型
-        eval_base_model = AutoModelForCausalLM.from_pretrained(
+        # 加载 base 模型
+        merge_base_model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             torch_dtype=torch.float16,
             device_map="auto",
             trust_remote_code=True
         )
 
-        # 加载最佳 LoRA 权重
-        eval_model = PeftModel.from_pretrained(
-            eval_base_model,
+        # 加载 LoRA 权重
+        merge_model = PeftModel.from_pretrained(
+            merge_base_model,
             best_lora_dir,
             is_trainable=False
         )
-        eval_model.eval()
 
-        print("✅ Best model loaded for evaluation")
+        print("Step 2: Merging LoRA weights into base model...")
+        # 合并 LoRA 权重到 base 模型（仅用于评估，不保存）
+        eval_model = merge_model.merge_and_unload()
+
+        # 清理内存
+        del merge_base_model
+        del merge_model
+        torch.cuda.empty_cache()
+
+        print("✅ LoRA weights merged successfully (in-memory only)")
+        print("")
+
+        # 使用合并后的模型进行评估
+        print("="*80)
+        print("Final Evaluation on Validation Set")
+        print("="*80)
+        print("")
+
+        eval_model.eval()
 
         # 在验证集上评估
         print("\nEvaluating on validation set...")
@@ -617,6 +651,7 @@ def main():
             "final_eval_loss": final_eval_loss,
             "final_eval_accuracy": final_eval_accuracy,
             "final_eval_perplexity": final_eval_perplexity,
+            "best_lora_dir": best_lora_dir,
             "training_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
@@ -629,18 +664,27 @@ def main():
         print(f"   Best Epoch: {epoch_callback.best_epoch}")
         print(f"   Best Eval Loss: {epoch_callback.best_eval_loss:.4f}")
         print(f"   Final Eval Accuracy: {final_eval_accuracy:.4f}")
+        print(f"   Final Eval Perplexity: {final_eval_perplexity:.4f}")
+        print(f"\n📁 Output Files:")
         print(f"   Best LoRA weights: {best_lora_dir}")
+        print(f"   Epoch eval results: {os.path.join(args.output_dir, 'epoch_eval_results.json')}")
+        print(f"   Final eval results: {os.path.join(args.output_dir, 'final_eval_results.json')}")
+        print(f"   Training config: {config_file}")
 
         print("\n" + "="*80)
         print("✅ Training completed successfully!")
         print("="*80)
         print(f"\n💡 Next steps:")
-        print(f"   1. Merge LoRA with base model:")
-        print(f"      python merge_lora.py \\")
-        print(f"        --base_model {args.model_name_or_path} \\")
-        print(f"        --lora_weights {best_lora_dir} \\")
-        print(f"        --output_dir /path/to/merged_model")
-        print(f"\n   2. Or use LoRA directly for inference")
+        print(f"   1. Merge LoRA with base model (if needed):")
+        print(f"      sh run_merge_lora.sh {args.model_name_or_path.split('/')[-1].lower().replace('meta-', '').split('-')[0]} <num_classes>")
+        print(f"\n   2. Evaluate with LoRA weights:")
+        print(f"      python eval_lora_only_from_components.py \\")
+        print(f"        --base_model_path {args.model_name_or_path} \\")
+        print(f"        --lora_weights_path {best_lora_dir} \\")
+        print(f"        --test_file /path/to/test.json \\")
+        print(f"        --output_dir /path/to/output")
+        print(f"\n   3. Use for CultureMoE training:")
+        print(f"      First merge LoRA, then use merged model for training")
         print("")
 
 

@@ -73,6 +73,13 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
             full_input = f"{instruction}\n{input_text}\n\nPlease answer with ONLY ONE WORD from: yes, no, neutral.\nYour answer:"
         else:
             full_input = f"{instruction}\n{input_text}\n\nYour answer:"
+    elif output_type == "bool":
+        # 布尔类型（TRUE/FALSE）
+        # 检查 input 是否已包含提示语
+        if "true" in input_text.lower() and "false" in input_text.lower():
+            full_input = f"{instruction}\n{input_text}"
+        else:
+            full_input = f"{instruction}\n{input_text}\n\nPlease answer with ONLY ONE WORD: TRUE or FALSE.\nYour answer:"
     else:
         # 数字类型（默认）
         if num_classes <= 10:
@@ -126,9 +133,10 @@ def extract_label(answer: str, num_classes: int = 5, output_type: str = "number"
     """
     从答案中提取标签
 
-    支持两种类型：
+    支持三种类型：
     - number: 数字标签 (1-10)
     - text: 文本标签 (yes/no/neutral)
+    - bool: 布尔标签 (TRUE/FALSE)
     """
     if not answer:
         return num_classes // 2  # 默认返回中间类别
@@ -147,6 +155,16 @@ def extract_label(answer: str, num_classes: int = 5, output_type: str = "number"
             # 默认返回 neutral
             print(f"⚠️  Warning: Failed to extract text label from '{answer}', using default 'neutral' (2)")
             return 2
+    elif output_type == "bool":
+        # 布尔类型：TRUE/FALSE
+        if "true" in answer_lower:
+            return 0  # TRUE -> 0
+        elif "false" in answer_lower:
+            return 1  # FALSE -> 1
+        else:
+            # 默认返回 TRUE
+            print(f"⚠️  Warning: Failed to extract bool label from '{answer}', using default 'TRUE' (0)")
+            return 0
     else:
         # 数字类型
         # 方法1：尝试直接转换为整数
@@ -205,6 +223,9 @@ def evaluate_model(model, tokenizer, test_data, device, num_classes: int = 5, sa
     if first_output in ['yes', 'no', 'neutral']:
         output_type = "text"
         print(f"✅ Detected output type: text (yes/no/neutral)")
+    elif first_output in ['true', 'false']:
+        output_type = "bool"
+        print(f"✅ Detected output type: bool (TRUE/FALSE)")
     else:
         output_type = "number"
         print(f"✅ Detected output type: number (1-{num_classes})")
@@ -232,6 +253,14 @@ def evaluate_model(model, tokenizer, test_data, device, num_classes: int = 5, sa
                 label = 2
             else:
                 label = 2  # 默认 neutral
+        elif output_type == "bool":
+            output_str = str(item['output']).upper().strip()
+            if output_str == 'TRUE':
+                label = 0  # TRUE -> 0
+            elif output_str == 'FALSE':
+                label = 1  # FALSE -> 1
+            else:
+                label = 0  # 默认 TRUE
         else:
             label = int(item['output'])
             # 转换为 0-indexed
@@ -389,6 +418,12 @@ def main():
         unique_labels = set(str(item['output']).lower().strip() for item in test_data)
         inferred_num_classes = 3  # yes/no/neutral 固定为 3 类
         print(f"✅ Auto-inferred num_classes: {inferred_num_classes} (text type)")
+        print(f"   Unique labels: {sorted(unique_labels)}")
+    elif first_output in ['true', 'false']:
+        # 布尔类型：TRUE/FALSE
+        unique_labels = set(str(item['output']).upper().strip() for item in test_data)
+        inferred_num_classes = 2  # TRUE/FALSE 固定为 2 类
+        print(f"✅ Auto-inferred num_classes: {inferred_num_classes} (bool type)")
         print(f"   Unique labels: {sorted(unique_labels)}")
     else:
         # 数字类型 - 注意：标签是字符串，需要转换为整数
