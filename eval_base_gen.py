@@ -46,9 +46,10 @@ def load_model(model_path: str, device: str = "cuda"):
     return model, tokenizer
 
 
-def generate_answer(model, tokenizer, instruction: str, input_text: str, num_classes: int = 5, max_new_tokens: int = 3):
+def generate_answer(model, tokenizer, instruction: str, input_text: str, num_classes: int = 5,
+                   output_type: str = "number", max_new_tokens: int = 10):
     """
-    生成答案 - 强制只生成数字（选项编号）
+    生成答案 - 根据数据集类型生成不同格式的答案
 
     Args:
         model: 模型
@@ -56,7 +57,8 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
         instruction: 指令
         input_text: 输入文本
         num_classes: 类别数量
-        max_new_tokens: 最大生成 token 数（默认3，足够生成一个数字）
+        output_type: 输出类型 ("number" 或 "text")
+        max_new_tokens: 最大生成 token 数
 
     Returns:
         raw_answer: 原始生成的答案
@@ -64,8 +66,19 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     """
     device = next(model.parameters()).device
 
-    # 构建输入 - 明确要求只输出数字
-    full_input = f"{instruction}\n{input_text}\n\nPlease answer with ONLY ONE NUMBER (0 to {num_classes-1}).\nYour answer:"
+    # 根据输出类型构建不同的 prompt
+    if output_type == "text":
+        # 文本类型（如 yes/no/neutral）
+        if num_classes == 3:
+            full_input = f"{instruction}\n{input_text}\n\nPlease answer with ONLY ONE WORD from: yes, no, neutral.\nYour answer:"
+        else:
+            full_input = f"{instruction}\n{input_text}\n\nYour answer:"
+    else:
+        # 数字类型（默认）
+        if num_classes <= 10:
+            full_input = f"{instruction}\n{input_text}\n\nPlease answer with ONLY ONE NUMBER (1 to {num_classes}).\nYour answer:"
+        else:
+            full_input = f"{instruction}\n{input_text}\n\nYour answer:"
 
     # Tokenize
     inputs = tokenizer(
@@ -97,48 +110,68 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     # 提取生成的部分（去掉输入的 prompt）
     raw_answer = full_output[len(full_input):].strip()
 
-    # 只保留第一个字符（应该是数字）
+    # 提取第一个词
     if raw_answer:
         raw_answer = raw_answer.split()[0]  # 取第一个词
-        if len(raw_answer) > 1:
-            raw_answer = raw_answer[0]  # 只取第一个字符
+        # 移除标点符号
+        raw_answer = raw_answer.strip('.,!?;:')
 
     # 提取标签
-    predicted_label = extract_label(raw_answer, num_classes)
+    predicted_label = extract_label(raw_answer, num_classes, output_type)
 
     return raw_answer, predicted_label
 
 
-def extract_label(answer: str, num_classes: int = 5):
+def extract_label(answer: str, num_classes: int = 5, output_type: str = "number"):
     """
     从答案中提取标签
 
-    多层提取策略：
-    1. 尝试直接匹配数字
-    2. 尝试匹配第一个数字
-    3. 如果失败，返回默认值（中间类别）
+    支持两种类型：
+    - number: 数字标签 (1-10)
+    - text: 文本标签 (yes/no/neutral)
     """
     if not answer:
         return num_classes // 2  # 默认返回中间类别
 
-    # 方法1：尝试直接转换为整数
-    try:
-        label = int(answer)
-        if 0 <= label < num_classes:
-            return label
-    except ValueError:
-        pass
+    answer_lower = answer.lower().strip()
 
-    # 方法2：尝试匹配第一个数字
-    match = re.search(r'(\d+)', answer)
-    if match:
-        label = int(match.group(1))
-        if 0 <= label < num_classes:
-            return label
+    if output_type == "text":
+        # 文本类型：yes/no/neutral
+        if "yes" in answer_lower:
+            return 0  # yes -> 0
+        elif "no" in answer_lower:
+            return 1  # no -> 1
+        elif "neutral" in answer_lower:
+            return 2  # neutral -> 2
+        else:
+            # 默认返回 neutral
+            print(f"⚠️  Warning: Failed to extract text label from '{answer}', using default 'neutral' (2)")
+            return 2
+    else:
+        # 数字类型
+        # 方法1：尝试直接转换为整数
+        try:
+            label = int(answer)
+            # 标签范围检查（支持 1-indexed）
+            if 1 <= label <= num_classes:
+                return label - 1  # 转换为 0-indexed
+            elif 0 <= label < num_classes:
+                return label
+        except ValueError:
+            pass
 
-    # 方法3：默认返回中间类别
-    print(f"⚠️  Warning: Failed to extract label from '{answer}', using default {num_classes // 2}")
-    return num_classes // 2
+        # 方法2：尝试匹配第一个数字
+        match = re.search(r'(\d+)', answer)
+        if match:
+            label = int(match.group(1))
+            if 1 <= label <= num_classes:
+                return label - 1  # 转换为 0-indexed
+            elif 0 <= label < num_classes:
+                return label
+
+        # 方法3：默认返回中间类别
+        print(f"⚠️  Warning: Failed to extract label from '{answer}', using default {num_classes // 2}")
+        return num_classes // 2
 
 
 def evaluate_model(model, tokenizer, test_data, device, num_classes: int = 5, save_answers: bool = True, output_dir: str = None):
