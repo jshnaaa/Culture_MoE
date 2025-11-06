@@ -66,7 +66,7 @@ case $DATA_ID in
     22)
         # CulturalBench (RP)
         DATASET_NAME="CulturalBench_RP"
-        TEST_FILE="/root/autodl-fs/CulturalBench_rp_merge_gen.json"
+        TEST_FILE="/root/autodl-fs/CulturalBench_merge_rp_gen.json"
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/rp_gen_CulturalBench_${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
     32)
