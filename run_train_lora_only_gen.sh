@@ -169,3 +169,11 @@ else
     exit 1
 fi
 
+# 训练完成后自动评估
+if [ -f "${OUTPUT_DIR}/generated_answers.json" ]; then
+    echo "Running post-evaluation..."
+    python eval_from_generated_answers.py \
+        --input "${OUTPUT_DIR}/generated_answers.json" \
+        --output "${OUTPUT_DIR}/eval_metrics.json"
+fi
+
