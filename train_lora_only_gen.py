@@ -44,19 +44,45 @@ def compute_metrics(eval_preds):
 
     注意：predictions 已经通过 preprocess_logits_for_metrics 转换为 token IDs
     """
+    import numpy as np
+
     predictions, labels = eval_preds
 
     # predictions 已经是 token IDs，shape: (batch_size, seq_len)
     # labels 是真实标签，shape: (batch_size, seq_len)
 
+    # 转换为 numpy 数组
+    if hasattr(predictions, 'cpu'):
+        predictions = predictions.cpu().numpy()
+    if hasattr(labels, 'cpu'):
+        labels = labels.cpu().numpy()
+
     # 只计算非 -100 位置（即答案部分）
     mask = labels != -100
+
+    # 调试信息：打印前几个样本
+    print(f"\n[DEBUG] compute_metrics called:")
+    print(f"  predictions shape: {predictions.shape}")
+    print(f"  labels shape: {labels.shape}")
+    print(f"  mask sum: {mask.sum()}")
+
+    # 打印第一个样本的答案部分
+    if len(predictions) > 0:
+        first_mask = mask[0]
+        first_pred = predictions[0][first_mask]
+        first_label = labels[0][first_mask]
+        print(f"  First sample answer tokens:")
+        print(f"    Predicted: {first_pred[:10]}")  # 前10个token
+        print(f"    Label:     {first_label[:10]}")
+        print(f"    Match:     {np.array_equal(first_pred, first_label)}")
 
     # 1. Token-level 准确率（每个 token 的准确率）
     token_correct = (predictions == labels) & mask
     total_correct_tokens = token_correct.sum()
     total_tokens = mask.sum()
     token_accuracy = total_correct_tokens / total_tokens if total_tokens > 0 else 0.0
+
+    print(f"  Token accuracy: {token_accuracy:.4f} ({total_correct_tokens}/{total_tokens})")
 
     # 2. Sample-level 准确率（整个答案完全正确才算对）
     num_samples = predictions.shape[0]
@@ -69,10 +95,12 @@ def compute_metrics(eval_preds):
         sample_label = labels[i][sample_mask]
 
         # 检查答案是否完全匹配
-        if len(sample_pred) == len(sample_label) and (sample_pred == sample_label).all():
+        if len(sample_pred) == len(sample_label) and np.array_equal(sample_pred, sample_label):
             sample_correct += 1
 
     sample_accuracy = sample_correct / num_samples if num_samples > 0 else 0.0
+
+    print(f"  Sample accuracy: {sample_accuracy:.4f} ({sample_correct}/{num_samples})\n")
 
     return {
         "accuracy": float(sample_accuracy),  # 主要指标：样本级别准确率
@@ -83,8 +111,9 @@ def compute_metrics(eval_preds):
 class EpochEvalCallback(TrainerCallback):
     """每个 epoch 结束后保存评估结果，并保存最佳 LoRA 权重"""
 
-    def __init__(self, output_dir):
+    def __init__(self, output_dir, tokenizer=None):
         self.output_dir = output_dir
+        self.tokenizer = tokenizer
         self.epoch_results = []
         self.best_eval_loss = float('inf')
         self.best_epoch = 0
@@ -129,6 +158,9 @@ class EpochEvalCallback(TrainerCallback):
 
                         if model is not None:
                             model.save_pretrained(best_lora_dir)
+                            # 同时保存 tokenizer
+                            if self.tokenizer is not None:
+                                self.tokenizer.save_pretrained(best_lora_dir)
                             print(f"   🏆 New best model! Eval Loss: {current_eval_loss:.4f}")
                             print(f"   ✅ Best LoRA weights saved to: {best_lora_dir}")
 
@@ -481,7 +513,7 @@ def main():
     data_collator = custom_data_collator
 
     # 创建 Callback
-    epoch_callback = EpochEvalCallback(args.output_dir)
+    epoch_callback = EpochEvalCallback(args.output_dir, tokenizer=tokenizer)
 
     # 预处理 logits 以节省显存
     def preprocess_logits_for_metrics(logits, labels):
