@@ -309,38 +309,44 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
                 # 答案前加空格
                 full_text = f"{prompt} {output}"
 
-            # Tokenize 完整文本
-            full_tokens = tokenizer(
-                full_text,
-                add_special_tokens=True,
-                truncation=True,
-                max_length=max_length
-            )
-
-            # Tokenize prompt（单独）来找到答案的起始位置
+            # Tokenize prompt 和答案（分别）
             prompt_tokens = tokenizer(
                 prompt,
                 add_special_tokens=True,
-                truncation=True,
-                max_length=max_length
+                truncation=False,  # 不截断
+                max_length=None
             )
 
-            # 找到答案的起始位置
-            # 方法：比较 full_tokens 和 prompt_tokens，找到第一个不同的位置
-            prompt_len = len(prompt_tokens["input_ids"])
+            answer_tokens = tokenizer(
+                output,
+                add_special_tokens=False,  # 答案不需要特殊 token
+                truncation=False,
+                max_length=None
+            )
+
+            # 合并 prompt 和答案的 token IDs
+            full_input_ids = prompt_tokens["input_ids"] + answer_tokens["input_ids"]
+            full_attention_mask = prompt_tokens["attention_mask"] + answer_tokens["attention_mask"]
+
+            # 截断到最大长度
+            if len(full_input_ids) > max_length:
+                full_input_ids = full_input_ids[:max_length]
+                full_attention_mask = full_attention_mask[:max_length]
 
             # 创建 labels：prompt 部分用 -100（忽略），答案部分正常
-            labels = []
-            for idx, token_id in enumerate(full_tokens["input_ids"]):
-                if idx < prompt_len:
-                    # Prompt 部分：忽略
-                    labels.append(-100)
-                else:
-                    # 答案部分：保留
-                    labels.append(token_id)
+            prompt_len = len(prompt_tokens["input_ids"])
+            labels = [-100] * prompt_len + answer_tokens["input_ids"]
 
-            model_inputs["input_ids"].append(full_tokens["input_ids"])
-            model_inputs["attention_mask"].append(full_tokens["attention_mask"])
+            # 截断 labels
+            if len(labels) > max_length:
+                labels = labels[:max_length]
+
+            # 确保长度一致
+            assert len(full_input_ids) == len(full_attention_mask) == len(labels), \
+                f"Length mismatch: input_ids={len(full_input_ids)}, attention_mask={len(full_attention_mask)}, labels={len(labels)}"
+
+            model_inputs["input_ids"].append(full_input_ids)
+            model_inputs["attention_mask"].append(full_attention_mask)
             model_inputs["labels"].append(labels)
 
         return model_inputs
