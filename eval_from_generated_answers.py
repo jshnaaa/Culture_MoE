@@ -19,8 +19,12 @@ def detect_task_type(data):
     sample_outputs = [d["true"] for d in data[:10] if d["true"]]
 
     # 检查是否是 yes/no/neutral
-    if all(s in ["yes", "no", "neutral"] for s in sample_outputs if s):
+    if all(s.lower() in ["yes", "no", "neutral"] for s in sample_outputs if s):
         return "text"
+
+    # 检查是否是 TRUE/FALSE
+    if all(s.upper() in ["TRUE", "FALSE"] for s in sample_outputs if s):
+        return "bool"
 
     # 检查是否是数字
     try:
@@ -177,6 +181,63 @@ def evaluate_number_classification(data):
     }
 
 
+def evaluate_bool_classification(data):
+    """评估布尔分类任务（TRUE/FALSE）"""
+    label_to_id = {"true": 0, "false": 1}
+    id_to_label = {0: "TRUE", 1: "FALSE"}
+
+    pred_labels = []
+    true_labels = []
+
+    for item in data:
+        pred = item["predicted"].strip().upper()
+        true = item["true"].strip().upper()
+
+        # 提取标签
+        pred_label = "FALSE"  # 默认
+        if "TRUE" in pred:
+            pred_label = "TRUE"
+        elif "FALSE" in pred:
+            pred_label = "FALSE"
+
+        true_label = true if true in ["TRUE", "FALSE"] else "FALSE"
+
+        pred_labels.append(label_to_id[pred_label.lower()])
+        true_labels.append(label_to_id[true_label.lower()])
+
+    # 计算指标
+    accuracy = sum(p == t for p, t in zip(pred_labels, true_labels)) / len(pred_labels)
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        true_labels, pred_labels, average='binary', zero_division=0
+    )
+
+    print("\n" + "="*80)
+    print("📊 Classification Metrics (TRUE/FALSE)")
+    print("="*80)
+    print(f"Accuracy:  {accuracy:.4f} ({sum(p == t for p, t in zip(pred_labels, true_labels))}/{len(pred_labels)})")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall:    {recall:.4f}")
+    print(f"F1 Score:  {f1:.4f}")
+    print("="*80)
+
+    # 混淆矩阵
+    cm = confusion_matrix(true_labels, pred_labels)
+    print("\nConfusion Matrix:")
+    print("-" * 80)
+    print(f"{'':>10} {'TRUE':<10} {'FALSE':<10}")
+    print("-" * 80)
+    for i, label in enumerate(["TRUE", "FALSE"]):
+        print(f"{label:>10} {cm[i][0]:<10} {cm[i][1]:<10}")
+    print("="*80)
+
+    return {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1
+    }
+
+
 def evaluate_exact_match(data):
     """评估精确匹配"""
     correct = sum(d["predicted"].strip() == d["true"].strip() for d in data)
@@ -219,6 +280,8 @@ def main():
     # 根据任务类型评估
     if task_type == "text":
         metrics = evaluate_text_classification(data)
+    elif task_type == "bool":
+        metrics = evaluate_bool_classification(data)
     elif task_type == "number":
         metrics = evaluate_number_classification(data)
     else:
