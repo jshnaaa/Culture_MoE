@@ -44,6 +44,13 @@ def load_model_from_components(base_model_path: str, lora_weights_path: str, dev
     print(f"  Base model: {base_model_path}")
     print(f"  LoRA weights: {lora_weights_path}")
 
+    # 列出 LoRA 权重目录的内容
+    if os.path.exists(lora_weights_path):
+        lora_files = os.listdir(lora_weights_path)
+        print(f"  LoRA directory contents: {lora_files}")
+    else:
+        raise FileNotFoundError(f"LoRA weights directory not found: {lora_weights_path}")
+
     # 加载 tokenizer
     tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -60,10 +67,19 @@ def load_model_from_components(base_model_path: str, lora_weights_path: str, dev
 
     # 加载 LoRA 权重
     print("Step 2: Loading LoRA weights...")
+
+    # 检查 adapter_config.json 是否存在
+    adapter_config_path = os.path.join(lora_weights_path, "adapter_config.json")
+    if not os.path.exists(adapter_config_path):
+        raise FileNotFoundError(f"adapter_config.json not found in {lora_weights_path}")
+
+    print(f"  Found adapter_config.json: {adapter_config_path}")
+
     peft_model = PeftModel.from_pretrained(
         base_model,
         lora_weights_path,
-        is_trainable=False
+        is_trainable=False,
+        torch_dtype=torch.float16
     )
 
     # 合并 LoRA 权重到 base 模型（仅在内存中）
@@ -238,9 +254,9 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
 
-    # 保存详细答案（保存为 generated_answer.json，与 shell 脚本一致）
+    # 保存详细答案
     if output_dir:
-        answers_file = os.path.join(output_dir, "generated_answer.json")
+        answers_file = os.path.join(output_dir, "generated_answers.json")
         with open(answers_file, 'w', encoding='utf-8') as f:
             json.dump(all_answers, f, indent=2, ensure_ascii=False)
         print(f"\n✅ Saved {len(all_answers)} detailed answers to: {answers_file}")
