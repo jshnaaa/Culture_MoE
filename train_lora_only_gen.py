@@ -34,260 +34,205 @@ from transformers import (
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def compute_metrics(eval_preds, tokenizer=None, output_type="number", output_dir=None):
+def generate_and_evaluate(model, tokenizer, eval_dataset, output_dir, output_type="number", max_new_tokens=10):
     """
-    计算评估指标（样本级别准确率）
+    生成答案并评估（使用真正的生成，而不是 teacher forcing）
 
-    对于生成式任务，我们计算：
-    - Sample-level Accuracy: 整个答案完全正确才算对
-    - Token-level Accuracy: 答案部分每个 token 的准确率
-    - 对于分类任务（yes/no/neutral），还计算精确率、recall、F1等指标
-
-    注意：predictions 已经通过 preprocess_logits_for_metrics 转换为 token IDs
+    这个函数会：
+    1. 对验证集中的每个样本生成答案
+    2. 保存到 generated_answers.json
+    3. 调用 post-eval 脚本计算指标
     """
-    import numpy as np
     import os
-    from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
+    import subprocess
+    from tqdm import tqdm
 
-    predictions, labels = eval_preds
+    print("\n" + "="*80)
+    print("Generating answers for evaluation...")
+    print("="*80)
 
-    # predictions 已经是 token IDs，shape: (batch_size, seq_len)
-    # labels 是真实标签，shape: (batch_size, seq_len)
-
-    # 转换为 numpy 数组
-    if hasattr(predictions, 'cpu'):
-        predictions = predictions.cpu().numpy()
-    if hasattr(labels, 'cpu'):
-        labels = labels.cpu().numpy()
-
-    # 只计算非 -100 位置（即答案部分）
-    mask = labels != -100
-
-    # 只在主进程中打印调试信息
-    is_main_process = int(os.environ.get('RANK', 0)) == 0
-
-    # 标签映射（用于分类任务）
-    label_to_id = {"yes": 0, "no": 1, "neutral": 2}
-    id_to_label = {0: "yes", 1: "no", 2: "neutral"}
-
-    # 提取答案部分并解码
+    model.eval()
     generated_answers = []
-    true_labels = []
-    pred_labels = []
-    true_label_ids = []
-    pred_label_ids = []
 
-    for i in range(predictions.shape[0]):
-        sample_mask = mask[i]
-        sample_label = labels[i][sample_mask]
+    # 获取原始数据（包含 prompt 和真实答案）
+    # 注意：eval_dataset 已经被预处理过，我们需要重新构建 prompt
+    # 这里我们假设可以从 input_ids 中提取 prompt（去掉答案部分）
 
-        # 找到答案开始的位置（第一个非 -100 的位置）
-        answer_positions = np.where(mask[i])[0]
+    for i in tqdm(range(len(eval_dataset)), desc="Generating"):
+        sample = eval_dataset[i]
+        input_ids = sample['input_ids']
+        labels = sample['labels']
 
-        if len(answer_positions) == 0:
-            # 没有答案部分，跳过
-            generated_answers.append({
-                "predicted": "",
-                "true": ""
-            })
-            continue
-
-        # 答案开始位置
-        answer_start = answer_positions[0]
-
-        # 获取模型对答案部分的预测
-        # 注意：predictions[i][j] 是模型在位置 j 预测的下一个 token
-        # 所以 predictions[i][answer_start-1:answer_end-1] 对应答案部分的预测
-        answer_end = answer_positions[-1] + 1
-
-        if answer_start > 0:
-            # 提取答案部分的预测（从 answer_start-1 开始，因为这个位置预测答案的第一个 token）
-            sample_pred = predictions[i][answer_start-1:answer_end-1]
+        # 找到 prompt 的结束位置（第一个非 -100 的 label 之前）
+        label_mask = [l != -100 for l in labels]
+        if any(label_mask):
+            prompt_end = label_mask.index(True)
+            prompt_ids = input_ids[:prompt_end]
         else:
-            # 如果答案从第一个位置开始（不太可能），直接使用预测
-            sample_pred = predictions[i][answer_start:answer_end]
+            # 如果没有答案部分，使用整个序列
+            prompt_ids = input_ids
 
-        # 解码预测和真实标签
-        try:
-            pred_text = tokenizer.decode(sample_pred, skip_special_tokens=True).strip().lower()
-            label_text = tokenizer.decode(sample_label, skip_special_tokens=True).strip().lower()
-        except:
-            pred_text = ""
-            label_text = ""
+        # 生成答案
+        import torch
+        with torch.no_grad():
+            prompt_tensor = torch.tensor([prompt_ids]).to(model.device)
+            outputs = model.generate(
+                prompt_tensor,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                do_sample=False,  # 使用贪婪解码
+            )
+
+            # 提取生成的部分（去掉 prompt）
+            generated_ids = outputs[0][len(prompt_ids):]
+            generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+        # 提取真实答案
+        answer_ids = [l for l in labels if l != -100]
+        true_text = tokenizer.decode(answer_ids, skip_special_tokens=True).strip()
 
         generated_answers.append({
-            "predicted": pred_text,
-            "true": label_text
+            "predicted": generated_text,
+            "true": true_text
         })
 
-        # 对于文本类型标签，需要提取分类标签
-        if output_type == "text":
-            # 从生成的文本中提取标签
-            pred_label = "neutral"  # 默认为 neutral
-            for label_str in ["yes", "no", "neutral"]:
-                if label_str in pred_text:
-                    pred_label = label_str
-                    break
-
-            # 真实标签
-            true_label = label_text
-            if true_label not in label_to_id:
-                true_label = "neutral"
-
-            pred_labels.append(pred_label)
-            true_labels.append(true_label)
-            pred_label_ids.append(label_to_id[pred_label])
-            true_label_ids.append(label_to_id[true_label])
-        else:
-            # 对于其他类型，直接比较文本
-            pred_labels.append(pred_text)
-            true_labels.append(label_text)
-
     # 保存生成的答案
-    if output_dir is not None and is_main_process:
-        answers_file = os.path.join(output_dir, "generated_answers.json")
-        with open(answers_file, 'w', encoding='utf-8') as f:
-            json.dump(generated_answers, f, indent=2, ensure_ascii=False)
+    answers_file = os.path.join(output_dir, "generated_answers.json")
+    with open(answers_file, 'w', encoding='utf-8') as f:
+        json.dump(generated_answers, f, indent=2, ensure_ascii=False)
 
-    # 计算指标
-    metrics = {}
+    print(f"✅ Generated answers saved to: {answers_file}")
 
-    if output_type == "text":
-        # 分类任务指标
-        num_samples = len(pred_label_ids)
-        sample_correct = sum(1 for p, t in zip(pred_label_ids, true_label_ids) if p == t)
-        sample_accuracy = sample_correct / num_samples if num_samples > 0 else 0.0
+    # 调用 post-eval 脚本计算指标
+    eval_script = os.path.join(os.path.dirname(__file__), "eval_from_generated_answers.py")
+    metrics_file = os.path.join(output_dir, "eval_metrics.json")
 
-        metrics["accuracy"] = float(sample_accuracy)
-
-        # 计算精确率、recall、F1
-        if len(set(true_label_ids)) > 0:
-            precision, recall, f1, _ = precision_recall_fscore_support(
-                true_label_ids, pred_label_ids, average='weighted', zero_division=0
+    if os.path.exists(eval_script):
+        print("\nRunning post-evaluation...")
+        try:
+            result = subprocess.run(
+                ["python", eval_script, "--input", answers_file, "--output", metrics_file],
+                capture_output=True,
+                text=True,
+                check=True
             )
-            metrics["precision"] = float(precision)
-            metrics["recall"] = float(recall)
-            metrics["f1"] = float(f1)
+            print(result.stdout)
 
-            # 计算每个类别的指标
-            precision_per_class, recall_per_class, f1_per_class, _ = precision_recall_fscore_support(
-                true_label_ids, pred_label_ids, average=None, zero_division=0
-            )
-            for label_id, label_str in id_to_label.items():
-                metrics[f"precision_{label_str}"] = float(precision_per_class[label_id])
-                metrics[f"recall_{label_str}"] = float(recall_per_class[label_id])
-                metrics[f"f1_{label_str}"] = float(f1_per_class[label_id])
-
-            if is_main_process:
-                print(f"\n[EVAL] Classification Metrics:")
-                print(f"  Accuracy: {sample_accuracy:.4f}")
-                print(f"  Precision (weighted): {precision:.4f}")
-                print(f"  Recall (weighted): {recall:.4f}")
-                print(f"  F1 (weighted): {f1:.4f}")
-                print(f"  Per-class metrics:")
-                for label_id, label_str in id_to_label.items():
-                    print(f"    {label_str}: P={precision_per_class[label_id]:.4f}, R={recall_per_class[label_id]:.4f}, F1={f1_per_class[label_id]:.4f}")
+            # 读取指标
+            if os.path.exists(metrics_file):
+                with open(metrics_file, 'r') as f:
+                    metrics = json.load(f)
+                return metrics
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️  Post-evaluation failed: {e}")
+            print(e.stderr)
     else:
-        # 其他类型的任务
-        num_samples = predictions.shape[0]
-        sample_correct = 0
+        print(f"⚠️  Evaluation script not found: {eval_script}")
 
-        for i in range(num_samples):
-            sample_mask = mask[i]
-            sample_pred = predictions[i][sample_mask]
-            sample_label = labels[i][sample_mask]
-
-            # 检查答案是否完全匹配
-            if len(sample_pred) == len(sample_label) and np.array_equal(sample_pred, sample_label):
-                sample_correct += 1
-
-        sample_accuracy = sample_correct / num_samples if num_samples > 0 else 0.0
-        metrics["accuracy"] = float(sample_accuracy)
-
-        if is_main_process:
-            print(f"\n[EVAL] Accuracy: {sample_accuracy:.4f} ({sample_correct}/{num_samples})")
-
-    return metrics
+    # 如果 post-eval 失败，返回简单的准确率
+    correct = sum(1 for item in generated_answers if item["predicted"].lower() == item["true"].lower())
+    accuracy = correct / len(generated_answers) if len(generated_answers) > 0 else 0.0
+    return {"accuracy": accuracy}
 
 
 class EpochEvalCallback(TrainerCallback):
-    """每个 epoch 结束后保存评估结果，并保存最佳 LoRA 权重"""
+    """每个 epoch 结束后生成答案、评估并保存最佳 LoRA 权重"""
 
-    def __init__(self, output_dir, tokenizer=None, use_accuracy=False):
+    def __init__(self, output_dir, tokenizer=None, eval_dataset=None, output_type="number"):
         self.output_dir = output_dir
         self.tokenizer = tokenizer
+        self.eval_dataset = eval_dataset
+        self.output_type = output_type
         self.epoch_results = []
-        self.best_eval_loss = float('inf')
         self.best_eval_accuracy = -1.0
         self.best_epoch = 0
-        self.use_accuracy = use_accuracy  # 是否使用 accuracy 作为最佳模型的判断标准
 
     def on_epoch_end(self, args, state, control, model=None, **kwargs):
-        """Epoch 结束时保存结果和最佳 LoRA 权重"""
-        # 获取当前 epoch 的评估指标
-        if state.log_history:
-            # 找到最近的评估结果
-            for log in reversed(state.log_history):
-                if 'eval_loss' in log:
-                    current_eval_loss = log.get('eval_loss', float('inf'))
-                    eval_accuracy = log.get('eval_accuracy', None)
+        """Epoch 结束时生成答案、评估并保存最佳 LoRA 权重"""
+        import torch.distributed as dist
 
-                    epoch_result = {
-                        'epoch': int(state.epoch),
-                        'eval_loss': current_eval_loss,
-                        'eval_accuracy': eval_accuracy,
-                        'train_loss': log.get('loss', None),
-                    }
-                    self.epoch_results.append(epoch_result)
+        # 只在主进程中进行评估
+        is_main_process = not dist.is_initialized() or dist.get_rank() == 0
 
-                    # 保存到文件
-                    results_file = os.path.join(self.output_dir, "epoch_eval_results.json")
-                    with open(results_file, 'w', encoding='utf-8') as f:
-                        json.dump(self.epoch_results, f, indent=2, ensure_ascii=False)
+        if not is_main_process:
+            return
 
-                    print(f"\n📊 Epoch {int(state.epoch)} Results:")
-                    print(f"   Train Loss: {epoch_result['train_loss']:.4f}" if epoch_result['train_loss'] else "   Train Loss: N/A")
-                    print(f"   Eval Loss:  {current_eval_loss:.4f}")
-                    if eval_accuracy is not None:
-                        print(f"   Eval Accuracy: {eval_accuracy:.4f}")
+        if model is None or self.eval_dataset is None:
+            return
 
-                    # 判断是否是最佳模型
-                    is_best = False
-                    if self.use_accuracy and eval_accuracy is not None:
-                        # 使用 accuracy 作为判断标准
-                        if eval_accuracy > self.best_eval_accuracy:
-                            is_best = True
-                            self.best_eval_accuracy = eval_accuracy
-                            self.best_epoch = int(state.epoch)
-                    else:
-                        # 使用 loss 作为判断标准
-                        if current_eval_loss < self.best_eval_loss:
-                            is_best = True
-                            self.best_eval_loss = current_eval_loss
-                            self.best_epoch = int(state.epoch)
+        # 获取训练 loss
+        train_loss = None
+        for log in reversed(state.log_history):
+            if 'loss' in log:
+                train_loss = log.get('loss', None)
+                break
 
-                    # 如果是最佳模型，保存 LoRA 权重
-                    if is_best:
-                        # 只保存 LoRA 权重
-                        best_lora_dir = os.path.join(self.output_dir, "best_lora")
-                        os.makedirs(best_lora_dir, exist_ok=True)
+        # 生成答案并评估
+        print(f"\n{'='*80}")
+        print(f"📊 Epoch {int(state.epoch)} Evaluation")
+        print(f"{'='*80}")
 
-                        if model is not None:
-                            model.save_pretrained(best_lora_dir)
-                            # 同时保存 tokenizer
-                            if self.tokenizer is not None:
-                                self.tokenizer.save_pretrained(best_lora_dir)
-                            if self.use_accuracy and eval_accuracy is not None:
-                                print(f"   🏆 New best model! Eval Accuracy: {eval_accuracy:.4f}")
-                            else:
-                                print(f"   🏆 New best model! Eval Loss: {current_eval_loss:.4f}")
-                            print(f"   ✅ Best LoRA weights saved to: {best_lora_dir}")
+        # 调用生成和评估函数
+        metrics = generate_and_evaluate(
+            model=model,
+            tokenizer=self.tokenizer,
+            eval_dataset=self.eval_dataset,
+            output_dir=self.output_dir,
+            output_type=self.output_type,
+            max_new_tokens=10
+        )
 
-                    if self.use_accuracy and eval_accuracy is not None:
-                        print(f"   Best so far: Epoch {self.best_epoch}, Eval Accuracy: {self.best_eval_accuracy:.4f}\n")
-                    else:
-                        print(f"   Best so far: Epoch {self.best_epoch}, Eval Loss: {self.best_eval_loss:.4f}\n")
-                    break
+        eval_accuracy = metrics.get('accuracy', 0.0)
+
+        # 保存结果
+        epoch_result = {
+            'epoch': int(state.epoch),
+            'eval_accuracy': eval_accuracy,
+            'train_loss': train_loss,
+        }
+
+        # 添加其他指标（如果有）
+        for key in ['precision', 'recall', 'f1']:
+            if key in metrics:
+                epoch_result[f'eval_{key}'] = metrics[key]
+
+        self.epoch_results.append(epoch_result)
+
+        # 保存到文件
+        results_file = os.path.join(self.output_dir, "epoch_eval_results.json")
+        with open(results_file, 'w', encoding='utf-8') as f:
+            json.dump(self.epoch_results, f, indent=2, ensure_ascii=False)
+
+        print(f"\n📊 Epoch {int(state.epoch)} Results:")
+        if train_loss is not None:
+            print(f"   Train Loss: {train_loss:.4f}")
+        print(f"   Eval Accuracy: {eval_accuracy:.4f}")
+
+        # 打印其他指标
+        for key in ['precision', 'recall', 'f1']:
+            if key in metrics:
+                print(f"   Eval {key.capitalize()}: {metrics[key]:.4f}")
+
+        # 如果是最佳模型，保存 LoRA 权重
+        if eval_accuracy > self.best_eval_accuracy:
+            self.best_eval_accuracy = eval_accuracy
+            self.best_epoch = int(state.epoch)
+
+            # 只保存 LoRA 权重
+            best_lora_dir = os.path.join(self.output_dir, "best_lora")
+            os.makedirs(best_lora_dir, exist_ok=True)
+
+            if model is not None:
+                model.save_pretrained(best_lora_dir)
+                # 同时保存 tokenizer
+                if self.tokenizer is not None:
+                    self.tokenizer.save_pretrained(best_lora_dir)
+                print(f"   🏆 New best model! Eval Accuracy: {eval_accuracy:.4f}")
+                print(f"   ✅ Best LoRA weights saved to: {best_lora_dir}")
+
+        print(f"   Best so far: Epoch {self.best_epoch}, Eval Accuracy: {self.best_eval_accuracy:.4f}")
+        print(f"{'='*80}\n")
 
 
 def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_split: float = 0.1):
@@ -415,12 +360,7 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
                     full_text = f"{prompt} {output}"
             else:
                 # 数字类型
-                if input_text.strip():
-                    # input 不为空
-                    prompt = f"{instruction}\n{input_text}\nAnswer:"
-                else:
-                    # input 为空，直接使用 instruction
-                    prompt = f"{instruction}\nAnswer:"
+                prompt = f"{instruction}\n{input_text}\nAnswer:"
                 # 答案前加空格
                 full_text = f"{prompt} {output}"
 
@@ -443,34 +383,18 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
             full_input_ids = prompt_tokens["input_ids"] + answer_tokens["input_ids"]
             full_attention_mask = prompt_tokens["attention_mask"] + answer_tokens["attention_mask"]
 
+            # 截断到最大长度
+            if len(full_input_ids) > max_length:
+                full_input_ids = full_input_ids[:max_length]
+                full_attention_mask = full_attention_mask[:max_length]
+
             # 创建 labels：prompt 部分用 -100（忽略），答案部分正常
             prompt_len = len(prompt_tokens["input_ids"])
             labels = [-100] * prompt_len + answer_tokens["input_ids"]
 
-            # 截断到最大长度（确保答案部分不被截断）
-            if len(full_input_ids) > max_length:
-                # 如果超过最大长度，优先保留答案部分
-                # 计算答案长度
-                answer_len = len(answer_tokens["input_ids"])
-
-                # 如果 prompt 太长，从 prompt 开始截断
-                if prompt_len > max_length - answer_len:
-                    # prompt 太长，需要截断 prompt
-                    new_prompt_len = max_length - answer_len
-                    if new_prompt_len < 10:  # 至少保留 10 个 token 的 prompt
-                        # 如果连 10 个 token 都保留不了，说明答案太长，跳过这个样本
-                        print(f"⚠️  Skipping sample: prompt_len={prompt_len}, answer_len={answer_len}, max_length={max_length}")
-                        continue
-
-                    full_input_ids = full_input_ids[:new_prompt_len] + full_input_ids[prompt_len:prompt_len + answer_len]
-                    full_attention_mask = full_attention_mask[:new_prompt_len] + full_attention_mask[prompt_len:prompt_len + answer_len]
-                    labels = [-100] * new_prompt_len + answer_tokens["input_ids"]
-                    print(f"📝 Truncated: prompt {prompt_len}->{new_prompt_len}, answer {answer_len}, total {len(full_input_ids)}")
-                else:
-                    # 正常截断
-                    full_input_ids = full_input_ids[:max_length]
-                    full_attention_mask = full_attention_mask[:max_length]
-                    labels = labels[:max_length]
+            # 截断 labels
+            if len(labels) > max_length:
+                labels = labels[:max_length]
 
             # 确保长度一致
             assert len(full_input_ids) == len(full_attention_mask) == len(labels), \
@@ -516,7 +440,7 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
 
     print("✅ Using answer-only loss (prompt tokens will be ignored)")
 
-    return {'train': train_dataset, 'val': val_dataset, 'output_type': output_type}
+    return {'train': train_dataset, 'val': val_dataset}
 
 
 def main():
@@ -609,7 +533,7 @@ def main():
     )
     train_dataset = datasets['train']
     val_dataset = datasets['val']
-    output_type = datasets['output_type']
+    output_type = datasets.get('output_type', 'number')
     print(f"✅ Train: {len(train_dataset)}, Val: {len(val_dataset) if val_dataset else 0} samples\n")
 
     # 配置训练参数
@@ -617,16 +541,10 @@ def main():
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=args.per_device_train_batch_size,  # 评估批次大小
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         logging_steps=10,
-        # 评估策略
-        eval_strategy="epoch",  # 每个 epoch 评估一次
         save_strategy="no",  # 不自动保存 checkpoint（由 Callback 手动保存最佳 LoRA）
-        load_best_model_at_end=False,  # 不需要自动加载（Callback 已保存最佳）
-        prediction_loss_only=False,  # 返回 predictions 以计算 accuracy
-        # 评估配置 - 需要返回 predictions 以计算 accuracy
         fp16=True,
         report_to="none",
         remove_unused_columns=False,
@@ -673,53 +591,21 @@ def main():
 
     data_collator = custom_data_collator
 
-    # 创建 Callback - 对于文本类型（yes/no/neutral），使用 accuracy 作为最佳模型判断标准
-    use_accuracy = (output_type == "text")
-    epoch_callback = EpochEvalCallback(args.output_dir, tokenizer=tokenizer, use_accuracy=use_accuracy)
+    # 创建 Callback - 传递 eval_dataset 和 output_type
+    epoch_callback = EpochEvalCallback(
+        output_dir=args.output_dir,
+        tokenizer=tokenizer,
+        eval_dataset=val_dataset,
+        output_type=output_type
+    )
 
-    # 预处理 logits 以节省显存
-    def preprocess_logits_for_metrics(logits, labels):
-        """
-        只保留预测的 token IDs，而不是完整的 logits
-        这样可以大幅减少显存占用
-        """
-        import os
-
-        if isinstance(logits, tuple):
-            logits = logits[0]
-
-        # 只在主进程中打印调试信息
-        is_main_process = int(os.environ.get('RANK', 0)) == 0
-
-        if is_main_process:
-            print(f"\n[DEBUG] preprocess_logits_for_metrics:")
-            print(f"  logits shape: {logits.shape}")
-            print(f"  labels shape: {labels.shape}")
-
-        # 只保存预测的 token IDs
-        pred_ids = logits.argmax(dim=-1)
-
-        if is_main_process:
-            print(f"  pred_ids shape: {pred_ids.shape}")
-            print(f"  First sample pred_ids: {pred_ids[0, :10].tolist()}")
-            print(f"  First sample labels: {labels[0, :10].tolist()}")
-
-        return pred_ids
-
-    # 创建一个闭包来传递 tokenizer、output_type 和 output_dir 给 compute_metrics
-    def compute_metrics_with_tokenizer(eval_preds):
-        return compute_metrics(eval_preds, tokenizer=tokenizer, output_type=output_type, output_dir=args.output_dir)
-
-    # 创建 Trainer
+    # 创建 Trainer（不使用 compute_metrics 和 preprocess_logits_for_metrics）
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=val_dataset,  # 添加验证集
         data_collator=data_collator,
-        compute_metrics=compute_metrics_with_tokenizer,  # 计算准确率（带 tokenizer）
-        preprocess_logits_for_metrics=preprocess_logits_for_metrics,  # 预处理 logits
-        callbacks=[epoch_callback]  # 添加 callback
+        callbacks=[epoch_callback]  # 只使用 callback 进行评估
     )
 
     # 训练
