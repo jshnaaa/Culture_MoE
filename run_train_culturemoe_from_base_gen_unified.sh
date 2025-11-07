@@ -32,7 +32,7 @@ NUM_GPUS="${4:-1}"                  # 默认使用 1 个 GPU
 MASK_USE="${5:-true}"               # 默认使用 instruction_mask
 
 # 固定参数
-NUM_CLASSES=10  # 统一标签范围：1-15
+NUM_CLASSES=15  # 统一标签范围：1-15
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -57,23 +57,57 @@ if [ -z "$LORA_WEIGHTS_PATH" ] || [ ! -d "$LORA_WEIGHTS_PATH" ]; then
     exit 1
 fi
 
-# 统一数据集路径
+# 数据集路径
+CULTURELLM_DATA="/root/autodl-fs/cultureLLM_merge_gen.json"
+NORMAD_DATA="/root/autodl-fs/normad_merge_gen.json"
+CULTURALBENCH_DATA="/root/autodl-fs/CulturalBench_merge_gen.json"
 TRAIN_FILE="/root/autodl-fs/unified_all_datasets.json"
 DATASET_NAME="Unified (CultureLLM + NormAD + CulturalBench)"
 
 # 检查统一数据集是否存在
 if [ ! -f "$TRAIN_FILE" ]; then
-    echo "❌ Error: Unified dataset not found: $TRAIN_FILE"
+    echo "⚠️  Unified dataset not found: $TRAIN_FILE"
     echo ""
-    echo "Please prepare the unified dataset first:"
-    echo "  python prepare_unified_dataset.py \\"
-    echo "    --culturellm /root/autodl-fs/cultureLLM_merge_gen.json \\"
-    echo "    --normad /root/autodl-fs/normad_merge_gen.json \\"
-    echo "    --culturalbench /root/autodl-fs/CulturalBench_merge_gen.json \\"
-    echo "    --output /root/autodl-fs/unified_all_datasets.json \\"
-    echo "    --shuffle"
+    echo "Preparing unified dataset..."
+    echo "============================================================"
+
+    # 检查原始数据集
+    if [ ! -f "$CULTURELLM_DATA" ]; then
+        echo "❌ Error: CultureLLM data not found: $CULTURELLM_DATA"
+        exit 1
+    fi
+
+    if [ ! -f "$NORMAD_DATA" ]; then
+        echo "❌ Error: NormAD data not found: $NORMAD_DATA"
+        exit 1
+    fi
+
+    if [ ! -f "$CULTURALBENCH_DATA" ]; then
+        echo "❌ Error: CulturalBench data not found: $CULTURALBENCH_DATA"
+        exit 1
+    fi
+
+    # 运行预处理脚本
+    python prepare_unified_dataset.py \
+        --culturellm "$CULTURELLM_DATA" \
+        --normad "$NORMAD_DATA" \
+        --culturalbench "$CULTURALBENCH_DATA" \
+        --output "$TRAIN_FILE" \
+        --shuffle
+
+    if [ $? -ne 0 ]; then
+        echo "❌ Error: Failed to prepare unified dataset"
+        exit 1
+    fi
+
     echo ""
-    exit 1
+    echo "============================================================"
+    echo "✅ Unified dataset prepared successfully!"
+    echo "============================================================"
+    echo ""
+else
+    echo "✅ Unified dataset found: $TRAIN_FILE"
+    echo ""
 fi
 
 # 输出目录
