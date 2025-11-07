@@ -45,6 +45,7 @@ def compute_metrics(eval_preds, tokenizer=None):
     注意：predictions 已经通过 preprocess_logits_for_metrics 转换为 token IDs
     """
     import numpy as np
+    import os
 
     predictions, labels = eval_preds
 
@@ -60,33 +61,36 @@ def compute_metrics(eval_preds, tokenizer=None):
     # 只计算非 -100 位置（即答案部分）
     mask = labels != -100
 
-    # 调试信息：打印前几个样本
-    print(f"\n[DEBUG] compute_metrics called:")
-    print(f"  predictions shape: {predictions.shape}")
-    print(f"  labels shape: {labels.shape}")
-    print(f"  mask sum: {mask.sum()}")
+    # 只在主进程中打印调试信息
+    is_main_process = int(os.environ.get('RANK', 0)) == 0
 
-    # 打印第一个样本的答案部分
-    if len(predictions) > 0 and tokenizer is not None:
-        first_mask = mask[0]
-        first_pred = predictions[0][first_mask]
-        first_label = labels[0][first_mask]
+    if is_main_process:
+        print(f"\n[DEBUG] compute_metrics called:")
+        print(f"  predictions shape: {predictions.shape}")
+        print(f"  labels shape: {labels.shape}")
+        print(f"  mask sum: {mask.sum()}")
 
-        # 解码为文本
-        try:
-            pred_text = tokenizer.decode(first_pred, skip_special_tokens=True)
-            label_text = tokenizer.decode(first_label, skip_special_tokens=True)
-            print(f"  First sample answer:")
-            print(f"    Predicted tokens: {first_pred[:10]}")
-            print(f"    Predicted text:   '{pred_text}'")
-            print(f"    Label tokens:     {first_label[:10]}")
-            print(f"    Label text:       '{label_text}'")
-            print(f"    Match:            {np.array_equal(first_pred, first_label)}")
-        except:
-            print(f"  First sample answer tokens:")
-            print(f"    Predicted: {first_pred[:10]}")
-            print(f"    Label:     {first_label[:10]}")
-            print(f"    Match:     {np.array_equal(first_pred, first_label)}")
+        # 打印第一个样本的答案部分
+        if len(predictions) > 0 and tokenizer is not None:
+            first_mask = mask[0]
+            first_pred = predictions[0][first_mask]
+            first_label = labels[0][first_mask]
+
+            # 解码为文本
+            try:
+                pred_text = tokenizer.decode(first_pred, skip_special_tokens=True)
+                label_text = tokenizer.decode(first_label, skip_special_tokens=True)
+                print(f"  First sample answer:")
+                print(f"    Predicted tokens: {first_pred[:10]}")
+                print(f"    Predicted text:   '{pred_text}'")
+                print(f"    Label tokens:     {first_label[:10]}")
+                print(f"    Label text:       '{label_text}'")
+                print(f"    Match:            {np.array_equal(first_pred, first_label)}")
+            except:
+                print(f"  First sample answer tokens:")
+                print(f"    Predicted: {first_pred[:10]}")
+                print(f"    Label:     {first_label[:10]}")
+                print(f"    Match:     {np.array_equal(first_pred, first_label)}")
 
     # 1. Token-level 准确率（每个 token 的准确率）
     token_correct = (predictions == labels) & mask
@@ -94,7 +98,8 @@ def compute_metrics(eval_preds, tokenizer=None):
     total_tokens = mask.sum()
     token_accuracy = total_correct_tokens / total_tokens if total_tokens > 0 else 0.0
 
-    print(f"  Token accuracy: {token_accuracy:.4f} ({total_correct_tokens}/{total_tokens})")
+    if is_main_process:
+        print(f"  Token accuracy: {token_accuracy:.4f} ({total_correct_tokens}/{total_tokens})")
 
     # 2. Sample-level 准确率（整个答案完全正确才算对）
     num_samples = predictions.shape[0]
@@ -112,7 +117,8 @@ def compute_metrics(eval_preds, tokenizer=None):
 
     sample_accuracy = sample_correct / num_samples if num_samples > 0 else 0.0
 
-    print(f"  Sample accuracy: {sample_accuracy:.4f} ({sample_correct}/{num_samples})\n")
+    if is_main_process:
+        print(f"  Sample accuracy: {sample_accuracy:.4f} ({sample_correct}/{num_samples})\n")
 
     return {
         "accuracy": float(sample_accuracy),  # 主要指标：样本级别准确率
@@ -550,19 +556,26 @@ def main():
         只保留预测的 token IDs，而不是完整的 logits
         这样可以大幅减少显存占用
         """
+        import os
+
         if isinstance(logits, tuple):
             logits = logits[0]
 
-        # 调试信息
-        print(f"\n[DEBUG] preprocess_logits_for_metrics:")
-        print(f"  logits shape: {logits.shape}")
-        print(f"  labels shape: {labels.shape}")
+        # 只在主进程中打印调试信息
+        is_main_process = int(os.environ.get('RANK', 0)) == 0
+
+        if is_main_process:
+            print(f"\n[DEBUG] preprocess_logits_for_metrics:")
+            print(f"  logits shape: {logits.shape}")
+            print(f"  labels shape: {labels.shape}")
 
         # 只保存预测的 token IDs
         pred_ids = logits.argmax(dim=-1)
-        print(f"  pred_ids shape: {pred_ids.shape}")
-        print(f"  First sample pred_ids: {pred_ids[0, :10]}")
-        print(f"  First sample labels: {labels[0, :10]}")
+
+        if is_main_process:
+            print(f"  pred_ids shape: {pred_ids.shape}")
+            print(f"  First sample pred_ids: {pred_ids[0, :10].tolist()}")
+            print(f"  First sample labels: {labels[0, :10].tolist()}")
 
         return pred_ids
 
