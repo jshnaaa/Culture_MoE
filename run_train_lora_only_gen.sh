@@ -125,7 +125,7 @@ if [ $NUM_GPUS -gt 1 ]; then
         --lora_alpha 16 \
         --lora_dropout 0.05 \
         --learning_rate 1e-4 \
-        --num_train_epochs 1 \
+        --num_train_epochs 15 \
         --per_device_train_batch_size 4 \
         --gradient_accumulation_steps 4 \
         --max_length 512 \
