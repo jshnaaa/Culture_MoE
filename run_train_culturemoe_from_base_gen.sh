@@ -34,21 +34,21 @@ case $DATA_ID in
     2)
         # CulturalBench
         DATASET_NAME="CulturalBench"
-        DATA_PATH="/root/autodl-fs/CulturalBench_merge_gen.json"
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_CulturalBench_${BACKBONE}_$(date +%Y%m%d_%H%M)"
         echo "Using CulturalBench dataset"
         ;;
     3)
         # NormAD
         DATASET_NAME="NormAD"
-        DATA_PATH="/root/autodl-fs/normad_merge_gen.json"
+        TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_normad_${BACKBONE}_$(date +%Y%m%d_%H%M)"
         echo "Using NormAD dataset"
         ;;
     4)
         # CultureLLM (默认)
         DATASET_NAME="CultureLLM"
-        DATA_PATH="/root/autodl-fs/cultureLLM_merge_gen.json"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_${BACKBONE}_$(date +%Y%m%d_%H%M)"
         echo "Using CultureLLM dataset"
         ;;
