@@ -82,11 +82,24 @@ def generate_and_evaluate(model, tokenizer, eval_dataset, output_dir, output_typ
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,  # 使用贪婪解码
+                temperature=None,  # 禁用 temperature
+                top_p=None,  # 禁用 top_p
             )
 
             # 提取生成的部分（去掉 prompt）
             generated_ids = outputs[0][len(prompt_ids):]
             generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+            # 对于数字类型，只提取第一个数字
+            if output_type == "number":
+                # 尝试从生成的文本中提取第一个数字
+                import re
+                numbers = re.findall(r'\d+', generated_text)
+                if numbers:
+                    generated_text = numbers[0]
+                else:
+                    # 如果没有找到数字，保留原始文本
+                    pass
 
         # 提取真实答案
         answer_ids = [l for l in labels if l != -100]
