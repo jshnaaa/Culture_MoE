@@ -284,23 +284,30 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
                 if "your answer is:" in input_text.lower() or "answer one of" in input_text.lower():
                     # input 已包含提示语，直接使用
                     prompt = f"{instruction}\n{input_text}"
+                    # 答案直接跟在后面，不加空格
+                    full_text = f"{prompt}{output}"
                 else:
                     # input 不包含提示语，添加标准提示
                     prompt = f"{instruction}\n{input_text}\nAnswer one of 'yes', 'no', or 'neutral'. Your answer is:"
+                    # 答案前加空格
+                    full_text = f"{prompt} {output}"
             elif output_type == "bool":
                 # 布尔类型：检查 input 是否已包含提示语
                 if "your answer is:" in input_text.lower() or ("true" in input_text.lower() and "false" in input_text.lower()):
                     # input 已包含提示语，直接使用
                     prompt = f"{instruction}\n{input_text}"
+                    # 答案直接跟在后面，不加空格
+                    full_text = f"{prompt}{output}"
                 else:
                     # input 不包含提示语，添加标准提示
                     prompt = f"{instruction}\n{input_text}\nAnswer one of 'TRUE' or 'FALSE'. Your answer is:"
+                    # 答案前加空格
+                    full_text = f"{prompt} {output}"
             else:
                 # 数字类型
                 prompt = f"{instruction}\n{input_text}\nAnswer:"
-
-            # 构建完整文本（包含答案）
-            full_text = f"{prompt} {output}"
+                # 答案前加空格
+                full_text = f"{prompt} {output}"
 
             # Tokenize prompt（用于确定忽略的位置）
             prompt_tokens = tokenizer(
