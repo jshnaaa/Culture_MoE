@@ -414,7 +414,6 @@ def main():
     parser.add_argument("--output_dir", type=str, required=True)
 
     # 训练参数
-    parser.add_argument("--num_classes", type=int, default=5)
     parser.add_argument("--use_culture_loss", type=lambda x: x.lower() == 'true', default=True)
     parser.add_argument("--culture_loss_lambda", type=float, default=0.5)
     parser.add_argument("--use_instruction_mask", type=lambda x: x.lower() == 'true', default=True)
@@ -455,7 +454,6 @@ def main():
     print(f"LoRA weights: {args.lora_weights_path}")
     print(f"Train file: {args.train_file}")
     print(f"Output directory: {args.output_dir}")
-    print(f"Num classes: {args.num_classes}")
     print(f"Use culture loss: {args.use_culture_loss}")
     print(f"Use instruction mask: {args.use_instruction_mask}")
     print("="*80)

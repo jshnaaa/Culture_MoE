@@ -12,7 +12,7 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"              # 默认使用 llama
-DATA_ID="${2:-4}"               # 默认 5 分类
+DATA_ID="${2:-4}"                   # 默认 CultureLLM (4)
 USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"               # 默认 6 个专家
 NUM_GPUS="${5:-1}"                  # 默认使用 1 个 GPU
@@ -35,14 +35,19 @@ case $DATA_ID in
         # CulturalBench
         DATASET_NAME="CulturalBench"
         TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
-        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_CulturalBench_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        DATASET_TAG="CulturalBench"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_CulturalBench_qwen_20251107_2124/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_CulturalBench_llama_20251107_2124/best_lora"
+        fi
         echo "Using CulturalBench dataset"
         ;;
     3)
         # NormAD
         DATASET_NAME="NormAD"
         TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
-        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_normad_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        DATASET_TAG="normad"
         if [ "$BACKBONE" = "qwen" ]; then
             LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_normad_qwen_20251107_2124/best_lora"
         else
@@ -54,7 +59,7 @@ case $DATA_ID in
         # CultureLLM (默认)
         DATASET_NAME="CultureLLM"
         TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
-        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        DATASET_TAG="cultureLLM"
         if [ "$BACKBONE" = "qwen" ]; then
             LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_qwen_20251107_2124/best_lora"
         else
@@ -63,10 +68,9 @@ case $DATA_ID in
         echo "Using CultureLLM dataset"
         ;;
     *)
-        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 0, 2, 3, or 4."
+        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, or 4."
         echo ""
         echo "DATA_ID options:"
-        echo "  0 - All datasets (CulturalBench + NormAD + CultureLLM)"
         echo "  2 - CulturalBench"
         echo "  3 - NormAD"
         echo "  4 - CultureLLM (default)"
@@ -75,7 +79,7 @@ case $DATA_ID in
 esac
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen_test_results/moe_${BACKBONE}_experts${NUM_EXPERTS}_USE_CULTURE_LOSS${USE_CULTURE_LOSS}_MASK_USE${MASK_USE}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen_test_results/moe_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_USE_CULTURE_LOSS${USE_CULTURE_LOSS}_MASK_USE${MASK_USE}_$(date +%Y%m%d_%H%M)"
 
 # 设置 GPU
 if [ "$NUM_GPUS" = "1" ]; then
@@ -93,7 +97,6 @@ echo "============================================================"
 echo "CultureMoE Training (From Base + LoRA, Gen Version)"
 echo "============================================================"
 echo "Backbone: $BACKBONE ($MODEL_NAME)"
-echo "Num classes: $NUM_CLASSES"
 echo "Dataset: $DATASET_NAME"
 echo "Use culture loss: $USE_CULTURE_LOSS"
 echo "Num experts: $NUM_EXPERTS"
@@ -142,7 +145,6 @@ TRAIN_CMD="python train_culturemoe_from_base_gen.py \
     --lora_weights_path $LORA_WEIGHTS_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
-    --num_classes $NUM_CLASSES \
     --use_culture_loss $USE_CULTURE_LOSS \
     --culture_loss_lambda 0.5 \
     --use_instruction_mask $MASK_USE \
