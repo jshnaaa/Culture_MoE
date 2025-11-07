@@ -34,18 +34,20 @@ from transformers import (
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def compute_metrics(eval_preds, tokenizer=None):
+def compute_metrics(eval_preds, tokenizer=None, output_type="number", output_dir=None):
     """
     计算评估指标（样本级别准确率）
 
     对于生成式任务，我们计算：
     - Sample-level Accuracy: 整个答案完全正确才算对
     - Token-level Accuracy: 答案部分每个 token 的准确率
+    - 对于分类任务（yes/no/neutral），还计算精确率、recall、F1等指标
 
     注意：predictions 已经通过 preprocess_logits_for_metrics 转换为 token IDs
     """
     import numpy as np
     import os
+    from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 
     predictions, labels = eval_preds
 
@@ -64,77 +66,136 @@ def compute_metrics(eval_preds, tokenizer=None):
     # 只在主进程中打印调试信息
     is_main_process = int(os.environ.get('RANK', 0)) == 0
 
-    if is_main_process:
-        print(f"\n[DEBUG] compute_metrics called:")
-        print(f"  predictions shape: {predictions.shape}")
-        print(f"  labels shape: {labels.shape}")
-        print(f"  mask sum: {mask.sum()}")
+    # 标签映射（用于分类任务）
+    label_to_id = {"yes": 0, "no": 1, "neutral": 2}
+    id_to_label = {0: "yes", 1: "no", 2: "neutral"}
 
-        # 打印第一个样本的答案部分
-        if len(predictions) > 0 and tokenizer is not None:
-            first_mask = mask[0]
-            first_pred = predictions[0][first_mask]
-            first_label = labels[0][first_mask]
+    # 提取答案部分并解码
+    generated_answers = []
+    true_labels = []
+    pred_labels = []
+    true_label_ids = []
+    pred_label_ids = []
 
-            # 解码为文本
-            try:
-                pred_text = tokenizer.decode(first_pred, skip_special_tokens=True)
-                label_text = tokenizer.decode(first_label, skip_special_tokens=True)
-                print(f"  First sample answer:")
-                print(f"    Predicted tokens: {first_pred[:10]}")
-                print(f"    Predicted text:   '{pred_text}'")
-                print(f"    Label tokens:     {first_label[:10]}")
-                print(f"    Label text:       '{label_text}'")
-                print(f"    Match:            {np.array_equal(first_pred, first_label)}")
-            except:
-                print(f"  First sample answer tokens:")
-                print(f"    Predicted: {first_pred[:10]}")
-                print(f"    Label:     {first_label[:10]}")
-                print(f"    Match:     {np.array_equal(first_pred, first_label)}")
-
-    # 1. Token-level 准确率（每个 token 的准确率）
-    token_correct = (predictions == labels) & mask
-    total_correct_tokens = token_correct.sum()
-    total_tokens = mask.sum()
-    token_accuracy = total_correct_tokens / total_tokens if total_tokens > 0 else 0.0
-
-    if is_main_process:
-        print(f"  Token accuracy: {token_accuracy:.4f} ({total_correct_tokens}/{total_tokens})")
-
-    # 2. Sample-level 准确率（整个答案完全正确才算对）
-    num_samples = predictions.shape[0]
-    sample_correct = 0
-
-    for i in range(num_samples):
-        # 获取当前样本的答案部分
+    for i in range(predictions.shape[0]):
         sample_mask = mask[i]
         sample_pred = predictions[i][sample_mask]
         sample_label = labels[i][sample_mask]
 
-        # 检查答案是否完全匹配
-        if len(sample_pred) == len(sample_label) and np.array_equal(sample_pred, sample_label):
-            sample_correct += 1
+        # 解码预测和真实标签
+        try:
+            pred_text = tokenizer.decode(sample_pred, skip_special_tokens=True).strip().lower()
+            label_text = tokenizer.decode(sample_label, skip_special_tokens=True).strip().lower()
+        except:
+            pred_text = ""
+            label_text = ""
 
-    sample_accuracy = sample_correct / num_samples if num_samples > 0 else 0.0
+        generated_answers.append({
+            "predicted": pred_text,
+            "true": label_text
+        })
 
-    if is_main_process:
-        print(f"  Sample accuracy: {sample_accuracy:.4f} ({sample_correct}/{num_samples})\n")
+        # 对于文本类型标签，需要提取分类标签
+        if output_type == "text":
+            # 从生成的文本中提取标签
+            pred_label = "neutral"  # 默认为 neutral
+            for label_str in ["yes", "no", "neutral"]:
+                if label_str in pred_text:
+                    pred_label = label_str
+                    break
 
-    return {
-        "accuracy": float(sample_accuracy),  # 主要指标：样本级别准确率
-        "token_accuracy": float(token_accuracy),  # 辅助指标：token 级别准确率
-    }
+            # 真实标签
+            true_label = label_text
+            if true_label not in label_to_id:
+                true_label = "neutral"
+
+            pred_labels.append(pred_label)
+            true_labels.append(true_label)
+            pred_label_ids.append(label_to_id[pred_label])
+            true_label_ids.append(label_to_id[true_label])
+        else:
+            # 对于其他类型，直接比较文本
+            pred_labels.append(pred_text)
+            true_labels.append(label_text)
+
+    # 保存生成的答案
+    if output_dir is not None and is_main_process:
+        answers_file = os.path.join(output_dir, "generated_answers.json")
+        with open(answers_file, 'w', encoding='utf-8') as f:
+            json.dump(generated_answers, f, indent=2, ensure_ascii=False)
+
+    # 计算指标
+    metrics = {}
+
+    if output_type == "text":
+        # 分类任务指标
+        num_samples = len(pred_label_ids)
+        sample_correct = sum(1 for p, t in zip(pred_label_ids, true_label_ids) if p == t)
+        sample_accuracy = sample_correct / num_samples if num_samples > 0 else 0.0
+
+        metrics["accuracy"] = float(sample_accuracy)
+
+        # 计算精确率、recall、F1
+        if len(set(true_label_ids)) > 0:
+            precision, recall, f1, _ = precision_recall_fscore_support(
+                true_label_ids, pred_label_ids, average='weighted', zero_division=0
+            )
+            metrics["precision"] = float(precision)
+            metrics["recall"] = float(recall)
+            metrics["f1"] = float(f1)
+
+            # 计算每个类别的指标
+            precision_per_class, recall_per_class, f1_per_class, _ = precision_recall_fscore_support(
+                true_label_ids, pred_label_ids, average=None, zero_division=0
+            )
+            for label_id, label_str in id_to_label.items():
+                metrics[f"precision_{label_str}"] = float(precision_per_class[label_id])
+                metrics[f"recall_{label_str}"] = float(recall_per_class[label_id])
+                metrics[f"f1_{label_str}"] = float(f1_per_class[label_id])
+
+            if is_main_process:
+                print(f"\n[EVAL] Classification Metrics:")
+                print(f"  Accuracy: {sample_accuracy:.4f}")
+                print(f"  Precision (weighted): {precision:.4f}")
+                print(f"  Recall (weighted): {recall:.4f}")
+                print(f"  F1 (weighted): {f1:.4f}")
+                print(f"  Per-class metrics:")
+                for label_id, label_str in id_to_label.items():
+                    print(f"    {label_str}: P={precision_per_class[label_id]:.4f}, R={recall_per_class[label_id]:.4f}, F1={f1_per_class[label_id]:.4f}")
+    else:
+        # 其他类型的任务
+        num_samples = predictions.shape[0]
+        sample_correct = 0
+
+        for i in range(num_samples):
+            sample_mask = mask[i]
+            sample_pred = predictions[i][sample_mask]
+            sample_label = labels[i][sample_mask]
+
+            # 检查答案是否完全匹配
+            if len(sample_pred) == len(sample_label) and np.array_equal(sample_pred, sample_label):
+                sample_correct += 1
+
+        sample_accuracy = sample_correct / num_samples if num_samples > 0 else 0.0
+        metrics["accuracy"] = float(sample_accuracy)
+
+        if is_main_process:
+            print(f"\n[EVAL] Accuracy: {sample_accuracy:.4f} ({sample_correct}/{num_samples})")
+
+    return metrics
 
 
 class EpochEvalCallback(TrainerCallback):
     """每个 epoch 结束后保存评估结果，并保存最佳 LoRA 权重"""
 
-    def __init__(self, output_dir, tokenizer=None):
+    def __init__(self, output_dir, tokenizer=None, use_accuracy=False):
         self.output_dir = output_dir
         self.tokenizer = tokenizer
         self.epoch_results = []
         self.best_eval_loss = float('inf')
+        self.best_eval_accuracy = -1.0
         self.best_epoch = 0
+        self.use_accuracy = use_accuracy  # 是否使用 accuracy 作为最佳模型的判断标准
 
     def on_epoch_end(self, args, state, control, model=None, **kwargs):
         """Epoch 结束时保存结果和最佳 LoRA 权重"""
@@ -165,11 +226,23 @@ class EpochEvalCallback(TrainerCallback):
                     if eval_accuracy is not None:
                         print(f"   Eval Accuracy: {eval_accuracy:.4f}")
 
-                    # 如果是最佳模型，保存 LoRA 权重
-                    if current_eval_loss < self.best_eval_loss:
-                        self.best_eval_loss = current_eval_loss
-                        self.best_epoch = int(state.epoch)
+                    # 判断是否是最佳模型
+                    is_best = False
+                    if self.use_accuracy and eval_accuracy is not None:
+                        # 使用 accuracy 作为判断标准
+                        if eval_accuracy > self.best_eval_accuracy:
+                            is_best = True
+                            self.best_eval_accuracy = eval_accuracy
+                            self.best_epoch = int(state.epoch)
+                    else:
+                        # 使用 loss 作为判断标准
+                        if current_eval_loss < self.best_eval_loss:
+                            is_best = True
+                            self.best_eval_loss = current_eval_loss
+                            self.best_epoch = int(state.epoch)
 
+                    # 如果是最佳模型，保存 LoRA 权重
+                    if is_best:
                         # 只保存 LoRA 权重
                         best_lora_dir = os.path.join(self.output_dir, "best_lora")
                         os.makedirs(best_lora_dir, exist_ok=True)
@@ -179,10 +252,16 @@ class EpochEvalCallback(TrainerCallback):
                             # 同时保存 tokenizer
                             if self.tokenizer is not None:
                                 self.tokenizer.save_pretrained(best_lora_dir)
-                            print(f"   🏆 New best model! Eval Loss: {current_eval_loss:.4f}")
+                            if self.use_accuracy and eval_accuracy is not None:
+                                print(f"   🏆 New best model! Eval Accuracy: {eval_accuracy:.4f}")
+                            else:
+                                print(f"   🏆 New best model! Eval Loss: {current_eval_loss:.4f}")
                             print(f"   ✅ Best LoRA weights saved to: {best_lora_dir}")
 
-                    print(f"   Best so far: Epoch {self.best_epoch}, Eval Loss: {self.best_eval_loss:.4f}\n")
+                    if self.use_accuracy and eval_accuracy is not None:
+                        print(f"   Best so far: Epoch {self.best_epoch}, Eval Accuracy: {self.best_eval_accuracy:.4f}\n")
+                    else:
+                        print(f"   Best so far: Epoch {self.best_epoch}, Eval Loss: {self.best_eval_loss:.4f}\n")
                     break
 
 
@@ -391,7 +470,7 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
 
     print("✅ Using answer-only loss (prompt tokens will be ignored)")
 
-    return {'train': train_dataset, 'val': val_dataset}
+    return {'train': train_dataset, 'val': val_dataset, 'output_type': output_type}
 
 
 def main():
@@ -484,6 +563,7 @@ def main():
     )
     train_dataset = datasets['train']
     val_dataset = datasets['val']
+    output_type = datasets['output_type']
     print(f"✅ Train: {len(train_dataset)}, Val: {len(val_dataset) if val_dataset else 0} samples\n")
 
     # 配置训练参数
@@ -547,8 +627,9 @@ def main():
 
     data_collator = custom_data_collator
 
-    # 创建 Callback
-    epoch_callback = EpochEvalCallback(args.output_dir, tokenizer=tokenizer)
+    # 创建 Callback - 对于文本类型（yes/no/neutral），使用 accuracy 作为最佳模型判断标准
+    use_accuracy = (output_type == "text")
+    epoch_callback = EpochEvalCallback(args.output_dir, tokenizer=tokenizer, use_accuracy=use_accuracy)
 
     # 预处理 logits 以节省显存
     def preprocess_logits_for_metrics(logits, labels):
@@ -579,9 +660,9 @@ def main():
 
         return pred_ids
 
-    # 创建一个闭包来传递 tokenizer 给 compute_metrics
+    # 创建一个闭包来传递 tokenizer、output_type 和 output_dir 给 compute_metrics
     def compute_metrics_with_tokenizer(eval_preds):
-        return compute_metrics(eval_preds, tokenizer=tokenizer)
+        return compute_metrics(eval_preds, tokenizer=tokenizer, output_type=output_type, output_dir=args.output_dir)
 
     # 创建 Trainer
     trainer = Trainer(
