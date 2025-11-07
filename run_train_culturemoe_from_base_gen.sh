@@ -12,7 +12,7 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"              # 默认使用 llama
-NUM_CLASSES="${2:-5}"               # 默认 5 分类
+DATA_ID="${2:-4}"               # 默认 5 分类
 USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"               # 默认 6 个专家
 NUM_GPUS="${5:-1}"                  # 默认使用 1 个 GPU
@@ -29,26 +29,37 @@ else
     LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_llama_20251107_2124/best_lora"
 fi
 
-# 根据 num_classes 选择数据集
-case $NUM_CLASSES in
+# 根据 DATA_ID 选择数据集
+case $DATA_ID in
     2)
-        TRAIN_FILE="/root/autodl-fs/CulturalBench_Hard_merge.json"
-        DATASET_NAME="CulturalBench_Hard"
+        # CulturalBench
+        DATASET_NAME="CulturalBench"
+        DATA_PATH="/root/autodl-fs/CulturalBench_merge_gen.json"
+        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_CulturalBench_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        echo "Using CulturalBench dataset"
         ;;
     3)
-        TRAIN_FILE="/root/autodl-fs/normad_ed_merge.json"
-        DATASET_NAME="NormAD_ED"
+        # NormAD
+        DATASET_NAME="NormAD"
+        DATA_PATH="/root/autodl-fs/normad_merge_gen.json"
+        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_normad_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        echo "Using NormAD dataset"
         ;;
     4)
-        TRAIN_FILE="/root/autodl-fs/wvs_all_llama_merge_4.json"
-        DATASET_NAME="WVS_4class"
-        ;;
-    5)
-        TRAIN_FILE="/root/autodl-fs/wvs_all_llama_merge_5.json"
-        DATASET_NAME="WVS_5class"
+        # CultureLLM (默认)
+        DATASET_NAME="CultureLLM"
+        DATA_PATH="/root/autodl-fs/cultureLLM_merge_gen.json"
+        OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        echo "Using CultureLLM dataset"
         ;;
     *)
-        echo "❌ Error: Invalid num_classes=$NUM_CLASSES. Must be 2, 3, 4, or 5."
+        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 0, 2, 3, or 4."
+        echo ""
+        echo "DATA_ID options:"
+        echo "  0 - All datasets (CulturalBench + NormAD + CultureLLM)"
+        echo "  2 - CulturalBench"
+        echo "  3 - NormAD"
+        echo "  4 - CultureLLM (default)"
         exit 1
         ;;
 esac
