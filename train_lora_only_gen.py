@@ -19,11 +19,9 @@ import os
 import sys
 from datetime import datetime
 
-import numpy as np
 import torch
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, TaskType
-
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -31,7 +29,6 @@ from transformers import (
     Trainer,
     TrainerCallback
 )
-import argparse
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,45 +36,47 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def compute_metrics(eval_preds):
     """
-    计算评估指标（准确率、困惑度等）
+    计算评估指标（样本级别准确率）
 
     对于生成式任务，我们计算：
-    - Perplexity (困惑度)
-    - Accuracy (token-level 准确率)
+    - Sample-level Accuracy: 整个答案完全正确才算对
+    - Token-level Accuracy: 答案部分每个 token 的准确率
+
+    注意：predictions 已经通过 preprocess_logits_for_metrics 转换为 token IDs
     """
     predictions, labels = eval_preds
 
-    # predictions 是 logits，shape: (batch_size, seq_len, vocab_size)
+    # predictions 已经是 token IDs，shape: (batch_size, seq_len)
     # labels 是真实标签，shape: (batch_size, seq_len)
 
-    # 将 logits 转换为预测的 token IDs
-    if isinstance(predictions, tuple):
-        predictions = predictions[0]
+    # 只计算非 -100 位置（即答案部分）
+    mask = labels != -100
 
-    # 为了节省内存，分批处理
-    batch_size = 1000  # 每次处理 1000 个样本
-    total_correct = 0
-    total_tokens = 0
+    # 1. Token-level 准确率（每个 token 的准确率）
+    token_correct = (predictions == labels) & mask
+    total_correct_tokens = token_correct.sum()
+    total_tokens = mask.sum()
+    token_accuracy = total_correct_tokens / total_tokens if total_tokens > 0 else 0.0
 
-    for i in range(0, len(predictions), batch_size):
-        batch_preds = predictions[i:i+batch_size]
-        batch_labels = labels[i:i+batch_size]
+    # 2. Sample-level 准确率（整个答案完全正确才算对）
+    num_samples = predictions.shape[0]
+    sample_correct = 0
 
-        # 获取预测的 token IDs
-        pred_ids = np.argmax(batch_preds, axis=-1)
+    for i in range(num_samples):
+        # 获取当前样本的答案部分
+        sample_mask = mask[i]
+        sample_pred = predictions[i][sample_mask]
+        sample_label = labels[i][sample_mask]
 
-        # 只计算非 -100 位置的准确率（即答案部分）
-        mask = batch_labels != -100
+        # 检查答案是否完全匹配
+        if len(sample_pred) == len(sample_label) and (sample_pred == sample_label).all():
+            sample_correct += 1
 
-        # Token-level 准确率
-        correct = (pred_ids == batch_labels) & mask
-        total_correct += correct.sum()
-        total_tokens += mask.sum()
-
-    accuracy = total_correct / total_tokens if total_tokens > 0 else 0.0
+    sample_accuracy = sample_correct / num_samples if num_samples > 0 else 0.0
 
     return {
-        "accuracy": float(accuracy),
+        "accuracy": float(sample_accuracy),  # 主要指标：样本级别准确率
+        "token_accuracy": float(token_accuracy),  # 辅助指标：token 级别准确率
     }
 
 
@@ -484,6 +483,17 @@ def main():
     # 创建 Callback
     epoch_callback = EpochEvalCallback(args.output_dir)
 
+    # 预处理 logits 以节省显存
+    def preprocess_logits_for_metrics(logits, labels):
+        """
+        只保留预测的 token IDs，而不是完整的 logits
+        这样可以大幅减少显存占用
+        """
+        if isinstance(logits, tuple):
+            logits = logits[0]
+        # 只保存预测的 token IDs
+        return logits.argmax(dim=-1)
+
     # 创建 Trainer
     trainer = Trainer(
         model=model,
@@ -492,6 +502,7 @@ def main():
         eval_dataset=val_dataset,  # 添加验证集
         data_collator=data_collator,
         compute_metrics=compute_metrics,  # 计算准确率
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,  # 预处理 logits
         callbacks=[epoch_callback]  # 添加 callback
     )
 
