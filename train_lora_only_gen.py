@@ -415,7 +415,12 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
                     full_text = f"{prompt} {output}"
             else:
                 # 数字类型
-                prompt = f"{instruction}\n{input_text}\nAnswer:"
+                if input_text.strip():
+                    # input 不为空
+                    prompt = f"{instruction}\n{input_text}\nAnswer:"
+                else:
+                    # input 为空，直接使用 instruction
+                    prompt = f"{instruction}\nAnswer:"
                 # 答案前加空格
                 full_text = f"{prompt} {output}"
 
@@ -454,11 +459,13 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
                     new_prompt_len = max_length - answer_len
                     if new_prompt_len < 10:  # 至少保留 10 个 token 的 prompt
                         # 如果连 10 个 token 都保留不了，说明答案太长，跳过这个样本
+                        print(f"⚠️  Skipping sample: prompt_len={prompt_len}, answer_len={answer_len}, max_length={max_length}")
                         continue
 
                     full_input_ids = full_input_ids[:new_prompt_len] + full_input_ids[prompt_len:prompt_len + answer_len]
                     full_attention_mask = full_attention_mask[:new_prompt_len] + full_attention_mask[prompt_len:prompt_len + answer_len]
                     labels = [-100] * new_prompt_len + answer_tokens["input_ids"]
+                    print(f"📝 Truncated: prompt {prompt_len}->{new_prompt_len}, answer {answer_len}, total {len(full_input_ids)}")
                 else:
                     # 正常截断
                     full_input_ids = full_input_ids[:max_length]
