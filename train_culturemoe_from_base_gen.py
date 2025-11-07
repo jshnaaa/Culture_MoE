@@ -18,7 +18,6 @@ import os
 import sys
 from datetime import datetime
 
-import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from torch.utils.data import DataLoader
@@ -83,16 +82,35 @@ def load_model_from_components(
     print("\n3. Loading and merging LoRA weights...")
     from peft import PeftModel
 
+    # 检查 LoRA 权重目录
+    if os.path.exists(lora_weights_path):
+        lora_files = os.listdir(lora_weights_path)
+        print(f"   LoRA directory contents: {lora_files}")
+    else:
+        raise FileNotFoundError(f"LoRA weights directory not found: {lora_weights_path}")
+
+    # 检查 adapter_config.json 是否存在
+    adapter_config_path = os.path.join(lora_weights_path, "adapter_config.json")
+    if not os.path.exists(adapter_config_path):
+        raise FileNotFoundError(f"adapter_config.json not found in {lora_weights_path}")
+
+    print(f"   Found adapter_config.json: {adapter_config_path}")
+
     model_with_lora = PeftModel.from_pretrained(
         base_model,
         lora_weights_path,
-        is_trainable=False
+        is_trainable=False,
+        torch_dtype=torch.float16
     )
     print("   ✅ LoRA weights loaded")
 
     print("   Merging LoRA weights into base model...")
     merged_model = model_with_lora.merge_and_unload()
     print("   ✅ LoRA weights merged")
+
+    # 清理内存
+    del model_with_lora
+    torch.cuda.empty_cache()
 
     # 4. 冻结 LLaMA 参数
     print("\n4. Freezing LLaMA parameters...")
@@ -202,7 +220,7 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
 
 
 def evaluate(model, val_loader, device, use_culture_loss, culture_loss_lambda, num_classes):
-    """评估模型"""
+    """评估模型（使用 forward pass 计算 loss）"""
     model.eval()
     total_loss = 0
     total_cls_loss = 0
@@ -271,6 +289,119 @@ def evaluate(model, val_loader, device, use_culture_loss, culture_loss_lambda, n
     }
 
 
+def generate_and_evaluate(model, tokenizer, val_dataset, output_dir, num_classes, max_new_tokens=10):
+    """
+    生成答案并评估（使用真正的生成，而不是 teacher forcing）
+
+    这个函数会：
+    1. 对验证集中的每个样本生成答案
+    2. 保存到 generated_answers.json
+    3. 调用 post-eval 脚本计算指标
+    """
+    import subprocess
+    import re
+
+    print("\n" + "="*80)
+    print("Generating answers for evaluation...")
+    print("="*80)
+
+    model.eval()
+    generated_answers = []
+    device = next(model.parameters()).device
+
+    for i in tqdm(range(len(val_dataset)), desc="Generating"):
+        sample = val_dataset[i]
+        instruction = sample['instruction']
+        input_text = sample['input']
+        true_label = sample['label']
+
+        # 构建 prompt
+        if num_classes <= 10:
+            full_input = f"{instruction}\n{input_text}\n\nPlease answer with ONLY ONE NUMBER (1 to {num_classes}).\nYour answer:"
+        else:
+            full_input = f"{instruction}\n{input_text}\n\nYour answer:"
+
+        # Tokenize
+        inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        # Generate
+        with torch.no_grad():
+            outputs = model.llama_model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                min_new_tokens=1,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                temperature=None,
+                top_p=None,
+            )
+
+        # Decode
+        full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        # 提取生成的部分
+        if full_input in full_output:
+            generated_text = full_output[len(full_input):].strip()
+        else:
+            generated_text = full_output.strip()
+
+        # 提取数字
+        numbers = re.findall(r'\d+', generated_text)
+        if numbers:
+            predicted_label = numbers[0]
+        else:
+            predicted_label = generated_text
+
+        generated_answers.append({
+            "predicted": predicted_label,
+            "true": str(true_label)
+        })
+
+    # 保存生成的答案
+    answers_file = os.path.join(output_dir, "generated_answers.json")
+    with open(answers_file, 'w', encoding='utf-8') as f:
+        json.dump(generated_answers, f, indent=2, ensure_ascii=False)
+
+    print(f"✅ Generated answers saved to: {answers_file}")
+
+    # 调用 post-eval 脚本计算指标
+    eval_script = os.path.join(os.path.dirname(__file__), "eval_from_generated_answers.py")
+    metrics_file = os.path.join(output_dir, "eval_metrics.json")
+
+    if os.path.exists(eval_script):
+        print("\nRunning post-evaluation...")
+        try:
+            result = subprocess.run(
+                ["python", eval_script, "--input", answers_file, "--output", metrics_file],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                check=True
+            )
+            print(result.stdout)
+
+            if os.path.exists(metrics_file):
+                with open(metrics_file, 'r', encoding='utf-8') as f:
+                    metrics = json.load(f)
+                return metrics
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️  Post-evaluation failed: {e}")
+            if e.stderr:
+                print(e.stderr)
+        except Exception as e:
+            print(f"⚠️  Post-evaluation error: {e}")
+    else:
+        print(f"⚠️  Evaluation script not found: {eval_script}")
+
+    # 如果 post-eval 失败，返回简单的准确率
+    correct = sum(1 for item in generated_answers if item["predicted"] == item["true"])
+    accuracy = correct / len(generated_answers) if len(generated_answers) > 0 else 0.0
+    return {"accuracy": accuracy}
+
+
 def main():
     parser = argparse.ArgumentParser(description="从 Base + LoRA 训练 CultureMoE")
 
@@ -306,10 +437,10 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--max_length", type=int, default=512)
     parser.add_argument("--val_split", type=float, default=0.1)
-parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--num_workers", type=int, default=2)
 
-# 设备
-parser.add_argument("--device", type=str, default="cuda")
+    # 设备
+    parser.add_argument("--device", type=str, default="cuda")
 
     args = parser.parse_args()
 
@@ -411,12 +542,28 @@ parser.add_argument("--device", type=str, default="cuda")
             args.use_culture_loss, args.culture_loss_lambda
         )
 
-        # 评估
+        # 评估（使用 forward pass 计算 loss）
         val_metrics = evaluate(
             model, val_loader, args.device,
             args.use_culture_loss, args.culture_loss_lambda,
             args.num_classes
         )
+
+        # 生成式评估（使用真正的生成）
+        print(f"\n{'='*80}")
+        print(f"📊 Epoch {epoch + 1} Generative Evaluation")
+        print(f"{'='*80}")
+
+        gen_metrics = generate_and_evaluate(
+            model=model,
+            tokenizer=tokenizer,
+            val_dataset=val_dataset,
+            output_dir=args.output_dir,
+            num_classes=args.num_classes,
+            max_new_tokens=10
+        )
+
+        gen_accuracy = gen_metrics.get('accuracy', 0.0)
 
         # 保存结果
         epoch_result = {
@@ -424,25 +571,27 @@ parser.add_argument("--device", type=str, default="cuda")
             'train_loss': train_metrics['loss'],
             'train_accuracy': train_metrics['accuracy'],
             'eval_loss': val_metrics['loss'],
-            'eval_accuracy': val_metrics['accuracy'],
-            'eval_precision': val_metrics['precision'],
-            'eval_recall': val_metrics['recall'],
-            'eval_f1': val_metrics['f1']
+            'eval_accuracy': gen_accuracy,  # 使用生成式评估的准确率
+            'eval_precision': gen_metrics.get('precision', val_metrics['precision']),
+            'eval_recall': gen_metrics.get('recall', val_metrics['recall']),
+            'eval_f1': gen_metrics.get('f1', val_metrics['f1'])
         }
         epoch_results.append(epoch_result)
 
         # 打印结果
         print(f"\n📊 Epoch {epoch + 1} Results:")
         print(f"   Train Loss: {train_metrics['loss']:.4f}, Train Acc: {train_metrics['accuracy']:.4f}")
-        print(f"   Eval Loss:  {val_metrics['loss']:.4f}, Eval Acc:  {val_metrics['accuracy']:.4f}")
-        print(f"   Eval Precision: {val_metrics['precision']:.4f}, Recall: {val_metrics['recall']:.4f}, F1: {val_metrics['f1']:.4f}")
+        print(f"   Eval Loss:  {val_metrics['loss']:.4f}")
+        print(f"   Eval Accuracy (Generative): {gen_accuracy:.4f}")
+        if 'precision' in gen_metrics:
+            print(f"   Eval Precision: {gen_metrics['precision']:.4f}, Recall: {gen_metrics['recall']:.4f}, F1: {gen_metrics['f1']:.4f}")
 
-        # 保存最佳模型
-        if val_metrics['accuracy'] > best_accuracy:
-            best_accuracy = val_metrics['accuracy']
+        # 保存最佳模型（基于生成式评估的准确率）
+        if gen_accuracy > best_accuracy:
+            best_accuracy = gen_accuracy
             best_epoch = epoch + 1
 
-            # 保存 MoE 权重
+            # 保存 MoE 权重（只保存 MoE 部分）
             best_moe_dir = os.path.join(args.output_dir, "best_moe")
             os.makedirs(best_moe_dir, exist_ok=True)
 
@@ -462,11 +611,16 @@ parser.add_argument("--device", type=str, default="cuda")
             with open(os.path.join(best_moe_dir, "moe_config.json"), 'w') as f:
                 json.dump(moe_config, f, indent=2)
 
-            # 保存 MoE 权重
-            torch.save(model.state_dict(), os.path.join(best_moe_dir, "moe_state_dict.pt"))
+            # 只保存 MoE 部分的权重（不包括 llama_model）
+            moe_state_dict = {}
+            for name, param in model.named_parameters():
+                if not name.startswith('llama_model.'):
+                    moe_state_dict[name] = param.cpu()
+
+            torch.save(moe_state_dict, os.path.join(best_moe_dir, "moe_state_dict.pt"))
 
             print(f"   🏆 New best model! Accuracy: {best_accuracy:.4f}")
-            print(f"   ✅ Best MoE weights saved to: {best_moe_dir}")
+            print(f"   ✅ Best MoE weights saved to: {best_moe_dir} (MoE only, {len(moe_state_dict)} parameters)")
 
         print(f"   Best so far: Epoch {best_epoch}, Accuracy: {best_accuracy:.4f}")
 
