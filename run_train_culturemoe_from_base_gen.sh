@@ -39,7 +39,7 @@ case $DATA_ID in
         if [ "$BACKBONE" = "qwen" ]; then
             LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_CulturalBench_qwen_20251107_2124/best_lora"
         else
-            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_CulturalBench_llama_20251107_2124/best_lora"
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_CulturalBench_llama_20251108_0727/best_lora"
         fi
         echo "Using CulturalBench dataset"
         ;;
