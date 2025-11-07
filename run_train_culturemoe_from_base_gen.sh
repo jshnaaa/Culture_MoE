@@ -43,6 +43,11 @@ case $DATA_ID in
         DATASET_NAME="NormAD"
         TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_normad_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_normad_qwen_20251107_2124/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_normad_llama_20251107_2245/best_lora"
+        fi
         echo "Using NormAD dataset"
         ;;
     4)
@@ -50,6 +55,11 @@ case $DATA_ID in
         DATASET_NAME="CultureLLM"
         TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_qwen_20251107_2124/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_llama_20251107_2124/best_lora"
+        fi
         echo "Using CultureLLM dataset"
         ;;
     *)
