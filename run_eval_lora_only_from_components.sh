@@ -18,11 +18,13 @@ BACKBONE="${1:-llama}"           # 默认使用 llama
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
-    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_all_qwen_$(date +%Y%m%d_%H%M)/best_lora"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_qwen_20251107_2048/best_lora"
+#    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_all_qwen_$(date +%Y%m%d_%H%M)/best_lora"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_all_llama_$(date +%Y%m%d_%H%M)/best_lora"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_llama_20251107_2048/best_lora"
+#    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_all_llama_$(date +%Y%m%d_%H%M)/best_lora"
 fi
 
 # 测试数据集（WVS 生成式数据集，标签 1-10）
@@ -92,7 +94,7 @@ if [ $? -eq 0 ]; then
     echo "   cat $OUTPUT_DIR/evaluation_summary.json | python -m json.tool"
     echo ""
     echo "💡 To view detailed answers:"
-    echo "   cat $OUTPUT_DIR/generated_answers.json | python -m json.tool | head -100"
+    echo "   cat $OUTPUT_DIR/generated_answer.json | python -m json.tool | head -100"
     echo "============================================================"
 else
     echo ""

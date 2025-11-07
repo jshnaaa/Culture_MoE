@@ -44,18 +44,21 @@ sh run_train_lora_only.sh qwen 4 false
 #### 生成式的训练+验证
 
 ```bash
-# sh run_train_lora_only_gen.sh <BACKBONE>
+# sh run_train_lora_only_gen.sh <BACKBONE> <DATA_ID>
 
-sh run_train_lora_only_gen.sh llama
-sh run_train_lora_only_gen.sh qwen
+sh run_train_lora_only_gen.sh llama 4
+sh run_train_lora_only_gen.sh llama 3
+sh run_train_lora_only_gen.sh qwen 2
 ```
 
 #### 生成式的测试
 
 ```bash
-# sh run_eval_lora_only_gen.sh <BACKBONE>
-sh run_eval_lora_only_gen.sh llama
-sh run_eval_lora_only_gen.sh qwen
+# 使用 LLaMA 模型
+sh run_eval_lora_only_from_components.sh llama
+
+# 使用 Qwen 模型
+sh run_eval_lora_only_from_components.sh qwen
 ```
 
 ### 2. CultureMoE

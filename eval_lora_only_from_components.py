@@ -238,9 +238,9 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
 
-    # 保存详细答案
+    # 保存详细答案（保存为 generated_answer.json，与 shell 脚本一致）
     if output_dir:
-        answers_file = os.path.join(output_dir, "generated_answers.json")
+        answers_file = os.path.join(output_dir, "generated_answer.json")
         with open(answers_file, 'w', encoding='utf-8') as f:
             json.dump(all_answers, f, indent=2, ensure_ascii=False)
         print(f"\n✅ Saved {len(all_answers)} detailed answers to: {answers_file}")
