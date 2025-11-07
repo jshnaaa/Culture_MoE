@@ -466,7 +466,6 @@ def main():
         router_hidden_dim=args.router_hidden_dim,
         experts_hidden_dim=args.experts_hidden_dim,
         lora_rank=args.moe_lora_rank,
-        num_classes=args.num_classes,
         classification_hidden_dim=args.classification_hidden_dim,
         dropout=args.dropout,
         num_heads=args.num_heads
@@ -544,7 +543,7 @@ def main():
         val_metrics = evaluate(
             model, val_loader, args.device,
             args.use_culture_loss, args.culture_loss_lambda,
-            args.num_classes
+            moe_args.num_classes
         )
 
         # 生成式评估（使用真正的生成）
@@ -557,7 +556,7 @@ def main():
             tokenizer=tokenizer,
             val_dataset=val_dataset,
             output_dir=args.output_dir,
-            num_classes=args.num_classes,
+            num_classes=moe_args.num_classes,
             max_new_tokens=10
         )
 
@@ -600,7 +599,7 @@ def main():
                 'router_hidden_dim': args.router_hidden_dim,
                 'experts_hidden_dim': args.experts_hidden_dim,
                 'moe_lora_rank': args.moe_lora_rank,
-                'num_classes': args.num_classes,
+                'num_classes': moe_args.num_classes,
                 'classification_hidden_dim': args.classification_hidden_dim,
                 'dropout': args.dropout,
                 'num_heads': args.num_heads
@@ -647,7 +646,7 @@ def main():
         model=model,
         val_loader=val_loader,
         device=args.device,
-        num_classes=args.num_classes,
+        num_classes=moe_args.num_classes,
         use_culture_loss=args.use_culture_loss,
         culture_loss_lambda=args.culture_loss_lambda
     )
@@ -683,7 +682,7 @@ def main():
     final_config = {
         'base_model': args.base_model_path,
         'lora_weights': args.lora_weights_path,
-        'num_classes': args.num_classes,
+        'num_classes': moe_args.num_classes,
         'use_culture_loss': args.use_culture_loss,
         'culture_loss_lambda': args.culture_loss_lambda,
         'num_epochs': args.num_epochs,
