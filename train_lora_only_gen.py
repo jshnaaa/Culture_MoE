@@ -34,7 +34,7 @@ from transformers import (
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def compute_metrics(eval_preds):
+def compute_metrics(eval_preds, tokenizer=None):
     """
     计算评估指标（样本级别准确率）
 
@@ -67,14 +67,26 @@ def compute_metrics(eval_preds):
     print(f"  mask sum: {mask.sum()}")
 
     # 打印第一个样本的答案部分
-    if len(predictions) > 0:
+    if len(predictions) > 0 and tokenizer is not None:
         first_mask = mask[0]
         first_pred = predictions[0][first_mask]
         first_label = labels[0][first_mask]
-        print(f"  First sample answer tokens:")
-        print(f"    Predicted: {first_pred[:10]}")  # 前10个token
-        print(f"    Label:     {first_label[:10]}")
-        print(f"    Match:     {np.array_equal(first_pred, first_label)}")
+
+        # 解码为文本
+        try:
+            pred_text = tokenizer.decode(first_pred, skip_special_tokens=True)
+            label_text = tokenizer.decode(first_label, skip_special_tokens=True)
+            print(f"  First sample answer:")
+            print(f"    Predicted tokens: {first_pred[:10]}")
+            print(f"    Predicted text:   '{pred_text}'")
+            print(f"    Label tokens:     {first_label[:10]}")
+            print(f"    Label text:       '{label_text}'")
+            print(f"    Match:            {np.array_equal(first_pred, first_label)}")
+        except:
+            print(f"  First sample answer tokens:")
+            print(f"    Predicted: {first_pred[:10]}")
+            print(f"    Label:     {first_label[:10]}")
+            print(f"    Match:     {np.array_equal(first_pred, first_label)}")
 
     # 1. Token-level 准确率（每个 token 的准确率）
     token_correct = (predictions == labels) & mask
@@ -523,8 +535,23 @@ def main():
         """
         if isinstance(logits, tuple):
             logits = logits[0]
+
+        # 调试信息
+        print(f"\n[DEBUG] preprocess_logits_for_metrics:")
+        print(f"  logits shape: {logits.shape}")
+        print(f"  labels shape: {labels.shape}")
+
         # 只保存预测的 token IDs
-        return logits.argmax(dim=-1)
+        pred_ids = logits.argmax(dim=-1)
+        print(f"  pred_ids shape: {pred_ids.shape}")
+        print(f"  First sample pred_ids: {pred_ids[0, :10]}")
+        print(f"  First sample labels: {labels[0, :10]}")
+
+        return pred_ids
+
+    # 创建一个闭包来传递 tokenizer 给 compute_metrics
+    def compute_metrics_with_tokenizer(eval_preds):
+        return compute_metrics(eval_preds, tokenizer=tokenizer)
 
     # 创建 Trainer
     trainer = Trainer(
@@ -533,7 +560,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=val_dataset,  # 添加验证集
         data_collator=data_collator,
-        compute_metrics=compute_metrics,  # 计算准确率
+        compute_metrics=compute_metrics_with_tokenizer,  # 计算准确率（带 tokenizer）
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,  # 预处理 logits
         callbacks=[epoch_callback]  # 添加 callback
     )
