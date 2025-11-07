@@ -79,8 +79,33 @@ def compute_metrics(eval_preds, tokenizer=None, output_type="number", output_dir
 
     for i in range(predictions.shape[0]):
         sample_mask = mask[i]
-        sample_pred = predictions[i][sample_mask]
         sample_label = labels[i][sample_mask]
+
+        # 找到答案开始的位置（第一个非 -100 的位置）
+        answer_positions = np.where(mask[i])[0]
+
+        if len(answer_positions) == 0:
+            # 没有答案部分，跳过
+            generated_answers.append({
+                "predicted": "",
+                "true": ""
+            })
+            continue
+
+        # 答案开始位置
+        answer_start = answer_positions[0]
+
+        # 获取模型对答案部分的预测
+        # 注意：predictions[i][j] 是模型在位置 j 预测的下一个 token
+        # 所以 predictions[i][answer_start-1:answer_end-1] 对应答案部分的预测
+        answer_end = answer_positions[-1] + 1
+
+        if answer_start > 0:
+            # 提取答案部分的预测（从 answer_start-1 开始，因为这个位置预测答案的第一个 token）
+            sample_pred = predictions[i][answer_start-1:answer_end-1]
+        else:
+            # 如果答案从第一个位置开始（不太可能），直接使用预测
+            sample_pred = predictions[i][answer_start:answer_end]
 
         # 解码预测和真实标签
         try:
@@ -413,18 +438,32 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
             full_input_ids = prompt_tokens["input_ids"] + answer_tokens["input_ids"]
             full_attention_mask = prompt_tokens["attention_mask"] + answer_tokens["attention_mask"]
 
-            # 截断到最大长度
-            if len(full_input_ids) > max_length:
-                full_input_ids = full_input_ids[:max_length]
-                full_attention_mask = full_attention_mask[:max_length]
-
             # 创建 labels：prompt 部分用 -100（忽略），答案部分正常
             prompt_len = len(prompt_tokens["input_ids"])
             labels = [-100] * prompt_len + answer_tokens["input_ids"]
 
-            # 截断 labels
-            if len(labels) > max_length:
-                labels = labels[:max_length]
+            # 截断到最大长度（确保答案部分不被截断）
+            if len(full_input_ids) > max_length:
+                # 如果超过最大长度，优先保留答案部分
+                # 计算答案长度
+                answer_len = len(answer_tokens["input_ids"])
+
+                # 如果 prompt 太长，从 prompt 开始截断
+                if prompt_len > max_length - answer_len:
+                    # prompt 太长，需要截断 prompt
+                    new_prompt_len = max_length - answer_len
+                    if new_prompt_len < 10:  # 至少保留 10 个 token 的 prompt
+                        # 如果连 10 个 token 都保留不了，说明答案太长，跳过这个样本
+                        continue
+
+                    full_input_ids = full_input_ids[:new_prompt_len] + full_input_ids[prompt_len:prompt_len + answer_len]
+                    full_attention_mask = full_attention_mask[:new_prompt_len] + full_attention_mask[prompt_len:prompt_len + answer_len]
+                    labels = [-100] * new_prompt_len + answer_tokens["input_ids"]
+                else:
+                    # 正常截断
+                    full_input_ids = full_input_ids[:max_length]
+                    full_attention_mask = full_attention_mask[:max_length]
+                    labels = labels[:max_length]
 
             # 确保长度一致
             assert len(full_input_ids) == len(full_attention_mask) == len(labels), \
