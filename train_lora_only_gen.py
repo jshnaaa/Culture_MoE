@@ -115,18 +115,23 @@ def generate_and_evaluate(model, tokenizer, eval_dataset, output_dir, output_typ
                 ["python", eval_script, "--input", answers_file, "--output", metrics_file],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',  # 指定 UTF-8 编码
+                errors='replace',  # 遇到无法解码的字符时替换
                 check=True
             )
             print(result.stdout)
 
             # 读取指标
             if os.path.exists(metrics_file):
-                with open(metrics_file, 'r') as f:
+                with open(metrics_file, 'r', encoding='utf-8') as f:
                     metrics = json.load(f)
                 return metrics
         except subprocess.CalledProcessError as e:
             print(f"⚠️  Post-evaluation failed: {e}")
-            print(e.stderr)
+            if e.stderr:
+                print(e.stderr)
+        except Exception as e:
+            print(f"⚠️  Post-evaluation error: {e}")
     else:
         print(f"⚠️  Evaluation script not found: {eval_script}")
 
