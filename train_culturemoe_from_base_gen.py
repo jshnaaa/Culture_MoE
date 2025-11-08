@@ -38,10 +38,183 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.llamafactory.data.dual_classification_collator import DualClassificationDataCollator
-from src.llamafactory.data.dual_classification_processor import load_and_process_dual_classification_data
+# ✅ 使用生成式数据处理，而不是分类数据处理
+# from src.llamafactory.data.dual_classification_collator import DualClassificationDataCollator
+# from src.llamafactory.data.dual_classification_processor import load_and_process_dual_classification_data
 from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
 from src.llamafactory.model.moe_args import ModelArgs
+
+
+def load_and_process_generative_data(
+    data_path: str,
+    tokenizer,
+    max_length: int = 512,
+    val_split: float = 0.1,
+    use_instruction_mask: bool = True
+):
+    """
+    加载并处理生成式数据（双路输入）
+
+    Args:
+        data_path: 数据文件路径
+        tokenizer: Tokenizer
+        max_length: 最大序列长度
+        val_split: 验证集比例
+        use_instruction_mask: 是否使用 instruction_mask
+
+    Returns:
+        dict: 包含 'train', 'validation', 'validation_raw' 的字典
+    """
+    import json
+    from datasets import Dataset
+
+    print(f"Loading data from: {data_path}")
+
+    with open(data_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    print(f"Loaded {len(data)} samples")
+
+    # 处理数据
+    processed_data = []
+    for item in data:
+        instruction = item.get('instruction', '')
+        instruction_mask = item.get('instruction_mask', instruction) if use_instruction_mask else instruction
+        input_text = item.get('input', '')
+        output = str(item['output'])
+        culture_label = item.get('label', '')
+
+        # 第一路：instruction + input
+        if input_text and input_text.strip():
+            full_text = f"{instruction}\n{input_text}\nAnswer:"
+        else:
+            full_text = f"{instruction}\nAnswer:"
+
+        # 第二路：instruction_mask + input
+        if input_text and input_text.strip():
+            mask_text = f"{instruction_mask}\n{input_text}\nAnswer:"
+        else:
+            mask_text = f"{instruction_mask}\nAnswer:"
+
+        # Tokenize 第一路（instruction + input）
+        encoded_full = tokenizer(
+            full_text,
+            max_length=max_length - 10,  # 留出空间给答案
+            truncation=True,
+            padding=False,
+            return_tensors=None
+        )
+
+        # Tokenize 第二路（instruction_mask + input）
+        encoded_mask = tokenizer(
+            mask_text,
+            max_length=max_length - 10,
+            truncation=True,
+            padding=False,
+            return_tensors=None
+        )
+
+        # Tokenize 答案
+        answer_tokens = tokenizer(
+            f" {output}",
+            add_special_tokens=False,
+            return_tensors=None
+        )
+
+        # 合并：prompt + answer
+        input_ids_full = encoded_full['input_ids'] + answer_tokens['input_ids']
+        attention_mask_full = encoded_full['attention_mask'] + answer_tokens['attention_mask']
+
+        # Labels：prompt 部分用 -100，answer 部分用真实 token
+        labels = [-100] * len(encoded_full['input_ids']) + answer_tokens['input_ids']
+
+        # 处理 culture_label
+        if isinstance(culture_label, str) and culture_label.strip():
+            culture_labels = [int(x.strip()) for x in culture_label.split(',') if x.strip().isdigit()]
+        elif isinstance(culture_label, int):
+            culture_labels = [culture_label]
+        else:
+            culture_labels = []
+
+        processed_data.append({
+            'input_ids': input_ids_full,
+            'attention_mask': attention_mask_full,
+            'input_ids_mask': encoded_mask['input_ids'] + answer_tokens['input_ids'],
+            'attention_mask_mask': encoded_mask['attention_mask'] + answer_tokens['attention_mask'],
+            'labels': labels,
+            'culture_labels': culture_labels,
+            'original_output': output
+        })
+
+    # 划分训练集和验证集
+    split_idx = int(len(processed_data) * (1 - val_split))
+    train_data = processed_data[:split_idx]
+    val_data = processed_data[split_idx:]
+
+    print(f"Train: {len(train_data)}, Val: {len(val_data)}")
+
+    # 创建 Dataset
+    train_dataset = Dataset.from_list(train_data)
+    val_dataset = Dataset.from_list(val_data)
+
+    # 保存原始验证集（用于生成式评估）
+    val_dataset_raw = data[split_idx:]
+
+    return {
+        'train': train_dataset,
+        'validation': val_dataset,
+        'validation_raw': val_dataset_raw
+    }
+
+
+def generative_data_collator(features, tokenizer):
+    """
+    生成式数据整理器（双路输入）
+
+    Args:
+        features: 样本列表
+        tokenizer: Tokenizer
+
+    Returns:
+        批次数据字典
+    """
+    # 获取最大长度
+    max_len_full = max(len(f['input_ids']) for f in features)
+    max_len_mask = max(len(f['input_ids_mask']) for f in features)
+
+    batch = {
+        'input_ids': [],
+        'attention_mask': [],
+        'input_ids_mask': [],
+        'attention_mask_mask': [],
+        'labels': [],
+        'culture_labels': []
+    }
+
+    for feature in features:
+        # 第一路 padding
+        padding_len_full = max_len_full - len(feature['input_ids'])
+        batch['input_ids'].append(feature['input_ids'] + [tokenizer.pad_token_id] * padding_len_full)
+        batch['attention_mask'].append(feature['attention_mask'] + [0] * padding_len_full)
+        batch['labels'].append(feature['labels'] + [-100] * padding_len_full)
+
+        # 第二路 padding
+        padding_len_mask = max_len_mask - len(feature['input_ids_mask'])
+        batch['input_ids_mask'].append(feature['input_ids_mask'] + [tokenizer.pad_token_id] * padding_len_mask)
+        batch['attention_mask_mask'].append(feature['attention_mask_mask'] + [0] * padding_len_mask)
+
+        # Culture labels
+        batch['culture_labels'].append(feature['culture_labels'])
+
+    # 转换为 tensor
+    return {
+        'input_ids': torch.tensor(batch['input_ids'], dtype=torch.long),
+        'attention_mask': torch.tensor(batch['attention_mask'], dtype=torch.long),
+        'input_ids_mask': torch.tensor(batch['input_ids_mask'], dtype=torch.long),
+        'attention_mask_mask': torch.tensor(batch['attention_mask_mask'], dtype=torch.long),
+        'labels': torch.tensor(batch['labels'], dtype=torch.long),
+        'culture_labels': batch['culture_labels']
+    }
 
 
 def setup_distributed():
@@ -517,9 +690,9 @@ def main():
     if is_distributed:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
 
-    # 加载数据
+    # 加载数据（使用生成式数据处理）
     print("Loading and processing data...")
-    datasets = load_and_process_dual_classification_data(
+    datasets = load_and_process_generative_data(
         data_path=args.train_file,
         tokenizer=tokenizer,
         max_length=args.max_length,
@@ -531,8 +704,9 @@ def main():
     val_dataset_raw = datasets.get('validation_raw', None)  # ✅ 获取原始验证集
     print(f"✅ Train: {len(train_dataset)}, Val: {len(val_dataset)}\n")
 
-    # 创建 DataLoader
-    data_collator = DualClassificationDataCollator(tokenizer=tokenizer, max_length=args.max_length)
+    # 创建 DataLoader（使用生成式数据整理器）
+    from functools import partial
+    data_collator = partial(generative_data_collator, tokenizer=tokenizer)
 
     # ✅ 如果是分布式训练，使用 DistributedSampler
     if is_distributed:

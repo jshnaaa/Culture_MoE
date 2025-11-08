@@ -236,6 +236,16 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         outputs = {'logits': logits}
 
         if labels is not None:
+            # ✅ 检查 labels 的维度
+            if labels.dim() == 1:
+                # 如果 labels 是 1D [B]，说明是分类标签，不是生成式标签
+                raise ValueError(
+                    f"Expected labels to be 2D [batch_size, seq_len] for generative training, "
+                    f"but got 1D [batch_size]. This suggests the data collator is not correctly "
+                    f"preparing labels for generative training. "
+                    f"Labels shape: {labels.shape}, Logits shape: {logits.shape}"
+                )
+
             # ✅ 如果 labels 的长度与 logits 不匹配，截断 labels
             if labels.size(1) != logits.size(1):
                 min_len = min(labels.size(1), logits.size(1))
