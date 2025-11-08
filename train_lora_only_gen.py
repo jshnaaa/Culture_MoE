@@ -512,9 +512,32 @@ def main():
         model = model.to("cuda")
     print("✅ Base model loaded\n")
 
+    # ✅ 设置 model.config.pad_token_id（关键！）
+    if model.config.pad_token_id is None:
+        model.config.pad_token_id = model.config.eos_token_id
+        print(f"✅ Set model.config.pad_token_id = {model.config.pad_token_id}")
+
     # 检测模型类型
     model_type = model.config.model_type if hasattr(model.config, 'model_type') else 'unknown'
-    print(f"Detected model type: {model_type}\n")
+    print(f"Detected model type: {model_type}")
+
+    # ✅ 验证关键配置
+    print("\n" + "="*80)
+    print("Model Configuration Check")
+    print("="*80)
+    print(f"Model type: {model_type}")
+    print(f"RMS Norm Eps: {getattr(model.config, 'rms_norm_eps', None)}")
+    print(f"Tokenizer pad_token: {tokenizer.pad_token} (id={tokenizer.pad_token_id})")
+    print(f"Model config pad_token_id: {model.config.pad_token_id}")
+    print(f"Model config eos_token_id: {model.config.eos_token_id}")
+
+    # 断言验证
+    assert tokenizer.pad_token_id == model.config.pad_token_id, \
+        f"Tokenizer pad_token_id ({tokenizer.pad_token_id}) != Model pad_token_id ({model.config.pad_token_id})"
+
+    print("✅ All configurations are correct")
+    print("="*80)
+    print("")
 
     # 配置 LoRA（根据模型类型）
     print("Configuring LoRA...")
