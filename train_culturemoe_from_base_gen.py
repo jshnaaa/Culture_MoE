@@ -229,48 +229,44 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
 
         # 统计
         total_loss += loss.item()
-        total_cls_loss += outputs['classification_loss'].item()
+        total_cls_loss += outputs['generation_loss'].item()  # ✅ 修改为 generation_loss
         if use_culture_loss:
             total_culture_loss += outputs['culture_loss'].item()
 
-        # 收集预测和标签
-        preds = torch.argmax(outputs['logits'], dim=-1)
-        all_preds.extend(preds.cpu().numpy())
-        all_labels.extend(labels.cpu().numpy())
+        # ✅ 生成式模型不需要在训练时收集预测（会很慢）
+        # 只在评估时使用 generate() 方法
 
         # 更新进度条
         progress_bar.set_postfix({
             'loss': f"{loss.item():.4f}",
-            'cls_loss': f"{outputs['classification_loss'].item():.4f}"
+            'gen_loss': f"{outputs['generation_loss'].item():.4f}"  # ✅ 修改为 gen_loss
         })
 
     # 计算平均损失
     avg_loss = total_loss / len(train_loader)
-    avg_cls_loss = total_cls_loss / len(train_loader)
+    avg_gen_loss = total_cls_loss / len(train_loader)  # ✅ 修改为 gen_loss
     avg_culture_loss = total_culture_loss / len(train_loader) if use_culture_loss else 0.0
 
-    # 计算准确率
-    accuracy = accuracy_score(all_labels, all_preds)
+    # ✅ 生成式模型在训练时不计算准确率（太慢）
+    # 准确率只在评估时通过 generate() 计算
 
     return {
         'loss': avg_loss,
-        'cls_loss': avg_cls_loss,
+        'gen_loss': avg_gen_loss,  # ✅ 修改为 gen_loss
         'culture_loss': avg_culture_loss,
-        'accuracy': accuracy
+        'accuracy': 0.0  # ✅ 训练时不计算准确率
     }
 
 
 def evaluate(model, val_loader, device, use_culture_loss, culture_loss_lambda, num_classes):
-    """评估模型（使用 forward pass 计算 loss）"""
+    """评估模型（只计算 loss，不计算准确率）"""
     model.eval()
     total_loss = 0
-    total_cls_loss = 0
+    total_gen_loss = 0  # ✅ 修改为 gen_loss
     total_culture_loss = 0
-    all_preds = []
-    all_labels = []
 
     with torch.no_grad():
-        for batch in tqdm(val_loader, desc="Evaluating"):
+        for batch in tqdm(val_loader, desc="Evaluating (loss only)"):
             # 移动数据到设备
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
@@ -293,40 +289,20 @@ def evaluate(model, val_loader, device, use_culture_loss, culture_loss_lambda, n
 
             # 统计
             total_loss += outputs['loss'].item()
-            total_cls_loss += outputs['classification_loss'].item()
+            total_gen_loss += outputs['generation_loss'].item()  # ✅ 修改为 generation_loss
             if use_culture_loss:
                 total_culture_loss += outputs['culture_loss'].item()
 
-            # 收集预测和标签
-            preds = torch.argmax(outputs['logits'], dim=-1)
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-
     # 计算平均损失
     avg_loss = total_loss / len(val_loader)
-    avg_cls_loss = total_cls_loss / len(val_loader)
+    avg_gen_loss = total_gen_loss / len(val_loader)  # ✅ 修改为 gen_loss
     avg_culture_loss = total_culture_loss / len(val_loader) if use_culture_loss else 0.0
 
-    # 计算指标
-    accuracy = accuracy_score(all_labels, all_preds)
-
-    if num_classes == 2:
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            all_labels, all_preds, average='binary', pos_label=1, zero_division=0
-        )
-    else:
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            all_labels, all_preds, average='macro', zero_division=0
-        )
-
+    # ✅ 生成式模型的准确率通过 generate_and_evaluate() 计算
     return {
         'loss': avg_loss,
-        'cls_loss': avg_cls_loss,
-        'culture_loss': avg_culture_loss,
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1': f1
+        'gen_loss': avg_gen_loss,  # ✅ 修改为 gen_loss
+        'culture_loss': avg_culture_loss
     }
 
 
@@ -650,19 +626,21 @@ def main():
         epoch_result = {
             'epoch': epoch + 1,
             'train_loss': train_metrics['loss'],
-            'train_accuracy': train_metrics['accuracy'],
+            'train_gen_loss': train_metrics['gen_loss'],  # ✅ 添加 gen_loss
+            'train_accuracy': train_metrics['accuracy'],  # ✅ 训练时为 0.0
             'eval_loss': val_metrics['loss'],
+            'eval_gen_loss': val_metrics['gen_loss'],  # ✅ 添加 gen_loss
             'eval_accuracy': gen_accuracy,  # 使用生成式评估的准确率
-            'eval_precision': gen_metrics.get('precision', val_metrics['precision']),
-            'eval_recall': gen_metrics.get('recall', val_metrics['recall']),
-            'eval_f1': gen_metrics.get('f1', val_metrics['f1'])
+            'eval_precision': gen_metrics.get('precision', 0.0),  # ✅ 修复默认值
+            'eval_recall': gen_metrics.get('recall', 0.0),  # ✅ 修复默认值
+            'eval_f1': gen_metrics.get('f1', 0.0)  # ✅ 修复默认值
         }
         epoch_results.append(epoch_result)
 
         # 打印结果
         print(f"\n📊 Epoch {epoch + 1} Results:")
-        print(f"   Train Loss: {train_metrics['loss']:.4f}, Train Acc: {train_metrics['accuracy']:.4f}")
-        print(f"   Eval Loss:  {val_metrics['loss']:.4f}")
+        print(f"   Train Loss: {train_metrics['loss']:.4f}, Train Gen Loss: {train_metrics['gen_loss']:.4f}")  # ✅ 修改
+        print(f"   Eval Loss:  {val_metrics['loss']:.4f}, Eval Gen Loss: {val_metrics['gen_loss']:.4f}")  # ✅ 修改
         print(f"   Eval Accuracy (Generative): {gen_accuracy:.4f}")
         if 'precision' in gen_metrics:
             print(f"   Eval Precision: {gen_metrics['precision']:.4f}, Recall: {gen_metrics['recall']:.4f}, F1: {gen_metrics['f1']:.4f}")

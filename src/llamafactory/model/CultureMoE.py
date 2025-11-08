@@ -81,13 +81,8 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             return_all=True
         )
 
-        # 5. 分类头
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim, args.classification_hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(args.dropout),
-            nn.Linear(args.classification_hidden_dim, args.num_classes)
-        )
+        # ✅ 5. 移除分类头，使用 LLaMA 的 lm_head 进行生成
+        # 不需要额外的分类头，直接使用 llama_model.lm_head
 
     # ✅ 添加梯度检查点相关方法
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
@@ -131,38 +126,57 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
     def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None,
                 labels=None, culture_labels=None, use_culture_loss=False, culture_loss_lambda=0.5, **kwargs):
+        """
+        ✅ 生成式前向传播
+
+        Args:
+            input_ids: [B, L] 输入 token IDs
+            attention_mask: [B, L] 注意力掩码
+            input_ids_mask: [B, L] 可选的 mask 输入（用于文化损失）
+            attention_mask_mask: [B, L] mask 输入的注意力掩码
+            labels: [B, L] 生成式标签（shifted input_ids）
+            culture_labels: [B] 文化标签
+            use_culture_loss: 是否使用文化损失
+            culture_loss_lambda: 文化损失权重
+
+        Returns:
+            outputs: dict with keys:
+                - logits: [B, L, vocab_size] 生成 logits
+                - loss: 总损失（如果提供了 labels）
+                - generation_loss: 生成损失
+                - culture_loss: 文化损失
+        """
         # ✅ 获取输入的设备和数据类型
         device = input_ids.device
-        # 使用 shared 层的第一个 Linear 的 dtype（MoE 层总是有参数的）
         dtype = self.shared[0].weight.dtype
 
         # ✅ Step 1: LLaMA forward for h_all (instruction + input)
-        outputs_all = self.llama_model(
+        outputs_all = self.llama_model.model(  # ✅ 使用 model 而不是整个 llama_model
             input_ids,
             attention_mask=attention_mask,
-            output_hidden_states=True
+            output_hidden_states=True,
+            return_dict=True
         )
 
-        # ✅ 确保 hidden states 在正确的设备上
-        hidden_all = outputs_all.hidden_states[-1]
+        # ✅ 获取最后一层的 hidden states
+        hidden_all = outputs_all.last_hidden_state  # [B, L, H]
         if hidden_all.device != device:
             hidden_all = hidden_all.to(device)
         if hidden_all.dtype != dtype:
             hidden_all = hidden_all.to(dtype)
 
-        # ✅ 关键修复：立即克隆 h_all，避免后续重复使用
         h_all = hidden_all.clone()
 
         # ✅ Step 2: LLaMA forward for h_no (instruction_mask + input)
-        # 如果提供了 mask 输入，使用它；否则使用相同的输入
         if input_ids_mask is not None:
-            outputs_no = self.llama_model(
+            outputs_no = self.llama_model.model(
                 input_ids_mask,
                 attention_mask=attention_mask_mask,
-                output_hidden_states=True
+                output_hidden_states=True,
+                return_dict=True
             )
 
-            hidden_no = outputs_no.hidden_states[-1]
+            hidden_no = outputs_no.last_hidden_state
             if hidden_no.device != device:
                 hidden_no = hidden_no.to(device)
             if hidden_no.dtype != dtype:
@@ -170,61 +184,63 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
             h_no = hidden_no.clone()
         else:
-            # ✅ 如果没有提供 mask 输入，再次克隆以创建独立副本
             h_no = h_all.clone()
 
-        # Step 2: Shared 层
-        # ✅ 确保 h_no 在正确的设备和数据类型上
+        # Step 3: Shared 层
         h_no = h_no.to(device=device, dtype=dtype)
         shared_out = self.shared(h_no)  # [B, L, H]
 
-        # Step 3: Router
+        # Step 4: Router（基于 pooled representation）
         pooled = shared_out.mean(dim=1)  # [B, H]
         expert_weights, router_logits = self.router(pooled)  # [B, E]
 
-        # ✅ 保存专家权重（用于损失计算）
+        # ✅ 保存专家权重
         self._last_expert_weights = expert_weights.detach()
 
-        # Step 4: Experts 层
-        # ✅ 确保 h_all 在正确的设备和数据类型上
+        # Step 5: Experts 层
         h_all = h_all.to(device=device, dtype=dtype)
         expert_outs = self.experts_layer(h_all)  # list of [B, L, H]
 
-        # Step 5: 权重缩放专家输出
+        # Step 6: 权重缩放专家输出
         weighted_expert_outs = [
             expert_outs[i] * expert_weights[:, i].unsqueeze(-1).unsqueeze(-1)
             for i in range(len(expert_outs))
         ]
 
-        # Step 6: 拼接 shared + 加权专家输出
-        kv = torch.cat([shared_out] + weighted_expert_outs, dim=1)  # [B, (E+1)*L, H]
+        # Step 7: 融合 shared + 加权专家输出
+        # ✅ 使用加权平均而不是拼接
+        expert_sum = torch.stack(weighted_expert_outs, dim=0).sum(dim=0)  # [B, L, H]
+        enhanced_hidden = shared_out + expert_sum  # [B, L, H]
 
-        # Step 7: 分类
-        final_repr = kv
-        logits = self.classifier(final_repr)
-
-        # Step 8: 对 logits 进行平均
-        logits_avg = logits.mean(dim=1)  # [B, num_classes]
+        # ✅ Step 8: 使用 LLaMA 的 lm_head 生成 logits
+        logits = self.llama_model.lm_head(enhanced_hidden)  # [B, L, vocab_size]
 
         # ✅ Step 9: 计算损失（如果提供了 labels）
-        outputs = {'logits': logits_avg}
+        outputs = {'logits': logits}
 
         if labels is not None:
-            loss_fct = nn.CrossEntropyLoss()
-            classification_loss = loss_fct(logits_avg, labels)
-            outputs['classification_loss'] = classification_loss
+            # ✅ 生成式损失（CrossEntropyLoss）
+            # Shift logits and labels for next token prediction
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+
+            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+            generation_loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1)
+            )
+            outputs['generation_loss'] = generation_loss
 
             # 文化损失（如果启用）
             if use_culture_loss and culture_labels is not None:
-                # 文化损失：鼓励相同文化的样本使用相似的专家
                 culture_loss = self.compute_culture_loss(expert_weights, culture_labels)
                 outputs['culture_loss'] = culture_loss
 
                 # 总损失
-                total_loss = classification_loss + culture_loss_lambda * culture_loss
+                total_loss = generation_loss + culture_loss_lambda * culture_loss
             else:
                 outputs['culture_loss'] = torch.tensor(0.0, device=device)
-                total_loss = classification_loss
+                total_loss = generation_loss
 
             outputs['loss'] = total_loss
 
