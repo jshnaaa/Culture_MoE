@@ -512,16 +512,33 @@ def main():
         model = model.to("cuda")
     print("✅ Base model loaded\n")
 
-    # 配置 LoRA
+    # 检测模型类型
+    model_type = model.config.model_type if hasattr(model.config, 'model_type') else 'unknown'
+    print(f"Detected model type: {model_type}\n")
+
+    # 配置 LoRA（根据模型类型）
     print("Configuring LoRA...")
-    lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-        bias="none"
-    )
+    if model_type == 'qwen':
+        print("  Using Qwen-specific LoRA configuration")
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=0.1,  # ✅ Qwen 需要更高的 dropout
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+            bias="none",
+            init_lora_weights="gaussian"  # ✅ 使用高斯初始化
+        )
+    else:
+        print("  Using LLaMA-specific LoRA configuration")
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+            bias="none"
+        )
 
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
@@ -540,20 +557,38 @@ def main():
     output_type = datasets.get('output_type', 'number')
     print(f"✅ Train: {len(train_dataset)}, Val: {len(val_dataset) if val_dataset else 0} samples\n")
 
-    # 配置训练参数
+    # 配置训练参数（根据模型类型调整）
+    if model_type == 'qwen':
+        # ✅ Qwen 需要更保守的配置
+        learning_rate = args.learning_rate * 0.5  # 降低学习率 50%
+        max_grad_norm = 0.5  # 更激进的梯度裁剪
+        warmup_steps = 200  # 更长的预热
+        warmup_ratio = 0.2  # 20% 的步数用于预热
+        print("  Using Qwen-specific training configuration")
+        print(f"    Learning rate: {learning_rate} (50% of {args.learning_rate})")
+        print(f"    Max grad norm: {max_grad_norm}")
+        print(f"    Warmup steps: {warmup_steps}")
+    else:
+        # LLaMA 配置
+        learning_rate = args.learning_rate
+        max_grad_norm = 1.0
+        warmup_steps = 100
+        warmup_ratio = 0.1
+        print("  Using LLaMA-specific training configuration")
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.learning_rate,
+        learning_rate=learning_rate,
         logging_steps=10,
         save_strategy="no",
         fp16=True,
         fp16_full_eval=False,  # 评估时不使用 fp16
         fp16_opt_level="O1",   # 使用 O1 混合精度（更稳定）
-        max_grad_norm=1.0,     # 梯度裁剪（防止梯度爆炸）
-        warmup_steps=100,      # 学习率预热（防止初始梯度过大）
+        max_grad_norm=max_grad_norm,     # ✅ 根据模型类型调整
+        warmup_steps=warmup_steps,      # ✅ 根据模型类型调整
         weight_decay=0.01,     # 权重衰减
         adam_epsilon=1e-8,     # Adam 优化器的 epsilon
         report_to="none",
