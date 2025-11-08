@@ -225,6 +225,11 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         enhanced_hidden = shared_out + expert_sum  # [B, L, H]
 
         # ✅ Step 8: 使用 LLaMA 的 lm_head 生成 logits
+        # 确保 enhanced_hidden 与 lm_head 的数据类型一致
+        lm_head_dtype = self.llama_model.lm_head.weight.dtype
+        if enhanced_hidden.dtype != lm_head_dtype:
+            enhanced_hidden = enhanced_hidden.to(lm_head_dtype)
+
         logits = self.llama_model.lm_head(enhanced_hidden)  # [B, L, vocab_size]
 
         # ✅ Step 9: 计算损失（如果提供了 labels）
