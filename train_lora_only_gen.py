@@ -559,13 +559,13 @@ def main():
 
     # 配置训练参数（根据模型类型调整）
     if model_type == 'qwen':
-        # ✅ Qwen 需要更保守的配置（更激进的修复）
-        learning_rate = args.learning_rate * 0.1  # 降低学习率 90%（极其保守）
-        max_grad_norm = 0.1  # 极其激进的梯度裁剪
-        warmup_ratio = 0.5  # 50% 的步数用于预热（不使用 warmup_steps）
-        use_fp32 = True  # ✅ Qwen 在 fp16 下不稳定，改用 fp32
-        print("  Using Qwen-specific training configuration (ultra-conservative)")
-        print(f"    Learning rate: {learning_rate} (10% of {args.learning_rate})")
+        # ✅ Qwen 需要保守但不过度的配置
+        learning_rate = args.learning_rate * 0.5  # 降低 50%（不是 90%）
+        max_grad_norm = 0.5  # 适中的梯度裁剪（不是 0.1）
+        warmup_ratio = 0.1  # ✅ 10% 预热（不是 50%）
+        use_fp32 = True  # 使用 fp32
+        print("  Using Qwen-specific training configuration")
+        print(f"    Learning rate: {learning_rate} (50% of {args.learning_rate})")
         print(f"    Max grad norm: {max_grad_norm}")
         print(f"    Warmup ratio: {warmup_ratio * 100:.0f}%")
         print(f"    Using fp32 (not fp16)")
@@ -573,7 +573,7 @@ def main():
         # LLaMA 配置
         learning_rate = args.learning_rate
         max_grad_norm = 1.0
-        warmup_ratio = 0.1  # 使用 warmup_ratio 而不是 warmup_steps
+        warmup_ratio = 0.1
         use_fp32 = False
         print("  Using LLaMA-specific training configuration")
 
