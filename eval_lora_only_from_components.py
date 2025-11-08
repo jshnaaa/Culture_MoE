@@ -417,6 +417,8 @@ def main():
                         help="类别数量（默认 10）")
     parser.add_argument("--device", type=str, default="cuda",
                         help="设备")
+    parser.add_argument("--use_multi_gpu", action="store_true",
+                        help="使用多 GPU 评估（DataParallel）")
 
     args = parser.parse_args()
 
@@ -441,6 +443,15 @@ def main():
         args.lora_weights_path,
         args.device
     )
+
+    # ✅ 使用多 GPU（DataParallel）
+    if args.use_multi_gpu and torch.cuda.device_count() > 1:
+        print(f"\n{'='*80}")
+        print(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
+        print(f"{'='*80}")
+        model = torch.nn.DataParallel(model)
+        print(f"✅ Model wrapped with DataParallel")
+        print(f"{'='*80}\n")
 
     # 加载测试数据
     print(f"\nLoading test data from: {args.test_file}")

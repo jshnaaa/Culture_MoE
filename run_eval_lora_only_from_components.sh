@@ -65,14 +65,38 @@ fi
 # 创建输出目录
 mkdir -p "$OUTPUT_DIR"
 
+# 检测可用 GPU 数量
+NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
+echo "Detected $NUM_GPUS GPUs"
+echo ""
+
 # 运行评估
-python eval_lora_only_from_components.py \
-    --base_model_path $BASE_MODEL_PATH \
-    --lora_weights_path $LORA_WEIGHTS_PATH \
-    --test_file $TEST_FILE \
-    --output_dir $OUTPUT_DIR \
-    --num_classes $NUM_CLASSES \
-    --device cuda
+if [ $NUM_GPUS -gt 1 ]; then
+    echo "Using multi-GPU evaluation with $NUM_GPUS GPUs"
+    echo ""
+
+    # 使用 DataParallel 进行多卡评估
+    python eval_lora_only_from_components.py \
+        --base_model_path $BASE_MODEL_PATH \
+        --lora_weights_path $LORA_WEIGHTS_PATH \
+        --test_file $TEST_FILE \
+        --output_dir $OUTPUT_DIR \
+        --num_classes $NUM_CLASSES \
+        --device cuda \
+        --use_multi_gpu
+else
+    echo "Using single-GPU evaluation"
+    echo ""
+
+    # 单卡评估
+    python eval_lora_only_from_components.py \
+        --base_model_path $BASE_MODEL_PATH \
+        --lora_weights_path $LORA_WEIGHTS_PATH \
+        --test_file $TEST_FILE \
+        --output_dir $OUTPUT_DIR \
+        --num_classes $NUM_CLASSES \
+        --device cuda
+fi
 
 if [ $? -eq 0 ]; then
     echo ""

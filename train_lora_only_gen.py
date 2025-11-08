@@ -497,6 +497,13 @@ def main():
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    # ✅ 对于 Qwen，确保 pad_token_id 和 eos_token_id 一致
+    if tokenizer.pad_token_id != tokenizer.eos_token_id:
+        print(f"⚠️  Warning: pad_token_id ({tokenizer.pad_token_id}) != eos_token_id ({tokenizer.eos_token_id})")
+        print(f"   Setting pad_token_id = eos_token_id = {tokenizer.eos_token_id}")
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
     print("✅ Tokenizer loaded\n")
 
     # 加载模型
