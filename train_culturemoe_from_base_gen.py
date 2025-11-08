@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """
-从 Base 模型 + LoRA 权重训练 CultureMoE（生成式版本）
+从 Base 模型 + LoRA 权重训练 CultureMoE（生成式版本 - 支持双卡训练）
 
 使用方法：
+    # 单卡训练
     python train_culturemoe_from_base_gen.py \
         --base_model_path /path/to/base_model \
         --lora_weights_path /path/to/lora_weights \
         --train_file /path/to/train_data.json \
         --output_dir /path/to/output \
-        --num_classes 5 \
+        --use_culture_loss True
+
+    # 双卡训练
+    torchrun --nproc_per_node=2 train_culturemoe_from_base_gen.py \
+        --base_model_path /path/to/base_model \
+        --lora_weights_path /path/to/lora_weights \
+        --train_file /path/to/train_data.json \
+        --output_dir /path/to/output \
         --use_culture_loss True
 """
 
@@ -19,6 +27,9 @@ import sys
 from datetime import datetime
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -33,11 +44,34 @@ from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
 from src.llamafactory.model.moe_args import ModelArgs
 
 
+def setup_distributed():
+    """初始化分布式训练环境"""
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+
+        dist.init_process_group(backend='nccl')
+        torch.cuda.set_device(local_rank)
+
+        return True, rank, world_size, local_rank
+    else:
+        return False, 0, 1, 0
+
+
+def cleanup_distributed():
+    """清理分布式训练环境"""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
 def load_model_from_components(
     base_model_path: str,
     lora_weights_path: str,
     moe_args: ModelArgs,
-    device: str = "cuda"
+    device: str = "cuda",
+    is_distributed: bool = False,
+    local_rank: int = 0
 ):
     """
     从 Base 模型 + LoRA 权重创建 CultureMoE 模型
@@ -47,18 +81,25 @@ def load_model_from_components(
         lora_weights_path: LoRA 权重路径
         moe_args: MoE 配置
         device: 设备
+        is_distributed: 是否使用分布式训练
+        local_rank: 本地 rank
 
     Returns:
         model: CultureMoE 模型
         tokenizer: Tokenizer
     """
-    print("\n" + "="*80)
-    print("Loading Model from Components")
-    print("="*80)
-    print(f"Base model: {base_model_path}")
-    print(f"LoRA weights: {lora_weights_path}")
-    print("="*80)
-    print("")
+    # 只在主进程打印
+    if not is_distributed or local_rank == 0:
+        print("\n" + "="*80)
+        print("Loading Model from Components")
+        print("="*80)
+        print(f"Base model: {base_model_path}")
+        print(f"LoRA weights: {lora_weights_path}")
+        print(f"Distributed: {is_distributed}")
+        if is_distributed:
+            print(f"Local rank: {local_rank}")
+        print("="*80)
+        print("")
 
     # 1. 加载 Tokenizer
     print("1. Loading tokenizer...")
@@ -443,21 +484,36 @@ def main():
 
     args = parser.parse_args()
 
-    # 创建输出目录
-    os.makedirs(args.output_dir, exist_ok=True)
+    # ✅ 初始化分布式训练
+    is_distributed, rank, world_size, local_rank = setup_distributed()
 
-    print("\n" + "="*80)
-    print("CultureMoE Training (From Base + LoRA)")
-    print("="*80)
-    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Base model: {args.base_model_path}")
-    print(f"LoRA weights: {args.lora_weights_path}")
-    print(f"Train file: {args.train_file}")
-    print(f"Output directory: {args.output_dir}")
-    print(f"Use culture loss: {args.use_culture_loss}")
-    print(f"Use instruction mask: {args.use_instruction_mask}")
-    print("="*80)
-    print("")
+    # 设置设备
+    if is_distributed:
+        device = f"cuda:{local_rank}"
+    else:
+        device = args.device
+
+    # 只在主进程创建输出目录和打印信息
+    if not is_distributed or rank == 0:
+        os.makedirs(args.output_dir, exist_ok=True)
+
+        print("\n" + "="*80)
+        print("CultureMoE Training (From Base + LoRA)")
+        print("="*80)
+        print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Distributed: {is_distributed}")
+        if is_distributed:
+            print(f"World size: {world_size}")
+            print(f"Rank: {rank}")
+            print(f"Local rank: {local_rank}")
+        print(f"Base model: {args.base_model_path}")
+        print(f"LoRA weights: {args.lora_weights_path}")
+        print(f"Train file: {args.train_file}")
+        print(f"Output directory: {args.output_dir}")
+        print(f"Use culture loss: {args.use_culture_loss}")
+        print(f"Use instruction mask: {args.use_instruction_mask}")
+        print("="*80)
+        print("")
 
     # 创建 MoE 配置
     moe_args = ModelArgs(
@@ -476,8 +532,14 @@ def main():
         args.base_model_path,
         args.lora_weights_path,
         moe_args,
-        args.device
+        device,
+        is_distributed=is_distributed,
+        local_rank=local_rank
     )
+
+    # ✅ 如果是分布式训练，包装模型
+    if is_distributed:
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
 
     # 加载数据
     print("Loading and processing data...")
@@ -496,21 +558,42 @@ def main():
     # 创建 DataLoader
     data_collator = DualClassificationDataCollator(tokenizer=tokenizer, max_length=args.max_length)
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        collate_fn=data_collator,
-        num_workers=args.num_workers
-    )
+    # ✅ 如果是分布式训练，使用 DistributedSampler
+    if is_distributed:
+        train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+        val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
 
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.eval_batch_size,
-        shuffle=False,
-        collate_fn=data_collator,
-        num_workers=args.num_workers
-    )
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            sampler=train_sampler,  # 使用 sampler 而不是 shuffle
+            collate_fn=data_collator,
+            num_workers=args.num_workers
+        )
+
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.eval_batch_size,
+            sampler=val_sampler,  # 使用 sampler 而不是 shuffle
+            collate_fn=data_collator,
+            num_workers=args.num_workers
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            collate_fn=data_collator,
+            num_workers=args.num_workers
+        )
+
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.eval_batch_size,
+            shuffle=False,
+            collate_fn=data_collator,
+            num_workers=args.num_workers
+        )
 
     # 创建优化器
     optimizer = torch.optim.AdamW(
