@@ -251,11 +251,17 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             # 确保在正确的设备上
             culture_labels = culture_labels.to(device=device, dtype=torch.long)
 
+        # ✅ 确保 culture_labels 是 1D [B]
+        if culture_labels.dim() > 1:
+            culture_labels = culture_labels.squeeze()
+
         batch_size = expert_weights.size(0)
 
         # 计算样本对之间的文化相似度（相同文化为1，不同文化为0）
-        culture_labels_expanded = culture_labels.unsqueeze(1)  # [B, 1]
-        culture_similarity = (culture_labels_expanded == culture_labels_expanded.t()).float()  # [B, B]
+        # ✅ 使用 unsqueeze 和 transpose 而不是 .t()
+        culture_labels_1 = culture_labels.unsqueeze(1)  # [B, 1]
+        culture_labels_2 = culture_labels.unsqueeze(0)  # [1, B]
+        culture_similarity = (culture_labels_1 == culture_labels_2).float()  # [B, B]
 
         # 计算专家权重之间的余弦相似度
         expert_weights_norm = torch.nn.functional.normalize(expert_weights, p=2, dim=1)

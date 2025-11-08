@@ -560,23 +560,21 @@ def main():
     # 配置训练参数（根据模型类型调整）
     if model_type == 'qwen':
         # ✅ Qwen 需要更保守的配置（更激进的修复）
-        learning_rate = args.learning_rate * 0.25  # 降低学习率 75%（更激进）
-        max_grad_norm = 0.3  # 更激进的梯度裁剪
-        warmup_steps = 500  # 更长的预热
-        warmup_ratio = 0.3  # 30% 的步数用于预热
-        use_fp16 = False  # ✅ Qwen 在 fp16 下不稳定，改用 fp32
-        print("  Using Qwen-specific training configuration (aggressive)")
-        print(f"    Learning rate: {learning_rate} (25% of {args.learning_rate})")
+        learning_rate = args.learning_rate * 0.1  # 降低学习率 90%（极其保守）
+        max_grad_norm = 0.1  # 极其激进的梯度裁剪
+        warmup_ratio = 0.5  # 50% 的步数用于预热（不使用 warmup_steps）
+        use_fp32 = True  # ✅ Qwen 在 fp16 下不稳定，改用 fp32
+        print("  Using Qwen-specific training configuration (ultra-conservative)")
+        print(f"    Learning rate: {learning_rate} (10% of {args.learning_rate})")
         print(f"    Max grad norm: {max_grad_norm}")
-        print(f"    Warmup steps: {warmup_steps}")
+        print(f"    Warmup ratio: {warmup_ratio * 100:.0f}%")
         print(f"    Using fp32 (not fp16)")
     else:
         # LLaMA 配置
         learning_rate = args.learning_rate
         max_grad_norm = 1.0
-        warmup_steps = 100
-        warmup_ratio = 0.1
-        use_fp16 = True
+        warmup_ratio = 0.1  # 使用 warmup_ratio 而不是 warmup_steps
+        use_fp32 = False
         print("  Using LLaMA-specific training configuration")
 
     training_args = TrainingArguments(
@@ -587,12 +585,11 @@ def main():
         learning_rate=learning_rate,
         logging_steps=10,
         save_strategy="no",
-        fp16=use_fp16,  # ✅ Qwen 使用 fp32
+        fp16=not use_fp32,  # ✅ Qwen 使用 fp32（fp16=False）
         fp16_full_eval=False,  # 评估时不使用 fp16
         fp16_opt_level="O1",   # 使用 O1 混合精度（更稳定）
         max_grad_norm=max_grad_norm,     # ✅ 根据模型类型调整
-        warmup_steps=warmup_steps,      # ✅ 根据模型类型调整
-        warmup_ratio=warmup_ratio,      # ✅ 添加 warmup_ratio
+        warmup_ratio=warmup_ratio,      # ✅ 使用 warmup_ratio（不使用 warmup_steps）
         weight_decay=0.01,     # 权重衰减
         adam_epsilon=1e-8,     # Adam 优化器的 epsilon
         report_to="none",
