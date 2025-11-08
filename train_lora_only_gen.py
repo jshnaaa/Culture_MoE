@@ -559,21 +559,24 @@ def main():
 
     # 配置训练参数（根据模型类型调整）
     if model_type == 'qwen':
-        # ✅ Qwen 需要更保守的配置
-        learning_rate = args.learning_rate * 0.5  # 降低学习率 50%
-        max_grad_norm = 0.5  # 更激进的梯度裁剪
-        warmup_steps = 200  # 更长的预热
-        warmup_ratio = 0.2  # 20% 的步数用于预热
-        print("  Using Qwen-specific training configuration")
-        print(f"    Learning rate: {learning_rate} (50% of {args.learning_rate})")
+        # ✅ Qwen 需要更保守的配置（更激进的修复）
+        learning_rate = args.learning_rate * 0.25  # 降低学习率 75%（更激进）
+        max_grad_norm = 0.3  # 更激进的梯度裁剪
+        warmup_steps = 500  # 更长的预热
+        warmup_ratio = 0.3  # 30% 的步数用于预热
+        use_fp16 = False  # ✅ Qwen 在 fp16 下不稳定，改用 fp32
+        print("  Using Qwen-specific training configuration (aggressive)")
+        print(f"    Learning rate: {learning_rate} (25% of {args.learning_rate})")
         print(f"    Max grad norm: {max_grad_norm}")
         print(f"    Warmup steps: {warmup_steps}")
+        print(f"    Using fp32 (not fp16)")
     else:
         # LLaMA 配置
         learning_rate = args.learning_rate
         max_grad_norm = 1.0
         warmup_steps = 100
         warmup_ratio = 0.1
+        use_fp16 = True
         print("  Using LLaMA-specific training configuration")
 
     training_args = TrainingArguments(
@@ -584,11 +587,12 @@ def main():
         learning_rate=learning_rate,
         logging_steps=10,
         save_strategy="no",
-        fp16=True,
+        fp16=use_fp16,  # ✅ Qwen 使用 fp32
         fp16_full_eval=False,  # 评估时不使用 fp16
         fp16_opt_level="O1",   # 使用 O1 混合精度（更稳定）
         max_grad_norm=max_grad_norm,     # ✅ 根据模型类型调整
         warmup_steps=warmup_steps,      # ✅ 根据模型类型调整
+        warmup_ratio=warmup_ratio,      # ✅ 添加 warmup_ratio
         weight_decay=0.01,     # 权重衰减
         adam_epsilon=1e-8,     # Adam 优化器的 epsilon
         report_to="none",
