@@ -255,7 +255,15 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         if culture_labels.dim() > 1:
             culture_labels = culture_labels.squeeze()
 
+        # ✅ 如果 culture_labels 是 0D（标量），转换为 1D
+        if culture_labels.dim() == 0:
+            culture_labels = culture_labels.unsqueeze(0)
+
         batch_size = expert_weights.size(0)
+
+        # ✅ 验证 batch size 一致性
+        if culture_labels.size(0) != batch_size:
+            raise ValueError(f"culture_labels size ({culture_labels.size(0)}) does not match batch size ({batch_size})")
 
         # 计算样本对之间的文化相似度（相同文化为1，不同文化为0）
         # ✅ 使用 unsqueeze 和 transpose 而不是 .t()
