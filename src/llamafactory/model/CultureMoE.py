@@ -129,7 +129,8 @@ class LlamaSharedRouterExpertsModel(nn.Module):
     def prepare_inputs_for_generation(self, input_ids, **kwargs):
         return self.llama_model.prepare_inputs_for_generation(input_ids, **kwargs)
 
-    def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None, **kwargs):
+    def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None,
+                labels=None, culture_labels=None, use_culture_loss=False, culture_loss_lambda=0.5, **kwargs):
         # ✅ 获取输入的设备和数据类型
         device = input_ids.device
         # 使用 shared 层的第一个 Linear 的 dtype（MoE 层总是有参数的）
@@ -179,7 +180,7 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         # Step 3: Router
         pooled = shared_out.mean(dim=1)  # [B, H]
-        expert_weights, _ = self.router(pooled)  # [B, E]
+        expert_weights, router_logits = self.router(pooled)  # [B, E]
 
         # ✅ 保存专家权重（用于损失计算）
         self._last_expert_weights = expert_weights.detach()
@@ -205,7 +206,60 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         # Step 8: 对 logits 进行平均
         logits_avg = logits.mean(dim=1)  # [B, num_classes]
 
-        return logits_avg
+        # ✅ Step 9: 计算损失（如果提供了 labels）
+        outputs = {'logits': logits_avg}
+
+        if labels is not None:
+            loss_fct = nn.CrossEntropyLoss()
+            classification_loss = loss_fct(logits_avg, labels)
+            outputs['classification_loss'] = classification_loss
+
+            # 文化损失（如果启用）
+            if use_culture_loss and culture_labels is not None:
+                # 文化损失：鼓励相同文化的样本使用相似的专家
+                culture_loss = self.compute_culture_loss(expert_weights, culture_labels)
+                outputs['culture_loss'] = culture_loss
+
+                # 总损失
+                total_loss = classification_loss + culture_loss_lambda * culture_loss
+            else:
+                outputs['culture_loss'] = torch.tensor(0.0, device=device)
+                total_loss = classification_loss
+
+            outputs['loss'] = total_loss
+
+        return outputs
+
+    def compute_culture_loss(self, expert_weights, culture_labels):
+        """
+        计算文化损失：鼓励相同文化的样本使用相似的专家
+
+        Args:
+            expert_weights: [B, E] 专家权重
+            culture_labels: [B] 文化标签
+
+        Returns:
+            culture_loss: 标量
+        """
+        device = expert_weights.device
+        batch_size = expert_weights.size(0)
+
+        # 计算样本对之间的文化相似度（相同文化为1，不同文化为0）
+        culture_labels = culture_labels.unsqueeze(1)  # [B, 1]
+        culture_similarity = (culture_labels == culture_labels.t()).float()  # [B, B]
+
+        # 计算专家权重之间的余弦相似度
+        expert_weights_norm = torch.nn.functional.normalize(expert_weights, p=2, dim=1)
+        expert_similarity = torch.mm(expert_weights_norm, expert_weights_norm.t())  # [B, B]
+
+        # 文化损失：相同文化的样本应该有相似的专家权重
+        # 使用 MSE 损失
+        culture_loss = torch.nn.functional.mse_loss(
+            expert_similarity * culture_similarity,
+            culture_similarity
+        )
+
+        return culture_loss
 
     def get_expert_weights(self):
         """

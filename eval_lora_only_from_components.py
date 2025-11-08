@@ -12,19 +12,18 @@
         --output_dir /path/to/output
 """
 
-import os
-import json
 import argparse
+import json
+import os
 import re
 from datetime import datetime
-from tqdm import tqdm
 
-import torch
 import numpy as np
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
 from peft import PeftModel
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from tqdm import tqdm
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
 def load_model_from_components(base_model_path: str, lora_weights_path: str, device: str = "cuda"):
@@ -114,11 +113,8 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     """
     device = next(model.parameters()).device
 
-    # 构建 prompt
-    if num_classes <= 10:
-        full_input = f"{instruction}\n{input_text}\n\nPlease answer with ONLY ONE NUMBER (1 to {num_classes}).\nYour answer:"
-    else:
-        full_input = f"{instruction}\n{input_text}\n\nYour answer:"
+    # 构建 prompt（与训练时保持一致）
+    full_input = f"{instruction}\n{input_text}\nAnswer:"
 
     # Tokenize
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)

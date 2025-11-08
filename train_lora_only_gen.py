@@ -550,10 +550,17 @@ def main():
         logging_steps=10,
         save_strategy="no",
         fp16=True,
+        fp16_full_eval=False,  # 评估时不使用 fp16
+        fp16_opt_level="O1",   # 使用 O1 混合精度（更稳定）
+        max_grad_norm=1.0,     # 梯度裁剪（防止梯度爆炸）
+        warmup_steps=100,      # 学习率预热（防止初始梯度过大）
+        weight_decay=0.01,     # 权重衰减
+        adam_epsilon=1e-8,     # Adam 优化器的 epsilon
         report_to="none",
         remove_unused_columns=False,
         ddp_find_unused_parameters=False,
         dataloader_pin_memory=True,
+        gradient_checkpointing=False,  # 如果内存不够可以开启
     )
 
     # 数据整理器 - 使用自定义的 collator
