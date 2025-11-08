@@ -97,7 +97,7 @@ def load_model_from_components(base_model_path: str, lora_weights_path: str, dev
 
 def generate_answer(model, tokenizer, instruction: str, input_text: str, num_classes: int = 10, max_new_tokens: int = 10):
     """
-    生成答案
+    生成答案（强约束版本）
 
     Args:
         model: 模型
@@ -113,26 +113,50 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     """
     device = next(model.parameters()).device
 
-    # 构建 prompt（与训练时保持一致）
-    full_input = f"{instruction}\n{input_text}\nAnswer:"
+    # ✅ 添加强约束提示
+    if num_classes <= 10:
+        # 标准数字类（1-10）
+        format_constraint = (
+            f"\n\n⚠️ CRITICAL INSTRUCTION: You MUST reply with ONLY a single digit number from 1 to {num_classes}. "
+            f"Do NOT write any words, letters, explanations, or punctuation. "
+            f"CORRECT examples: '1', '2', '3', '{num_classes}'. "
+            f"WRONG examples: 'Code', 'Country', 'Option 1', 'The answer is 1', 'A', 'yes'."
+        )
+    elif num_classes == 15:
+        # 统一编码（1-15）
+        format_constraint = (
+            "\n\n⚠️ CRITICAL INSTRUCTION: You MUST reply with ONLY a single number from 1 to 15. "
+            "Do NOT write any words, letters, explanations, or punctuation. "
+            "CORRECT examples: '1', '5', '10', '11', '14', '15'. "
+            "WRONG examples: 'Code', 'Country', 'Option', 'yes', 'TRUE', 'A', 'eleven'."
+        )
+    else:
+        # 其他情况
+        format_constraint = (
+            f"\n\n⚠️ CRITICAL INSTRUCTION: You MUST reply with ONLY a single number from 1 to {num_classes}. "
+            f"Do NOT write any words or letters."
+        )
+
+    # 构建 prompt（添加强约束）
+    full_input = f"{instruction}\n{input_text}{format_constraint}\nAnswer:"
 
     # Tokenize
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    # Generate
+    # ✅ 使用确定性生成
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=max_new_tokens,
+            max_new_tokens=5,              # ✅ 减少生成长度（只需要 1-2 个 token）
             min_new_tokens=1,
-            do_sample=False,
+            do_sample=False,               # ✅ 禁用采样
+            temperature=None,              # ✅ 不使用 temperature
+            top_p=None,                    # ✅ 不使用 top_p
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            temperature=1.0,
-            top_p=1.0,
-            repetition_penalty=1.0,
-            num_beams=1
+            num_beams=1,                   # ✅ 贪婪解码
+            repetition_penalty=1.0         # ✅ 不惩罚重复
         )
 
     # Decode
@@ -143,18 +167,20 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
 
     # 提取第一个词
     if raw_answer:
+        # 只取第一个 token（空格分隔）
         raw_answer = raw_answer.split()[0]
+        # 移除标点符号
         raw_answer = raw_answer.strip('.,!?;:')
 
-    # 提取标签
-    predicted_label = extract_label(raw_answer, num_classes)
+    # ✅ 使用改进的标签提取
+    predicted_label = extract_label_robust(raw_answer, num_classes)
 
     return raw_answer, predicted_label
 
 
 def extract_label(answer: str, num_classes: int = 10):
     """
-    从答案中提取标签
+    从答案中提取标签（旧版本，保留兼容性）
 
     Args:
         answer: 模型回答
@@ -191,6 +217,88 @@ def extract_label(answer: str, num_classes: int = 10):
             return num_classes - 1
 
     # 默认返回中间类别
+    return num_classes // 2
+
+
+def extract_label_robust(answer: str, num_classes: int = 10):
+    """
+    改进的标签提取（更鲁棒）
+
+    Args:
+        answer: 模型回答
+        num_classes: 类别数量
+
+    Returns:
+        label: 标签（0-indexed），如果无法提取则返回 None
+    """
+    if not answer:
+        print(f"⚠️  Empty answer, using default: {num_classes // 2}")
+        return num_classes // 2
+
+    # 1. 尝试直接转换为整数
+    try:
+        label = int(answer.strip())
+        if 1 <= label <= num_classes:
+            return label - 1  # 1-indexed -> 0-indexed
+        elif 0 <= label < num_classes:
+            return label
+        else:
+            print(f"⚠️  Label {label} out of range [1, {num_classes}], clipping")
+            return min(max(0, label - 1), num_classes - 1)
+    except ValueError:
+        pass
+
+    # 2. 提取第一个数字
+    numbers = re.findall(r'\d+', answer)
+    if numbers:
+        label = int(numbers[0])
+        if 1 <= label <= num_classes:
+            return label - 1
+        elif 0 <= label < num_classes:
+            return label
+        else:
+            print(f"⚠️  Extracted label {label} out of range, clipping")
+            return min(max(0, label - 1), num_classes - 1)
+
+    # 3. 检查是否是文本答案（如果混训了）
+    answer_lower = answer.lower().strip()
+
+    # 统一编码的文本映射（针对 num_classes=15）
+    if num_classes == 15:
+        text_mapping = {
+            # NormAD (11-13)
+            'yes': 10,      # 11 - 1 = 10
+            'no': 11,       # 12 - 1 = 11
+            'neutral': 12,  # 13 - 1 = 12
+            # CulturalBench (14-15)
+            'true': 13,     # 14 - 1 = 13
+            'false': 14,    # 15 - 1 = 14
+        }
+        if answer_lower in text_mapping:
+            print(f"⚠️  Found text answer '{answer_lower}', mapping to {text_mapping[answer_lower]}")
+            return text_mapping[answer_lower]
+
+    # 标准文本映射（针对其他情况）
+    standard_text_mapping = {
+        'yes': 0, 'no': 1, 'neutral': 2,
+        'true': 0, 'false': 1,
+        'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4,
+        'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 9
+    }
+    if answer_lower in standard_text_mapping:
+        mapped = standard_text_mapping[answer_lower]
+        if mapped < num_classes:
+            print(f"⚠️  Found text answer '{answer_lower}', mapping to {mapped}")
+            return mapped
+
+    # 4. 如果是无关词（如 "Code", "Country"），打印警告
+    if answer.isalpha() and len(answer) > 2:
+        print(f"⚠️  Invalid answer: '{answer}' - this is likely a word, not a number")
+        print(f"   Using default: {num_classes // 2}")
+        return num_classes // 2
+
+    # 5. 默认返回中间类别
+    print(f"⚠️  Could not extract label from '{answer}', using default: {num_classes // 2}")
     return num_classes // 2
 
 
