@@ -209,7 +209,19 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         # Step 7: 融合 shared + 加权专家输出
         # ✅ 使用加权平均而不是拼接
-        expert_sum = torch.stack(weighted_expert_outs, dim=0).sum(dim=0)  # [B, L, H]
+        expert_sum = torch.stack(weighted_expert_outs, dim=0).sum(dim=0)  # [B, L_all, H]
+
+        # ✅ 处理序列长度不匹配的情况
+        # shared_out 来自 h_no (instruction_mask + input)
+        # expert_sum 来自 h_all (instruction + input)
+        # 它们的长度可能不同
+
+        if shared_out.size(1) != expert_sum.size(1):
+            # 取较短的长度
+            min_len = min(shared_out.size(1), expert_sum.size(1))
+            shared_out = shared_out[:, :min_len, :]
+            expert_sum = expert_sum[:, :min_len, :]
+
         enhanced_hidden = shared_out + expert_sum  # [B, L, H]
 
         # ✅ Step 8: 使用 LLaMA 的 lm_head 生成 logits
@@ -219,6 +231,12 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         outputs = {'logits': logits}
 
         if labels is not None:
+            # ✅ 如果 labels 的长度与 logits 不匹配，截断 labels
+            if labels.size(1) != logits.size(1):
+                min_len = min(labels.size(1), logits.size(1))
+                labels = labels[:, :min_len]
+                logits = logits[:, :min_len, :]
+
             # ✅ 生成式损失（CrossEntropyLoss）
             # Shift logits and labels for next token prediction
             shift_logits = logits[..., :-1, :].contiguous()
