@@ -490,6 +490,7 @@ def main():
     )
     train_dataset = datasets['train']
     val_dataset = datasets['validation']
+    val_dataset_raw = datasets.get('validation_raw', None)  # ✅ 获取原始验证集
     print(f"✅ Train: {len(train_dataset)}, Val: {len(val_dataset)}\n")
 
     # 创建 DataLoader
@@ -554,7 +555,7 @@ def main():
         gen_metrics = generate_and_evaluate(
             model=model,
             tokenizer=tokenizer,
-            val_dataset=val_dataset,
+            val_dataset=val_dataset_raw,  # ✅ 使用原始验证集
             output_dir=args.output_dir,
             num_classes=moe_args.num_classes,
             max_new_tokens=10

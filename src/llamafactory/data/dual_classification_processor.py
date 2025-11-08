@@ -257,9 +257,12 @@ def load_and_process_dual_classification_data(
         split_dataset = dataset.train_test_split(test_size=val_split, seed=42)
         train_dataset = split_dataset['train']
         val_dataset = split_dataset['test']
+        # ✅ 保留原始验证集（用于生成式评估）
+        val_dataset_raw = val_dataset
     else:
         train_dataset = dataset
         val_dataset = None
+        val_dataset_raw = None
 
     # 3. 处理数据
     print("\nTokenizing dataset...")
@@ -274,6 +277,7 @@ def load_and_process_dual_classification_data(
 
     return {
         "train": train_dataset,
-        "validation": val_dataset
+        "validation": val_dataset,
+        "validation_raw": val_dataset_raw  # ✅ 返回原始验证集
     }
 
