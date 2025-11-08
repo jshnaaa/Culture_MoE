@@ -236,17 +236,26 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         Args:
             expert_weights: [B, E] 专家权重
-            culture_labels: [B] 文化标签
+            culture_labels: [B] 文化标签（可以是 list 或 tensor）
 
         Returns:
             culture_loss: 标量
         """
         device = expert_weights.device
+        dtype = expert_weights.dtype
+
+        # ✅ 将 culture_labels 转换为 tensor（如果还不是）
+        if not isinstance(culture_labels, torch.Tensor):
+            culture_labels = torch.tensor(culture_labels, device=device, dtype=torch.long)
+        else:
+            # 确保在正确的设备上
+            culture_labels = culture_labels.to(device=device, dtype=torch.long)
+
         batch_size = expert_weights.size(0)
 
         # 计算样本对之间的文化相似度（相同文化为1，不同文化为0）
-        culture_labels = culture_labels.unsqueeze(1)  # [B, 1]
-        culture_similarity = (culture_labels == culture_labels.t()).float()  # [B, B]
+        culture_labels_expanded = culture_labels.unsqueeze(1)  # [B, 1]
+        culture_similarity = (culture_labels_expanded == culture_labels_expanded.t()).float()  # [B, B]
 
         # 计算专家权重之间的余弦相似度
         expert_weights_norm = torch.nn.functional.normalize(expert_weights, p=2, dim=1)
