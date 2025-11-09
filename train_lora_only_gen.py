@@ -606,6 +606,15 @@ def main():
         if 'lora' in name.lower():
             param.requires_grad = True
 
+    # ✅ 禁用 gradient_checkpointing（可能导致多卡训练问题）
+    if hasattr(model, 'enable_input_require_grads'):
+        model.enable_input_require_grads()
+
+    # ✅ 确保基础模型参数不需要梯度
+    for name, param in model.named_parameters():
+        if 'lora' not in name.lower():
+            param.requires_grad = False
+
     print("✅ LoRA configured\n")
 
     # 加载数据
@@ -731,6 +740,29 @@ def main():
         eval_dataset=val_dataset,
         output_type=output_type
     )
+
+    # ✅ 在创建 Trainer 之前，再次确保所有 LoRA 参数需要梯度
+    print("\n" + "="*80)
+    print("Verifying trainable parameters...")
+    print("="*80)
+    trainable_params = 0
+    all_params = 0
+    for name, param in model.named_parameters():
+        all_params += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+            if 'lora' in name.lower():
+                print(f"✅ {name}: requires_grad=True")
+        else:
+            if 'lora' in name.lower():
+                print(f"❌ {name}: requires_grad=False (fixing...)")
+                param.requires_grad = True
+                trainable_params += param.numel()
+                print(f"✅ {name}: requires_grad=True (fixed)")
+
+    print(f"\nTrainable params: {trainable_params:,} || All params: {all_params:,} || Trainable%: {100 * trainable_params / all_params:.2f}%")
+    print("="*80)
+    print("")
 
     # 创建 Trainer（不使用 compute_metrics 和 preprocess_logits_for_metrics）
     trainer = Trainer(
