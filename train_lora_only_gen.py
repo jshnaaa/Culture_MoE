@@ -605,7 +605,7 @@ def main():
         # ✅ Qwen 需要保守但不过度的配置
         learning_rate = args.learning_rate  # ✅ 不降低学习率！使用原始值
         max_grad_norm = 1.0  # ✅ 标准梯度裁剪
-        warmup_ratio = 0.03  # ✅ 3% 预热（更短）
+        warmup_ratio = 0.0  # ✅ 3% 预热（更短）
         lr_scheduler_type = "cosine"  # ✅ 使用 cosine 调度器
 
         # ✅ 根据模型加载的数据类型设置训练精度
