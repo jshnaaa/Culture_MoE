@@ -146,14 +146,14 @@ TRAIN_CMD="python train_culturemoe_from_base_gen.py \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
     --use_culture_loss $USE_CULTURE_LOSS \
-    --culture_loss_lambda 0.5 \
+    --culture_loss_lambda 0.1 \
     --use_instruction_mask $MASK_USE \
     \
     --num_epochs 30 \
     --num_experts $NUM_EXPERTS \
-    --shared_hidden_dim 2048 \
-    --router_hidden_dim 1024 \
-    --experts_hidden_dim 2048 \
+    --shared_hidden_dim 4096 \
+    --router_hidden_dim 2048 \
+    --experts_hidden_dim 4096 \
     --moe_lora_rank 32 \
     --classification_hidden_dim 512 \
     --dropout 0.05 \
@@ -161,7 +161,7 @@ TRAIN_CMD="python train_culturemoe_from_base_gen.py \
     \
     --batch_size 4 \
     --eval_batch_size 4 \
-    --learning_rate 1e-5 \
+    --learning_rate 1e-6 \
     --weight_decay 0.01 \
     --max_length 512 \
     --val_split 0.1 \
