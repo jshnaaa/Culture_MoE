@@ -9,8 +9,8 @@ CulturalBench: TRUE/FALSE → 14/15
 这样所有标签都是数字，可以合并训练
 """
 
-import json
 import argparse
+import json
 
 
 def unify_culturellm(data):

@@ -10,9 +10,10 @@ Qwen 训练问题诊断脚本
 
 import argparse
 import json
+
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import LoraConfig, get_peft_model, TaskType
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
 def check_lora_injection(model):

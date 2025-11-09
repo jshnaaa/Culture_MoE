@@ -10,7 +10,8 @@
 import argparse
 import json
 import os
-from sklearn.metrics import precision_recall_fscore_support, confusion_matrix, classification_report
+
+from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 
 
 def detect_task_type(data):

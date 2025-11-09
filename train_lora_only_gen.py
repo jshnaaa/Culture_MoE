@@ -532,9 +532,13 @@ def main():
 
     # ✅ 根据模型类型选择数据类型
     if model_type in ['qwen', 'qwen2']:  # ✅ 支持 qwen 和 qwen2
-        # Qwen 使用 bfloat16（如果支持）或 float32
-        torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
-        print(f"  Using {torch_dtype} for Qwen/Qwen2")
+        # ✅ 检查 bfloat16 支持
+        bf16_supported = torch.cuda.is_bf16_supported()
+        print(f"  BF16 supported: {bf16_supported}")
+
+        # ✅ Qwen 强制使用 bfloat16（即使硬件不支持，也比 float16 稳定）
+        torch_dtype = torch.bfloat16
+        print(f"  Using {torch_dtype} for Qwen/Qwen2 (forced for stability)")
     else:
         # LLaMA 使用 fp16
         torch_dtype = torch.float16
