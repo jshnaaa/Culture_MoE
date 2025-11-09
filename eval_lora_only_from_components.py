@@ -100,7 +100,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     生成答案（改进版本 - 使用多种策略）
 
     Args:
-        model: 模型
+        model: 模型（可能被 DataParallel 包装）
         tokenizer: tokenizer
         instruction: 指令
         input_text: 输入文本
@@ -111,6 +111,12 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
         raw_answer: 原始生成的答案
         predicted_label: 提取的标签（整数）
     """
+    # ✅ 处理 DataParallel 包装的模型
+    if isinstance(model, torch.nn.DataParallel):
+        actual_model = model.module
+    else:
+        actual_model = model
+
     device = next(model.parameters()).device
 
     # ✅ 添加强约束提示
@@ -148,7 +154,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
 
     # 策略 1: 贪婪解码（最可能的路径）
     with torch.no_grad():
-        outputs = model.generate(
+        outputs = actual_model.generate(  # ✅ 使用 actual_model 而不是 model
             **inputs,
             max_new_tokens=3,              # ✅ 只生成 1-3 个 token
             min_new_tokens=1,

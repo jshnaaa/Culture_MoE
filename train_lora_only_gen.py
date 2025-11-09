@@ -508,9 +508,26 @@ def main():
 
     # 加载模型
     print("Loading base model...")
+
+    # ✅ 检测模型类型（提前检测）
+    from transformers import AutoConfig
+    config = AutoConfig.from_pretrained(args.model_name_or_path, trust_remote_code=True)
+    model_type = config.model_type if hasattr(config, 'model_type') else 'unknown'
+    print(f"Detected model type: {model_type}")
+
+    # ✅ 根据模型类型选择数据类型
+    if model_type == 'qwen':
+        # Qwen 使用 fp32（bfloat16 也可以）
+        torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
+        print(f"  Using {torch_dtype} for Qwen")
+    else:
+        # LLaMA 使用 fp16
+        torch_dtype = torch.float16
+        print(f"  Using {torch_dtype} for LLaMA")
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
-        torch_dtype=torch.float16,
+        torch_dtype=torch_dtype,
         trust_remote_code=True,
         low_cpu_mem_usage=True  # 减少 CPU 内存使用
     )
@@ -523,10 +540,6 @@ def main():
     if model.config.pad_token_id is None:
         model.config.pad_token_id = model.config.eos_token_id
         print(f"✅ Set model.config.pad_token_id = {model.config.pad_token_id}")
-
-    # 检测模型类型
-    model_type = model.config.model_type if hasattr(model.config, 'model_type') else 'unknown'
-    print(f"Detected model type: {model_type}")
 
     # ✅ 验证关键配置
     print("\n" + "="*80)
@@ -593,23 +606,31 @@ def main():
         learning_rate = args.learning_rate  # ✅ 不降低学习率！使用原始值
         max_grad_norm = 1.0  # ✅ 标准梯度裁剪
         warmup_ratio = 0.03  # ✅ 3% 预热（更短）
-        use_fp32 = True  # 使用 fp32
         lr_scheduler_type = "cosine"  # ✅ 使用 cosine 调度器
+
+        # ✅ 根据模型加载的数据类型设置训练精度
+        use_fp16 = False
+        use_bf16 = (torch_dtype == torch.bfloat16)
+
         print("  Using Qwen-specific training configuration")
         print(f"    Learning rate: {learning_rate}")
         print(f"    Max grad norm: {max_grad_norm}")
         print(f"    Warmup ratio: {warmup_ratio * 100:.0f}%")
         print(f"    LR scheduler: {lr_scheduler_type}")
-        print(f"    Using fp32 (not fp16)")
+        print(f"    Model dtype: {torch_dtype}")
+        print(f"    Training: fp16={use_fp16}, bf16={use_bf16}")
     else:
         # LLaMA 配置
         learning_rate = args.learning_rate
         max_grad_norm = 1.0
         warmup_ratio = 0.1
-        use_fp32 = False
         lr_scheduler_type = "linear"  # ✅ LLaMA 使用 linear
+        use_fp16 = True
+        use_bf16 = False
+
         print("  Using LLaMA-specific training configuration")
         print(f"    LR scheduler: {lr_scheduler_type}")
+        print(f"    Training: fp16={use_fp16}, bf16={use_bf16}")
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -619,9 +640,10 @@ def main():
         learning_rate=learning_rate,
         logging_steps=10,
         save_strategy="no",
-        fp16=not use_fp32,  # ✅ Qwen 使用 fp32（fp16=False）
+        fp16=use_fp16,         # ✅ 根据模型类型设置
+        bf16=use_bf16,         # ✅ Qwen 可能使用 bf16
         fp16_full_eval=False,  # 评估时不使用 fp16
-        fp16_opt_level="O1",   # 使用 O1 混合精度（更稳定）
+        bf16_full_eval=False,  # 评估时不使用 bf16
         max_grad_norm=max_grad_norm,     # ✅ 标准梯度裁剪
         warmup_ratio=warmup_ratio,      # ✅ 使用 warmup_ratio
         weight_decay=0.01,     # 权重衰减
