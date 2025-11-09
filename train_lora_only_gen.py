@@ -316,12 +316,20 @@ def load_and_process_data(data_path: str, tokenizer, max_length: int = 512, val_
     except Exception as e:
         print(f"⚠️  Could not analyze label distribution: {e}")
 
-    # 划分训练集和验证集
+    # ✅ 随机划分训练集和验证集（保证标签均衡）
     if val_split > 0:
-        split_idx = int(len(data) * (1 - val_split))
-        train_data = data[:split_idx]
-        val_data = data[split_idx:]
-        print(f"Split: Train={len(train_data)}, Val={len(val_data)} (val_split={val_split})")
+        import random
+        random.seed(42)  # 固定随机种子，保证可复现
+
+        # 打乱数据
+        shuffled_data = data.copy()
+        random.shuffle(shuffled_data)
+
+        # 划分
+        split_idx = int(len(shuffled_data) * (1 - val_split))
+        train_data = shuffled_data[:split_idx]
+        val_data = shuffled_data[split_idx:]
+        print(f"Split: Train={len(train_data)}, Val={len(val_data)} (val_split={val_split}, randomly shuffled)")
     else:
         train_data = data
         val_data = []
@@ -516,10 +524,10 @@ def main():
     print(f"Detected model type: {model_type}")
 
     # ✅ 根据模型类型选择数据类型
-    if model_type == 'qwen':
-        # Qwen 使用 fp32（bfloat16 也可以）
+    if model_type in ['qwen', 'qwen2']:  # ✅ 支持 qwen 和 qwen2
+        # Qwen 使用 bfloat16（如果支持）或 float32
         torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
-        print(f"  Using {torch_dtype} for Qwen")
+        print(f"  Using {torch_dtype} for Qwen/Qwen2")
     else:
         # LLaMA 使用 fp16
         torch_dtype = torch.float16
@@ -561,7 +569,7 @@ def main():
 
     # 配置 LoRA（根据模型类型）
     print("Configuring LoRA...")
-    if model_type == 'qwen':
+    if model_type in ['qwen', 'qwen2']:  # ✅ 支持 qwen 和 qwen2
         print("  Using Qwen-specific LoRA configuration")
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
@@ -601,11 +609,11 @@ def main():
     print(f"✅ Train: {len(train_dataset)}, Val: {len(val_dataset) if val_dataset else 0} samples\n")
 
     # 配置训练参数（根据模型类型调整）
-    if model_type == 'qwen':
+    if model_type in ['qwen', 'qwen2']:  # ✅ 支持 qwen 和 qwen2
         # ✅ Qwen 需要保守但不过度的配置
         learning_rate = args.learning_rate  # ✅ 不降低学习率！使用原始值
         max_grad_norm = 1.0  # ✅ 标准梯度裁剪
-        warmup_ratio = 0.0  # ✅ 3% 预热（更短）
+        warmup_ratio = 0.03  # ✅ 3% 预热
         lr_scheduler_type = "cosine"  # ✅ 使用 cosine 调度器
 
         # ✅ 根据模型加载的数据类型设置训练精度

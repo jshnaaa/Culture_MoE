@@ -15,7 +15,7 @@ BACKBONE="${1:-llama}"              # 默认使用 llama
 DATA_ID="${2:-4}"                   # 默认 CultureLLM (4)
 USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"               # 默认 6 个专家
-NUM_GPUS="${5:-2}"                  # 默认使用 1 个 GPU
+NUM_GPUS="${5:-2}"                  # 默认使用 2 个 GPU
 MASK_USE="${6:-true}"               # 默认使用 instruction_mask
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径

@@ -29,9 +29,8 @@ from datetime import datetime
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -146,12 +145,20 @@ def load_and_process_generative_data(
             'original_output': output
         })
 
-    # 划分训练集和验证集
-    split_idx = int(len(processed_data) * (1 - val_split))
-    train_data = processed_data[:split_idx]
-    val_data = processed_data[split_idx:]
+    # ✅ 随机划分训练集和验证集（保证标签均衡）
+    import random
+    random.seed(42)  # 固定随机种子，保证可复现
 
-    print(f"Train: {len(train_data)}, Val: {len(val_data)}")
+    # 打乱数据
+    shuffled_data = processed_data.copy()
+    random.shuffle(shuffled_data)
+
+    # 划分
+    split_idx = int(len(shuffled_data) * (1 - val_split))
+    train_data = shuffled_data[:split_idx]
+    val_data = shuffled_data[split_idx:]
+
+    print(f"Train: {len(train_data)}, Val: {len(val_data)} (randomly shuffled)")
 
     # 创建 Dataset
     train_dataset = Dataset.from_list(train_data)
