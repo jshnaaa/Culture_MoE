@@ -590,14 +590,16 @@ def main():
     # 配置训练参数（根据模型类型调整）
     if model_type == 'qwen':
         # ✅ Qwen 需要保守但不过度的配置
-        learning_rate = args.learning_rate * 0.5  # 降低 50%（不是 90%）
-        max_grad_norm = 0.5  # 适中的梯度裁剪（不是 0.1）
-        warmup_ratio = 0.1  # ✅ 10% 预热（不是 50%）
+        learning_rate = args.learning_rate  # ✅ 不降低学习率！使用原始值
+        max_grad_norm = 1.0  # ✅ 标准梯度裁剪
+        warmup_ratio = 0.03  # ✅ 3% 预热（更短）
         use_fp32 = True  # 使用 fp32
+        lr_scheduler_type = "cosine"  # ✅ 使用 cosine 调度器
         print("  Using Qwen-specific training configuration")
-        print(f"    Learning rate: {learning_rate} (50% of {args.learning_rate})")
+        print(f"    Learning rate: {learning_rate}")
         print(f"    Max grad norm: {max_grad_norm}")
         print(f"    Warmup ratio: {warmup_ratio * 100:.0f}%")
+        print(f"    LR scheduler: {lr_scheduler_type}")
         print(f"    Using fp32 (not fp16)")
     else:
         # LLaMA 配置
@@ -605,7 +607,9 @@ def main():
         max_grad_norm = 1.0
         warmup_ratio = 0.1
         use_fp32 = False
+        lr_scheduler_type = "linear"  # ✅ LLaMA 使用 linear
         print("  Using LLaMA-specific training configuration")
+        print(f"    LR scheduler: {lr_scheduler_type}")
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -618,10 +622,12 @@ def main():
         fp16=not use_fp32,  # ✅ Qwen 使用 fp32（fp16=False）
         fp16_full_eval=False,  # 评估时不使用 fp16
         fp16_opt_level="O1",   # 使用 O1 混合精度（更稳定）
-        max_grad_norm=max_grad_norm,     # ✅ 根据模型类型调整
-        warmup_ratio=warmup_ratio,      # ✅ 使用 warmup_ratio（不使用 warmup_steps）
+        max_grad_norm=max_grad_norm,     # ✅ 标准梯度裁剪
+        warmup_ratio=warmup_ratio,      # ✅ 使用 warmup_ratio
         weight_decay=0.01,     # 权重衰减
         adam_epsilon=1e-8,     # Adam 优化器的 epsilon
+        lr_scheduler_type=lr_scheduler_type,  # ✅ 添加学习率调度器
+        optim="adamw_torch",   # ✅ 显式指定 AdamW 优化器
         report_to="none",
         remove_unused_columns=False,
         ddp_find_unused_parameters=False,

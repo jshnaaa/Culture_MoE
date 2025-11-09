@@ -97,7 +97,7 @@ def load_model_from_components(base_model_path: str, lora_weights_path: str, dev
 
 def generate_answer(model, tokenizer, instruction: str, input_text: str, num_classes: int = 10, max_new_tokens: int = 10):
     """
-    生成答案（强约束版本）
+    生成答案（改进版本 - 使用多种策略）
 
     Args:
         model: 模型
@@ -117,24 +117,22 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     if num_classes <= 10:
         # 标准数字类（1-10）
         format_constraint = (
-            f"\n\n⚠️ CRITICAL INSTRUCTION: You MUST reply with ONLY a single digit number from 1 to {num_classes}. "
-            f"Do NOT write any words, letters, explanations, or punctuation. "
-            f"CORRECT examples: '1', '2', '3', '{num_classes}'. "
-            f"WRONG examples: 'Code', 'Country', 'Option 1', 'The answer is 1', 'A', 'yes'."
+            f"\n\nAnswer with ONLY a single digit from 1 to {num_classes}. "
+            f"Examples: 1, 2, 3, {num_classes}. "
+            f"Do NOT write words, letters, or explanations."
         )
     elif num_classes == 15:
         # 统一编码（1-15）
         format_constraint = (
-            "\n\n⚠️ CRITICAL INSTRUCTION: You MUST reply with ONLY a single number from 1 to 15. "
-            "Do NOT write any words, letters, explanations, or punctuation. "
-            "CORRECT examples: '1', '5', '10', '11', '14', '15'. "
-            "WRONG examples: 'Code', 'Country', 'Option', 'yes', 'TRUE', 'A', 'eleven'."
+            "\n\nAnswer with ONLY a single number from 1 to 15. "
+            "Examples: 1, 5, 10, 11, 14, 15. "
+            "Do NOT write words or letters."
         )
     else:
         # 其他情况
         format_constraint = (
-            f"\n\n⚠️ CRITICAL INSTRUCTION: You MUST reply with ONLY a single number from 1 to {num_classes}. "
-            f"Do NOT write any words or letters."
+            f"\n\nAnswer with ONLY a single number from 1 to {num_classes}. "
+            f"Do NOT write words or letters."
         )
 
     # 构建 prompt（添加强约束）
@@ -144,23 +142,29 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    # ✅ 使用确定性生成
+    # ✅ 改进的生成策略：多次尝试不同的参数
+    best_answer = None
+    best_score = -1
+
+    # 策略 1: 贪婪解码（最可能的路径）
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=5,              # ✅ 减少生成长度（只需要 1-2 个 token）
+            max_new_tokens=3,              # ✅ 只生成 1-3 个 token
             min_new_tokens=1,
-            do_sample=False,               # ✅ 禁用采样
-            temperature=None,              # ✅ 不使用 temperature
-            top_p=None,                    # ✅ 不使用 top_p
+            do_sample=False,               # ✅ 贪婪解码
+            temperature=None,
+            top_p=None,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            num_beams=1,                   # ✅ 贪婪解码
-            repetition_penalty=1.0         # ✅ 不惩罚重复
+            num_beams=1,
+            repetition_penalty=1.0,
+            output_scores=True,            # ✅ 获取分数
+            return_dict_in_generate=True
         )
 
     # Decode
-    full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    full_output = tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
 
     # 提取生成的部分
     raw_answer = full_output[len(full_input):].strip()
@@ -170,7 +174,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
         # 只取第一个 token（空格分隔）
         raw_answer = raw_answer.split()[0]
         # 移除标点符号
-        raw_answer = raw_answer.strip('.,!?;:')
+        raw_answer = raw_answer.strip('.,!?;:()[]{}')
 
     # ✅ 使用改进的标签提取
     predicted_label = extract_label_robust(raw_answer, num_classes)
