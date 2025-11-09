@@ -817,12 +817,46 @@ def main():
             num_workers=args.num_workers
         )
 
-    # 创建优化器
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay
-    )
+    # ✅ 解冻 LoRA 权重（微调）
+    print("Unfreezing LoRA weights for fine-tuning...")
+    for name, param in model.named_parameters():
+        if 'lora' in name.lower():
+            param.requires_grad = True
+
+    # ✅ 分离参数组（使用分层学习率）
+    lora_params = []
+    moe_params = []
+    other_params = []
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            if 'lora' in name.lower():
+                lora_params.append(param)
+            elif 'moe' in name.lower() or 'router' in name.lower() or 'shared' in name.lower() or 'experts' in name.lower():
+                moe_params.append(param)
+            else:
+                other_params.append(param)
+
+    if not is_distributed or rank == 0:
+        print(f"✅ Parameter groups:")
+        print(f"   LoRA params: {len(lora_params)} ({sum(p.numel() for p in lora_params):,} parameters)")
+        print(f"   MoE params: {len(moe_params)} ({sum(p.numel() for p in moe_params):,} parameters)")
+        print(f"   Other params: {len(other_params)} ({sum(p.numel() for p in other_params):,} parameters)")
+        print("")
+
+    # ✅ 创建优化器（使用分层学习率）
+    optimizer = torch.optim.AdamW([
+        {'params': lora_params, 'lr': 1e-6},           # LoRA：低学习率（微调）
+        {'params': moe_params, 'lr': args.learning_rate},  # MoE：原始学习率（快速学习）
+        {'params': other_params, 'lr': 1e-6}           # 其他：低学习率
+    ], weight_decay=args.weight_decay)
+
+    if not is_distributed or rank == 0:
+        print(f"✅ Optimizer created with layered learning rates:")
+        print(f"   LoRA learning rate: 1e-6 (fine-tuning)")
+        print(f"   MoE learning rate: {args.learning_rate} (fast learning)")
+        print(f"   Other learning rate: 1e-6 (fine-tuning)")
+        print("")
 
     # ✅ 计算总训练步数并设置 MoE 预热
     total_steps = len(train_loader) * args.num_epochs
