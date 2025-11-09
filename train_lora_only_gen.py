@@ -600,6 +600,12 @@ def main():
 
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
+
+    # ✅ 确保 LoRA 参数需要梯度（多卡训练必需）
+    for name, param in model.named_parameters():
+        if 'lora' in name.lower():
+            param.requires_grad = True
+
     print("✅ LoRA configured\n")
 
     # 加载数据
@@ -675,7 +681,7 @@ def main():
         optim="adamw_torch",   # ✅ 显式指定 AdamW 优化器
         report_to="none",
         remove_unused_columns=False,
-        ddp_find_unused_parameters=False,
+        ddp_find_unused_parameters=True,  # ✅ 多卡训练时需要设置为 True
         dataloader_pin_memory=True,
         gradient_checkpointing=use_gradient_checkpointing,  # ✅ Qwen 开启，LLaMA 关闭
     )
