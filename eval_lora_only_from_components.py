@@ -159,8 +159,8 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
             max_new_tokens=3,              # ✅ 只生成 1-3 个 token
             min_new_tokens=1,
             do_sample=False,               # ✅ 贪婪解码
-            temperature=None,
-            top_p=None,
+            temperature=0.0,
+            top_p=0.1,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
             num_beams=1,
