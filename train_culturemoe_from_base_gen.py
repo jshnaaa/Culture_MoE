@@ -528,27 +528,34 @@ def generate_and_evaluate(model, tokenizer, val_dataset, output_dir, num_classes
         inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
-        # Generate
+        # ✅ 使用 model.forward() 而不是 model.llama_model.generate()
+        # 这样可以确保经过 MoE 层
         with torch.no_grad():
-            outputs = model.llama_model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                min_new_tokens=1,
-                do_sample=False,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                temperature=None,
-                top_p=None,
+            # 构建 input_ids_mask（如果需要）
+            input_ids_mask = inputs['input_ids'].clone()
+            attention_mask_mask = inputs['attention_mask'].clone()
+
+            # 调用 model.forward() 获取 logits
+            outputs = model(
+                input_ids=inputs['input_ids'],
+                attention_mask=inputs['attention_mask'],
+                input_ids_mask=input_ids_mask,
+                attention_mask_mask=attention_mask_mask,
+                labels=None,  # 不计算损失
+                use_culture_loss=False
             )
 
-        # Decode
-        full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # 获取 logits [B, L, vocab_size]
+            logits = outputs['logits']
 
-        # 提取生成的部分
-        if full_input in full_output:
-            generated_text = full_output[len(full_input):].strip()
-        else:
-            generated_text = full_output.strip()
+            # 获取最后一个 token 的 logits
+            last_token_logits = logits[:, -1, :]  # [B, vocab_size]
+
+            # 贪婪解码：选择概率最高的 token
+            predicted_token_id = torch.argmax(last_token_logits, dim=-1)  # [B]
+
+            # 解码为文本
+            generated_text = tokenizer.decode(predicted_token_id[0], skip_special_tokens=True).strip()
 
         # 提取数字
         numbers = re.findall(r'\d+', generated_text)
@@ -883,11 +890,14 @@ def main():
     print("Loading best MoE weights for final evaluation...")
     best_moe_dir = os.path.join(args.output_dir, "best_moe")
 
-    # 加载最佳 MoE 权重
+    # 加载最佳 MoE 权重（只包含 MoE 部分，不包括 llama_model）
     best_state_dict = torch.load(os.path.join(best_moe_dir, "moe_state_dict.pt"))
-    model.load_state_dict(best_state_dict)
+
+    # ✅ 使用 strict=False，因为 best_state_dict 只包含 MoE 部分
+    # llama_model 部分保持不变（仍然是 Base + LoRA merged）
+    model.load_state_dict(best_state_dict, strict=False)
     model.eval()
-    print("✅ Best model loaded")
+    print("✅ Best MoE weights loaded (llama_model with LoRA remains unchanged)")
 
     # 在验证集上进行最终评估
     print("\nEvaluating on validation set...")
