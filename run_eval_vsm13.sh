@@ -7,7 +7,7 @@
 #   sh run_eval_vsm13.sh <MODEL_TYPE> <BACKBONE>
 #
 # 参数说明：
-#   MODEL_TYPE: base, lora_only 或 culturemoe
+#   MODEL_TYPE: base, lora_only, moe 或 culturemoe
 #   BACKBONE: qwen 或 llama (默认 qwen)
 #
 # 示例：
@@ -17,11 +17,14 @@
 #   # 评估 LoRA Only 模型 (Qwen)
 #   sh run_eval_vsm13.sh lora_only qwen
 #
+#   # 评估 MOE 模型 (Qwen)
+#   sh run_eval_vsm13.sh moe qwen
+#
 #   # 评估 CultureMoE 模型 (Qwen)
 #   sh run_eval_vsm13.sh culturemoe qwen
 #
-#   # 评估 LoRA Only 模型 (LLaMA)
-#   sh run_eval_vsm13.sh lora_only llama
+#   # 评估 MOE 模型 (LLaMA)
+#   sh run_eval_vsm13.sh moe llama
 # ============================================================
 
 # ✅ 配置参数
@@ -33,10 +36,12 @@ if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
     LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_qwen_20251109_1549/best_lora"
+    MOE_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/moe_cultureLLM_qwen_experts6_USE_CULTURE_LOSSTrue_MASK_USEtrue_20251109_1323/best_moe"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
     LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_llama_20251107_2124/best_lora"
+    MOE_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/moe_cultureLLM_llama_experts6_USE_CULTURE_LOSSTrue_MASK_USEtrue_20251109_1323/best_moe"
 fi
 
 # 数据集路径
@@ -53,6 +58,10 @@ echo "Backbone: $BACKBONE ($MODEL_NAME)"
 echo "Base model: $BASE_MODEL_PATH"
 if [ "$MODEL_TYPE" = "lora_only" ]; then
     echo "LoRA weights: $LORA_WEIGHTS_PATH"
+fi
+if [ "$MODEL_TYPE" = "moe" ]; then
+    echo "LoRA weights: $LORA_WEIGHTS_PATH"
+    echo "MOE weights: $MOE_WEIGHTS_PATH"
 fi
 echo "Dataset: $VSM13_DATA"
 echo "Output: $OUTPUT_DIR"
@@ -71,9 +80,17 @@ if [ ! -d "$BASE_MODEL_PATH" ]; then
     exit 1
 fi
 
-# 检查 LoRA 权重（仅当 model_type 为 lora_only 时）
-if [ "$MODEL_TYPE" = "lora_only" ] && [ ! -d "$LORA_WEIGHTS_PATH" ]; then
-    echo "❌ Error: LoRA weights not found: $LORA_WEIGHTS_PATH"
+# 检查 LoRA 权重（仅当 model_type 为 lora_only 或 moe 时）
+if [ "$MODEL_TYPE" = "lora_only" ] || [ "$MODEL_TYPE" = "moe" ]; then
+    if [ ! -d "$LORA_WEIGHTS_PATH" ]; then
+        echo "❌ Error: LoRA weights not found: $LORA_WEIGHTS_PATH"
+        exit 1
+    fi
+fi
+
+# 检查 MOE 权重（仅当 model_type 为 moe 时）
+if [ "$MODEL_TYPE" = "moe" ] && [ ! -d "$MOE_WEIGHTS_PATH" ]; then
+    echo "❌ Error: MOE weights not found: $MOE_WEIGHTS_PATH"
     exit 1
 fi
 
@@ -90,6 +107,16 @@ if [ "$MODEL_TYPE" = "lora_only" ]; then
         --backbone "$BACKBONE" \
         --base_model_path "$BASE_MODEL_PATH" \
         --lora_weights_path "$LORA_WEIGHTS_PATH" \
+        --data_path "$VSM13_DATA" \
+        --output_dir "$OUTPUT_DIR" \
+        --device cuda
+elif [ "$MODEL_TYPE" = "moe" ]; then
+    python eval_vsm13.py \
+        --model_type "$MODEL_TYPE" \
+        --backbone "$BACKBONE" \
+        --base_model_path "$BASE_MODEL_PATH" \
+        --lora_weights_path "$LORA_WEIGHTS_PATH" \
+        --moe_weights_path "$MOE_WEIGHTS_PATH" \
         --data_path "$VSM13_DATA" \
         --output_dir "$OUTPUT_DIR" \
         --device cuda

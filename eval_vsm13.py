@@ -102,16 +102,18 @@ def load_model_and_tokenizer(
     backbone: str = 'qwen',
     base_model_path: str = None,
     lora_weights_path: str = None,
+    moe_weights_path: str = None,
     device: str = 'cuda'
 ):
     """
     加载模型和 tokenizer
 
     Args:
-        model_type: 模型类型 ('base', 'lora_only' 或 'culturemoe')
+        model_type: 模型类型 ('base', 'lora_only', 'moe' 或 'culturemoe')
         backbone: 基座模型 ('qwen' 或 'llama')
         base_model_path: Base 模型路径（可选，如果不提供则自动推断）
-        lora_weights_path: LoRA 权重路径（仅用于 lora_only）
+        lora_weights_path: LoRA 权重路径（仅用于 lora_only 和 moe）
+        moe_weights_path: MOE 权重路径（仅用于 moe）
         device: 设备
 
     Returns:
@@ -130,6 +132,18 @@ def load_model_and_tokenizer(
         else:  # llama
             lora_weights_path = "/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_llama_20251107_2124/best_lora"
 
+    if model_type == 'moe' and lora_weights_path is None:
+        if backbone == 'qwen':
+            lora_weights_path = "/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_qwen_20251109_1549/best_lora"
+        else:  # llama
+            lora_weights_path = "/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_llama_20251107_2124/best_lora"
+
+    if model_type == 'moe' and moe_weights_path is None:
+        if backbone == 'qwen':
+            moe_weights_path = "/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/moe_cultureLLM_qwen_experts6_USE_CULTURE_LOSSTrue_MASK_USEtrue_20251109_1323/best_moe"
+        else:  # llama
+            moe_weights_path = "/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/moe_cultureLLM_llama_experts6_USE_CULTURE_LOSSTrue_MASK_USEtrue_20251109_1323/best_moe"
+
     print(f"\n{'='*80}")
     print("Loading Model")
     print(f"{'='*80}")
@@ -138,10 +152,13 @@ def load_model_and_tokenizer(
     print(f"Base model path: {base_model_path}")
     if model_type == 'lora_only':
         print(f"LoRA weights path: {lora_weights_path}")
+    if model_type == 'moe':
+        print(f"LoRA weights path: {lora_weights_path}")
+        print(f"MOE weights path: {moe_weights_path}")
     print(f"{'='*80}\n")
 
     # 加载 tokenizer（从 base 模型或 lora 权重）
-    if model_type == 'lora_only':
+    if model_type in ['lora_only', 'moe']:
         tokenizer_path = lora_weights_path
     else:
         tokenizer_path = base_model_path
@@ -189,6 +206,39 @@ def load_model_and_tokenizer(
         print(f"\nMerging LoRA weights into base model...")
         model = model.merge_and_unload()
         print("✅ LoRA weights merged")
+
+    elif model_type == 'moe':
+        # MOE 模型：加载 base 模型 + LoRA 权重 + MOE 权重
+        print(f"\nLoading base model from {base_model_path}...")
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_path,
+            torch_dtype=torch.float16,
+            device_map='auto',
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
+        )
+        print("✅ Base model loaded")
+
+        print(f"\nLoading LoRA weights from {lora_weights_path}...")
+        model = PeftModel.from_pretrained(
+            base_model,
+            lora_weights_path,
+            is_trainable=False,
+            torch_dtype=torch.float16
+        )
+        print("✅ LoRA weights loaded")
+
+        print(f"\nMerging LoRA weights into base model...")
+        model = model.merge_and_unload()
+        print("✅ LoRA weights merged")
+
+        print(f"\nLoading MOE weights from {moe_weights_path}...")
+        moe_state_dict = torch.load(
+            os.path.join(moe_weights_path, 'pytorch_model.bin'),
+            map_location='cpu'
+        )
+        model.load_state_dict(moe_state_dict, strict=False)
+        print("✅ MOE weights loaded and merged")
 
     else:  # culturemoe
         # CultureMoE 模型：直接加载
@@ -514,15 +564,17 @@ def main():
     parser = argparse.ArgumentParser(description="VSM13 Evaluation Script")
 
     parser.add_argument("--model_type", type=str, default='lora_only',
-                        choices=['base', 'lora_only', 'culturemoe'],
-                        help="Model type: 'base', 'lora_only' or 'culturemoe'")
+                        choices=['base', 'lora_only', 'moe', 'culturemoe'],
+                        help="Model type: 'base', 'lora_only', 'moe' or 'culturemoe'")
     parser.add_argument("--backbone", type=str, default='qwen',
                         choices=['qwen', 'llama'],
                         help="Backbone model: 'qwen' or 'llama'")
     parser.add_argument("--base_model_path", type=str, default=None,
                         help="Path to base model (optional, auto-inferred if not provided)")
     parser.add_argument("--lora_weights_path", type=str, default=None,
-                        help="Path to LoRA weights (only for lora_only model type)")
+                        help="Path to LoRA weights (only for lora_only and moe model types)")
+    parser.add_argument("--moe_weights_path", type=str, default=None,
+                        help="Path to MOE weights (only for moe model type)")
     parser.add_argument("--data_path", type=str, required=True,
                         help="Path to VSM13 dataset (vsm13.json)")
     parser.add_argument("--output_dir", type=str, required=True,
@@ -541,6 +593,8 @@ def main():
         print(f"Base model path: {args.base_model_path}")
     if args.lora_weights_path:
         print(f"LoRA weights path: {args.lora_weights_path}")
+    if args.moe_weights_path:
+        print(f"MOE weights path: {args.moe_weights_path}")
     print(f"Data path: {args.data_path}")
     print(f"Output directory: {args.output_dir}")
     print(f"Device: {args.device}")
@@ -553,6 +607,7 @@ def main():
         backbone=args.backbone,
         base_model_path=args.base_model_path,
         lora_weights_path=args.lora_weights_path,
+        moe_weights_path=args.moe_weights_path,
         device=args.device
     )
 
