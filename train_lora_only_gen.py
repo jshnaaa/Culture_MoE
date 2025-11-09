@@ -671,8 +671,9 @@ def main():
         print(f"    LR scheduler: {lr_scheduler_type}")
         print(f"    Training: fp16={use_fp16}, bf16={use_bf16}")
 
-    # ✅ Qwen 使用 gradient_checkpointing 提高稳定性
-    use_gradient_checkpointing = (model_type in ['qwen', 'qwen2'])
+    # ✅ 关闭 gradient_checkpointing（与 DDP 冲突）
+    # gradient_checkpointing 会导致参数被多次标记，与 DDP 不兼容
+    use_gradient_checkpointing = False
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -696,7 +697,7 @@ def main():
         remove_unused_columns=False,
         ddp_find_unused_parameters=True,  # ✅ 多卡训练时需要设置为 True
         dataloader_pin_memory=True,
-        gradient_checkpointing=use_gradient_checkpointing,  # ✅ Qwen 开启，LLaMA 关闭
+        gradient_checkpointing=use_gradient_checkpointing,  # ✅ 关闭（与 DDP 冲突）
     )
 
     # 数据整理器 - 使用自定义的 collator
