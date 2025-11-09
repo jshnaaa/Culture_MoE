@@ -382,6 +382,7 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
     total_culture_loss = 0
     all_preds = []
     all_labels = []
+    nan_count = 0
 
     progress_bar = tqdm(train_loader, desc="Training")
     for batch in progress_bar:
@@ -407,9 +408,24 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
 
         loss = outputs['loss']
 
+        # ✅ 检查 NaN loss
+        if torch.isnan(loss) or torch.isinf(loss):
+            nan_count += 1
+            print(f"\n⚠️  NaN/Inf loss detected! Skipping batch...")
+            print(f"   Loss: {loss.item()}")
+            print(f"   Generation loss: {outputs['generation_loss'].item()}")
+            if use_culture_loss:
+                print(f"   Culture loss: {outputs['culture_loss'].item()}")
+            optimizer.zero_grad()  # 清空梯度
+            continue
+
         # 反向传播
         optimizer.zero_grad()
         loss.backward()
+
+        # ✅ 梯度裁剪（防止梯度爆炸）
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
         optimizer.step()
 
         # 统计
