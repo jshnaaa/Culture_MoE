@@ -551,27 +551,48 @@ def generate_and_evaluate(model, tokenizer, val_dataset, output_dir, num_classes
             input_ids_mask = inputs['input_ids'].clone()
             attention_mask_mask = inputs['attention_mask'].clone()
 
-            # 调用 model.forward() 获取 logits
-            outputs = model(
-                input_ids=inputs['input_ids'],
-                attention_mask=inputs['attention_mask'],
-                input_ids_mask=input_ids_mask,
-                attention_mask_mask=attention_mask_mask,
-                labels=None,  # 不计算损失
-                use_culture_loss=False
-            )
+            # ✅ 生成多个 token（最多 max_new_tokens 个）
+            current_ids = inputs['input_ids'].clone()
+            current_mask = inputs['attention_mask'].clone()
+            generated_tokens = []
 
-            # 获取 logits [B, L, vocab_size]
-            logits = outputs['logits']
+            for _ in range(max_new_tokens):
+                # 调用 model.forward() 获取 logits
+                outputs = model(
+                    input_ids=current_ids,
+                    attention_mask=current_mask,
+                    input_ids_mask=input_ids_mask,
+                    attention_mask_mask=attention_mask_mask,
+                    labels=None,
+                    use_culture_loss=False
+                )
 
-            # 获取最后一个 token 的 logits
-            last_token_logits = logits[:, -1, :]  # [B, vocab_size]
+                # 获取 logits [B, L, vocab_size]
+                logits = outputs['logits']
 
-            # 贪婪解码：选择概率最高的 token
-            predicted_token_id = torch.argmax(last_token_logits, dim=-1)  # [B]
+                # 获取最后一个 token 的 logits
+                last_token_logits = logits[:, -1, :]  # [B, vocab_size]
 
-            # 解码为文本
-            generated_text = tokenizer.decode(predicted_token_id[0], skip_special_tokens=True).strip()
+                # 贪婪解码：选择概率最高的 token
+                predicted_token_id = torch.argmax(last_token_logits, dim=-1)  # [B]
+
+                # 添加到生成的 tokens
+                generated_tokens.append(predicted_token_id.item())
+
+                # 检查是否生成了 EOS token
+                if predicted_token_id.item() == tokenizer.eos_token_id:
+                    break
+
+                # 拼接到 input_ids
+                current_ids = torch.cat([current_ids, predicted_token_id.unsqueeze(-1)], dim=1)
+                current_mask = torch.cat([current_mask, torch.ones((1, 1), dtype=torch.long, device=device)], dim=1)
+
+                # 更新 input_ids_mask（保持相同长度）
+                input_ids_mask = torch.cat([input_ids_mask, predicted_token_id.unsqueeze(-1)], dim=1)
+                attention_mask_mask = torch.cat([attention_mask_mask, torch.ones((1, 1), dtype=torch.long, device=device)], dim=1)
+
+            # 解码生成的 tokens
+            generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
 
         # 提取数字
         numbers = re.findall(r'\d+', generated_text)
@@ -579,6 +600,14 @@ def generate_and_evaluate(model, tokenizer, val_dataset, output_dir, num_classes
             predicted_label = numbers[0]
         else:
             predicted_label = generated_text
+
+        # ✅ 调试：打印前几个样本的生成结果
+        if i < 5:
+            print(f"\n🔍 Sample {i}:")
+            print(f"  Input: {full_input[:100]}...")
+            print(f"  Generated text: '{generated_text}'")
+            print(f"  Predicted: '{predicted_label}'")
+            print(f"  True: '{true_label}'")
 
         generated_answers.append({
             "predicted": predicted_label,
