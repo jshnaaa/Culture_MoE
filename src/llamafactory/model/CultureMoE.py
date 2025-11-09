@@ -45,6 +45,11 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         # ✅ 用于存储最近一次前向传播的专家权重
         self._last_expert_weights = None
 
+        # ✅ MoE 预热相关
+        self.moe_warmup_steps = 0
+        self.moe_warmup_total_steps = 0
+        self.moe_warmup_enabled = False
+
         # ✅ generation_config 从 llama_model 继承
         if hasattr(llama_model, 'generation_config'):
             self.generation_config = llama_model.generation_config
@@ -54,13 +59,16 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         hidden_dim = self.config.hidden_size
 
-        # 2. Shared 层
+        # 2. Shared 层 - 改进初始化
         self.shared = nn.Sequential(
             nn.Linear(hidden_dim, args.shared_hidden_dim),
             nn.ReLU(),
             nn.Dropout(args.dropout),
             nn.Linear(args.shared_hidden_dim, hidden_dim)
         )
+
+        # ✅ 改进 Shared 层初始化
+        self._init_shared_layer()
 
         # 3. Router
         self.router = ExpertRouter(
@@ -117,6 +125,63 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         elif hasattr(self.llama_model, 'gradient_checkpointing'):
             return self.llama_model.gradient_checkpointing
         return False
+
+    def _init_shared_layer(self):
+        """
+        ✅ 改进 Shared 层初始化
+        使用小的初始化确保 MoE 层不会过度改变 LLaMA 的输出
+        """
+        for i, module in enumerate(self.shared):
+            if isinstance(module, nn.Linear):
+                # 第一层：从 hidden_dim 到 shared_hidden_dim
+                if i == 0:
+                    nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+                # 最后一层：从 shared_hidden_dim 回到 hidden_dim
+                # 使用小的初始化，使输出接近 0（接近恒等映射）
+                elif i == len(self.shared) - 1:
+                    nn.init.normal_(module.weight, mean=0, std=0.01)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+
+    def set_moe_warmup(self, total_steps: int, enabled: bool = True):
+        """
+        ✅ 设置 MoE 预热参数
+
+        Args:
+            total_steps: 总训练步数
+            enabled: 是否启用预热
+        """
+        self.moe_warmup_enabled = enabled
+        self.moe_warmup_total_steps = total_steps
+        self.moe_warmup_steps = 0
+
+    def get_moe_warmup_weight(self) -> float:
+        """
+        ✅ 获取当前的 MoE 预热权重
+
+        Returns:
+            float: 0.0 到 1.0 之间的权重
+        """
+        if not self.moe_warmup_enabled or self.moe_warmup_total_steps == 0:
+            return 1.0
+
+        # 前 20% 的步数用于预热
+        warmup_steps = int(self.moe_warmup_total_steps * 0.2)
+
+        if self.moe_warmup_steps < warmup_steps:
+            # 线性预热
+            return self.moe_warmup_steps / warmup_steps
+        else:
+            return 1.0
+
+    def step_moe_warmup(self):
+        """
+        ✅ 更新 MoE 预热步数
+        """
+        if self.moe_warmup_enabled:
+            self.moe_warmup_steps += 1
 
     def generate(self, input_ids, attention_mask=None, **kwargs):
         return self.llama_model.generate(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
@@ -201,13 +266,16 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         h_all = h_all.to(device=device, dtype=dtype)
         expert_outs = self.experts_layer(h_all)  # list of [B, L, H]
 
-        # Step 6: 权重缩放专家输出
+        # ✅ Step 6: 获取 MoE 预热权重
+        moe_warmup_weight = self.get_moe_warmup_weight()
+
+        # Step 7: 权重缩放专家输出
         weighted_expert_outs = [
             expert_outs[i] * expert_weights[:, i].unsqueeze(-1).unsqueeze(-1)
             for i in range(len(expert_outs))
         ]
 
-        # Step 7: 融合 shared + 加权专家输出
+        # Step 8: 融合 shared + 加权专家输出
         # ✅ 使用加权平均而不是拼接
         expert_sum = torch.stack(weighted_expert_outs, dim=0).sum(dim=0)  # [B, L_all, H]
 
@@ -222,7 +290,9 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             shared_out = shared_out[:, :min_len, :]
             expert_sum = expert_sum[:, :min_len, :]
 
-        enhanced_hidden = shared_out + expert_sum  # [B, L, H]
+        # ✅ 应用 MoE 预热权重
+        # 在预热阶段，逐步增加 MoE 的影响
+        enhanced_hidden = shared_out + moe_warmup_weight * expert_sum  # [B, L, H]
 
         # ✅ Step 8: 使用 LLaMA 的 lm_head 生成 logits
         # 确保 enhanced_hidden 与 lm_head 的数据类型一致

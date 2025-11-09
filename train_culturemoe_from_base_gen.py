@@ -428,6 +428,10 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
 
         optimizer.step()
 
+        # ✅ 更新 MoE 预热步数
+        actual_model = model.module if isinstance(model, DDP) else model
+        actual_model.step_moe_warmup()
+
         # 统计
         total_loss += loss.item()
         total_cls_loss += outputs['generation_loss'].item()  # ✅ 修改为 generation_loss
@@ -438,9 +442,11 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
         # 只在评估时使用 generate() 方法
 
         # 更新进度条
+        warmup_weight = actual_model.get_moe_warmup_weight()
         progress_bar.set_postfix({
             'loss': f"{loss.item():.4f}",
-            'gen_loss': f"{outputs['generation_loss'].item():.4f}"  # ✅ 修改为 gen_loss
+            'gen_loss': f"{outputs['generation_loss'].item():.4f}",  # ✅ 修改为 gen_loss
+            'moe_warmup': f"{warmup_weight:.2f}"  # ✅ 显示预热权重
         })
 
     # 计算平均损失
@@ -755,7 +761,8 @@ def main():
     if is_distributed:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
 
-    # 加载数据（使用生成式数据处理）
+    # ✅ 设置 MoE 预热
+    # 计算总训练步数
     print("Loading and processing data...")
     datasets = load_and_process_generative_data(
         data_path=args.train_file,
@@ -816,6 +823,18 @@ def main():
         lr=args.learning_rate,
         weight_decay=args.weight_decay
     )
+
+    # ✅ 计算总训练步数并设置 MoE 预热
+    total_steps = len(train_loader) * args.num_epochs
+
+    # 获取实际的模型对象（处理 DDP 包装）
+    actual_model = model.module if is_distributed else model
+    actual_model.set_moe_warmup(total_steps=total_steps, enabled=True)
+
+    if not is_distributed or rank == 0:
+        print(f"✅ MoE Warmup enabled: {total_steps} total steps")
+        print(f"   Warmup phase: first {int(total_steps * 0.2)} steps (20%)")
+        print("")
 
     # 训练循环
     print("\n" + "="*80)

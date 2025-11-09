@@ -60,13 +60,22 @@ class ExpertRouter(nn.Module):
 
     def _init_weights(self):
         """
-        初始化网络权重
+        初始化网络权重 - 改进版本
+        使用更好的初始化策略确保 Router 稳定性
         """
-        for module in self.router_network:
+        for i, module in enumerate(self.router_network):
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+                # ✅ 最后一层（输出层）使用更小的初始化
+                if i == len(self.router_network) - 1:
+                    # 最后一层：使用小的初始化，使 logits 接近 0
+                    nn.init.normal_(module.weight, mean=0, std=0.01)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+                else:
+                    # 中间层：使用 Xavier 初始化
+                    nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
 
     def forward(self, features: torch.Tensor, temperature: float = 1.0) -> Tuple[torch.Tensor, torch.Tensor]:
         """
