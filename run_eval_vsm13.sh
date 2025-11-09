@@ -1,121 +1,133 @@
 #!/bin/bash
 
 # ============================================================
-# VSM13 文化一致性测试
+# VSM13 评估脚本
 #
 # 使用方法：
-#   sh run_eval_vsm13.sh <MODEL> <BACKBONE> [NUM_CLASSES]
+#   sh run_eval_vsm13.sh <MODEL_TYPE> <BACKBONE>
+#
+# 参数说明：
+#   MODEL_TYPE: base, lora_only 或 culturemoe
+#   BACKBONE: qwen 或 llama (默认 qwen)
 #
 # 示例：
-#   sh run_eval_vsm13.sh base llama
-#   sh run_eval_vsm13.sh lora qwen 2
-#   sh run_eval_vsm13.sh moe llama 4
+#   # 评估 Base 模型 (Qwen)
+#   sh run_eval_vsm13.sh base qwen
+#
+#   # 评估 LoRA Only 模型 (Qwen)
+#   sh run_eval_vsm13.sh lora_only qwen
+#
+#   # 评估 CultureMoE 模型 (Qwen)
+#   sh run_eval_vsm13.sh culturemoe qwen
+#
+#   # 评估 LoRA Only 模型 (LLaMA)
+#   sh run_eval_vsm13.sh lora_only llama
 # ============================================================
 
 # ✅ 配置参数
-MODEL="${1:-base}"          # 模型类型：base/lora/moe
-BACKBONE="${2:-llama}"      # 骨干模型：llama/qwen
-NUM_CLASSES="${3:-2}"       # 分类数量（仅用于 lora 和 moe）
+MODEL_TYPE="${1:-lora_only}"
+BACKBONE="${2:-qwen}"
+
+# 根据 backbone 设置模型路径
+if [ "$BACKBONE" = "qwen" ]; then
+    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
+    MODEL_NAME="Qwen 2.5-7B-Instruct"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_qwen_20251109_1549/best_lora"
+else
+    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
+    MODEL_NAME="LLaMA 3.1-8B-Instruct"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_llama_20251107_2124/best_lora"
+fi
+
+# 数据集路径
+VSM13_DATA="/root/autodl-fs/vsm13.json"
+
+# 输出目录
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/vsm13/${MODEL_TYPE}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
-echo "VSM13 Cultural Consistency Test"
+echo "VSM13 Evaluation"
 echo "============================================================"
-echo "Model: $MODEL"
-echo "Backbone: $BACKBONE"
-if [ "$MODEL" != "base" ]; then
-    echo "Num classes: $NUM_CLASSES"
+echo "Model type: $MODEL_TYPE"
+echo "Backbone: $BACKBONE ($MODEL_NAME)"
+echo "Base model: $BASE_MODEL_PATH"
+if [ "$MODEL_TYPE" = "lora_only" ]; then
+    echo "LoRA weights: $LORA_WEIGHTS_PATH"
 fi
+echo "Dataset: $VSM13_DATA"
+echo "Output: $OUTPUT_DIR"
 echo "============================================================"
 echo ""
 
-# 检查模型类型
-if [ "$MODEL" != "base" ] && [ "$MODEL" != "lora" ] && [ "$MODEL" != "moe" ]; then
-    echo "❌ Error: Invalid model type: $MODEL"
-    echo "   Valid options: base, lora, moe"
+# 检查数据集
+if [ ! -f "$VSM13_DATA" ]; then
+    echo "❌ Error: VSM13 dataset not found: $VSM13_DATA"
     exit 1
 fi
 
-# 检查骨干模型
-if [ "$BACKBONE" != "llama" ] && [ "$BACKBONE" != "qwen" ]; then
-    echo "❌ Error: Invalid backbone: $BACKBONE"
-    echo "   Valid options: llama, qwen"
+# 检查 base 模型
+if [ ! -d "$BASE_MODEL_PATH" ]; then
+    echo "❌ Error: Base model not found: $BASE_MODEL_PATH"
     exit 1
 fi
 
-# 检查测试文件
-TEST_FILE="/root/autodl-fs/vsm13_test.json"
-if [ ! -f "$TEST_FILE" ]; then
-    echo "❌ Error: Test file not found: $TEST_FILE"
+# 检查 LoRA 权重（仅当 model_type 为 lora_only 时）
+if [ "$MODEL_TYPE" = "lora_only" ] && [ ! -d "$LORA_WEIGHTS_PATH" ]; then
+    echo "❌ Error: LoRA weights not found: $LORA_WEIGHTS_PATH"
     exit 1
 fi
 
-# 根据模型类型检查必要的文件
-if [ "$MODEL" = "base" ]; then
-    if [ "$BACKBONE" = "llama" ]; then
-        MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-    else
-        MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-    fi
+# 创建输出目录
+mkdir -p "$OUTPUT_DIR"
 
-    if [ ! -d "$MODEL_PATH" ]; then
-        echo "❌ Error: Base model not found: $MODEL_PATH"
-        exit 1
-    fi
-elif [ "$MODEL" = "lora" ]; then
-    MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/${BACKBONE}_merge_${NUM_CLASSES}"
+# 运行评估
+echo "Starting evaluation..."
+echo ""
 
-    if [ ! -d "$MODEL_PATH" ]; then
-        echo "❌ Error: LoRA model not found: $MODEL_PATH"
-        echo ""
-        echo "Please ensure you have completed the following steps:"
-        echo "  1. Train LoRA Only: sh run_train_lora_only.sh $BACKBONE $NUM_CLASSES true"
-        echo "  2. Merge weights: sh run_merge_lora.sh $BACKBONE $NUM_CLASSES"
-        exit 1
-    fi
-elif [ "$MODEL" = "moe" ]; then
-    MERGED_LLM_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/${BACKBONE}_merge_${NUM_CLASSES}"
-    MOE_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/model_moe_${BACKBONE}_${NUM_CLASSES}"
-
-    if [ ! -d "$MERGED_LLM_PATH" ]; then
-        echo "❌ Error: Merged LLM not found: $MERGED_LLM_PATH"
-        exit 1
-    fi
-
-    if [ ! -d "$MOE_WEIGHTS_PATH" ]; then
-        echo "❌ Error: MoE weights not found: $MOE_WEIGHTS_PATH"
-        exit 1
-    fi
-fi
-
-# 运行评估脚本
-if [ "$MODEL" = "base" ]; then
+if [ "$MODEL_TYPE" = "lora_only" ]; then
     python eval_vsm13.py \
-        --model $MODEL \
-        --backbone $BACKBONE \
+        --model_type "$MODEL_TYPE" \
+        --backbone "$BACKBONE" \
+        --base_model_path "$BASE_MODEL_PATH" \
+        --lora_weights_path "$LORA_WEIGHTS_PATH" \
+        --data_path "$VSM13_DATA" \
+        --output_dir "$OUTPUT_DIR" \
         --device cuda
 else
     python eval_vsm13.py \
-        --model $MODEL \
-        --backbone $BACKBONE \
-        --num_classes $NUM_CLASSES \
+        --model_type "$MODEL_TYPE" \
+        --backbone "$BACKBONE" \
+        --base_model_path "$BASE_MODEL_PATH" \
+        --data_path "$VSM13_DATA" \
+        --output_dir "$OUTPUT_DIR" \
         --device cuda
 fi
 
 if [ $? -eq 0 ]; then
     echo ""
     echo "============================================================"
-    echo "✅ VSM13 test completed successfully!"
+    echo "✅ Evaluation completed successfully!"
     echo "============================================================"
     echo ""
-    echo "Results saved to: /root/autodl-fs/vsm13_output/${MODEL}_${BACKBONE}/"
+    echo "Model information:"
+    echo "  Model type: $MODEL_TYPE"
+    echo "  Backbone: $BACKBONE ($MODEL_NAME)"
+    echo ""
+    echo "Results saved to: $OUTPUT_DIR"
+    echo ""
+    echo "Files generated:"
+    echo "  - vsm13_results.json (详细结果)"
     echo ""
     echo "💡 To view results:"
-    echo "   cat /root/autodl-fs/vsm13_output/${MODEL}_${BACKBONE}/vsm13_test_results_${MODEL}_${BACKBONE}.json | jq"
+    echo "   cat $OUTPUT_DIR/vsm13_results.json | python -m json.tool"
+    echo ""
+    echo "💡 To view average distance:"
+    echo "   python -c \"import json; data = json.load(open('$OUTPUT_DIR/vsm13_results.json')); print(f'Average Distance: {data[\\\"average_euclidean_distance\\\"]:.2f}')\""
     echo "============================================================"
 else
     echo ""
     echo "============================================================"
-    echo "❌ VSM13 test failed!"
+    echo "❌ Evaluation failed!"
     echo "============================================================"
     exit 1
 fi
