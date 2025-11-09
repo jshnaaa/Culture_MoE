@@ -149,14 +149,19 @@ def load_and_process_generative_data(
     import random
     random.seed(42)  # 固定随机种子，保证可复现
 
-    # 打乱数据
-    shuffled_data = processed_data.copy()
-    random.shuffle(shuffled_data)
+    # ✅ 同时打乱 processed_data 和原始 data（保持对应关系）
+    indices = list(range(len(data)))
+    random.shuffle(indices)  # 打乱索引
 
-    # 划分
-    split_idx = int(len(shuffled_data) * (1 - val_split))
-    train_data = shuffled_data[:split_idx]
-    val_data = shuffled_data[split_idx:]
+    # 使用相同的索引划分
+    split_idx = int(len(indices) * (1 - val_split))
+    train_indices = indices[:split_idx]
+    val_indices = indices[split_idx:]
+
+    # 根据索引获取数据
+    train_data = [processed_data[i] for i in train_indices]
+    val_data = [processed_data[i] for i in val_indices]
+    val_data_raw = [data[i] for i in val_indices]  # ✅ 使用相同的索引
 
     print(f"Train: {len(train_data)}, Val: {len(val_data)} (randomly shuffled)")
 
@@ -165,7 +170,7 @@ def load_and_process_generative_data(
     val_dataset = Dataset.from_list(val_data)
 
     # 保存原始验证集（用于生成式评估）
-    val_dataset_raw = data[split_idx:]
+    val_dataset_raw = val_data_raw  # ✅ 使用相同索引的原始数据
 
     return {
         'train': train_dataset,
@@ -510,7 +515,8 @@ def generate_and_evaluate(model, tokenizer, val_dataset, output_dir, num_classes
         sample = val_dataset[i]
         instruction = sample['instruction']
         input_text = sample['input']
-        true_label = sample['label']
+        # ✅ 修复：原始数据字段名是 'output'，不是 'label'
+        true_label = sample.get('output', sample.get('label', ''))  # 兼容两种字段名
 
         # 构建 prompt
         if num_classes <= 10:
