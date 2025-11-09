@@ -20,6 +20,13 @@ import sys
 from datetime import datetime
 
 import torch
+
+# ✅ 修复 Qwen2.5 的 SDPA 数值不稳定问题
+# 强制关闭 FlashAttention 和 cuDNN SDPA，使用 PyTorch 默认实现
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_math_sdp(True)
+
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, TaskType
 from transformers import (
@@ -610,23 +617,28 @@ def main():
 
     # 配置训练参数（根据模型类型调整）
     if model_type in ['qwen', 'qwen2']:  # ✅ 支持 qwen 和 qwen2
-        # ✅ Qwen 需要保守但不过度的配置
-        learning_rate = args.learning_rate  # ✅ 不降低学习率！使用原始值
+        # ✅ Qwen2.5 需要更保守的配置（防止梯度爆炸）
+        learning_rate = min(args.learning_rate, 5e-6)  # ✅ 限制最大学习率为 5e-6
         max_grad_norm = 1.0  # ✅ 标准梯度裁剪
         warmup_ratio = 0.03  # ✅ 3% 预热
-        lr_scheduler_type = "cosine"  # ✅ 使用 cosine 调度器
+        lr_scheduler_type = "linear"  # ✅ 使用 linear 调度器（更稳定）
 
         # ✅ 根据模型加载的数据类型设置训练精度
         use_fp16 = False
         use_bf16 = (torch_dtype == torch.bfloat16)
 
         print("  Using Qwen-specific training configuration")
-        print(f"    Learning rate: {learning_rate}")
+        print(f"    Learning rate: {learning_rate} (capped at 5e-6 for stability)")
         print(f"    Max grad norm: {max_grad_norm}")
         print(f"    Warmup ratio: {warmup_ratio * 100:.0f}%")
         print(f"    LR scheduler: {lr_scheduler_type}")
         print(f"    Model dtype: {torch_dtype}")
         print(f"    Training: fp16={use_fp16}, bf16={use_bf16}")
+
+        # ✅ 警告：如果用户设置的学习率过高
+        if args.learning_rate > 5e-6:
+            print(f"    ⚠️  Warning: Original learning_rate={args.learning_rate} is too high for Qwen2.5")
+            print(f"    ⚠️  Capped to {learning_rate} to prevent gradient explosion")
     else:
         # LLaMA 配置
         learning_rate = args.learning_rate
@@ -639,6 +651,9 @@ def main():
         print("  Using LLaMA-specific training configuration")
         print(f"    LR scheduler: {lr_scheduler_type}")
         print(f"    Training: fp16={use_fp16}, bf16={use_bf16}")
+
+    # ✅ Qwen 使用 gradient_checkpointing 提高稳定性
+    use_gradient_checkpointing = (model_type in ['qwen', 'qwen2'])
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -662,7 +677,7 @@ def main():
         remove_unused_columns=False,
         ddp_find_unused_parameters=False,
         dataloader_pin_memory=True,
-        gradient_checkpointing=False,  # 如果内存不够可以开启
+        gradient_checkpointing=use_gradient_checkpointing,  # ✅ Qwen 开启，LLaMA 关闭
     )
 
     # 数据整理器 - 使用自定义的 collator
