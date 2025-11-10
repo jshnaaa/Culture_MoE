@@ -318,6 +318,8 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss=False, 
 
         # 梯度更新
         if (batch_idx + 1) % num_accumulation_steps == 0:
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             optimizer.zero_grad()
 
@@ -705,10 +707,14 @@ def main():
         print("   Please check your model structure.")
         sys.exit(1)
 
+    # 使用更保守的学习率
+    learning_rate = args.learning_rate * 0.1  # 降低学习率
+
     optimizer = torch.optim.AdamW(
         trainable_params,
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay
+        lr=learning_rate,
+        weight_decay=args.weight_decay,
+        eps=1e-8  # 增加数值稳定性
     )
 
     # 训练循环

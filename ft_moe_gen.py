@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-微调 LoRA + MOE 模型（新数据格式）
+微调 MOE 模型（新数据格式）
 
 关键改进：
-1. 冻结 Base 模型参数
-2. 一同训练 LoRA + MOE 层
-3. 使用标准语言建模损失
-4. 支持 Post Eval（生成答案并评估准确率）
+1. 加载 Base 模型 + LoRA 权重
+2. 合并成完整模型（不保存）
+3. 冻结 Base 和 LoRA 参数
+4. 只训练 MOE 部分
+5. 使用标准语言建模损失
+6. 支持 Post Eval（生成答案并评估准确率）
 
 使用方法：
-    python ft_lora_moe_gen.py \
+    python ft_moe_gen.py \
         --base_model_path /path/to/base_model \
         --lora_weights_path /path/to/lora_weights \
         --train_file /path/to/train_data.json \
@@ -31,11 +33,9 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
 
-import numpy as np
 import torch
-from peft import LoraConfig, get_peft_model, PeftModel
+from peft import PeftModel
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -271,6 +271,8 @@ def train_epoch(model, train_loader, optimizer, device, num_accumulation_steps=1
 
         # 梯度更新
         if (batch_idx + 1) % num_accumulation_steps == 0:
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             optimizer.zero_grad()
 
@@ -457,7 +459,7 @@ def main():
     args = parser.parse_args()
 
     print("\n" + "="*80)
-    print("Fine-tuning LoRA + MOE Model with New Data Format")
+    print("Fine-tuning MOE Model Only with New Data Format")
     print("="*80)
     print(f"Base model: {args.base_model_path}")
     print(f"LoRA weights: {args.lora_weights_path}")
@@ -466,6 +468,7 @@ def main():
     print(f"Number of epochs: {args.num_epochs}")
     print(f"Batch size: {args.batch_size}")
     print(f"Learning rate: {args.learning_rate}")
+    print(f"Training mode: Freeze Base + LoRA, Train MOE Only")
     print("="*80 + "\n")
 
     # 创建输出目录
@@ -517,36 +520,60 @@ def main():
     )
     print("✅ Base model loaded")
 
-    # 冻结 Base 模型的所有参数
-    print("\nFreezing base model parameters...")
-    for param in base_model.parameters():
-        param.requires_grad = False
-    print("✅ Base model parameters frozen")
-
     # 加载 LoRA 权重
     print("\nLoading LoRA weights...")
     model = PeftModel.from_pretrained(
         base_model,
         args.lora_weights_path,
-        is_trainable=True,  # ✅ LoRA 权重可训练
+        is_trainable=False,  # LoRA 权重不训练
         torch_dtype=torch.float16
     )
     print("✅ LoRA weights loaded")
 
-    # 合并 LoRA 权重
-    print("\nMerging LoRA weights...")
+    # 合并 LoRA 权重（不保存）
+    print("\nMerging LoRA weights (not saving)...")
     model = model.merge_and_unload()
     print("✅ LoRA weights merged")
 
-    # 冻结 Base 模型参数（再次确保）
-    print("\nEnsuring base model parameters are frozen...")
-    base_param_count = 0
+    # 冻结所有参数（Base + LoRA）
+    print("\nFreezing all parameters (Base + LoRA)...")
+    frozen_param_count = 0
+    for param in model.parameters():
+        param.requires_grad = False
+        frozen_param_count += 1
+    print(f"✅ All parameters frozen ({frozen_param_count} parameters)")
+
+    # 解冻 MOE 相关参数
+    print("\nUnfreezing MOE parameters...")
+    moe_param_count = 0
+    moe_param_names = []
+
+    # MOE 相关的参数模式
+    moe_patterns = [
+        'moe', 'expert', 'router', 'mixture',
+        'shared', 'gate', 'adapter'
+    ]
+
     for name, param in model.named_parameters():
-        # 冻结所有不是 LoRA 相关的参数
-        if 'lora' not in name.lower():
-            param.requires_grad = False
-            base_param_count += 1
-    print(f"✅ Base model parameters frozen ({base_param_count} parameters)")
+        # 检查是否匹配任何 MOE 相关的模式
+        if any(pattern in name.lower() for pattern in moe_patterns):
+            param.requires_grad = True
+            moe_param_count += 1
+            moe_param_names.append(name)
+
+    print(f"✅ MOE parameters unfrozen ({moe_param_count} parameters)")
+
+    # 如果没有找到 MOE 参数，打印警告
+    if moe_param_count == 0:
+        print("\n⚠️  WARNING: No MOE parameters found!")
+        print("   Model may not have MOE layers.")
+        print("   Trainable parameters: 0")
+    else:
+        print("\n   MOE parameters found:")
+        for name in moe_param_names[:10]:
+            print(f"   - {name}")
+        if len(moe_param_names) > 10:
+            print(f"   ... and {len(moe_param_names) - 10} more")
 
     # 设置模型为训练模式
     model.train()
@@ -556,20 +583,22 @@ def main():
     print(f"\n📊 Trainable parameters: {len(trainable_params)}")
     print(f"   Total parameters: {sum(p.numel() for p in model.parameters())}")
     print(f"   Trainable parameters: {sum(p.numel() for p in trainable_params)}")
+    print(f"   Frozen parameters: {sum(1 for p in model.parameters() if not p.requires_grad)}")
 
-    # 打印可训练的参数名称
-    print("\n📋 Trainable parameter names:")
-    trainable_names = [name for name, param in model.named_parameters() if param.requires_grad]
-    for i, name in enumerate(trainable_names[:10]):
-        print(f"   {i+1}. {name}")
-    if len(trainable_names) > 10:
-        print(f"   ... and {len(trainable_names) - 10} more")
+    # 检查是否有可训练的参数
+    if len(trainable_params) == 0:
+        print("\n❌ ERROR: No trainable parameters found!")
+        print("   Model may not have MOE layers.")
+        print("   Please check your model structure.")
+        sys.exit(1)
 
-    # 优化器
+    # 优化器（使用更保守的学习率）
+    learning_rate = args.learning_rate * 0.1  # 降低学习率
     optimizer = torch.optim.AdamW(
         trainable_params,
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay
+        lr=learning_rate,
+        weight_decay=args.weight_decay,
+        eps=1e-8  # 增加数值稳定性
     )
 
     # 训练循环
@@ -578,7 +607,7 @@ def main():
     print("="*80 + "\n")
 
     best_val_loss = float('inf')
-    best_model_dir = os.path.join(args.output_dir, 'best_lora_moe')
+    best_model_dir = os.path.join(args.output_dir, 'best_moe')
 
     epoch_results = []
 
@@ -617,9 +646,18 @@ def main():
 
             # 保存新的最好模型
             os.makedirs(best_model_dir, exist_ok=True)
-            model.save_pretrained(best_model_dir)
-            tokenizer.save_pretrained(best_model_dir)
-            print(f"   ✅ Best model saved (loss: {best_val_loss:.4f})")
+
+            try:
+                # 只保存可训练的参数（MOE 部分）
+                trainable_state_dict = {}
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        trainable_state_dict[name] = param.data
+
+                torch.save(trainable_state_dict, os.path.join(best_model_dir, "moe_params.bin"))
+                print(f"   ✅ Best MOE parameters saved (loss: {best_val_loss:.4f})")
+            except Exception as e:
+                print(f"   ⚠️  Warning: Failed to save MOE parameters: {str(e)}")
 
         # 记录结果
         epoch_results.append({
@@ -642,12 +680,10 @@ def main():
         'num_epochs': args.num_epochs,
         'batch_size': args.batch_size,
         'learning_rate': args.learning_rate,
-        'lora_r': args.lora_r,
-        'lora_alpha': args.lora_alpha,
-        'lora_dropout': args.lora_dropout,
         'best_val_loss': best_val_loss,
         'data_format': 'new_format (instruction + input + output)',
-        'training_mode': 'Freeze Base + Train LoRA + MOE'
+        'training_mode': 'Freeze Base + LoRA, Train MOE Only',
+        'moe_param_count': moe_param_count
     }
 
     with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
@@ -658,10 +694,12 @@ def main():
     print("="*80)
     print(f"Results saved to: {args.output_dir}")
     print(f"\nFiles generated:")
-    print(f"  - best_lora_moe/ (Best LoRA + MOE weights)")
+    print(f"  - best_moe/ (Best MOE parameters only)")
     print(f"  - epoch_eval_results.json (Epoch-by-epoch results)")
     print(f"  - generated_answers.json (Generated answers on validation set)")
     print(f"  - config.json (Training configuration)")
+    print(f"\nTraining mode: Freeze Base + LoRA, Train MOE Only")
+    print(f"MOE parameters trained: {moe_param_count}")
     print("="*80)
 
 
