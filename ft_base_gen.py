@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """
-在 CultureLLM 数据集上评估 Base 模型（LLaMA 或 Qwen）
+在新格式 CultureLLM 数据集上评估 Base 模型（LLaMA 或 Qwen）
 
 使用方法：
-    python ft_base.py \
+    python ft_base_gen.py \
         --base_model_path /path/to/base_model \
         --train_file /path/to/train_data.json \
         --output_dir /path/to/output
 
-数据格式：
+数据格式（新格式）：
     {
-        "text": "### Question: ... ### Answer: 10",
-        "text_mask": "...",
-        "label": "1"
+        "instruction": "### Question: ... ### Answer: ",
+        "instruction_mask": "### Question: ... [MASK] ### Answer: ",
+        "input": "",
+        "output": "1",
+        "label": "0"
     }
 
 说明：
-    - 只使用 text 字段进行评估
-    - text_mask 和 label 字段被忽略
+    - 只使用 instruction + input 字段进行评估
+    - instruction_mask 和 label 字段被忽略
     - 模型生成答案，通过正则表达式提取数字
     - 计算准确率
 """
@@ -38,15 +40,17 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-class CultureLLMDataset:
+class CultureLLMNewFormatDataset:
     """
-    CultureLLM 数据集
+    CultureLLM 新格式数据集
 
     数据格式：
     {
-        "text": "### Question: ... ### Answer: 10",
-        "text_mask": "...",
-        "label": "1"
+        "instruction": "### Question: ... ### Answer: ",
+        "instruction_mask": "### Question: ... [MASK] ### Answer: ",
+        "input": "",
+        "output": "1",
+        "label": "0"
     }
     """
 
@@ -66,11 +70,22 @@ class CultureLLMDataset:
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        text = item['text']
+
+        # 新格式：instruction + input
+        instruction = item.get('instruction', '')
+        input_text = item.get('input', '')
+        output_text = item.get('output', '')
         label = item.get('label', '')
 
+        # 构建完整的文本
+        if input_text:
+            full_text = f"{instruction}{input_text}"
+        else:
+            full_text = instruction
+
         return {
-            'text': text,
+            'text': full_text,
+            'output': output_text,
             'label': label
         }
 
@@ -79,7 +94,7 @@ def extract_answer_from_text(text: str) -> str:
     """
     从生成的文本中提取答案
 
-    使用正则表达式查找 "Answer: " 后面的数字
+    使用正则表达式查找数字
 
     Args:
         text: 生成的文本
@@ -87,10 +102,10 @@ def extract_answer_from_text(text: str) -> str:
     Returns:
         提取的答案（数字字符串），如果没有找到则返回空字符串
     """
-    # 查找 "Answer: " 后面的数字
-    match = re.search(r'Answer:\s*(\d+)', text)
+    # 查找数字（1-10 或 1-4）
+    match = re.search(r'\d+', text)
     if match:
-        return match.group(1)
+        return match.group(0)
 
     return ""
 
@@ -155,7 +170,8 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir):
     for idx in tqdm(range(len(dataset)), desc="Generating"):
         sample = dataset[idx]
         text = sample['text']
-        true_label = sample['label']
+        true_output = sample['output']
+        label = sample['label']
 
         # 生成答案
         generated_text = generate_answer(model, tokenizer, text, device)
@@ -164,17 +180,18 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir):
         predicted_answer = extract_answer_from_text(generated_text)
 
         # 比对答案
-        if predicted_answer == true_label:
+        if predicted_answer == true_output:
             correct += 1
         total += 1
 
         # 保存生成的数据
         generated_data.append({
             'text': text,
-            'true_label': true_label,
+            'true_output': true_output,
+            'label': label,
             'generated_text': generated_text,
             'predicted_answer': predicted_answer,
-            'correct': predicted_answer == true_label
+            'correct': predicted_answer == true_output
         })
 
     accuracy = correct / total if total > 0 else 0
@@ -182,6 +199,19 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir):
     # 保存生成的答案
     with open(os.path.join(output_dir, 'generated_answers.json'), 'w', encoding='utf-8') as f:
         json.dump(generated_data, f, indent=2, ensure_ascii=False)
+
+    # 打印前五条生成的答案
+    print("\n📋 前五条生成的答案:")
+    print("-" * 100)
+    for idx in range(min(5, len(generated_data))):
+        item = generated_data[idx]
+        print(f"\n样本 {idx + 1}:")
+        print(f"  Question: {item['text'][:80]}...")
+        print(f"  True Output: {item['true_output']}")
+        print(f"  Generated Text: {item['generated_text']}")
+        print(f"  Predicted Answer: {item['predicted_answer']}")
+        print(f"  Correct: {'✅' if item['correct'] else '❌'}")
+    print("\n" + "-" * 100)
 
     return {
         'accuracy': accuracy,
@@ -192,12 +222,12 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate Base model on CultureLLM dataset")
+    parser = argparse.ArgumentParser(description="Evaluate Base model on CultureLLM dataset (new format)")
 
     parser.add_argument("--base_model_path", type=str, required=True,
                         help="Path to base model")
     parser.add_argument("--train_file", type=str, required=True,
-                        help="Path to training data (JSON format)")
+                        help="Path to training data (new format JSON)")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output directory for results")
 
@@ -209,7 +239,7 @@ def main():
     args = parser.parse_args()
 
     print("\n" + "="*80)
-    print("Evaluating Base Model on CultureLLM Dataset")
+    print("Evaluating Base Model on CultureLLM Dataset (New Format)")
     print("="*80)
     print(f"Base model: {args.base_model_path}")
     print(f"Training data: {args.train_file}")
@@ -229,7 +259,7 @@ def main():
 
     # 加载数据
     print("\nLoading dataset...")
-    dataset = CultureLLMDataset(args.train_file)
+    dataset = CultureLLMNewFormatDataset(args.train_file)
     print("✅ Dataset loaded")
 
     # 加载模型
@@ -264,7 +294,8 @@ def main():
     # 保存配置
     config = {
         'base_model': args.base_model_path,
-        'max_length': args.max_length
+        'max_length': args.max_length,
+        'data_format': 'new_format (instruction + instruction_mask + input + output + label)'
     }
 
     with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:

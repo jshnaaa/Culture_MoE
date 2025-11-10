@@ -469,6 +469,20 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
     with open(os.path.join(output_dir, 'generated_answers.json'), 'w', encoding='utf-8') as f:
         json.dump(generated_data, f, indent=2, ensure_ascii=False)
 
+    # 打印前五条生成的答案
+    print("\n📋 前五条生成的答案:")
+    print("-" * 100)
+    for idx in range(min(5, len(generated_data))):
+        item = generated_data[idx]
+        print(f"\n样本 {idx + 1}:")
+        print(f"  Instruction: {item['instruction'][:80]}...")
+        print(f"  Input: {item['input']}")
+        print(f"  True Output: {item['true_output']}")
+        print(f"  Generated Text: {item['generated_text']}")
+        print(f"  Predicted Answer: {item['predicted_answer']}")
+        print(f"  Correct: {'✅' if item['correct'] else '❌'}")
+    print("\n" + "-" * 100)
+
     return {
         'accuracy': accuracy,
         'correct': correct,

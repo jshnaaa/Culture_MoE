@@ -1,24 +1,24 @@
 #!/bin/bash
 
 # ============================================================
-# 在 CultureLLM 数据集上评估 Base 模型（LLaMA 或 Qwen）
+# 在新格式 CultureLLM 数据集上评估 Base 模型（LLaMA 或 Qwen）
 #
 # 使用方法：
-#   sh run_ft_base.sh <BACKBONE> <DATA_ID>
+#   sh run_ft_base_new_format.sh <BACKBONE> <DATA_ID>
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
 #   DATA_ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认 4)
 #
 # 示例：
-#   # 评估 LLaMA Base 模型 + CultureLLM 数据集
-#   sh run_ft_base.sh llama 4
+#   # 评估 LLaMA Base 模型 + CultureLLM 数据集（新格式）
+#   sh run_ft_base_new_format.sh llama 4
 #
-#   # 评估 Qwen Base 模型 + CultureLLM 数据集
-#   sh run_ft_base.sh qwen 4
+#   # 评估 Qwen Base 模型 + CultureLLM 数据集（新格式）
+#   sh run_ft_base_new_format.sh qwen 4
 #
-#   # 评估 LLaMA Base 模型 + CulturalBench 数据集
-#   sh run_ft_base.sh llama 2
+#   # 评估 LLaMA Base 模型 + CulturalBench 数据集（新格式）
+#   sh run_ft_base_new_format.sh llama 2
 # ============================================================
 
 # ✅ 配置参数
@@ -41,28 +41,28 @@ case $DATA_ID in
         DATASET_NAME="CulturalBench"
         TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen_small.json"
         DATASET_TAG="CulturalBench"
-        echo "Using CulturalBench dataset"
+        echo "Using CulturalBench dataset (new format)"
         ;;
     3)
         # NormAD
         DATASET_NAME="NormAD"
         TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
         DATASET_TAG="normad"
-        echo "Using NormAD dataset"
+        echo "Using NormAD dataset (new format)"
         ;;
     4)
         # CultureLLM (默认)
         DATASET_NAME="CultureLLM"
         TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen_small.json"
         DATASET_TAG="cultureLLM"
-        echo "Using CultureLLM dataset"
+        echo "Using CultureLLM dataset (new format)"
         ;;
     5)
-        # CultureLLM (默认)
+        # wvs
         DATASET_NAME="wvs"
         TRAIN_FILE="/root/autodl-fs/wvs_merge_gen_small.json"
         DATASET_TAG="wvs"
-        echo "Using wvs dataset"
+        echo "Using wvs dataset (new format)"
         ;;
     *)
         echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, or 5."
@@ -71,7 +71,7 @@ case $DATA_ID in
         echo "  2 - CulturalBench"
         echo "  3 - NormAD"
         echo "  4 - CultureLLM (default)"
-        echo "  5 - wvs (test)"
+        echo "  5 - wvs"
         exit 1
         ;;
 esac
@@ -80,7 +80,7 @@ esac
 OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_base_${DATASET_TAG}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
-echo "Evaluating Base Model on CultureLLM Dataset"
+echo "Evaluating Base Model on CultureLLM Dataset (New Format)"
 echo "============================================================"
 echo "Backbone: $BACKBONE ($MODEL_NAME)"
 echo "Dataset: $DATASET_NAME"
@@ -101,6 +101,9 @@ fi
 
 if [ ! -f "$TRAIN_FILE" ]; then
     echo "❌ Error: Train file not found: $TRAIN_FILE"
+    echo ""
+    echo "Please ensure the data file exists in new format:"
+    echo "  {\"instruction\": ..., \"instruction_mask\": ..., \"input\": ..., \"output\": ..., \"label\": ...}"
     exit 1
 fi
 
@@ -111,7 +114,7 @@ mkdir -p "$OUTPUT_DIR"
 echo "Starting evaluation..."
 echo ""
 
-python ft_base.py \
+python ft_base_gen.py \
     --base_model_path "$BASE_MODEL_PATH" \
     --train_file "$TRAIN_FILE" \
     --output_dir "$OUTPUT_DIR" \
