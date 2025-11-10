@@ -128,15 +128,29 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            do_sample=False,
-            num_beams=1,
-            repetition_penalty=1.0
-        )
+        # 检测模型类型
+        model_name = model.config._name_or_path.lower() if hasattr(model.config, '_name_or_path') else ''
+        is_qwen = 'qwen' in model_name
+
+        # Qwen 模型需要特殊配置
+        if is_qwen:
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id
+            )
+        else:
+            # LLaMA 和其他模型使用标准配置
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                do_sample=False,
+                num_beams=1,
+                repetition_penalty=1.0
+            )
 
     # 解码
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
