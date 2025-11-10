@@ -4,10 +4,30 @@
 # 从 Base 模型 + LoRA 权重训练 CultureMoE（生成式版本）
 #
 # 使用方法：
-#   sh run_train_culturemoe_from_base_gen.sh <BACKBONE> <NUM_CLASSES> <USE_CULTURE_LOSS> <NUM_EXPERTS> <NUM_GPUS> <MASK_USE>
+#   sh run_train_culturemoe_from_base_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <NUM_GPUS> <MASK_USE> <CULTURE_LOSS_WEIGHT> <USE_SHARED>
+#
+# 参数说明：
+#   BACKBONE: llama 或 qwen (默认 llama)
+#   DATA_ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认 4)
+#   USE_CULTURE_LOSS: True 或 False (默认 True)
+#   NUM_EXPERTS: 专家数量 (默认 6)
+#   NUM_GPUS: GPU 数量 (默认 2)
+#   MASK_USE: true 或 false (默认 true)
+#   CULTURE_LOSS_WEIGHT: 文化损失权重 (默认 0.5)
+#   USE_SHARED: true 或 false，是否使用共享专家 (默认 true)
 #
 # 示例：
-#   sh run_train_culturemoe_from_base_gen.sh llama 5 True 6 1 true
+#   # 基础训练
+#   sh run_train_culturemoe_from_base_gen.sh llama 4 True 6 2 true
+#
+#   # 消融实验：降低文化损失权重
+#   sh run_train_culturemoe_from_base_gen.sh llama 4 True 6 2 true 0.1
+#
+#   # 消融实验：不使用共享专家
+#   sh run_train_culturemoe_from_base_gen.sh llama 4 True 6 2 true 0.5 false
+#
+#   # 消融实验：同时修改两个参数
+#   sh run_train_culturemoe_from_base_gen.sh llama 4 True 6 2 true 0.1 false
 # ============================================================
 
 # ✅ 配置参数
@@ -17,6 +37,8 @@ USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"               # 默认 6 个专家
 NUM_GPUS="${5:-2}"                  # 默认使用 2 个 GPU
 MASK_USE="${6:-true}"               # 默认使用 instruction_mask
+CULTURE_LOSS_WEIGHT="${7:-0.5}"     # ✅ 新增：文化损失权重 (默认 0.5)
+USE_SHARED="${8:-true}"             # ✅ 新增：是否使用共享专家 (默认 true)
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -79,7 +101,8 @@ case $DATA_ID in
 esac
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/moe_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_USE_CULTURE_LOSS${USE_CULTURE_LOSS}_MASK_USE${MASK_USE}_$(date +%Y%m%d_%H%M)"
+# ✅ 包含新参数：CULTURE_LOSS_WEIGHT 和 USE_SHARED
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/moe_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_USE_CULTURE_LOSS${USE_CULTURE_LOSS}_CULTURE_LOSS_WEIGHT${CULTURE_LOSS_WEIGHT}_USE_SHARED${USE_SHARED}_MASK_USE${MASK_USE}_$(date +%Y%m%d_%H%M)"
 
 # 设置 GPU
 if [ "$NUM_GPUS" = "1" ]; then
@@ -99,6 +122,8 @@ echo "============================================================"
 echo "Backbone: $BACKBONE ($MODEL_NAME)"
 echo "Dataset: $DATASET_NAME"
 echo "Use culture loss: $USE_CULTURE_LOSS"
+echo "Culture loss weight: $CULTURE_LOSS_WEIGHT"  # ✅ 新增
+echo "Use shared experts: $USE_SHARED"             # ✅ 新增
 echo "Num experts: $NUM_EXPERTS"
 echo "Use instruction_mask: $MASK_USE"
 echo "GPUs: $GPU_INFO"
@@ -140,14 +165,16 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 # 构建训练命令
+# ✅ 添加新参数：--culture_loss_lambda 和 --use_shared_experts
 TRAIN_CMD="python train_culturemoe_from_base_gen.py \
     --base_model_path $BASE_MODEL_PATH \
     --lora_weights_path $LORA_WEIGHTS_PATH \
     --train_file $TRAIN_FILE \
     --output_dir $OUTPUT_DIR \
     --use_culture_loss $USE_CULTURE_LOSS \
-    --culture_loss_lambda 0.1 \
+    --culture_loss_lambda $CULTURE_LOSS_WEIGHT \
     --use_instruction_mask $MASK_USE \
+    --use_shared_experts $USE_SHARED \
     \
     --num_epochs 30 \
     --num_experts $NUM_EXPERTS \

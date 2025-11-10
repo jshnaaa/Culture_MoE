@@ -375,13 +375,14 @@ def load_model_from_components(
 
 
 def train_epoch(model, train_loader, optimizer, device, use_culture_loss, culture_loss_lambda,
-                lambda_entropy=0.05, lambda_load=0.01):
+                lambda_entropy=0.05, lambda_load=0.01, use_shared_experts=True):
     """
     训练一个 epoch
 
     Args:
         lambda_entropy: 熵正则化系数（推荐 0.01-0.1）
         lambda_load: 负载均衡系数（推荐 0.01）
+        use_shared_experts: 是否使用共享专家层（消融实验）
     """
     model.train()
     total_loss = 0
@@ -404,6 +405,7 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
         culture_labels = batch['culture_labels']
 
         # 前向传播
+        # ✅ 传递 use_shared_experts 参数到模型
         outputs = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -412,7 +414,8 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
             labels=labels,
             culture_labels=culture_labels,
             use_culture_loss=use_culture_loss,
-            culture_loss_lambda=culture_loss_lambda
+            culture_loss_lambda=culture_loss_lambda,
+            use_shared_experts=use_shared_experts
         )
 
         loss = outputs['loss']
@@ -725,6 +728,10 @@ def main():
     parser.add_argument("--culture_loss_lambda", type=float, default=0.5)
     parser.add_argument("--use_instruction_mask", type=lambda x: x.lower() == 'true', default=True)
 
+    # ✅ 消融实验参数
+    parser.add_argument("--use_shared_experts", type=lambda x: x.lower() == 'true', default=True,
+                        help="Whether to use shared experts layer (default: True)")
+
     # ✅ MoE 正则化参数
     parser.add_argument("--lambda_entropy", type=float, default=0.05,
                         help="Entropy regularization coefficient (0.01-0.1)")
@@ -942,7 +949,8 @@ def main():
             model, train_loader, optimizer, args.device,
             args.use_culture_loss, args.culture_loss_lambda,
             lambda_entropy=args.lambda_entropy,  # ✅ 新增
-            lambda_load=args.lambda_load  # ✅ 新增
+            lambda_load=args.lambda_load,  # ✅ 新增
+            use_shared_experts=args.use_shared_experts  # ✅ 新增：消融实验参数
         )
 
         # 评估（使用 forward pass 计算 loss）

@@ -190,7 +190,8 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         return self.llama_model.prepare_inputs_for_generation(input_ids, **kwargs)
 
     def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None,
-                labels=None, culture_labels=None, use_culture_loss=False, culture_loss_lambda=0.5, **kwargs):
+                labels=None, culture_labels=None, use_culture_loss=False, culture_loss_lambda=0.5,
+                use_shared_experts=True, **kwargs):
         """
         ✅ 生成式前向传播
 
@@ -203,6 +204,7 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             culture_labels: [B] 文化标签
             use_culture_loss: 是否使用文化损失
             culture_loss_lambda: 文化损失权重
+            use_shared_experts: 是否使用共享专家层（消融实验）
 
         Returns:
             outputs: dict with keys:
@@ -233,7 +235,8 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         h_all = hidden_all.clone()
 
         # ✅ Step 2: LLaMA forward for h_no (instruction_mask + input)
-        if input_ids_mask is not None:
+        # ✅ 如果不使用共享专家，则不需要处理 instruction_mask
+        if use_shared_experts and input_ids_mask is not None:
             outputs_no = self.llama_model.model(
                 input_ids_mask,
                 attention_mask=attention_mask_mask,
@@ -252,11 +255,20 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             h_no = h_all.clone()
 
         # Step 3: Shared 层
-        h_no = h_no.to(device=device, dtype=dtype)
-        shared_out = self.shared(h_no)  # [B, L, H]
+        # ✅ 如果不使用共享专家，则跳过 shared 层
+        if use_shared_experts:
+            h_no = h_no.to(device=device, dtype=dtype)
+            shared_out = self.shared(h_no)  # [B, L, H]
+        else:
+            # ✅ 消融实验：不使用共享专家，shared_out 为零
+            shared_out = torch.zeros_like(h_all)
 
         # Step 4: Router（基于 pooled representation）
-        pooled = shared_out.mean(dim=1)  # [B, H]
+        # ✅ 如果使用共享专家，基于 shared_out 计算路由；否则基于 h_all 计算
+        if use_shared_experts:
+            pooled = shared_out.mean(dim=1)  # [B, H]
+        else:
+            pooled = h_all.mean(dim=1)  # [B, H]
         expert_weights, router_logits = self.router(pooled)  # [B, E]
 
         # ✅ 保存专家权重
