@@ -31,7 +31,6 @@ import re
 import sys
 from datetime import datetime
 
-import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -128,28 +127,22 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
-        # 检测模型类型
-        model_name = model.config._name_or_path.lower() if hasattr(model.config, '_name_or_path') else ''
-        is_qwen = 'qwen' in model_name
-
-        # Qwen 模型需要特殊配置
-        if is_qwen:
+        try:
+            # 尝试使用最简单的配置
             outputs = model.generate(
-                **inputs,
+                input_ids=inputs['input_ids'],
+                attention_mask=inputs['attention_mask'],
                 max_new_tokens=max_new_tokens,
-                pad_token_id=tokenizer.pad_token_id,
+                pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
                 eos_token_id=tokenizer.eos_token_id
             )
-        else:
-            # LLaMA 和其他模型使用标准配置
+        except Exception as e:
+            print(f"⚠️  Warning: Generation failed with error: {e}")
+            print("   Trying alternative configuration...")
+            # 如果失败，尝试更简单的配置
             outputs = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,
-                num_beams=1,
-                repetition_penalty=1.0
+                input_ids=inputs['input_ids'],
+                max_new_tokens=max_new_tokens
             )
 
     # 解码
