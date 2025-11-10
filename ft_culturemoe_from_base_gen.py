@@ -633,6 +633,14 @@ def main():
     # model = convert_to_culturemoe(model, moe_args)
     print("✅ CultureMoE model created")
 
+    # 诊断：打印所有参数名称（前 20 个）
+    print("\n📋 Model parameter names (first 20):")
+    param_names = list(dict(model.named_parameters()).keys())
+    for i, name in enumerate(param_names[:20]):
+        print(f"   {i+1}. {name}")
+    if len(param_names) > 20:
+        print(f"   ... and {len(param_names) - 20} more parameters")
+
     # 冻结 Base 模型的所有参数（只训练 MOE 层）
     print("\nFreezing base model parameters...")
     for param in model.parameters():
@@ -642,11 +650,44 @@ def main():
     # 解冻 MOE 层的参数（如果存在）
     print("\nUnfreezing MOE layer parameters...")
     moe_param_count = 0
+    moe_param_names = []
+
+    # 尝试多种参数名称模式
+    moe_patterns = [
+        'moe', 'expert', 'router', 'gate', 'mixture',
+        'shared', 'lora', 'adapter'  # 也尝试其他可能的模式
+    ]
+
     for name, param in model.named_parameters():
-        if 'moe' in name.lower() or 'expert' in name.lower() or 'router' in name.lower():
+        # 检查是否匹配任何 MOE 相关的模式
+        if any(pattern in name.lower() for pattern in moe_patterns):
             param.requires_grad = True
             moe_param_count += 1
+            moe_param_names.append(name)
+
     print(f"✅ MOE layer parameters unfrozen ({moe_param_count} parameters)")
+
+    # 如果没有找到 MOE 参数，打印警告并列出所有参数名称
+    if moe_param_count == 0:
+        print("\n⚠️  WARNING: No MOE parameters found!")
+        print("   Possible reasons:")
+        print("   1. Model doesn't have MOE layers")
+        print("   2. MOE layer names don't match the patterns")
+        print("\n   All parameter names in the model:")
+        for i, name in enumerate(param_names):
+            print(f"   {i+1}. {name}")
+
+        # 如果没有 MOE 参数，训练所有参数
+        print("\n   Training all parameters instead...")
+        for param in model.parameters():
+            param.requires_grad = True
+        moe_param_count = sum(1 for p in model.parameters() if p.requires_grad)
+    else:
+        print("\n   MOE parameters found:")
+        for name in moe_param_names[:10]:
+            print(f"   - {name}")
+        if len(moe_param_names) > 10:
+            print(f"   ... and {len(moe_param_names) - 10} more")
 
     # 设置模型为训练模式
     model.train()
@@ -658,6 +699,11 @@ def main():
     print(f"   Trainable parameters: {sum(p.numel() for p in trainable_params)}")
 
     # 优化器（只优化可训练的参数）
+    if len(trainable_params) == 0:
+        print("\n❌ ERROR: No trainable parameters found!")
+        print("   Please check your model structure.")
+        sys.exit(1)
+
     optimizer = torch.optim.AdamW(
         trainable_params,
         lr=args.learning_rate,

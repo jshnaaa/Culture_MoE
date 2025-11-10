@@ -18,17 +18,17 @@ BACKBONE="${1:-llama}"           # 默认使用 llama
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
-    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_qwen_20251109_1549/best_lora"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_qwen_20251110_2137/best_lora"
 #    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_all_qwen_$(date +%Y%m%d_%H%M)/best_lora"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_llama_20251107_2124/best_lora"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_cultureLLM_llama_20251110_2135/best_lora"
 #    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_all_llama_20251107_2321/best_lora"
 fi
 
 # 测试数据集（WVS 生成式数据集，标签 1-10）
-TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
+TEST_FILE="/root/autodl-fs/wvs_merge_gen_small.json"
 DATASET_NAME="WVS_Gen"
 NUM_CLASSES=10  # 1-10 共 10 个类别
 
