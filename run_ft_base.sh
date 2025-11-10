@@ -53,14 +53,14 @@ case $DATA_ID in
     4)
         # CultureLLM (默认)
         DATASET_NAME="CultureLLM"
-        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen_small.json"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
         echo "Using CultureLLM dataset (new format)"
         ;;
     5)
         # wvs
         DATASET_NAME="wvs"
-        TRAIN_FILE="/root/autodl-fs/wvs_merge_gen_small.json"
+        TRAIN_FILE="/root/autodl-fs/wvs_merge_gen.json"
         DATASET_TAG="wvs"
         echo "Using wvs dataset (new format)"
         ;;
