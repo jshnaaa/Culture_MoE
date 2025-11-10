@@ -388,7 +388,11 @@ def evaluate_vsm13(
         print(f"{'='*80}")
 
         # 为每个问题生成答案
-        for question_idx, sample in enumerate(tqdm(data, desc=f"Generating answers for {country}")):
+        for sample_idx, sample in enumerate(tqdm(data, desc=f"Generating answers for {country}")):
+            # ✅ 获取问题索引（从样本中提取或使用样本索引）
+            # 假设数据中有 'question_idx' 字段，否则使用 sample_idx
+            question_idx = sample.get('question_idx', sample_idx)
+
             # 添加国家文化提示词
             instruction = sample['instruction']
 
@@ -406,8 +410,14 @@ def evaluate_vsm13(
             # 提取数字答案
             answer = extract_number_from_text(generated_text)
 
+            # ✅ 调试输出：显示生成的答案
+            if sample_idx < 3:  # 只显示前 3 个样本
+                print(f"  Sample {sample_idx}: Generated='{generated_text}' → Answer={answer}")
+
             if answer == -1:
                 # 如果没有提取到有效的数字，跳过
+                if sample_idx < 10:  # 只显示前 10 个失败的样本
+                    print(f"  ⚠️  Sample {sample_idx}: Failed to extract number from: '{generated_text}'")
                 continue
 
             # 存储答案
