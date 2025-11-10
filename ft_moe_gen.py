@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
 """
-使用标准语言建模损失微调 LoRA Only 模型（新数据格式）
+微调 LoRA + MOE 模型（新数据格式）
+
+关键改进：
+1. 冻结 Base 模型参数
+2. 一同训练 LoRA + MOE 层
+3. 使用标准语言建模损失
+4. 支持 Post Eval（生成答案并评估准确率）
 
 使用方法：
-    python ft_lora_only_gen.py \
+    python ft_lora_moe_gen.py \
         --base_model_path /path/to/base_model \
+        --lora_weights_path /path/to/lora_weights \
         --train_file /path/to/train_data.json \
         --output_dir /path/to/output \
-        --num_epochs 6
+        --num_epochs 12
 
 数据格式（新格式）：
     {
-        "instruction": "Give me the answer from 1 to 4: Do you agree with ...",
-        "instruction_mask": "Give me the answer from 1 to 4: Do you agree with ... [MASK]",
+        "instruction": "Give me the answer from 1 to 4: ...",
+        "instruction_mask": "Give me the answer from 1 to 4: ... [MASK]",
         "input": "This question is for a country or language that is Arabic.",
         "output": "2",
         "label": "0"
     }
-
-关键特性：
-    1. 使用 instruction + input 作为输入
-    2. 使用 output 作为目标输出
-    3. 使用标准语言建模损失
-    4. 支持 post eval（生成答案并评估准确率）
-    5. instruction_mask 和 label 字段被保存但不用于训练
 """
 
 import argparse
@@ -31,10 +31,11 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 
+import numpy as np
 import torch
-from peft import LoraConfig, get_peft_model
-from torch.nn.parallel import DistributedDataParallel as DDP
+from peft import LoraConfig, get_peft_model, PeftModel
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -184,10 +185,6 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     """
     使用模型生成答案
 
-    关键改进：
-    - 只输入 instruction + input，不输入 output
-    - 让模型生成 output
-
     Args:
         model: 模型
         tokenizer: tokenizer
@@ -214,8 +211,8 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             max_new_tokens=max_new_tokens,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            do_sample=False,  # 贪婪解码
-            num_beams=1,      # 禁用 beam search
+            do_sample=False,
+            num_beams=1,
             repetition_penalty=1.0
         )
 
@@ -303,9 +300,6 @@ def evaluate(model, val_loader, device):
     total_loss = 0
     num_batches = 0
 
-    # 获取实际的模型（如果被 DDP 包装）
-    actual_model = model.module if isinstance(model, DDP) else model
-
     pbar = tqdm(val_loader, desc="Evaluating")
 
     with torch.no_grad():
@@ -342,12 +336,6 @@ def evaluate(model, val_loader, device):
 def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_dir):
     """
     在验证集上生成答案并评估准确率（Post Eval）
-
-    关键改进：
-    - 只输入 instruction + input，不输入 output
-    - 让模型生成答案
-    - 通过正则表达式提取数字答案
-    - 与真实答案比对
 
     Args:
         model: 模型
@@ -424,17 +412,19 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune LoRA Only model with new data format")
+    parser = argparse.ArgumentParser(description="Fine-tune LoRA + MOE model with new data format")
 
     parser.add_argument("--base_model_path", type=str, required=True,
                         help="Path to base model")
+    parser.add_argument("--lora_weights_path", type=str, required=True,
+                        help="Path to LoRA weights")
     parser.add_argument("--train_file", type=str, required=True,
                         help="Path to training data (new format JSON)")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output directory for results")
 
     # 训练参数
-    parser.add_argument("--num_epochs", type=int, default=6,
+    parser.add_argument("--num_epochs", type=int, default=12,
                         help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=4,
                         help="Batch size")
@@ -467,9 +457,10 @@ def main():
     args = parser.parse_args()
 
     print("\n" + "="*80)
-    print("Fine-tuning LoRA Only Model with New Data Format")
+    print("Fine-tuning LoRA + MOE Model with New Data Format")
     print("="*80)
     print(f"Base model: {args.base_model_path}")
+    print(f"LoRA weights: {args.lora_weights_path}")
     print(f"Training data: {args.train_file}")
     print(f"Output directory: {args.output_dir}")
     print(f"Number of epochs: {args.num_epochs}")
@@ -515,9 +506,9 @@ def main():
         num_workers=args.num_workers
     )
 
-    # 加载模型
+    # 加载 Base 模型
     print("\nLoading base model...")
-    model = AutoModelForCausalLM.from_pretrained(
+    base_model = AutoModelForCausalLM.from_pretrained(
         args.base_model_path,
         torch_dtype=torch.float16,
         device_map='auto',
@@ -526,27 +517,57 @@ def main():
     )
     print("✅ Base model loaded")
 
-    # 配置 LoRA
-    print("\nConfiguring LoRA...")
-    lora_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        target_modules=["q_proj", "v_proj"],
-        lora_dropout=args.lora_dropout,
-        bias="none",
-        task_type="CAUSAL_LM"
+    # 冻结 Base 模型的所有参数
+    print("\nFreezing base model parameters...")
+    for param in base_model.parameters():
+        param.requires_grad = False
+    print("✅ Base model parameters frozen")
+
+    # 加载 LoRA 权重
+    print("\nLoading LoRA weights...")
+    model = PeftModel.from_pretrained(
+        base_model,
+        args.lora_weights_path,
+        is_trainable=True,  # ✅ LoRA 权重可训练
+        torch_dtype=torch.float16
     )
+    print("✅ LoRA weights loaded")
 
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
-    print("✅ LoRA configured")
+    # 合并 LoRA 权重
+    print("\nMerging LoRA weights...")
+    model = model.merge_and_unload()
+    print("✅ LoRA weights merged")
 
-    # 设置模型为评估模式（禁用 dropout）
-    model.eval()
+    # 冻结 Base 模型参数（再次确保）
+    print("\nEnsuring base model parameters are frozen...")
+    base_param_count = 0
+    for name, param in model.named_parameters():
+        # 冻结所有不是 LoRA 相关的参数
+        if 'lora' not in name.lower():
+            param.requires_grad = False
+            base_param_count += 1
+    print(f"✅ Base model parameters frozen ({base_param_count} parameters)")
+
+    # 设置模型为训练模式
+    model.train()
+
+    # 获取可训练的参数
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    print(f"\n📊 Trainable parameters: {len(trainable_params)}")
+    print(f"   Total parameters: {sum(p.numel() for p in model.parameters())}")
+    print(f"   Trainable parameters: {sum(p.numel() for p in trainable_params)}")
+
+    # 打印可训练的参数名称
+    print("\n📋 Trainable parameter names:")
+    trainable_names = [name for name, param in model.named_parameters() if param.requires_grad]
+    for i, name in enumerate(trainable_names[:10]):
+        print(f"   {i+1}. {name}")
+    if len(trainable_names) > 10:
+        print(f"   ... and {len(trainable_names) - 10} more")
 
     # 优化器
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        trainable_params,
         lr=args.learning_rate,
         weight_decay=args.weight_decay
     )
@@ -557,7 +578,7 @@ def main():
     print("="*80 + "\n")
 
     best_val_loss = float('inf')
-    best_model_dir = os.path.join(args.output_dir, 'best_lora')
+    best_model_dir = os.path.join(args.output_dir, 'best_lora_moe')
 
     epoch_results = []
 
@@ -617,6 +638,7 @@ def main():
     # 保存配置
     config = {
         'base_model': args.base_model_path,
+        'lora_weights': args.lora_weights_path,
         'num_epochs': args.num_epochs,
         'batch_size': args.batch_size,
         'learning_rate': args.learning_rate,
@@ -624,7 +646,8 @@ def main():
         'lora_alpha': args.lora_alpha,
         'lora_dropout': args.lora_dropout,
         'best_val_loss': best_val_loss,
-        'data_format': 'new_format (instruction + input + output)'
+        'data_format': 'new_format (instruction + input + output)',
+        'training_mode': 'Freeze Base + Train LoRA + MOE'
     }
 
     with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
@@ -635,7 +658,7 @@ def main():
     print("="*80)
     print(f"Results saved to: {args.output_dir}")
     print(f"\nFiles generated:")
-    print(f"  - best_lora/ (Best LoRA weights)")
+    print(f"  - best_lora_moe/ (Best LoRA + MOE weights)")
     print(f"  - epoch_eval_results.json (Epoch-by-epoch results)")
     print(f"  - generated_answers.json (Generated answers on validation set)")
     print(f"  - config.json (Training configuration)")
