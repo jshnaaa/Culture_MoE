@@ -653,9 +653,10 @@ def main():
     moe_param_names = []
 
     # 尝试多种参数名称模式
+    # 注意：不包括 'gate'，因为 gate_proj 是标准的 MLP 门控，不是 MOE 层
     moe_patterns = [
-        'moe', 'expert', 'router', 'gate', 'mixture',
-        'shared', 'lora', 'adapter'  # 也尝试其他可能的模式
+        'moe', 'expert', 'router', 'mixture',
+        'shared', 'lora', 'adapter'
     ]
 
     for name, param in model.named_parameters():
@@ -761,9 +762,28 @@ def main():
 
             # 保存新的最好模型
             os.makedirs(best_moe_dir, exist_ok=True)
-            moe_state_dict = model.state_dict()
-            torch.save(moe_state_dict, os.path.join(best_moe_dir, "pytorch_model.bin"))
-            print(f"   ✅ Best model saved (loss: {best_val_loss:.4f})")
+
+            try:
+                # 尝试保存完整模型
+                moe_state_dict = model.state_dict()
+                torch.save(moe_state_dict, os.path.join(best_moe_dir, "pytorch_model.bin"))
+                print(f"   ✅ Best model saved (loss: {best_val_loss:.4f})")
+            except Exception as e:
+                print(f"   ⚠️  Warning: Failed to save full model: {str(e)}")
+                print(f"   Saving only trainable parameters instead...")
+
+                try:
+                    # 只保存可训练的参数
+                    trainable_state_dict = {}
+                    for name, param in model.named_parameters():
+                        if param.requires_grad:
+                            trainable_state_dict[name] = param.data
+
+                    torch.save(trainable_state_dict, os.path.join(best_moe_dir, "trainable_params.bin"))
+                    print(f"   ✅ Trainable parameters saved (loss: {best_val_loss:.4f})")
+                except Exception as e2:
+                    print(f"   ❌ Failed to save trainable parameters: {str(e2)}")
+                    print(f"   Continuing training without saving...")
 
         # 记录结果
         epoch_results.append({

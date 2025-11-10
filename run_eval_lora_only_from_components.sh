@@ -33,7 +33,7 @@ DATASET_NAME="WVS_Gen"
 NUM_CLASSES=10  # 1-10 共 10 个类别
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen_test_results/lora_only_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft_test_results/ft_lora_only_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "LoRA Only Model Evaluation (From Components)"
