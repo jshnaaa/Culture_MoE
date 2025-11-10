@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from collections import defaultdict
 from typing import Dict
 
@@ -25,6 +26,11 @@ import torch
 from peft import PeftModel
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
+
+# ✅ 添加项目路径以导入 CultureMoE
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
+from src.llamafactory.model.moe_args import ModelArgs
 
 # ✅ 10 个国家及其形容词形式
 COUNTRIES = {
@@ -241,16 +247,34 @@ def load_model_and_tokenizer(
         print("✅ MOE weights loaded and merged")
 
     else:  # culturemoe
-        # CultureMoE 模型：直接加载
-        print(f"\nLoading CultureMoE model from {base_model_path}...")
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model_path,
-            torch_dtype=torch.float16,
-            device_map='auto',
-            trust_remote_code=True,
-            low_cpu_mem_usage=True
-        )
-        print("✅ CultureMoE model loaded")
+        # ⚠️ CultureMoE 模型：需要从 Base + LoRA + MOE 权重还原
+        # 这与 'moe' 类型相同，但用于评估已训练的完整 CultureMoE 模型
+        print(f"\n⚠️  CultureMoE 模型需要从 Base + LoRA + MOE 权重还原")
+        print(f"如果你想评估完整的 CultureMoE 模型，请使用 --model_type moe")
+        print(f"或者提供 --moe_weights_path 参数")
+
+        # 尝试从 base_model_path 加载（如果是完整的 CultureMoE 模型）
+        print(f"\nAttempting to load CultureMoE model from {base_model_path}...")
+        try:
+            model = LlamaSharedRouterExpertsModel.from_pretrained(
+                base_model_path,
+                torch_dtype=torch.float16,
+                device_map='auto',
+                trust_remote_code=True,
+                low_cpu_mem_usage=True
+            )
+            print("✅ CultureMoE model loaded from pretrained")
+        except Exception as e:
+            print(f"❌ Failed to load CultureMoE from pretrained: {e}")
+            print(f"Falling back to loading as Base model...")
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model_path,
+                torch_dtype=torch.float16,
+                device_map='auto',
+                trust_remote_code=True,
+                low_cpu_mem_usage=True
+            )
+            print("⚠️  Loaded as Base model (not CultureMoE)")
 
     model.eval()
     print("\n✅ Model ready for evaluation")

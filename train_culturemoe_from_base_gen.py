@@ -374,12 +374,21 @@ def load_model_from_components(
     return culturemoe_model, tokenizer
 
 
-def train_epoch(model, train_loader, optimizer, device, use_culture_loss, culture_loss_lambda):
-    """训练一个 epoch"""
+def train_epoch(model, train_loader, optimizer, device, use_culture_loss, culture_loss_lambda,
+                lambda_entropy=0.05, lambda_load=0.01):
+    """
+    训练一个 epoch
+
+    Args:
+        lambda_entropy: 熵正则化系数（推荐 0.01-0.1）
+        lambda_load: 负载均衡系数（推荐 0.01）
+    """
     model.train()
     total_loss = 0
     total_cls_loss = 0
     total_culture_loss = 0
+    total_entropy_loss = 0
+    total_load_loss = 0
     all_preds = []
     all_labels = []
     nan_count = 0
@@ -407,6 +416,35 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
         )
 
         loss = outputs['loss']
+
+        # ✅ 计算熵正则化（Router 熵）
+        entropy_loss = torch.tensor(0.0, device=device)
+        if lambda_entropy > 0:
+            # 从模型获取专家权重
+            actual_model = model.module if isinstance(model, DDP) else model
+            expert_weights = actual_model.get_expert_weights()  # [batch, num_experts]
+
+            if expert_weights is not None:
+                # 计算熵：H = -sum(p * log(p))
+                entropy = -(expert_weights * torch.log(expert_weights + 1e-12)).sum(dim=-1).mean()
+                # 负熵项：惩罚过低熵（鼓励保持一定的熵）
+                entropy_loss = -entropy
+                loss = loss + lambda_entropy * entropy_loss
+
+        # ✅ 计算负载均衡损失
+        load_loss = torch.tensor(0.0, device=device)
+        if lambda_load > 0:
+            # 从模型获取专家权重
+            actual_model = model.module if isinstance(model, DDP) else model
+            expert_weights = actual_model.get_expert_weights()  # [batch, num_experts]
+
+            if expert_weights is not None:
+                # 计算每个专家的重要性（接收的总权重）
+                importance = expert_weights.sum(dim=0)  # [num_experts]
+                importance_norm = importance / (importance.sum() + 1e-12)
+                # 负载均衡：惩罚分布尖峰（鼓励均匀分布）
+                load_loss = (importance_norm ** 2).sum()
+                loss = loss + lambda_load * load_loss
 
         # ✅ 检查 NaN loss
         if torch.isnan(loss) or torch.isinf(loss):
@@ -437,6 +475,8 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
         total_cls_loss += outputs['generation_loss'].item()  # ✅ 修改为 generation_loss
         if use_culture_loss:
             total_culture_loss += outputs['culture_loss'].item()
+        total_entropy_loss += entropy_loss.item() if isinstance(entropy_loss, torch.Tensor) else entropy_loss
+        total_load_loss += load_loss.item() if isinstance(load_loss, torch.Tensor) else load_loss
 
         # ✅ 生成式模型不需要在训练时收集预测（会很慢）
         # 只在评估时使用 generate() 方法
@@ -446,6 +486,8 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
         progress_bar.set_postfix({
             'loss': f"{loss.item():.4f}",
             'gen_loss': f"{outputs['generation_loss'].item():.4f}",  # ✅ 修改为 gen_loss
+            'entropy': f"{entropy_loss.item():.4f}" if isinstance(entropy_loss, torch.Tensor) else "0.0000",
+            'load': f"{load_loss.item():.4f}" if isinstance(load_loss, torch.Tensor) else "0.0000",
             'moe_warmup': f"{warmup_weight:.2f}"  # ✅ 显示预热权重
         })
 
@@ -453,6 +495,8 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
     avg_loss = total_loss / len(train_loader)
     avg_gen_loss = total_cls_loss / len(train_loader)  # ✅ 修改为 gen_loss
     avg_culture_loss = total_culture_loss / len(train_loader) if use_culture_loss else 0.0
+    avg_entropy_loss = total_entropy_loss / len(train_loader)
+    avg_load_loss = total_load_loss / len(train_loader)
 
     # ✅ 生成式模型在训练时不计算准确率（太慢）
     # 准确率只在评估时通过 generate() 计算
@@ -461,6 +505,8 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss, cultur
         'loss': avg_loss,
         'gen_loss': avg_gen_loss,  # ✅ 修改为 gen_loss
         'culture_loss': avg_culture_loss,
+        'entropy_loss': avg_entropy_loss,  # ✅ 新增
+        'load_loss': avg_load_loss,  # ✅ 新增
         'accuracy': 0.0  # ✅ 训练时不计算准确率
     }
 
@@ -679,6 +725,12 @@ def main():
     parser.add_argument("--culture_loss_lambda", type=float, default=0.5)
     parser.add_argument("--use_instruction_mask", type=lambda x: x.lower() == 'true', default=True)
 
+    # ✅ MoE 正则化参数
+    parser.add_argument("--lambda_entropy", type=float, default=0.05,
+                        help="Entropy regularization coefficient (0.01-0.1)")
+    parser.add_argument("--lambda_load", type=float, default=0.01,
+                        help="Load balancing coefficient (0.01)")
+
     # MoE 参数
     parser.add_argument("--num_epochs", type=int, default=10)
     parser.add_argument("--num_experts", type=int, default=6)
@@ -888,7 +940,9 @@ def main():
         # 训练
         train_metrics = train_epoch(
             model, train_loader, optimizer, args.device,
-            args.use_culture_loss, args.culture_loss_lambda
+            args.use_culture_loss, args.culture_loss_lambda,
+            lambda_entropy=args.lambda_entropy,  # ✅ 新增
+            lambda_load=args.lambda_load  # ✅ 新增
         )
 
         # 评估（使用 forward pass 计算 loss）
@@ -919,6 +973,8 @@ def main():
             'epoch': epoch + 1,
             'train_loss': train_metrics['loss'],
             'train_gen_loss': train_metrics['gen_loss'],  # ✅ 添加 gen_loss
+            'train_entropy_loss': train_metrics['entropy_loss'],  # ✅ 新增
+            'train_load_loss': train_metrics['load_loss'],  # ✅ 新增
             'train_accuracy': train_metrics['accuracy'],  # ✅ 训练时为 0.0
             'eval_loss': val_metrics['loss'],
             'eval_gen_loss': val_metrics['gen_loss'],  # ✅ 添加 gen_loss
@@ -933,6 +989,8 @@ def main():
         print(f"\n📊 Epoch {epoch + 1} Results:")
         print(f"   Train Loss: {train_metrics['loss']:.4f}, Train Gen Loss: {train_metrics['gen_loss']:.4f}")  # ✅ 修改
         print(f"   Eval Loss:  {val_metrics['loss']:.4f}, Eval Gen Loss: {val_metrics['gen_loss']:.4f}")  # ✅ 修改
+        # ✅ 显示正则化损失
+        print(f"   Train Entropy Loss: {train_metrics['entropy_loss']:.4f}, Load Loss: {train_metrics['load_loss']:.4f}")
         print(f"   Eval Accuracy (Generative): {gen_accuracy:.4f}")
         if 'precision' in gen_metrics:
             print(f"   Eval Precision: {gen_metrics['precision']:.4f}, Recall: {gen_metrics['recall']:.4f}, F1: {gen_metrics['f1']:.4f}")
