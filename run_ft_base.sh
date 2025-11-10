@@ -39,7 +39,7 @@ case $DATA_ID in
     2)
         # CulturalBench
         DATASET_NAME="CulturalBench"
-        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen_small.json"
         DATASET_TAG="CulturalBench"
         echo "Using CulturalBench dataset"
         ;;
@@ -53,17 +53,25 @@ case $DATA_ID in
     4)
         # CultureLLM (默认)
         DATASET_NAME="CultureLLM"
-        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen_small.json"
         DATASET_TAG="cultureLLM"
         echo "Using CultureLLM dataset"
         ;;
+    5)
+        # CultureLLM (默认)
+        DATASET_NAME="wvs"
+        TRAIN_FILE="/root/autodl-fs/wvs_merge_gen_small.json"
+        DATASET_TAG="wvs"
+        echo "Using wvs dataset"
+        ;;
     *)
-        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, or 4."
+        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, or 5."
         echo ""
         echo "DATA_ID options:"
         echo "  2 - CulturalBench"
         echo "  3 - NormAD"
         echo "  4 - CultureLLM (default)"
+        echo "  5 - wvs (test)"
         exit 1
         ;;
 esac

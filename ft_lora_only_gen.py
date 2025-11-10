@@ -1,31 +1,35 @@
 #!/usr/bin/env python3
 """
-使用标准语言建模损失微调 LoRA Only 模型（Alpaca 格式）
+使用标准语言建模损失微调 LoRA Only 模型（新数据格式）
 
 使用方法：
-    python ft_lora_alpaca.py \
+    python ft_lora_only_gen.py \
         --base_model_path /path/to/base_model \
         --train_file /path/to/train_data.json \
         --output_dir /path/to/output \
         --num_epochs 6
 
-数据格式（Alpaca）：
+数据格式（新格式）：
     {
         "instruction": "Give me the answer from 1 to 4: Do you agree with ...",
-        "input": "",
-        "output": "2"
+        "instruction_mask": "Give me the answer from 1 to 4: Do you agree with ... [MASK]",
+        "input": "This question is for a country or language that is Arabic.",
+        "output": "2",
+        "label": "0"
     }
 
-关键改进：
-    1. 使用 Alpaca 格式而不是 CultureLLM 格式
-    2. 明确分离 instruction/input 和 output
-    3. 模型学习生成 output 部分
-    4. 推理时只输入 instruction，让模型生成 output
+关键特性：
+    1. 使用 instruction + input 作为输入
+    2. 使用 output 作为目标输出
+    3. 使用标准语言建模损失
+    4. 支持 post eval（生成答案并评估准确率）
+    5. instruction_mask 和 label 字段被保存但不用于训练
 """
 
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -43,15 +47,17 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-class AlpacaDataset(Dataset):
+class CultureLLMNewFormatDataset(Dataset):
     """
-    Alpaca 格式数据集
+    CultureLLM 新格式数据集
 
     数据格式：
     {
         "instruction": "Give me the answer from 1 to 4: ...",
-        "input": "",
-        "output": "2"
+        "instruction_mask": "Give me the answer from 1 to 4: ... [MASK]",
+        "input": "This question is for a country or language that is Arabic.",
+        "output": "2",
+        "label": "0"
     }
     """
 
@@ -77,10 +83,11 @@ class AlpacaDataset(Dataset):
     def __getitem__(self, idx):
         item = self.data[idx]
 
-        # Alpaca 格式：instruction + input + output
+        # 新格式：instruction + input + output
         instruction = item.get('instruction', '')
         input_text = item.get('input', '')
         output_text = item.get('output', '')
+        label = item.get('label', '')
 
         # 构建完整的输入和输出
         # 格式：instruction + input → output
@@ -90,7 +97,7 @@ class AlpacaDataset(Dataset):
             full_input = instruction
 
         # 完整的文本（用于语言建模）
-        # 这样模型会学习：给定 instruction，生成 output
+        # 这样模型会学习：给定 instruction + input，生成 output
         full_text = f"{full_input}\n{output_text}"
 
         # Tokenize
@@ -113,7 +120,9 @@ class AlpacaDataset(Dataset):
             'attention_mask': attention_mask,
             'labels': labels,
             'instruction': instruction,
-            'output': output_text
+            'input': input_text,
+            'output': output_text,
+            'label': label
         }
 
 
@@ -135,7 +144,7 @@ def load_and_process_data(
     Returns:
         dict: 包含 'train' 和 'validation' 的字典
     """
-    dataset = AlpacaDataset(data_path, tokenizer, max_length)
+    dataset = CultureLLMNewFormatDataset(data_path, tokenizer, max_length)
 
     # 按 9:1 比例划分
     val_size = int(len(dataset) * val_split)
@@ -159,14 +168,14 @@ def extract_answer_from_text(text: str) -> str:
     """
     从生成的文本中提取答案
 
+    使用正则表达式查找数字
+
     Args:
         text: 生成的文本
 
     Returns:
         提取的答案（数字字符串）
     """
-    import re
-
     # 查找数字（1-10 或 1-4）
     match = re.search(r'\d+', text)
     if match:
@@ -175,25 +184,32 @@ def extract_answer_from_text(text: str) -> str:
     return ""
 
 
-def generate_answer(model, tokenizer, instruction: str, device: str = 'cuda', max_new_tokens: int = 10) -> str:
+def generate_answer(model, tokenizer, instruction: str, input_text: str, device: str = 'cuda', max_new_tokens: int = 10) -> str:
     """
     使用模型生成答案
 
     关键改进：
-    - 只输入 instruction，不输入 output
+    - 只输入 instruction + input，不输入 output
     - 让模型生成 output
 
     Args:
         model: 模型
         tokenizer: tokenizer
-        instruction: 指令（不包含答案）
+        instruction: 指令
+        input_text: 输入文本
         device: 设备
         max_new_tokens: 最大生成 token 数
 
     Returns:
         生成的文本
     """
-    inputs = tokenizer(instruction, return_tensors="pt", truncation=True, max_length=512)
+    # 构建输入
+    if input_text:
+        full_input = f"{instruction}\n{input_text}"
+    else:
+        full_input = instruction
+
+    inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -203,7 +219,7 @@ def generate_answer(model, tokenizer, instruction: str, device: str = 'cuda', ma
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
             do_sample=False,
-            temperature=None,
+            temperature=0.0,
             top_p=None
         )
 
@@ -329,11 +345,13 @@ def evaluate(model, val_loader, device):
 
 def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_dir):
     """
-    在验证集上生成答案并评估准确率
+    在验证集上生成答案并评估准确率（Post Eval）
 
     关键改进：
-    - 只输入 instruction，不输入 output
+    - 只输入 instruction + input，不输入 output
     - 让模型生成答案
+    - 通过正则表达式提取数字答案
+    - 与真实答案比对
 
     Args:
         model: 模型
@@ -351,15 +369,17 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
     total = 0
     generated_data = []
 
-    print("\nGenerating answers on validation set...")
+    print("\nGenerating answers on validation set (Post Eval)...")
 
     for idx in tqdm(range(len(val_dataset)), desc="Generating"):
         sample = val_dataset[idx]
         instruction = sample['instruction']
+        input_text = sample['input']
         true_output = sample['output']
+        label = sample['label']
 
-        # 生成答案（只输入 instruction）
-        generated_text = generate_answer(model, tokenizer, instruction, device)
+        # 生成答案（只输入 instruction + input）
+        generated_text = generate_answer(model, tokenizer, instruction, input_text, device)
 
         # 提取答案
         predicted_answer = extract_answer_from_text(generated_text)
@@ -372,7 +392,9 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
         # 保存生成的数据
         generated_data.append({
             'instruction': instruction,
+            'input': input_text,
             'true_output': true_output,
+            'label': label,
             'generated_text': generated_text,
             'predicted_answer': predicted_answer,
             'correct': predicted_answer == true_output
@@ -392,12 +414,12 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune LoRA Only model with Alpaca format")
+    parser = argparse.ArgumentParser(description="Fine-tune LoRA Only model with new data format")
 
     parser.add_argument("--base_model_path", type=str, required=True,
                         help="Path to base model")
     parser.add_argument("--train_file", type=str, required=True,
-                        help="Path to training data (Alpaca format JSON)")
+                        help="Path to training data (new format JSON)")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output directory for results")
 
@@ -435,7 +457,7 @@ def main():
     args = parser.parse_args()
 
     print("\n" + "="*80)
-    print("Fine-tuning LoRA Only Model with Alpaca Format")
+    print("Fine-tuning LoRA Only Model with New Data Format")
     print("="*80)
     print(f"Base model: {args.base_model_path}")
     print(f"Training data: {args.train_file}")
@@ -543,7 +565,7 @@ def main():
         # 验证
         val_metrics = evaluate(model, val_loader, args.device)
 
-        # 生成答案并评估准确率
+        # 生成答案并评估准确率（Post Eval）
         gen_metrics = generate_and_evaluate_answers(
             model, val_dataset, tokenizer, args.device, args.output_dir
         )
@@ -551,7 +573,7 @@ def main():
         print(f"\n📊 Epoch {epoch + 1} Results:")
         print(f"   Train Loss: {train_metrics['loss']:.4f}")
         print(f"   Eval Loss:  {val_metrics['loss']:.4f}")
-        print(f"   Eval Accuracy: {gen_metrics['accuracy']:.4f}")
+        print(f"   Eval Accuracy (Post Eval): {gen_metrics['accuracy']:.4f}")
 
         # 保存最好的模型
         if val_metrics['loss'] < best_val_loss:
@@ -592,7 +614,7 @@ def main():
         'lora_alpha': args.lora_alpha,
         'lora_dropout': args.lora_dropout,
         'best_val_loss': best_val_loss,
-        'data_format': 'alpaca'
+        'data_format': 'new_format (instruction + input + output)'
     }
 
     with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:

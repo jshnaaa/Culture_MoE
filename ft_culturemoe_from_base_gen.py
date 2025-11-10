@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-使用标准语言建模损失 + 文化专注性损失微调 CultureMoE 模型（生成式版本）
+使用标准语言建模损失 + 文化专注性损失微调 CultureMoE 模型（新数据格式）
 
 使用方法：
-    python ft_culturemoe_from_base_gen.py \
+    python ft_culturemoe_from_base_gen_new_format.py \
         --base_model_path /path/to/base_model \
         --lora_weights_path /path/to/lora_weights \
         --train_file /path/to/train_data.json \
@@ -11,17 +11,27 @@
         --use_culture_loss True \
         --culture_loss_lambda 0.5
 
-数据格式：
+数据格式（新格式）：
     {
-        "text": "### Question: ... ### Answer: 2",
-        "text_mask": "### Question: ... ### Answer: 2",
+        "instruction": "### Question: ... ### Answer: ",
+        "instruction_mask": "### Question: ... [MASK] ### Answer: ",
+        "input": "",
+        "output": "2",
         "label": "0"
     }
+
+关键特性：
+    1. MOE 专家使用 instruction 字段
+    2. Shared 专家使用 instruction_mask 字段
+    3. 使用标准语言建模损失 + 文化专注性损失
+    4. 支持 Post Eval（生成答案并评估准确率）
+    5. 每个 epoch 生成答案并评估
 """
 
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -37,18 +47,18 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
-from src.llamafactory.model.moe_args import ModelArgs
 
 
-class CultureMoEDataset(Dataset):
+class CultureMoENewFormatDataset(Dataset):
     """
-    CultureMoE 数据集
+    CultureMoE 新格式数据集
 
     数据格式：
     {
-        "text": "### Question: ... ### Answer: 2",
-        "text_mask": "### Question: ... ### Answer: 2",
+        "instruction": "### Question: ... ### Answer: ",
+        "instruction_mask": "### Question: ... [MASK] ### Answer: ",
+        "input": "",
+        "output": "2",
         "label": "0"
     }
     """
@@ -74,35 +84,62 @@ class CultureMoEDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        text = item['text']
-        text_mask = item.get('text_mask', text)
+
+        # 新格式：instruction + input + output
+        instruction = item.get('instruction', '')
+        instruction_mask = item.get('instruction_mask', instruction)
+        input_text = item.get('input', '')
+        output_text = item.get('output', '')
         label = item.get('label', '')
 
-        # Tokenize text（用于 MOE 专家）
-        encoded_text = self.tokenizer(
-            text,
+        # 构建完整的输入和输出
+        # MOE 专家用 instruction
+        if input_text:
+            full_input = f"{instruction}{input_text}"
+        else:
+            full_input = instruction
+
+        # Shared 专家用 instruction_mask
+        if input_text:
+            full_input_mask = f"{instruction_mask}{input_text}"
+        else:
+            full_input_mask = instruction_mask
+
+        # 完整的文本（用于语言建模）
+        full_text = f"{full_input}{output_text}"
+        full_text_mask = f"{full_input_mask}{output_text}"
+
+        # Tokenize for MOE experts (instruction)
+        encoded = self.tokenizer(
+            full_text,
             max_length=self.max_length,
             truncation=True,
             padding='max_length',
             return_tensors='pt'
         )
 
-        # Tokenize text_mask（用于共享专家）
+        # Tokenize for Shared experts (instruction_mask)
         encoded_mask = self.tokenizer(
-            text_mask,
+            full_text_mask,
             max_length=self.max_length,
             truncation=True,
             padding='max_length',
             return_tensors='pt'
         )
 
-        input_ids = encoded_text['input_ids'].squeeze(0)
-        attention_mask = encoded_text['attention_mask'].squeeze(0)
+        input_ids = encoded['input_ids'].squeeze(0)
+        attention_mask = encoded['attention_mask'].squeeze(0)
         input_ids_mask = encoded_mask['input_ids'].squeeze(0)
         attention_mask_mask = encoded_mask['attention_mask'].squeeze(0)
 
         # 对于生成式模型，labels = input_ids（用于语言建模损失）
         labels = input_ids.clone()
+
+        # 将 label 转换为整数（用于文化损失）
+        try:
+            label_int = int(label)
+        except:
+            label_int = 0
 
         return {
             'input_ids': input_ids,
@@ -110,8 +147,10 @@ class CultureMoEDataset(Dataset):
             'input_ids_mask': input_ids_mask,
             'attention_mask_mask': attention_mask_mask,
             'labels': labels,
-            'text': text,
-            'label': label
+            'label': label_int,
+            'instruction': instruction,
+            'input': input_text,
+            'output': output_text
         }
 
 
@@ -133,7 +172,7 @@ def load_and_process_data(
     Returns:
         dict: 包含 'train' 和 'validation' 的字典
     """
-    dataset = CultureMoEDataset(data_path, tokenizer, max_length)
+    dataset = CultureMoENewFormatDataset(data_path, tokenizer, max_length)
 
     # 按 9:1 比例划分
     val_size = int(len(dataset) * val_split)
@@ -157,37 +196,44 @@ def extract_answer_from_text(text: str) -> str:
     """
     从生成的文本中提取答案
 
+    使用正则表达式查找数字
+
     Args:
         text: 生成的文本
 
     Returns:
         提取的答案（数字字符串）
     """
-    import re
-
-    # 查找 "Answer: " 后面的数字
-    match = re.search(r'Answer:\s*(\d+)', text)
+    # 查找数字（1-10 或 1-4）
+    match = re.search(r'\d+', text)
     if match:
-        return match.group(1)
+        return match.group(0)
 
     return ""
 
 
-def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_tokens: int = 10) -> str:
+def generate_answer(model, tokenizer, instruction: str, input_text: str, device: str = 'cuda', max_new_tokens: int = 10) -> str:
     """
     使用模型生成答案
 
     Args:
         model: 模型
         tokenizer: tokenizer
-        text: 输入文本
+        instruction: 指令
+        input_text: 输入文本
         device: 设备
         max_new_tokens: 最大生成 token 数
 
     Returns:
         生成的文本
     """
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    # 构建输入
+    if input_text:
+        full_input = f"{instruction}{input_text}"
+    else:
+        full_input = instruction
+
+    inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -206,29 +252,6 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
     generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
     return generated_text
-
-
-def compute_culture_loss(logits, labels, culture_labels, num_classes=10):
-    """
-    计算文化专注性损失
-
-    Args:
-        logits: 模型输出的 logits [B, num_classes]
-        labels: 真实标签 [B]
-        culture_labels: 文化标签 [B]
-        num_classes: 类别数量
-
-    Returns:
-        文化损失
-    """
-    # 这里假设我们有一个分类头来计算文化损失
-    # 实际实现需要根据你的具体需求调整
-
-    # 简单的交叉熵损失
-    loss_fn = torch.nn.CrossEntropyLoss()
-    culture_loss = loss_fn(logits, labels)
-
-    return culture_loss
 
 
 def train_epoch(model, train_loader, optimizer, device, use_culture_loss=False, culture_loss_lambda=0.5, num_accumulation_steps=1):
@@ -261,7 +284,7 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss=False, 
         input_ids_mask = batch['input_ids_mask'].to(device)
         attention_mask_mask = batch['attention_mask_mask'].to(device)
         labels = batch['labels'].to(device)
-        culture_labels = batch['label']  # 文化标签
+        culture_labels = batch['label'].to(device)
 
         # 前向传播
         outputs = model(
@@ -345,7 +368,7 @@ def evaluate(model, val_loader, device, use_culture_loss=False, culture_loss_lam
             input_ids_mask = batch['input_ids_mask'].to(device)
             attention_mask_mask = batch['attention_mask_mask'].to(device)
             labels = batch['labels'].to(device)
-            culture_labels = batch['label']
+            culture_labels = batch['label'].to(device)
 
             # 前向传播
             outputs = model(
@@ -391,7 +414,7 @@ def evaluate(model, val_loader, device, use_culture_loss=False, culture_loss_lam
 
 def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_dir):
     """
-    在验证集上生成答案并评估准确率
+    在验证集上生成答案并评估准确率（Post Eval）
 
     Args:
         model: 模型
@@ -409,31 +432,35 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
     total = 0
     generated_data = []
 
-    print("\nGenerating answers on validation set...")
+    print("\nGenerating answers on validation set (Post Eval)...")
 
     for idx in tqdm(range(len(val_dataset)), desc="Generating"):
         sample = val_dataset[idx]
-        text = sample['text']
-        true_label = sample['label']
+        instruction = sample['instruction']
+        input_text = sample['input']
+        true_output = sample['output']
+        label = sample['label']
 
         # 生成答案
-        generated_text = generate_answer(model, tokenizer, text, device)
+        generated_text = generate_answer(model, tokenizer, instruction, input_text, device)
 
         # 提取答案
         predicted_answer = extract_answer_from_text(generated_text)
 
         # 比对答案
-        if predicted_answer == true_label:
+        if predicted_answer == true_output:
             correct += 1
         total += 1
 
         # 保存生成的数据
         generated_data.append({
-            'text': text,
-            'true_label': true_label,
+            'instruction': instruction,
+            'input': input_text,
+            'true_output': true_output,
+            'label': label,
             'generated_text': generated_text,
             'predicted_answer': predicted_answer,
-            'correct': predicted_answer == true_label
+            'correct': predicted_answer == true_output
         })
 
     accuracy = correct / total if total > 0 else 0
@@ -450,14 +477,14 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune CultureMoE model with standard language modeling loss + culture loss")
+    parser = argparse.ArgumentParser(description="Fine-tune CultureMoE model with new data format")
 
     parser.add_argument("--base_model_path", type=str, required=True,
                         help="Path to base model")
     parser.add_argument("--lora_weights_path", type=str, required=True,
                         help="Path to LoRA weights")
     parser.add_argument("--train_file", type=str, required=True,
-                        help="Path to training data (JSON format)")
+                        help="Path to training data (new format JSON)")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output directory for results")
 
@@ -509,7 +536,7 @@ def main():
     args = parser.parse_args()
 
     print("\n" + "="*80)
-    print("Fine-tuning CultureMoE Model with Standard Language Modeling Loss + Culture Loss")
+    print("Fine-tuning CultureMoE Model with New Data Format")
     print("="*80)
     print(f"Base model: {args.base_model_path}")
     print(f"LoRA weights: {args.lora_weights_path}")
@@ -588,21 +615,8 @@ def main():
 
     # 创建 CultureMoE 模型
     print("\nCreating CultureMoE model...")
-    moe_args = ModelArgs(
-        num_experts=args.num_experts,
-        shared_hidden_dim=args.shared_hidden_dim,
-        router_hidden_dim=args.router_hidden_dim,
-        experts_hidden_dim=args.experts_hidden_dim,
-        moe_lora_rank=args.moe_lora_rank,
-        classification_hidden_dim=args.classification_hidden_dim,
-        dropout=args.dropout,
-        num_heads=args.num_heads
-    )
-
     # 这里需要根据你的实际实现来创建 CultureMoE 模型
-    # 假设你有一个函数可以将 Base + LoRA 模型转换为 CultureMoE 模型
     # model = convert_to_culturemoe(model, moe_args)
-
     print("✅ CultureMoE model created")
 
     # 优化器
@@ -642,7 +656,7 @@ def main():
             culture_loss_lambda=args.culture_loss_lambda
         )
 
-        # 生成答案并评估准确率
+        # 生成答案并评估准确率（Post Eval）
         gen_metrics = generate_and_evaluate_answers(
             model, val_dataset, tokenizer, args.device, args.output_dir
         )
@@ -650,7 +664,7 @@ def main():
         print(f"\n📊 Epoch {epoch + 1} Results:")
         print(f"   Train Loss: {train_metrics['loss']:.4f}, Train Gen Loss: {train_metrics['gen_loss']:.4f}")
         print(f"   Eval Loss:  {val_metrics['loss']:.4f}, Eval Gen Loss: {val_metrics['gen_loss']:.4f}")
-        print(f"   Eval Accuracy: {gen_metrics['accuracy']:.4f}")
+        print(f"   Eval Accuracy (Post Eval): {gen_metrics['accuracy']:.4f}")
 
         # 保存最好的模型
         if val_metrics['loss'] < best_val_loss:
@@ -695,7 +709,8 @@ def main():
         'use_culture_loss': args.use_culture_loss,
         'culture_loss_lambda': args.culture_loss_lambda,
         'num_experts': args.num_experts,
-        'best_val_loss': best_val_loss
+        'best_val_loss': best_val_loss,
+        'data_format': 'new_format (instruction + instruction_mask + input + output + label)'
     }
 
     with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
