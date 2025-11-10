@@ -107,7 +107,7 @@ python ft_lora_only_gen.py \
     --base_model_path "$BASE_MODEL_PATH" \
     --train_file "$TRAIN_FILE" \
     --output_dir "$OUTPUT_DIR" \
-    --num_epochs 6 \
+    --num_epochs 12 \
     --batch_size 4 \
     --eval_batch_size 4 \
     --learning_rate 2e-4 \
