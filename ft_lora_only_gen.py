@@ -218,9 +218,9 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             max_new_tokens=max_new_tokens,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            do_sample=False,
-            temperature=0.0,
-            top_p=None
+            do_sample=False,  # 贪婪解码
+            num_beams=1,      # 禁用 beam search
+            repetition_penalty=1.0
         )
 
     # 解码
