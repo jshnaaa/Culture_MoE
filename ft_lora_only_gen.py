@@ -368,7 +368,15 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
     print("\nGenerating answers on validation set (Post Eval)...")
 
     for idx in tqdm(range(len(val_dataset)), desc="Generating"):
-        sample = val_dataset[idx]
+        # 获取原始数据集（处理 Subset 对象）
+        if hasattr(val_dataset, 'dataset'):
+            # val_dataset 是 Subset 对象
+            original_idx = val_dataset.indices[idx]
+            sample = val_dataset.dataset[original_idx]
+        else:
+            # val_dataset 是普通 Dataset 对象
+            sample = val_dataset[idx]
+
         instruction = sample['instruction']
         input_text = sample['input']
         true_output = sample['output']
