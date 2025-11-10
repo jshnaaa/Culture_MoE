@@ -617,7 +617,7 @@ def main():
     model = PeftModel.from_pretrained(
         base_model,
         args.lora_weights_path,
-        is_trainable=False,
+        is_trainable=False,  # LoRA 权重不训练
         torch_dtype=torch.float16
     )
     print("✅ LoRA weights loaded")
@@ -633,9 +633,33 @@ def main():
     # model = convert_to_culturemoe(model, moe_args)
     print("✅ CultureMoE model created")
 
-    # 优化器
+    # 冻结 Base 模型的所有参数（只训练 MOE 层）
+    print("\nFreezing base model parameters...")
+    for param in model.parameters():
+        param.requires_grad = False
+    print("✅ Base model parameters frozen")
+
+    # 解冻 MOE 层的参数（如果存在）
+    print("\nUnfreezing MOE layer parameters...")
+    moe_param_count = 0
+    for name, param in model.named_parameters():
+        if 'moe' in name.lower() or 'expert' in name.lower() or 'router' in name.lower():
+            param.requires_grad = True
+            moe_param_count += 1
+    print(f"✅ MOE layer parameters unfrozen ({moe_param_count} parameters)")
+
+    # 设置模型为训练模式
+    model.train()
+
+    # 获取可训练的参数
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    print(f"\n📊 Trainable parameters: {len(trainable_params)}")
+    print(f"   Total parameters: {sum(p.numel() for p in model.parameters())}")
+    print(f"   Trainable parameters: {sum(p.numel() for p in trainable_params)}")
+
+    # 优化器（只优化可训练的参数）
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        trainable_params,
         lr=args.learning_rate,
         weight_decay=args.weight_decay
     )
