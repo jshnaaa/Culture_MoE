@@ -134,8 +134,8 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
             do_sample=False,
-            temperature=None,
-            top_p=None
+            num_beams=1,
+            repetition_penalty=1.0
         )
 
     # 解码
