@@ -283,14 +283,29 @@ def main():
 
     # 加载模型
     print("\nLoading base model...")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.base_model_path,
-        torch_dtype=torch.float16,
-        device_map='auto',
-        trust_remote_code=True,
-        low_cpu_mem_usage=True
-    )
-    print("✅ Base model loaded")
+    # ✅ 使用 bfloat16 或 float16（根据 GPU 支持情况）
+    # bfloat16 更稳定，但需要 Ampere 架构（A100, RTX 30xx 等）
+    try:
+        # 尝试使用 bfloat16
+        model = AutoModelForCausalLM.from_pretrained(
+            args.base_model_path,
+            torch_dtype=torch.bfloat16,
+            device_map='auto',
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
+        )
+        print("✅ Base model loaded (bfloat16)")
+    except Exception as e:
+        print(f"⚠️  bfloat16 not supported, falling back to float16")
+        # 降级到 float16
+        model = AutoModelForCausalLM.from_pretrained(
+            args.base_model_path,
+            torch_dtype=torch.float16,
+            device_map='auto',
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
+        )
+        print("✅ Base model loaded (float16)")
 
     # 评估
     print("\n" + "="*80)

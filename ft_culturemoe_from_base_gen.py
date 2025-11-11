@@ -623,14 +623,15 @@ def main():
 
     # 加载 Base 模型
     print("\nLoading base model...")
+    # ✅ 使用 float32 防止 NaN（fp16 精度不足导致 logits 包含 NaN）
     base_model = AutoModelForCausalLM.from_pretrained(
         args.base_model_path,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,  # 改为 float32
         device_map='auto',
         trust_remote_code=True,
         low_cpu_mem_usage=True
     )
-    print("✅ Base model loaded")
+    print("✅ Base model loaded (float32)")
 
     # 加载 LoRA 权重
     print("\nLoading LoRA weights...")
@@ -638,9 +639,9 @@ def main():
         base_model,
         args.lora_weights_path,
         is_trainable=False,  # LoRA 权重不训练
-        torch_dtype=torch.float16
+        torch_dtype=torch.float32  # 改为 float32
     )
-    print("✅ LoRA weights loaded")
+    print("✅ LoRA weights loaded (float32)")
 
     # 合并 LoRA 权重
     print("\nMerging LoRA weights...")
