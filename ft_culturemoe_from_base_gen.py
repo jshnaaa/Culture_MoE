@@ -340,6 +340,8 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss=False, 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             optimizer.zero_grad()
+            # ✅ 更新学习率
+            scheduler.step()
 
         pbar.set_postfix({
             'loss': f"{loss.item() * num_accumulation_steps:.4f}",
@@ -791,10 +793,20 @@ def main():
         betas=(0.9, 0.999)  # 标准 Adam 参数
     )
 
+    # ✅ 添加学习率调度（余弦退火）
+    total_steps = args.num_epochs * len(train_loader)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=total_steps,
+        eta_min=learning_rate * 0.1
+    )
+
     print(f"\n📊 Optimizer configuration:")
     print(f"   Learning rate: {learning_rate:.2e}")
     print(f"   Weight decay: {args.weight_decay}")
     print(f"   Gradient clipping: 1.0")
+    print(f"   Learning rate scheduler: CosineAnnealingLR")
+    print(f"   Total training steps: {total_steps}")
 
     # 训练循环
     print("\n" + "="*80)
