@@ -46,7 +46,7 @@ case $DATA_ID in
     2)
         # CulturalBench
         DATASET_NAME="CulturalBench"
-        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen_small.json"
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
         DATASET_TAG="CulturalBench"
         if [ "$BACKBONE" = "qwen" ]; then
             LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_qwen_*/best_lora"
@@ -173,7 +173,7 @@ python ft_culturemoe_from_base_gen.py \
     --num_heads 8 \
     --batch_size 4 \
     --eval_batch_size 4 \
-    --learning_rate 1e-7 \
+    --learning_rate 1e-4 \
     --weight_decay 0.001 \
     --max_length 512 \
     --val_split 0.1 \
