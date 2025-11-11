@@ -123,8 +123,16 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
     Returns:
         生成的文本
     """
+    # ✅ 检查输入文本是否为空
+    if not text or text.strip() == "":
+        return ""
+
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
+
+    # ✅ 检查 input_ids 是否为空
+    if inputs['input_ids'].shape[1] == 0:
+        return ""
 
     with torch.no_grad():
         try:
@@ -140,10 +148,14 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
             print(f"⚠️  Warning: Generation failed with error: {e}")
             print("   Trying alternative configuration...")
             # 如果失败，尝试更简单的配置
-            outputs = model.generate(
-                input_ids=inputs['input_ids'],
-                max_new_tokens=max_new_tokens
-            )
+            try:
+                outputs = model.generate(
+                    input_ids=inputs['input_ids'],
+                    max_new_tokens=max_new_tokens
+                )
+            except Exception as e2:
+                print(f"⚠️  Warning: Alternative generation also failed: {e2}")
+                return ""
 
     # 解码
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]

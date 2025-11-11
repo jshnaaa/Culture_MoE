@@ -108,16 +108,17 @@ python ft_lora_only_gen.py \
     --train_file "$TRAIN_FILE" \
     --output_dir "$OUTPUT_DIR" \
     --num_epochs 12 \
-    --batch_size 4 \
-    --eval_batch_size 4 \
+    --batch_size 8 \
+    --eval_batch_size 8 \
     --learning_rate 2e-4 \
     --weight_decay 0.001 \
     --max_length 512 \
     --val_split 0.1 \
-    --num_workers 2 \
+    --num_workers 4 \
     --lora_r 64 \
     --lora_alpha 16 \
     --lora_dropout 0.1 \
+    --eval_interval 3 \
     --device cuda
 
 if [ $? -eq 0 ]; then

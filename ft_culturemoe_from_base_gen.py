@@ -275,6 +275,7 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss=False, 
     total_gen_loss = 0
     total_culture_loss = 0
     num_batches = 0
+    nan_count = 0
 
     pbar = tqdm(train_loader, desc="Training")
 
@@ -302,9 +303,22 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss=False, 
         gen_loss = outputs.get('generation_loss', loss)
         culture_loss = outputs.get('culture_loss', torch.tensor(0.0, device=device))
 
-        # ✅ 检查 NaN loss
+        # ✅ 检查 NaN loss 并诊断
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f"❌ NaN or Inf loss detected at batch {batch_idx}")
+            nan_count += 1
+            print(f"\n❌ NaN or Inf loss detected at batch {batch_idx}")
+            print(f"   Loss: {loss.item()}")
+            print(f"   Gen Loss: {gen_loss.item() if isinstance(gen_loss, torch.Tensor) else gen_loss}")
+            print(f"   Culture Loss: {culture_loss.item() if isinstance(culture_loss, torch.Tensor) else culture_loss}")
+
+            # 诊断：检查 logits 的范围
+            if hasattr(outputs, 'logits'):
+                logits = outputs.logits
+                print(f"   Logits max: {logits.abs().max().item():.4f}")
+                print(f"   Logits has NaN: {torch.isnan(logits).any().item()}")
+                print(f"   Logits has Inf: {torch.isinf(logits).any().item()}")
+
+            # 跳过这个批次
             continue
 
         # 梯度累积
@@ -333,11 +347,15 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss=False, 
     avg_gen_loss = total_gen_loss / num_batches if num_batches > 0 else 0
     avg_culture_loss = total_culture_loss / num_batches if num_batches > 0 else 0
 
+    if nan_count > 0:
+        print(f"\n⚠️  WARNING: {nan_count} batches had NaN/Inf loss (skipped)")
+
     return {
         'loss': avg_loss,
         'gen_loss': avg_gen_loss,
         'culture_loss': avg_culture_loss,
-        'num_batches': num_batches
+        'num_batches': num_batches,
+        'nan_count': nan_count
     }
 
 
@@ -707,15 +725,22 @@ def main():
         print("   Please check your model structure.")
         sys.exit(1)
 
-    # 使用更保守的学习率
-    learning_rate = args.learning_rate * 0.1  # 降低学习率
+    # ✅ 使用更保守的学习率和优化器配置（防止 NaN）
+    # 根据 ChatGPT 分析，MoE 参数少、梯度波动大，需要特殊处理
+    learning_rate = args.learning_rate * 0.01  # 进一步降低学习率（从 1e-6 到 1e-8）
 
     optimizer = torch.optim.AdamW(
         trainable_params,
         lr=learning_rate,
         weight_decay=args.weight_decay,
-        eps=1e-8  # 增加数值稳定性
+        eps=1e-8,  # 增加数值稳定性
+        betas=(0.9, 0.999)  # 标准 Adam 参数
     )
+
+    print(f"\n📊 Optimizer configuration:")
+    print(f"   Learning rate: {learning_rate:.2e}")
+    print(f"   Weight decay: {args.weight_decay}")
+    print(f"   Gradient clipping: 1.0")
 
     # 训练循环
     print("\n" + "="*80)

@@ -244,7 +244,7 @@ def train_epoch(model, train_loader, optimizer, device, num_accumulation_steps=1
     total_loss = 0
     num_batches = 0
 
-    pbar = tqdm(train_loader, desc="Training")
+    pbar = tqdm(train_loader, desc="Training", disable=False, mininterval=1.0)
 
     for batch_idx, batch in enumerate(pbar):
         input_ids = batch['input_ids'].to(device)
@@ -306,7 +306,7 @@ def evaluate(model, val_loader, device):
     # 获取实际的模型（如果被 DDP 包装）
     actual_model = model.module if isinstance(model, DDP) else model
 
-    pbar = tqdm(val_loader, desc="Evaluating")
+    pbar = tqdm(val_loader, desc="Evaluating", disable=False, mininterval=1.0)
 
     with torch.no_grad():
         for batch in pbar:
@@ -365,9 +365,7 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
     total = 0
     generated_data = []
 
-    print("\nGenerating answers on validation set (Post Eval)...")
-
-    for idx in tqdm(range(len(val_dataset)), desc="Generating"):
+    for idx in tqdm(range(len(val_dataset)), desc="Generating", disable=False, mininterval=1.0):
         # 获取原始数据集（处理 Subset 对象）
         if hasattr(val_dataset, 'dataset'):
             # val_dataset 是 Subset 对象
@@ -460,6 +458,8 @@ def main():
                         help="Number of workers for data loading")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1,
                         help="Gradient accumulation steps")
+    parser.add_argument("--eval_interval", type=int, default=1,
+                        help="Evaluation interval (every N epochs)")
 
     # LoRA 参数
     parser.add_argument("--lora_r", type=int, default=64,
@@ -513,14 +513,16 @@ def main():
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        pin_memory=True
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.eval_batch_size,
         shuffle=False,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        pin_memory=True
     )
 
     # 加载模型
@@ -570,9 +572,7 @@ def main():
     epoch_results = []
 
     for epoch in range(args.num_epochs):
-        print(f"\n{'='*80}")
         print(f"Epoch {epoch + 1}/{args.num_epochs}")
-        print(f"{'='*80}")
 
         # 训练
         train_metrics = train_epoch(
@@ -580,43 +580,55 @@ def main():
             num_accumulation_steps=args.gradient_accumulation_steps
         )
 
-        # 验证
-        val_metrics = evaluate(model, val_loader, args.device)
+        print(f"  Train Loss: {train_metrics['loss']:.4f}")
 
-        # 生成答案并评估准确率（Post Eval）
-        gen_metrics = generate_and_evaluate_answers(
-            model, val_dataset, tokenizer, args.device, args.output_dir
-        )
+        # 每 eval_interval 个 epoch 进行一次验证
+        if (epoch + 1) % args.eval_interval == 0:
+            # 验证
+            val_metrics = evaluate(model, val_loader, args.device)
 
-        print(f"\n📊 Epoch {epoch + 1} Results:")
-        print(f"   Train Loss: {train_metrics['loss']:.4f}")
-        print(f"   Eval Loss:  {val_metrics['loss']:.4f}")
-        print(f"   Eval Accuracy (Post Eval): {gen_metrics['accuracy']:.4f}")
+            # 生成答案并评估准确率（Post Eval）
+            gen_metrics = generate_and_evaluate_answers(
+                model, val_dataset, tokenizer, args.device, args.output_dir
+            )
 
-        # 保存最好的模型
-        if val_metrics['loss'] < best_val_loss:
-            best_val_loss = val_metrics['loss']
+            print(f"  Eval Loss: {val_metrics['loss']:.4f}")
+            print(f"  Eval Accuracy: {gen_metrics['accuracy']:.4f}")
 
-            # 删除旧的最好模型
-            if os.path.exists(best_model_dir):
-                import shutil
-                shutil.rmtree(best_model_dir)
+            # 保存最好的模型
+            if val_metrics['loss'] < best_val_loss:
+                best_val_loss = val_metrics['loss']
 
-            # 保存新的最好模型
-            os.makedirs(best_model_dir, exist_ok=True)
-            model.save_pretrained(best_model_dir)
-            tokenizer.save_pretrained(best_model_dir)
-            print(f"   ✅ Best model saved (loss: {best_val_loss:.4f})")
+                # 删除旧的最好模型
+                if os.path.exists(best_model_dir):
+                    import shutil
+                    shutil.rmtree(best_model_dir)
 
-        # 记录结果
-        epoch_results.append({
-            'epoch': epoch + 1,
-            'train_loss': train_metrics['loss'],
-            'eval_loss': val_metrics['loss'],
-            'eval_accuracy': gen_metrics['accuracy'],
-            'correct': gen_metrics['correct'],
-            'total': gen_metrics['total']
-        })
+                # 保存新的最好模型
+                os.makedirs(best_model_dir, exist_ok=True)
+                model.save_pretrained(best_model_dir)
+                tokenizer.save_pretrained(best_model_dir)
+                print(f"  ✅ Best model saved (loss: {best_val_loss:.4f})")
+
+            # 记录结果
+            epoch_results.append({
+                'epoch': epoch + 1,
+                'train_loss': train_metrics['loss'],
+                'eval_loss': val_metrics['loss'],
+                'eval_accuracy': gen_metrics['accuracy'],
+                'correct': gen_metrics['correct'],
+                'total': gen_metrics['total']
+            })
+        else:
+            # 不评估的 epoch，只记录训练损失
+            epoch_results.append({
+                'epoch': epoch + 1,
+                'train_loss': train_metrics['loss'],
+                'eval_loss': None,
+                'eval_accuracy': None,
+                'correct': None,
+                'total': None
+            })
 
     # 保存训练结果
     with open(os.path.join(args.output_dir, 'epoch_eval_results.json'), 'w', encoding='utf-8') as f:
