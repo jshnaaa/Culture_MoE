@@ -314,6 +314,9 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         logits = self.llama_model.lm_head(enhanced_hidden)  # [B, L, vocab_size]
 
+        # ✅ 裁剪 logits（防止数值溢出导致异常高的损失）
+        logits = torch.clamp(logits, min=-100, max=100)
+
         # ✅ Step 9: 计算损失（如果提供了 labels）
         outputs = {'logits': logits}
 

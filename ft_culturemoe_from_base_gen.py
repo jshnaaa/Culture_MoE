@@ -777,9 +777,9 @@ def main():
         print("   Please check your model structure.")
         sys.exit(1)
 
-    # ✅ 使用更保守的学习率和优化器配置（防止 NaN）
-    # 根据 ChatGPT 分析，MoE 参数少、梯度波动大，需要特殊处理
-    learning_rate = args.learning_rate * 0.01  # 进一步降低学习率（从 1e-6 到 1e-8）
+    # ✅ 使用合理的学习率
+    # 注意：学习率太小（1e-8）会导致损失不下降
+    learning_rate = args.learning_rate * 0.1  # 1e-6 * 0.1 = 1e-7（合理的学习率）
 
     optimizer = torch.optim.AdamW(
         trainable_params,
