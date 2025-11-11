@@ -64,6 +64,30 @@ class CultureLLMNewFormatDataset:
 
         print(f"Loaded {len(self.data)} samples")
 
+        # ✅ 数据验证
+        if len(self.data) == 0:
+            print("⚠️  Warning: Dataset is empty!")
+        else:
+            # 检查第一条数据的格式
+            first_sample = self.data[0]
+            print(f"\n📋 First sample keys: {first_sample.keys()}")
+            print(f"   instruction: {str(first_sample.get('instruction', ''))[:80]}...")
+            print(f"   input: {str(first_sample.get('input', ''))[:80]}...")
+            print(f"   output: {first_sample.get('output', '')}")
+            print(f"   label: {first_sample.get('label', '')}")
+
+            # 统计非空字段
+            non_empty_count = 0
+            for key in ['instruction', 'input', 'output', 'label']:
+                non_empty = sum(1 for item in self.data if item.get(key, ''))
+                print(f"   Non-empty '{key}': {non_empty}/{len(self.data)}")
+                if key in ['instruction', 'output']:
+                    non_empty_count += non_empty
+
+            if non_empty_count == 0:
+                print("\n❌ Error: All instruction and output fields are empty!")
+                print("   Please check your data file format.")
+
     def __len__(self):
         return len(self.data)
 
@@ -75,6 +99,12 @@ class CultureLLMNewFormatDataset:
         input_text = item.get('input', '')
         output_text = item.get('output', '')
         label = item.get('label', '')
+
+        # ✅ 调试：检查数据是否为空
+        if not instruction and not input_text:
+            print(f"⚠️  Warning: Empty instruction and input at index {idx}")
+            print(f"   Item keys: {item.keys()}")
+            print(f"   Item: {item}")
 
         # 构建完整的文本
         if input_text:

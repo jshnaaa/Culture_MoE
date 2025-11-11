@@ -697,11 +697,13 @@ def main():
 
     # ✅ 强制 MoE 部分使用 float32（防止 NaN）
     print("Setting MoE layers to float32...")
-    model.shared = model.shared.to(torch.float32)
-    model.router = model.router.to(torch.float32)
-    model.experts_layer = model.experts_layer.to(torch.float32)
+    # ✅ 获取 base_model 的设备
+    device = next(base_model.parameters()).device
+    model.shared = model.shared.to(device=device, dtype=torch.float32)
+    model.router = model.router.to(device=device, dtype=torch.float32)
+    model.experts_layer = model.experts_layer.to(device=device, dtype=torch.float32)
 
-    print("✅ CultureMoE model created (MoE layers in float32)")
+    print(f"✅ CultureMoE model created (MoE layers in float32 on {device})")
 
     # 诊断：打印所有参数名称（前 20 个）
     print("\n📋 Model parameter names (first 20):")

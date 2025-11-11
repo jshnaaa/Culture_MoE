@@ -33,6 +33,13 @@ fi
 
 # 根据 DATA_ID 选择数据集
 case $DATA_ID in
+    1)
+        # CultureLLM (默认)
+        DATASET_NAME="CultureLLM"
+        TRAIN_FILE="/root/autodl-fs/unified_all_datasets_small.json"
+        DATASET_TAG="unified_all_datasets"
+        echo "Using unified_all_datasets dataset (new format)"
+        ;;
     2)
         # CulturalBench
         DATASET_NAME="CulturalBench"

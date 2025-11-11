@@ -60,7 +60,35 @@ case $DATA_ID in
     5)
         # wvs
         DATASET_NAME="wvs"
-        TRAIN_FILE="/root/autodl-fs/wvs_merge_gen.json"
+        TRAIN_FILE="/root/autodl-fs/wvs_merge_rp_gen.json"
+        DATASET_TAG="wvs"
+        echo "Using wvs dataset (new format)"
+        ;;
+    22)
+        # CulturalBench
+        DATASET_NAME="CulturalBench"
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_rp_gen.json"
+        DATASET_TAG="CulturalBench"
+        echo "Using CulturalBench dataset (new format)"
+        ;;
+    32)
+        # NormAD
+        DATASET_NAME="NormAD"
+        TRAIN_FILE="/root/autodl-fs/normad_merge_rp_gen.json"
+        DATASET_TAG="normad"
+        echo "Using NormAD dataset (new format)"
+        ;;
+    42)
+        # CultureLLM (默认)
+        DATASET_NAME="CultureLLM"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_rp_gen.json"
+        DATASET_TAG="cultureLLM"
+        echo "Using CultureLLM dataset (new format)"
+        ;;
+    52)
+        # wvs
+        DATASET_NAME="wvs"
+        TRAIN_FILE="/root/autodl-fs/wvs_merge_rp_gen.json"
         DATASET_TAG="wvs"
         echo "Using wvs dataset (new format)"
         ;;
