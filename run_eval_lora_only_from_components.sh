@@ -28,7 +28,7 @@ else
 fi
 
 # 测试数据集（WVS 生成式数据集，标签 1-10）
-TEST_FILE="/root/autodl-fs/wvs_merge_gen_small.json"
+TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
 DATASET_NAME="WVS_Gen"
 NUM_CLASSES=10  # 1-10 共 10 个类别
 
