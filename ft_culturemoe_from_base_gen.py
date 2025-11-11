@@ -48,6 +48,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# 导入 CultureMoE 模型
+from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
+from src.llamafactory.model.moe_args import ModelArgs
+
 
 class CultureMoENewFormatDataset(Dataset):
     """
@@ -432,7 +436,7 @@ def evaluate(model, val_loader, device, use_culture_loss=False, culture_loss_lam
     }
 
 
-def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_dir):
+def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_dir, epoch=None):
     """
     在验证集上生成答案并评估准确率（Post Eval）
 
@@ -442,6 +446,7 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
         tokenizer: tokenizer
         device: 设备
         output_dir: 输出目录
+        epoch: 当前 epoch 数（用于保存文件名）
 
     Returns:
         dict: 包含准确率等指标的字典
@@ -485,9 +490,15 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
 
     accuracy = correct / total if total > 0 else 0
 
-    # 保存生成的答案
+    # 保存生成的答案（最新的）
     with open(os.path.join(output_dir, 'generated_answers.json'), 'w', encoding='utf-8') as f:
         json.dump(generated_data, f, indent=2, ensure_ascii=False)
+
+    # ✅ 保存每个 epoch 的生成答案（不覆盖）
+    if epoch is not None:
+        epoch_answers_file = os.path.join(output_dir, f'generated_answers_epoch_{epoch}.json')
+        with open(epoch_answers_file, 'w', encoding='utf-8') as f:
+            json.dump(generated_data, f, indent=2, ensure_ascii=False)
 
     # 打印前五条生成的答案
     print("\n📋 前五条生成的答案:")
@@ -650,9 +661,33 @@ def main():
 
     # 创建 CultureMoE 模型
     print("\nCreating CultureMoE model...")
-    # 这里需要根据你的实际实现来创建 CultureMoE 模型
-    # model = convert_to_culturemoe(model, moe_args)
-    print("✅ CultureMoE model created")
+
+    # 创建 ModelArgs
+    moe_args = ModelArgs(
+        num_experts=args.num_experts,
+        shared_hidden_dim=args.shared_hidden_dim,
+        router_hidden_dim=args.router_hidden_dim,
+        experts_hidden_dim=args.experts_hidden_dim,
+        lora_rank=args.moe_lora_rank,
+        classification_hidden_dim=args.classification_hidden_dim,
+        dropout=args.dropout,
+        num_heads=args.num_heads
+    )
+
+    # 创建 CultureMoE 模型
+    model = LlamaSharedRouterExpertsModel(
+        llama_model=model,
+        config=model.config,
+        args=moe_args
+    )
+
+    # ✅ 强制 MoE 部分使用 float32（防止 NaN）
+    print("Setting MoE layers to float32...")
+    model.shared = model.shared.to(torch.float32)
+    model.router = model.router.to(torch.float32)
+    model.experts_layer = model.experts_layer.to(torch.float32)
+
+    print("✅ CultureMoE model created (MoE layers in float32)")
 
     # 诊断：打印所有参数名称（前 20 个）
     print("\n📋 Model parameter names (first 20):")
@@ -775,7 +810,7 @@ def main():
 
         # 生成答案并评估准确率（Post Eval）
         gen_metrics = generate_and_evaluate_answers(
-            model, val_dataset, tokenizer, args.device, args.output_dir
+            model, val_dataset, tokenizer, args.device, args.output_dir, epoch=epoch+1
         )
 
         print(f"\n📊 Epoch {epoch + 1} Results:")

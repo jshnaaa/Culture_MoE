@@ -339,7 +339,7 @@ def evaluate(model, val_loader, device):
     }
 
 
-def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_dir):
+def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_dir, epoch=None):
     """
     在验证集上生成答案并评估准确率（Post Eval）
 
@@ -355,6 +355,7 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
         tokenizer: tokenizer
         device: 设备
         output_dir: 输出目录
+        epoch: 当前 epoch 数（用于保存文件名）
 
     Returns:
         dict: 包含准确率等指标的字典
@@ -404,9 +405,15 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
 
     accuracy = correct / total if total > 0 else 0
 
-    # 保存生成的答案
+    # 保存生成的答案（最新的）
     with open(os.path.join(output_dir, 'generated_answers.json'), 'w', encoding='utf-8') as f:
         json.dump(generated_data, f, indent=2, ensure_ascii=False)
+
+    # ✅ 保存每个 epoch 的生成答案（不覆盖）
+    if epoch is not None:
+        epoch_answers_file = os.path.join(output_dir, f'generated_answers_epoch_{epoch}.json')
+        with open(epoch_answers_file, 'w', encoding='utf-8') as f:
+            json.dump(generated_data, f, indent=2, ensure_ascii=False)
 
     # 打印前五条生成的答案
     print("\n📋 前五条生成的答案:")
@@ -589,7 +596,7 @@ def main():
 
             # 生成答案并评估准确率（Post Eval）
             gen_metrics = generate_and_evaluate_answers(
-                model, val_dataset, tokenizer, args.device, args.output_dir
+                model, val_dataset, tokenizer, args.device, args.output_dir, epoch=epoch+1
             )
 
             print(f"  Eval Loss: {val_metrics['loss']:.4f}")
