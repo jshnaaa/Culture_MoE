@@ -339,6 +339,10 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
 
+            # ✅ 确保 shift_labels 与 shift_logits 在同一设备上
+            if shift_labels.device != shift_logits.device:
+                shift_labels = shift_labels.to(shift_logits.device)
+
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
             generation_loss = loss_fct(
                 shift_logits.view(-1, shift_logits.size(-1)),
