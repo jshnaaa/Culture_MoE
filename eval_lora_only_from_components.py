@@ -119,68 +119,56 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
 
     device = next(model.parameters()).device
 
-    # ✅ 添加强约束提示
-    if num_classes <= 10:
-        # 标准数字类（1-10）
-        format_constraint = (
-            f"\n\nAnswer with ONLY a single digit from 1 to {num_classes}. "
-            f"Examples: 1, 2, 3, {num_classes}. "
-            f"Do NOT write words, letters, or explanations."
-        )
-    elif num_classes == 15:
-        # 统一编码（1-15）
-        format_constraint = (
-            "\n\nAnswer with ONLY a single number from 1 to 15. "
-            "Examples: 1, 5, 10, 11, 14, 15. "
-            "Do NOT write words or letters."
-        )
+    # ✅ 完整的 prompt 就只有 instruction（不添加任何额外内容）
+    if input_text:
+        full_input = f"{instruction}{input_text}"
     else:
-        # 其他情况
-        format_constraint = (
-            f"\n\nAnswer with ONLY a single number from 1 to {num_classes}. "
-            f"Do NOT write words or letters."
-        )
-
-    # 构建 prompt（添加强约束）
-    full_input = f"{instruction}\n{input_text}{format_constraint}\nAnswer:"
+        full_input = instruction
 
     # Tokenize
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    # ✅ 改进的生成策略：多次尝试不同的参数
-    best_answer = None
-    best_score = -1
-
-    # 策略 1: 贪婪解码（最可能的路径）
+    # ✅ 生成答案
     with torch.no_grad():
-        outputs = actual_model.generate(  # ✅ 使用 actual_model 而不是 model
+        outputs = actual_model.generate(
             **inputs,
-            max_new_tokens=3,              # ✅ 只生成 1-3 个 token
+            max_new_tokens=10,             # ✅ 增加到 10 个 token
             min_new_tokens=1,
             do_sample=False,               # ✅ 贪婪解码
-            temperature=0.0,
-            top_p=0.1,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
             num_beams=1,
-            repetition_penalty=1.0,
-            output_scores=True,            # ✅ 获取分数
-            return_dict_in_generate=True
+            repetition_penalty=1.0
         )
 
-    # Decode
-    full_output = tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
+    # Decode 完整输出
+    full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-    # 提取生成的部分
-    raw_answer = full_output[len(full_input):].strip()
+    # ✅ 改进的答案提取逻辑
+    # 方法 1：尝试从 full_input 之后提取
+    if len(full_output) > len(full_input):
+        raw_answer = full_output[len(full_input):].strip()
+    else:
+        # 方法 2：如果输出太短，尝试从 "### Answer:" 或 "Answer:" 之后提取
+        if "### Answer:" in full_output:
+            raw_answer = full_output.split("### Answer:")[-1].strip()
+        elif "Answer:" in full_output:
+            raw_answer = full_output.split("Answer:")[-1].strip()
+        else:
+            # 方法 3：使用生成的 token IDs
+            input_length = inputs['input_ids'].shape[1]
+            generated_ids = outputs[0][input_length:]
+            raw_answer = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
-    # 提取第一个词
+    # 提取第一个有效的答案（数字或单词）
     if raw_answer:
-        # 只取第一个 token（空格分隔）
-        raw_answer = raw_answer.split()[0]
+        # 只取第一行（如果有多行）
+        raw_answer = raw_answer.split('\n')[0].strip()
+        # 只取第一个词（空格分隔）
+        raw_answer = raw_answer.split()[0] if raw_answer.split() else raw_answer
         # 移除标点符号
-        raw_answer = raw_answer.strip('.,!?;:()[]{}')
+        raw_answer = raw_answer.strip('.,!?;:()[]{}"\'-')
 
     # ✅ 使用改进的标签提取
     predicted_label = extract_label_robust(raw_answer, num_classes)
