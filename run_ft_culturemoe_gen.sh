@@ -43,15 +43,27 @@ fi
 
 # 根据 DATA_ID 选择数据集
 case $DATA_ID in
+    1)
+        # CultureLLM (默认)
+        DATASET_NAME="unified_all_datasets"
+        TRAIN_FILE="/root/autodl-fs/unified_all_datasets.json"
+        DATASET_TAG="unified_all_datasets"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_qwen_20251111_1421/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_llama_20251112_/best_lora"
+        fi
+        echo "Using unified_all_datasets dataset (new format)"
+        ;;
     2)
         # CulturalBench
         DATASET_NAME="CulturalBench"
         TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
         DATASET_TAG="CulturalBench"
         if [ "$BACKBONE" = "qwen" ]; then
-            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_qwen_*/best_lora"
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_qwen_20251112_/best_lora"
         else
-            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_llama_*/best_lora"
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_llama_20251112_/best_lora"
         fi
         echo "Using CulturalBench dataset (new format)"
         ;;
@@ -61,9 +73,9 @@ case $DATA_ID in
         TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
         DATASET_TAG="normad"
         if [ "$BACKBONE" = "qwen" ]; then
-            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_qwen_*/best_lora"
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_qwen_20251112_/best_lora"
         else
-            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_llama_*/best_lora"
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_llama_20251112_/best_lora"
         fi
         echo "Using NormAD dataset (new format)"
         ;;

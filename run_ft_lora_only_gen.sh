@@ -35,15 +35,15 @@ fi
 case $DATA_ID in
     1)
         # CultureLLM (默认)
-        DATASET_NAME="CultureLLM"
-        TRAIN_FILE="/root/autodl-fs/unified_all_datasets_small.json"
+        DATASET_NAME="unified_all_datasets"
+        TRAIN_FILE="/root/autodl-fs/unified_all_datasets.json"
         DATASET_TAG="unified_all_datasets"
         echo "Using unified_all_datasets dataset (new format)"
         ;;
     2)
         # CulturalBench
         DATASET_NAME="CulturalBench"
-        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen_small.json"
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
         DATASET_TAG="CulturalBench"
         echo "Using CulturalBench dataset (new format)"
         ;;
