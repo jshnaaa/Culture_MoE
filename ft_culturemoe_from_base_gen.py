@@ -634,25 +634,39 @@ def main():
 
     # 加载 Base 模型
     print("\nLoading base model...")
-    # ✅ 使用 float32 防止 NaN（fp16 精度不足导致 logits 包含 NaN）
-    base_model = AutoModelForCausalLM.from_pretrained(
-        args.base_model_path,
-        torch_dtype=torch.float32,  # 改为 float32
-        device_map='auto',
-        trust_remote_code=True,
-        low_cpu_mem_usage=True
-    )
-    print("✅ Base model loaded (float32)")
+    # ✅ 使用 bfloat16 而不是 float32（节省内存，避免 OOM）
+    # bfloat16 数值范围与 float32 相同，但内存占用与 float16 相同
+    try:
+        base_model = AutoModelForCausalLM.from_pretrained(
+            args.base_model_path,
+            torch_dtype=torch.bfloat16,  # 使用 bfloat16
+            device_map='auto',
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
+        )
+        print("✅ Base model loaded (bfloat16)")
+    except Exception as e:
+        print(f"⚠️  bfloat16 not supported, falling back to float16")
+        base_model = AutoModelForCausalLM.from_pretrained(
+            args.base_model_path,
+            torch_dtype=torch.float16,  # 降级到 float16
+            device_map='auto',
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
+        )
+        print("✅ Base model loaded (float16)")
 
     # 加载 LoRA 权重
     print("\nLoading LoRA weights...")
+    # ✅ 使用与 base_model 相同的精度
+    model_dtype = base_model.dtype
     model = PeftModel.from_pretrained(
         base_model,
         args.lora_weights_path,
         is_trainable=False,  # LoRA 权重不训练
-        torch_dtype=torch.float32  # 改为 float32
+        torch_dtype=model_dtype
     )
-    print("✅ LoRA weights loaded (float32)")
+    print(f"✅ LoRA weights loaded ({model_dtype})")
 
     # 合并 LoRA 权重
     print("\nMerging LoRA weights...")
