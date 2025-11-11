@@ -356,12 +356,18 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             # 文化损失（如果启用）
             if use_culture_loss and culture_labels is not None:
                 culture_loss = self.compute_culture_loss(expert_weights, culture_labels)
+
+                # ✅ 确保 culture_loss 与 generation_loss 在同一设备上
+                if culture_loss.device != generation_loss.device:
+                    culture_loss = culture_loss.to(generation_loss.device)
+
                 outputs['culture_loss'] = culture_loss
 
                 # 总损失
                 total_loss = generation_loss + culture_loss_lambda * culture_loss
             else:
-                outputs['culture_loss'] = torch.tensor(0.0, device=device)
+                # ✅ 确保 culture_loss 与 generation_loss 在同一设备上
+                outputs['culture_loss'] = torch.tensor(0.0, device=generation_loss.device)
                 total_loss = generation_loss
 
             outputs['loss'] = total_loss
