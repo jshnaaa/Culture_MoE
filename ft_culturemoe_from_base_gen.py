@@ -779,7 +779,7 @@ def main():
 
     # ✅ 使用合理的学习率
     # 注意：学习率太小（1e-8）会导致损失不下降
-    learning_rate = args.learning_rate * 0.1  # 1e-6 * 0.1 = 1e-7（合理的学习率）
+    learning_rate = args.learning_rate  # 1e-6 * 0.1 = 1e-7（合理的学习率）
 
     optimizer = torch.optim.AdamW(
         trainable_params,
