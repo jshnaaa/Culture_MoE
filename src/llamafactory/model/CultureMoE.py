@@ -376,7 +376,7 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
     def compute_culture_loss(self, expert_weights, culture_labels):
         """
-        计算文化损失：鼓励相同文化的样本使用相似的专家
+        计算文化损失：鼓励相同文化的样本使用相似的专家，不同文化使用不同的专家
 
         Args:
             expert_weights: [B, E] 专家权重
@@ -409,8 +409,13 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         if culture_labels.size(0) != batch_size:
             raise ValueError(f"culture_labels size ({culture_labels.size(0)}) does not match batch size ({batch_size})")
 
+        # ✅ 检查 batch 中是否有多个不同的文化
+        unique_cultures = torch.unique(culture_labels)
+        if len(unique_cultures) == 1:
+            # 如果 batch 中只有一个文化，返回 0（无法计算文化对比损失）
+            return torch.tensor(0.0, device=device, dtype=dtype)
+
         # 计算样本对之间的文化相似度（相同文化为1，不同文化为0）
-        # ✅ 使用 unsqueeze 和 transpose 而不是 .t()
         culture_labels_1 = culture_labels.unsqueeze(1)  # [B, 1]
         culture_labels_2 = culture_labels.unsqueeze(0)  # [1, B]
         culture_similarity = (culture_labels_1 == culture_labels_2).float()  # [B, B]
@@ -419,12 +424,26 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         expert_weights_norm = torch.nn.functional.normalize(expert_weights, p=2, dim=1)
         expert_similarity = torch.mm(expert_weights_norm, expert_weights_norm.t())  # [B, B]
 
-        # 文化损失：相同文化的样本应该有相似的专家权重
-        # 使用 MSE 损失
-        culture_loss = torch.nn.functional.mse_loss(
-            expert_similarity * culture_similarity,
-            culture_similarity
+        # ✅ 改进的文化损失：
+        # 1. 相同文化的样本应该有相似的专家权重（最大化相似度）
+        # 2. 不同文化的样本应该有不同的专家权重（最小化相似度）
+
+        # 相同文化的损失：鼓励相似度接近 1
+        same_culture_mask = culture_similarity  # [B, B]
+        same_culture_loss = torch.nn.functional.mse_loss(
+            expert_similarity * same_culture_mask,
+            same_culture_mask
         )
+
+        # 不同文化的损失：鼓励相似度接近 0
+        diff_culture_mask = 1.0 - culture_similarity  # [B, B]
+        diff_culture_loss = torch.nn.functional.mse_loss(
+            expert_similarity * diff_culture_mask,
+            torch.zeros_like(expert_similarity) * diff_culture_mask
+        )
+
+        # 总文化损失：同时考虑相同文化和不同文化
+        culture_loss = same_culture_loss + diff_culture_loss
 
         return culture_loss
 

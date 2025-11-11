@@ -573,7 +573,7 @@ def main():
     print("Starting training...")
     print("="*80 + "\n")
 
-    best_val_loss = float('inf')
+    best_eval_accuracy = 0.0  # ✅ 改为根据 accuracy 保存最佳模型
     best_model_dir = os.path.join(args.output_dir, 'best_lora')
 
     epoch_results = []
@@ -600,11 +600,11 @@ def main():
             )
 
             print(f"  Eval Loss: {val_metrics['loss']:.4f}")
-            print(f"  Eval Accuracy: {gen_metrics['accuracy']:.4f}")
+            print(f"  Eval Accuracy: {gen_metrics['accuracy']:.4f} ({gen_metrics['correct']}/{gen_metrics['total']})")
 
-            # 保存最好的模型
-            if val_metrics['loss'] < best_val_loss:
-                best_val_loss = val_metrics['loss']
+            # ✅ 根据 accuracy 保存最好的模型
+            if gen_metrics['accuracy'] > best_eval_accuracy:
+                best_eval_accuracy = gen_metrics['accuracy']
 
                 # 删除旧的最好模型
                 if os.path.exists(best_model_dir):
@@ -615,7 +615,7 @@ def main():
                 os.makedirs(best_model_dir, exist_ok=True)
                 model.save_pretrained(best_model_dir)
                 tokenizer.save_pretrained(best_model_dir)
-                print(f"  ✅ Best model saved (loss: {best_val_loss:.4f})")
+                print(f"  ✅ Best model saved (accuracy: {best_eval_accuracy:.4f})")
 
             # 记录结果
             epoch_results.append({
@@ -624,7 +624,8 @@ def main():
                 'eval_loss': val_metrics['loss'],
                 'eval_accuracy': gen_metrics['accuracy'],
                 'correct': gen_metrics['correct'],
-                'total': gen_metrics['total']
+                'total': gen_metrics['total'],
+                'is_best': gen_metrics['accuracy'] == best_eval_accuracy  # ✅ 标记是否为最佳
             })
         else:
             # 不评估的 epoch，只记录训练损失
@@ -634,7 +635,8 @@ def main():
                 'eval_loss': None,
                 'eval_accuracy': None,
                 'correct': None,
-                'total': None
+                'total': None,
+                'is_best': False
             })
 
     # 保存训练结果
@@ -650,7 +652,8 @@ def main():
         'lora_r': args.lora_r,
         'lora_alpha': args.lora_alpha,
         'lora_dropout': args.lora_dropout,
-        'best_val_loss': best_val_loss,
+        'eval_interval': args.eval_interval,
+        'best_eval_accuracy': best_eval_accuracy,  # ✅ 改为保存最佳准确率
         'data_format': 'new_format (instruction + input + output)'
     }
 
