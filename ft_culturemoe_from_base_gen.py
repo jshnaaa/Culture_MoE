@@ -556,6 +556,8 @@ def main():
                         help="Number of workers for data loading")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1,
                         help="Gradient accumulation steps")
+    parser.add_argument("--eval_interval", type=int, default=3,
+                        help="Evaluate every N epochs")
 
     # MOE 参数
     parser.add_argument("--num_experts", type=int, default=6,
@@ -799,7 +801,7 @@ def main():
     print("Starting training...")
     print("="*80 + "\n")
 
-    best_val_loss = float('inf')
+    best_eval_accuracy = 0.0  # ✅ 改为根据 accuracy 保存最佳模型
     best_moe_dir = os.path.join(args.output_dir, 'best_moe')
 
     epoch_results = []
@@ -817,70 +819,91 @@ def main():
             num_accumulation_steps=args.gradient_accumulation_steps
         )
 
-        # 验证
-        val_metrics = evaluate(
-            model, val_loader, args.device,
-            use_culture_loss=args.use_culture_loss,
-            culture_loss_lambda=args.culture_loss_lambda
-        )
+        print(f"\n📊 Epoch {epoch + 1} Training Results:")
+        print(f"   Train Loss: {train_metrics['loss']:.4f}")
+        print(f"   Train Gen Loss: {train_metrics['gen_loss']:.4f}")
+        print(f"   Train Culture Loss: {train_metrics['culture_loss']:.4f}")
 
-        # 生成答案并评估准确率（Post Eval）
-        gen_metrics = generate_and_evaluate_answers(
-            model, val_dataset, tokenizer, args.device, args.output_dir, epoch=epoch+1
-        )
+        # ✅ 每 eval_interval 个 epoch 进行一次评估
+        if (epoch + 1) % args.eval_interval == 0 or (epoch + 1) == args.num_epochs:
+            print(f"\n{'='*80}")
+            print(f"Evaluating at Epoch {epoch + 1}...")
+            print(f"{'='*80}")
 
-        print(f"\n📊 Epoch {epoch + 1} Results:")
-        print(f"   Train Loss: {train_metrics['loss']:.4f}, Train Gen Loss: {train_metrics['gen_loss']:.4f}")
-        print(f"   Eval Loss:  {val_metrics['loss']:.4f}, Eval Gen Loss: {val_metrics['gen_loss']:.4f}")
-        print(f"   Eval Accuracy (Post Eval): {gen_metrics['accuracy']:.4f}")
+            # 验证
+            val_metrics = evaluate(
+                model, val_loader, args.device,
+                use_culture_loss=args.use_culture_loss,
+                culture_loss_lambda=args.culture_loss_lambda
+            )
 
-        # 保存最好的模型
-        if val_metrics['loss'] < best_val_loss:
-            best_val_loss = val_metrics['loss']
+            # 生成答案并评估准确率（Post Eval）
+            gen_metrics = generate_and_evaluate_answers(
+                model, val_dataset, tokenizer, args.device, args.output_dir, epoch=epoch+1
+            )
 
-            # 删除旧的最好模型
-            if os.path.exists(best_moe_dir):
-                import shutil
-                shutil.rmtree(best_moe_dir)
+            print(f"\n📊 Epoch {epoch + 1} Evaluation Results:")
+            print(f"   Eval Loss: {val_metrics['loss']:.4f}")
+            print(f"   Eval Gen Loss: {val_metrics['gen_loss']:.4f}")
+            print(f"   Eval Culture Loss: {val_metrics['culture_loss']:.4f}")
+            print(f"   Eval Accuracy: {gen_metrics['accuracy']:.4f} ({gen_metrics['correct']}/{gen_metrics['total']})")
 
-            # 保存新的最好模型
-            os.makedirs(best_moe_dir, exist_ok=True)
+            # ✅ 根据 accuracy 保存最好的模型
+            if gen_metrics['accuracy'] > best_eval_accuracy:
+                best_eval_accuracy = gen_metrics['accuracy']
 
-            try:
-                # 尝试保存完整模型
-                moe_state_dict = model.state_dict()
-                torch.save(moe_state_dict, os.path.join(best_moe_dir, "pytorch_model.bin"))
-                print(f"   ✅ Best model saved (loss: {best_val_loss:.4f})")
-            except Exception as e:
-                print(f"   ⚠️  Warning: Failed to save full model: {str(e)}")
-                print(f"   Saving only trainable parameters instead...")
+                # 删除旧的最好模型
+                if os.path.exists(best_moe_dir):
+                    import shutil
+                    shutil.rmtree(best_moe_dir)
+
+                # 保存新的最好模型
+                os.makedirs(best_moe_dir, exist_ok=True)
 
                 try:
-                    # 只保存可训练的参数
-                    trainable_state_dict = {}
+                    # ✅ 只保存 MoE 部分的参数
+                    moe_state_dict = {}
                     for name, param in model.named_parameters():
-                        if param.requires_grad:
-                            trainable_state_dict[name] = param.data
+                        # 只保存 MoE 相关的参数
+                        if any(keyword in name.lower() for keyword in ['expert', 'router', 'shared', 'moe']):
+                            moe_state_dict[name] = param.data.cpu()
 
-                    torch.save(trainable_state_dict, os.path.join(best_moe_dir, "trainable_params.bin"))
-                    print(f"   ✅ Trainable parameters saved (loss: {best_val_loss:.4f})")
-                except Exception as e2:
-                    print(f"   ❌ Failed to save trainable parameters: {str(e2)}")
+                    torch.save(moe_state_dict, os.path.join(best_moe_dir, "moe_weights.bin"))
+                    print(f"   ✅ Best MoE model saved (accuracy: {best_eval_accuracy:.4f})")
+                    print(f"   Saved {len(moe_state_dict)} MoE parameters")
+                except Exception as e:
+                    print(f"   ⚠️  Warning: Failed to save MoE model: {str(e)}")
                     print(f"   Continuing training without saving...")
 
-        # 记录结果
-        epoch_results.append({
-            'epoch': epoch + 1,
-            'train_loss': train_metrics['loss'],
-            'train_gen_loss': train_metrics['gen_loss'],
-            'train_culture_loss': train_metrics['culture_loss'],
-            'eval_loss': val_metrics['loss'],
-            'eval_gen_loss': val_metrics['gen_loss'],
-            'eval_culture_loss': val_metrics['culture_loss'],
-            'eval_accuracy': gen_metrics['accuracy'],
-            'correct': gen_metrics['correct'],
-            'total': gen_metrics['total']
-        })
+            # 记录结果（包含评估指标）
+            epoch_results.append({
+                'epoch': epoch + 1,
+                'train_loss': train_metrics['loss'],
+                'train_gen_loss': train_metrics['gen_loss'],
+                'train_culture_loss': train_metrics['culture_loss'],
+                'eval_loss': val_metrics['loss'],
+                'eval_gen_loss': val_metrics['gen_loss'],
+                'eval_culture_loss': val_metrics['culture_loss'],
+                'eval_accuracy': gen_metrics['accuracy'],
+                'correct': gen_metrics['correct'],
+                'total': gen_metrics['total'],
+                'is_best': gen_metrics['accuracy'] == best_eval_accuracy
+            })
+        else:
+            # 不评估的 epoch，只记录训练指标
+            epoch_results.append({
+                'epoch': epoch + 1,
+                'train_loss': train_metrics['loss'],
+                'train_gen_loss': train_metrics['gen_loss'],
+                'train_culture_loss': train_metrics['culture_loss'],
+                'eval_loss': None,
+                'eval_gen_loss': None,
+                'eval_culture_loss': None,
+                'eval_accuracy': None,
+                'correct': None,
+                'total': None,
+                'is_best': False
+            })
 
     # 保存训练结果
     with open(os.path.join(args.output_dir, 'epoch_eval_results.json'), 'w', encoding='utf-8') as f:
@@ -892,11 +915,12 @@ def main():
         'lora_weights': args.lora_weights_path,
         'num_epochs': args.num_epochs,
         'batch_size': args.batch_size,
-        'learning_rate': args.learning_rate,
+        'learning_rate': learning_rate,  # ✅ 保存实际使用的学习率
         'use_culture_loss': args.use_culture_loss,
         'culture_loss_lambda': args.culture_loss_lambda,
         'num_experts': args.num_experts,
-        'best_val_loss': best_val_loss,
+        'eval_interval': args.eval_interval,
+        'best_eval_accuracy': best_eval_accuracy,  # ✅ 改为保存最佳准确率
         'data_format': 'new_format (instruction + instruction_mask + input + output + label)'
     }
 
