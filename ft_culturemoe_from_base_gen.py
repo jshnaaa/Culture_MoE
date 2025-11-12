@@ -231,6 +231,12 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     Returns:
         生成的文本
     """
+    # ✅ 处理 DataParallel 包装的模型
+    if isinstance(model, torch.nn.DataParallel):
+        actual_model = model.module
+    else:
+        actual_model = model
+
     # 构建输入
     if input_text:
         full_input = f"{instruction}{input_text}"
@@ -241,7 +247,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
-        outputs = model.generate(
+        outputs = actual_model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
             pad_token_id=tokenizer.pad_token_id,
@@ -517,6 +523,26 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
         print(f"  Predicted Answer: {item['predicted_answer']}")
         print(f"  Correct: {'✅' if item['correct'] else '❌'}")
     print("\n" + "-" * 100)
+
+    # ✅ 打印准确率统计
+    print(f"\n📊 Accuracy Statistics:")
+    print(f"   Correct: {correct}/{total}")
+    print(f"   Accuracy: {accuracy:.4f}")
+
+    # ✅ 统计生成的答案分布
+    predicted_answers = [item['predicted_answer'] for item in generated_data]
+    from collections import Counter
+    answer_dist = Counter(predicted_answers)
+    print(f"\n   Generated Answer Distribution:")
+    for ans, count in sorted(answer_dist.items()):
+        print(f"      Answer '{ans}': {count} times")
+
+    # ✅ 统计真实答案分布
+    true_answers = [item['true_output'] for item in generated_data]
+    true_dist = Counter(true_answers)
+    print(f"\n   True Answer Distribution:")
+    for ans, count in sorted(true_dist.items()):
+        print(f"      Answer '{ans}': {count} times")
 
     return {
         'accuracy': accuracy,
