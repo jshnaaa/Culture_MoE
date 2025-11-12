@@ -372,8 +372,12 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
     total_loss = 0
     total_gen_loss = 0
     total_culture_loss = 0
+    total_router_entropy_loss = 0
     num_batches = 0
     nan_count = 0
+
+    # ✅ 用于统计 Router 权重分布
+    all_expert_weights = []
 
     pbar = tqdm(train_loader, desc="Training")
 
@@ -400,6 +404,11 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         loss = outputs['loss']
         gen_loss = outputs.get('generation_loss', loss)
         culture_loss = outputs.get('culture_loss', torch.tensor(0.0, device=device))
+        router_entropy_loss = outputs.get('router_entropy_loss', torch.tensor(0.0, device=device))
+
+        # ✅ 收集 expert_weights 用于诊断
+        if 'expert_weights' in outputs:
+            all_expert_weights.append(outputs['expert_weights'].detach().cpu())
 
         # ✅ 检查 NaN loss 并诊断
         if torch.isnan(loss) or torch.isinf(loss):
@@ -408,6 +417,7 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
             print(f"   Loss: {loss.item()}")
             print(f"   Gen Loss: {gen_loss.item() if isinstance(gen_loss, torch.Tensor) else gen_loss}")
             print(f"   Culture Loss: {culture_loss.item() if isinstance(culture_loss, torch.Tensor) else culture_loss}")
+            print(f"   Router Entropy Loss: {router_entropy_loss.item() if isinstance(router_entropy_loss, torch.Tensor) else router_entropy_loss}")
 
             # 诊断：检查 logits 的范围
             if hasattr(outputs, 'logits'):
@@ -426,6 +436,7 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         total_loss += loss.item() * num_accumulation_steps
         total_gen_loss += gen_loss.item() if isinstance(gen_loss, torch.Tensor) else gen_loss
         total_culture_loss += culture_loss.item() if isinstance(culture_loss, torch.Tensor) else culture_loss
+        total_router_entropy_loss += router_entropy_loss.item() if isinstance(router_entropy_loss, torch.Tensor) else router_entropy_loss
         num_batches += 1
 
         # 梯度更新
@@ -447,14 +458,33 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
     avg_loss = total_loss / num_batches if num_batches > 0 else 0
     avg_gen_loss = total_gen_loss / num_batches if num_batches > 0 else 0
     avg_culture_loss = total_culture_loss / num_batches if num_batches > 0 else 0
+    avg_router_entropy_loss = total_router_entropy_loss / num_batches if num_batches > 0 else 0
 
     if nan_count > 0:
         print(f"\n⚠️  WARNING: {nan_count} batches had NaN/Inf loss (skipped)")
+
+    # ✅ 打印 Router 权重分布诊断
+    if len(all_expert_weights) > 0:
+        all_expert_weights = torch.cat(all_expert_weights, dim=0)  # [total_samples, num_experts]
+        avg_expert_weights = all_expert_weights.mean(dim=0)  # [num_experts]
+
+        print(f"\n📊 Router Average Weights (across all batches):")
+        for i, weight in enumerate(avg_expert_weights):
+            print(f"   Expert {i}: {weight.item():.4f}")
+
+        # ✅ 检查 Router 是否塌陷
+        max_weight = avg_expert_weights.max().item()
+        if max_weight > 0.7:
+            print(f"\n⚠️  WARNING: Router may have collapsed! Expert {avg_expert_weights.argmax().item()} has weight {max_weight:.4f}")
+            print(f"   This suggests the router is always selecting the same expert.")
+        else:
+            print(f"\n✅ Router weights are balanced (max weight: {max_weight:.4f})")
 
     return {
         'loss': avg_loss,
         'gen_loss': avg_gen_loss,
         'culture_loss': avg_culture_loss,
+        'router_entropy_loss': avg_router_entropy_loss,
         'num_batches': num_batches,
         'nan_count': nan_count
     }
@@ -960,6 +990,7 @@ def main():
         print(f"   Train Loss: {train_metrics['loss']:.4f}")
         print(f"   Train Gen Loss: {train_metrics['gen_loss']:.4f}")
         print(f"   Train Culture Loss: {train_metrics['culture_loss']:.4f}")
+        print(f"   Train Router Entropy Loss: {train_metrics['router_entropy_loss']:.4f}")
 
         # ✅ 每 eval_interval 个 epoch 进行一次评估
         if (epoch + 1) % args.eval_interval == 0 or (epoch + 1) == args.num_epochs:

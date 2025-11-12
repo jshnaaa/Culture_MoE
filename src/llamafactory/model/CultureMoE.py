@@ -318,7 +318,7 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         logits = torch.clamp(logits, min=-100, max=100)
 
         # ✅ Step 9: 计算损失（如果提供了 labels）
-        outputs = {'logits': logits}
+        outputs = {'logits': logits, 'expert_weights': expert_weights, 'router_logits': router_logits}
 
         if labels is not None:
             # ✅ 检查 labels 的维度
@@ -353,6 +353,10 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             )
             outputs['generation_loss'] = generation_loss
 
+            # ✅ Router 熵正则化损失（防止 Router 塌陷）
+            router_entropy_loss = self.compute_router_entropy_loss(expert_weights)
+            outputs['router_entropy_loss'] = router_entropy_loss
+
             # 文化损失（如果启用）
             if use_culture_loss and culture_labels is not None:
                 culture_loss = self.compute_culture_loss(expert_weights, culture_labels)
@@ -363,16 +367,35 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
                 outputs['culture_loss'] = culture_loss
 
-                # 总损失
-                total_loss = generation_loss + culture_loss_lambda * culture_loss
+                # ✅ 总损失：生成损失 + 文化损失 + Router 熵正则化
+                total_loss = generation_loss + culture_loss_lambda * culture_loss + 0.1 * router_entropy_loss
             else:
                 # ✅ 确保 culture_loss 与 generation_loss 在同一设备上
                 outputs['culture_loss'] = torch.tensor(0.0, device=generation_loss.device)
-                total_loss = generation_loss
+                # ✅ 总损失：生成损失 + Router 熵正则化
+                total_loss = generation_loss + 0.1 * router_entropy_loss
 
             outputs['loss'] = total_loss
 
         return outputs
+
+    def compute_router_entropy_loss(self, expert_weights):
+        """
+        计算 Router 熵正则化损失，防止 Router 塌陷
+
+        Args:
+            expert_weights: [B, E] 专家权重
+
+        Returns:
+            entropy_loss: 标量（负熵，最小化负熵 = 最大化熵）
+        """
+        # 计算每个样本的熵
+        entropy = -torch.sum(expert_weights * torch.log(expert_weights + 1e-8), dim=-1)
+
+        # 返回负熵（我们希望最大化熵，即最小化负熵）
+        entropy_loss = -entropy.mean()
+
+        return entropy_loss
 
     def compute_culture_loss(self, expert_weights, culture_labels):
         """
