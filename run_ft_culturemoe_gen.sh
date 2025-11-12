@@ -41,8 +41,8 @@ DATA_ID="${2:-4}"                   # 默认 CultureLLM (4)
 USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"               # 默认 6 个专家
 NUM_GPUS="${5:-2}"                  # 默认使用 2 个 GPU
-LAMBDA="${6:-0.5}"                  # 默认文化损失权重 lambda 0.5
-ALPHA="${7:-1.0}"                   # 默认 specialization 权重 alpha 1.0
+LAMBDA="${6:-0.2}"                  # 默认文化损失权重 lambda 0.5
+ALPHA="${7:-0.1}"                   # 默认 specialization 权重 alpha 1.0
 BETA="${8:-0.5}"                    # 默认 diversity 权重 beta 0.5
 USE_SHARED="${9:-True}"             # 默认使用共享专家
 
