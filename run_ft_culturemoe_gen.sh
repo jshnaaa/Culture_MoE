@@ -12,6 +12,7 @@
 #   USE_CULTURE_LOSS: True 或 False (默认 True)
 #   NUM_EXPERTS: 专家数量 (默认 6)
 #   NUM_GPUS: GPU 数量 (默认 2)
+#   CULTURE_LOSS_WEIGHT: 文化损失权重 (默认 0.5)
 #   LAMBDA: 文化损失权重 lambda (默认 0.5)
 #   ALPHA: specialization 损失权重 alpha (默认 1.0)
 #   BETA: diversity 损失权重 beta (默认 0.5)
