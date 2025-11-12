@@ -355,6 +355,11 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
             # ✅ Router 熵正则化损失（防止 Router 塌陷）
             router_entropy_loss = self.compute_router_entropy_loss(expert_weights)
+
+            # ✅ 确保 router_entropy_loss 与 generation_loss 在同一设备上
+            if router_entropy_loss.device != generation_loss.device:
+                router_entropy_loss = router_entropy_loss.to(generation_loss.device)
+
             outputs['router_entropy_loss'] = router_entropy_loss
 
             # 文化损失（如果启用）
