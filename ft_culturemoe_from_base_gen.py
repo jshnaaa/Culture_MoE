@@ -192,6 +192,58 @@ class CultureMoENewFormatDataset(Dataset):
         }
 
 
+def compute_class_weights(dataset, num_classes=10):
+    """
+    计算类别权重以处理类别不平衡
+
+    Args:
+        dataset: 数据集
+        num_classes: 类别数量
+
+    Returns:
+        torch.Tensor: 类别权重
+    """
+    from collections import Counter
+
+    # 统计每个类别的样本数
+    labels = []
+    for idx in range(len(dataset)):
+        item = dataset[idx]
+        # 从 output 中提取标签
+        output_text = item.get('output', '')
+        try:
+            label = int(output_text.strip())
+            labels.append(label)
+        except:
+            pass
+
+    # 计算类别分布
+    label_counts = Counter(labels)
+    print(f"\n📊 Class distribution in dataset:")
+    for label in sorted(label_counts.keys()):
+        print(f"   Class {label}: {label_counts[label]} samples")
+
+    # 计算类别权重：1 / count
+    class_counts = torch.zeros(num_classes)
+    for label, count in label_counts.items():
+        if 0 <= label < num_classes:
+            class_counts[label] = count
+
+    # 避免除以零
+    class_counts = torch.clamp(class_counts, min=1.0)
+
+    # 计算权重：1 / count，然后归一化
+    class_weights = 1.0 / class_counts
+    class_weights = class_weights / class_weights.sum() * num_classes
+
+    print(f"\n📊 Computed class weights:")
+    for i in range(num_classes):
+        if class_counts[i] > 1:
+            print(f"   Class {i}: weight={class_weights[i]:.4f} (count={int(class_counts[i])})")
+
+    return class_weights
+
+
 def load_and_process_data(
     data_path: str,
     tokenizer,
@@ -298,7 +350,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     return generated_text
 
 
-def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, num_accumulation_steps=1):
+def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, num_accumulation_steps=1, class_weights=None):
     """
     训练一个 epoch
 
@@ -311,6 +363,7 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         use_culture_loss: 是否使用文化损失
         culture_loss_lambda: 文化损失权重
         num_accumulation_steps: 梯度累积步数
+        class_weights: 类别权重（用于处理类别不平衡）
 
     Returns:
         dict: 包含训练指标的字典
@@ -683,6 +736,14 @@ def main():
     val_dataset = datasets['validation']
     print("✅ Data loaded")
 
+    # ✅ 计算类别权重以处理类别不平衡
+    print("\nComputing class weights...")
+    # 从原始数据集计算权重
+    full_dataset = CultureMoENewFormatDataset(args.train_file, tokenizer, args.max_length)
+    class_weights = compute_class_weights(full_dataset, num_classes=10)
+    class_weights = class_weights.to(args.device)
+    print("✅ Class weights computed")
+
     # 创建数据加载器
     train_loader = DataLoader(
         train_dataset,
@@ -891,7 +952,8 @@ def main():
             scheduler=scheduler,
             use_culture_loss=args.use_culture_loss,
             culture_loss_lambda=args.culture_loss_lambda,
-            num_accumulation_steps=args.gradient_accumulation_steps
+            num_accumulation_steps=args.gradient_accumulation_steps,
+            class_weights=class_weights  # ✅ 传递类别权重
         )
 
         print(f"\n📊 Epoch {epoch + 1} Training Results:")
