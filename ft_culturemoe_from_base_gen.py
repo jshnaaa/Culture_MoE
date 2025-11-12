@@ -136,8 +136,20 @@ class CultureMoENewFormatDataset(Dataset):
         input_ids_mask = encoded_mask['input_ids'].squeeze(0)
         attention_mask_mask = encoded_mask['attention_mask'].squeeze(0)
 
-        # 对于生成式模型，labels = input_ids（用于语言建模损失）
+        # ✅ 修复：只在 answer 部分计算 loss
+        # 计算 prompt 长度（instruction + input）
+        prompt_encoded = self.tokenizer(
+            full_input,
+            max_length=self.max_length,
+            truncation=True,
+            padding='max_length',
+            return_tensors='pt'
+        )
+        prompt_length = (prompt_encoded['attention_mask'].squeeze(0) != 0).sum().item()
+
+        # labels：prompt 部分设为 -100（不计算 loss），answer 部分保留
         labels = input_ids.clone()
+        labels[:prompt_length] = -100  # ✅ 只在 answer 部分计算 loss
 
         # 将 label 转换为整数（用于文化损失）
         try:
@@ -249,7 +261,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     with torch.no_grad():
         outputs = actual_model.generate(
             **inputs,
-            max_new_tokens=max_new_tokens,
+            max_new_tokens=2,  # ✅ 限制生成长度为 2 个 token（只生成数字）
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
             do_sample=False,
