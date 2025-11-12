@@ -136,20 +136,42 @@ class CultureMoENewFormatDataset(Dataset):
         input_ids_mask = encoded_mask['input_ids'].squeeze(0)
         attention_mask_mask = encoded_mask['attention_mask'].squeeze(0)
 
-        # ✅ 修复：只在 answer 部分计算 loss
-        # 计算 prompt 长度（instruction + input）
-        prompt_encoded = self.tokenizer(
-            full_input,
-            max_length=self.max_length,
-            truncation=True,
-            padding='max_length',
-            return_tensors='pt'
-        )
-        prompt_length = (prompt_encoded['attention_mask'].squeeze(0) != 0).sum().item()
+        # ✅ 推荐做法：只在 Answer 部分计算 loss
+        # 1. 初始化 labels 为 -100（不计算 loss）
+        labels = torch.full_like(input_ids, -100)
 
-        # labels：prompt 部分设为 -100（不计算 loss），answer 部分保留
-        labels = input_ids.clone()
-        labels[:prompt_length] = -100  # ✅ 只在 answer 部分计算 loss
+        # 2. 定位 "### Answer:" 后的部分
+        # 找到 "### Answer:" 在 full_text 中的位置
+        ans_marker = "### Answer:"
+        if ans_marker in full_text:
+            ans_start_char = full_text.find(ans_marker) + len(ans_marker)
+            # Tokenize 到 "### Answer:" 为止的部分
+            prefix_text = full_text[:ans_start_char]
+            prefix_encoded = self.tokenizer(
+                prefix_text,
+                add_special_tokens=False,
+                truncation=True,
+                max_length=self.max_length
+            )
+            ans_token_start = len(prefix_encoded['input_ids'])
+
+            # 3. Tokenize answer 部分（不添加特殊 token）
+            ans_encoded = self.tokenizer(
+                output_text,
+                add_special_tokens=False,
+                truncation=True,
+                max_length=self.max_length - ans_token_start
+            )
+            ans_token_ids = ans_encoded['input_ids']
+
+            # 4. 只在 answer 部分设置真实的 token ids
+            ans_end = min(ans_token_start + len(ans_token_ids), len(labels))
+            labels[ans_token_start:ans_end] = input_ids[ans_token_start:ans_end]
+        else:
+            # 如果没有找到 "### Answer:"，使用整个 output 部分
+            # 这是一个 fallback，理论上不应该发生
+            print(f"⚠️  Warning: '### Answer:' not found in instruction at index {idx}")
+            labels = input_ids.clone()
 
         # 将 label 转换为整数（用于文化损失）
         try:
