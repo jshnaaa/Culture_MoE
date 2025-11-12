@@ -73,7 +73,7 @@ case $DATA_ID in
         TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
         DATASET_TAG="normad"
         if [ "$BACKBONE" = "qwen" ]; then
-            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_qwen_20251112_/best_lora"
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_qwen_20251111_1204/best_lora"
         else
             LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_llama_20251112_/best_lora"
         fi

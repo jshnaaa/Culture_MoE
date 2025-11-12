@@ -258,7 +258,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     return generated_text
 
 
-def train_epoch(model, train_loader, optimizer, device, use_culture_loss=False, culture_loss_lambda=0.5, num_accumulation_steps=1):
+def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, num_accumulation_steps=1):
     """
     训练一个 epoch
 
@@ -267,6 +267,7 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss=False, 
         train_loader: 训练数据加载器
         optimizer: 优化器
         device: 设备
+        scheduler: 学习率调度器（可选）
         use_culture_loss: 是否使用文化损失
         culture_loss_lambda: 文化损失权重
         num_accumulation_steps: 梯度累积步数
@@ -340,8 +341,9 @@ def train_epoch(model, train_loader, optimizer, device, use_culture_loss=False, 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             optimizer.zero_grad()
-            # ✅ 更新学习率
-            scheduler.step()
+            # ✅ 更新学习率（如果提供了 scheduler）
+            if scheduler is not None:
+                scheduler.step()
 
         pbar.set_postfix({
             'loss': f"{loss.item() * num_accumulation_steps:.4f}",
@@ -826,6 +828,7 @@ def main():
         # 训练
         train_metrics = train_epoch(
             model, train_loader, optimizer, args.device,
+            scheduler=scheduler,
             use_culture_loss=args.use_culture_loss,
             culture_loss_lambda=args.culture_loss_lambda,
             num_accumulation_steps=args.gradient_accumulation_steps
