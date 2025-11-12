@@ -350,7 +350,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     return generated_text
 
 
-def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, num_accumulation_steps=1, class_weights=None):
+def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, culture_loss_alpha=2.0, culture_loss_beta=1.0, num_accumulation_steps=1, class_weights=None):
     """
     训练一个 epoch
 
@@ -361,7 +361,9 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         device: 设备
         scheduler: 学习率调度器（可选）
         use_culture_loss: 是否使用文化损失
-        culture_loss_lambda: 文化损失权重
+        culture_loss_lambda: 文化损失权重 (lambda)
+        culture_loss_alpha: specialization 损失权重 (alpha)
+        culture_loss_beta: diversity 损失权重 (beta)
         num_accumulation_steps: 梯度累积步数
         class_weights: 类别权重（用于处理类别不平衡）
 
@@ -372,7 +374,8 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
     total_loss = 0
     total_gen_loss = 0
     total_culture_loss = 0
-    total_router_entropy_loss = 0
+    total_spec_loss = 0
+    total_div_loss = 0
     num_batches = 0
     nan_count = 0
 
@@ -398,13 +401,16 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
             labels=labels,
             culture_labels=culture_labels if use_culture_loss else None,
             use_culture_loss=use_culture_loss,
-            culture_loss_lambda=culture_loss_lambda
+            culture_loss_lambda=culture_loss_lambda,
+            culture_loss_alpha=culture_loss_alpha,
+            culture_loss_beta=culture_loss_beta
         )
 
         loss = outputs['loss']
         gen_loss = outputs.get('generation_loss', loss)
         culture_loss = outputs.get('culture_loss', torch.tensor(0.0, device=device))
-        router_entropy_loss = outputs.get('router_entropy_loss', torch.tensor(0.0, device=device))
+        spec_loss = outputs.get('specialization_loss', torch.tensor(0.0, device=device))
+        div_loss = outputs.get('diversity_loss', torch.tensor(0.0, device=device))
 
         # ✅ 收集 expert_weights 用于诊断
         if 'expert_weights' in outputs:
@@ -417,7 +423,8 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
             print(f"   Loss: {loss.item()}")
             print(f"   Gen Loss: {gen_loss.item() if isinstance(gen_loss, torch.Tensor) else gen_loss}")
             print(f"   Culture Loss: {culture_loss.item() if isinstance(culture_loss, torch.Tensor) else culture_loss}")
-            print(f"   Router Entropy Loss: {router_entropy_loss.item() if isinstance(router_entropy_loss, torch.Tensor) else router_entropy_loss}")
+            print(f"   Spec Loss: {spec_loss.item() if isinstance(spec_loss, torch.Tensor) else spec_loss}")
+            print(f"   Div Loss: {div_loss.item() if isinstance(div_loss, torch.Tensor) else div_loss}")
 
             # 诊断：检查 logits 的范围
             if hasattr(outputs, 'logits'):
@@ -436,7 +443,8 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         total_loss += loss.item() * num_accumulation_steps
         total_gen_loss += gen_loss.item() if isinstance(gen_loss, torch.Tensor) else gen_loss
         total_culture_loss += culture_loss.item() if isinstance(culture_loss, torch.Tensor) else culture_loss
-        total_router_entropy_loss += router_entropy_loss.item() if isinstance(router_entropy_loss, torch.Tensor) else router_entropy_loss
+        total_spec_loss += spec_loss.item() if isinstance(spec_loss, torch.Tensor) else spec_loss
+        total_div_loss += div_loss.item() if isinstance(div_loss, torch.Tensor) else div_loss
         num_batches += 1
 
         # 梯度更新
@@ -458,7 +466,8 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
     avg_loss = total_loss / num_batches if num_batches > 0 else 0
     avg_gen_loss = total_gen_loss / num_batches if num_batches > 0 else 0
     avg_culture_loss = total_culture_loss / num_batches if num_batches > 0 else 0
-    avg_router_entropy_loss = total_router_entropy_loss / num_batches if num_batches > 0 else 0
+    avg_spec_loss = total_spec_loss / num_batches if num_batches > 0 else 0
+    avg_div_loss = total_div_loss / num_batches if num_batches > 0 else 0
 
     if nan_count > 0:
         print(f"\n⚠️  WARNING: {nan_count} batches had NaN/Inf loss (skipped)")
@@ -484,7 +493,8 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         'loss': avg_loss,
         'gen_loss': avg_gen_loss,
         'culture_loss': avg_culture_loss,
-        'router_entropy_loss': avg_router_entropy_loss,
+        'spec_loss': avg_spec_loss,
+        'div_loss': avg_div_loss,
         'num_batches': num_batches,
         'nan_count': nan_count
     }
@@ -684,7 +694,11 @@ def main():
     parser.add_argument("--use_culture_loss", type=lambda x: x.lower() == 'true', default=True,
                         help="Whether to use culture loss")
     parser.add_argument("--culture_loss_lambda", type=float, default=0.5,
-                        help="Culture loss weight")
+                        help="Culture loss weight (lambda)")
+    parser.add_argument("--culture_loss_alpha", type=float, default=2.0,
+                        help="Specialization loss weight (alpha)")
+    parser.add_argument("--culture_loss_beta", type=float, default=1.0,
+                    help="Diversity loss weight (beta)")
     parser.add_argument("--num_epochs", type=int, default=30,
                         help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=4,
@@ -709,10 +723,12 @@ def main():
     # MOE 参数
     parser.add_argument("--num_experts", type=int, default=6,
                         help="Number of experts")
+    parser.add_argument("--use_shared_experts", type=lambda x: x.lower() == 'true', default=True,
+                        help="Whether to use shared experts (True) or only MoE experts (False)")
     parser.add_argument("--shared_hidden_dim", type=int, default=4096,
                         help="Shared layer hidden dimension")
     parser.add_argument("--router_hidden_dim", type=int, default=2048,
-                        help="Router hidden dimension")
+                    help="Router hidden dimension")
     parser.add_argument("--experts_hidden_dim", type=int, default=4096,
                         help="Experts hidden dimension")
     parser.add_argument("--moe_lora_rank", type=int, default=32,
@@ -722,10 +738,10 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.05,
                         help="Dropout rate")
     parser.add_argument("--num_heads", type=int, default=8,
-                        help="Number of attention heads")
+                    help="Number of attention heads")
 
     parser.add_argument("--device", type=str, default='cuda',
-                        help="Device to use (cuda or cpu)")
+                    help="Device to use (cuda or cpu)")
 
     args = parser.parse_args()
 
@@ -982,6 +998,8 @@ def main():
             scheduler=scheduler,
             use_culture_loss=args.use_culture_loss,
             culture_loss_lambda=args.culture_loss_lambda,
+            culture_loss_alpha=args.culture_loss_alpha,
+            culture_loss_beta=args.culture_loss_beta,
             num_accumulation_steps=args.gradient_accumulation_steps,
             class_weights=class_weights  # ✅ 传递类别权重
         )
@@ -990,7 +1008,8 @@ def main():
         print(f"   Train Loss: {train_metrics['loss']:.4f}")
         print(f"   Train Gen Loss: {train_metrics['gen_loss']:.4f}")
         print(f"   Train Culture Loss: {train_metrics['culture_loss']:.4f}")
-        print(f"   Train Router Entropy Loss: {train_metrics['router_entropy_loss']:.4f}")
+        print(f"   Train Spec Loss: {train_metrics['spec_loss']:.4f}")
+        print(f"   Train Div Loss: {train_metrics['div_loss']:.4f}")
 
         # ✅ 每 eval_interval 个 epoch 进行一次评估
         if (epoch + 1) % args.eval_interval == 0 or (epoch + 1) == args.num_epochs:
