@@ -59,6 +59,11 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         hidden_dim = self.config.hidden_size
 
+        # ✅ 可学习的 MoE 融合系数（替代拼接方式）
+        # h_final = h_shared + alpha * h_moe
+        # 初始值 0.05，让 MoE 初期影响较小，逐步学习增加影响力
+        self.moe_fusion_alpha = nn.Parameter(torch.tensor(0.05, dtype=torch.float32))
+
         # 2. Shared 层 - 改进初始化
         self.shared = nn.Sequential(
             nn.Linear(hidden_dim, args.shared_hidden_dim),
@@ -289,7 +294,13 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         ]
 
         # Step 8: 融合 shared + 加权专家输出
-        # ✅ 使用加权平均而不是拼接
+        # ✅ 使用加权融合 + 残差，替代拼接方式
+        # h_final = h_shared + alpha * h_moe
+        # 这样可以：
+        # 1. 保持输出维度不变（不改变分类头输入维度）
+        # 2. 初期 MoE 影响较小，逐步学习增加影响力
+        # 3. 梯度流均衡，MoE 能学到有意义的文化分化
+
         expert_sum = torch.stack(weighted_expert_outs, dim=0).sum(dim=0)  # [B, L_all, H]
 
         # ✅ 处理序列长度不匹配的情况
@@ -303,9 +314,12 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             shared_out = shared_out[:, :min_len, :]
             expert_sum = expert_sum[:, :min_len, :]
 
-        # ✅ 应用 MoE 预热权重
-        # 在预热阶段，逐步增加 MoE 的影响
-        enhanced_hidden = shared_out + moe_warmup_weight * expert_sum  # [B, L, H]
+        # ✅ 应用可学习的 MoE 融合系数
+        # 初期 alpha 很小（0.05），MoE 影响较小，不会破坏原模型输出分布
+        # 随着训练，alpha 会自动调节，学习 MoE 在文化差异显著样本上的影响力
+        # 同时应用 MoE 预热权重（在预热阶段逐步增加 MoE 的影响）
+        moe_contribution = self.moe_fusion_alpha * expert_sum  # [B, L, H]
+        enhanced_hidden = shared_out + moe_warmup_weight * moe_contribution  # [B, L, H]
 
         # ✅ Step 8: 使用 LLaMA 的 lm_head 生成 logits
         # 确保 enhanced_hidden 与 lm_head 的数据类型一致
