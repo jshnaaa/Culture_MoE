@@ -401,6 +401,12 @@ class LlamaSharedRouterExpertsModel(nn.Module):
                 load_balance_loss = self.router.compute_load_balancing_loss(router_logits)
                 entropy_loss = self.router.entropy_regularization(expert_weights)
 
+                # ✅ 确保所有损失在同一设备上
+                if load_balance_loss.device != generation_loss.device:
+                    load_balance_loss = load_balance_loss.to(generation_loss.device)
+                if entropy_loss.device != generation_loss.device:
+                    entropy_loss = entropy_loss.to(generation_loss.device)
+
                 outputs['load_balance_loss'] = load_balance_loss
                 outputs['entropy_loss'] = entropy_loss
 
@@ -418,6 +424,12 @@ class LlamaSharedRouterExpertsModel(nn.Module):
                 # ✅ 计算防塌陷损失
                 load_balance_loss = self.router.compute_load_balancing_loss(router_logits)
                 entropy_loss = self.router.entropy_regularization(expert_weights)
+
+                # ✅ 确保所有损失在同一设备上
+                if load_balance_loss.device != generation_loss.device:
+                    load_balance_loss = load_balance_loss.to(generation_loss.device)
+                if entropy_loss.device != generation_loss.device:
+                    entropy_loss = entropy_loss.to(generation_loss.device)
 
                 outputs['load_balance_loss'] = load_balance_loss
                 outputs['entropy_loss'] = entropy_loss
