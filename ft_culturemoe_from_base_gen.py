@@ -345,7 +345,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     return generated_text
 
 
-def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, culture_loss_alpha=2.0, culture_loss_beta=1.0, num_accumulation_steps=1, class_weights=None):
+def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, culture_loss_alpha=2.0, culture_loss_beta=1.0, router_temperature=2.0, load_balance_weight=0.01, entropy_weight=0.1, num_accumulation_steps=1, class_weights=None):
     """
     训练一个 epoch
 
@@ -735,6 +735,14 @@ def main():
     parser.add_argument("--num_heads", type=int, default=8,
                     help="Number of attention heads")
 
+    # 防塌陷参数
+    parser.add_argument("--router_temperature", type=float, default=2.0,
+                        help="Router temperature parameter (default 2.0, prevents collapse)")
+    parser.add_argument("--load_balance_weight", type=float, default=0.01,
+                        help="Load balance loss weight (default 0.01, prevents collapse)")
+    parser.add_argument("--entropy_weight", type=float, default=0.1,
+                        help="Entropy regularization weight (default 0.1, prevents collapse)")
+
     parser.add_argument("--device", type=str, default='cuda',
                     help="Device to use (cuda or cpu)")
 
@@ -995,6 +1003,9 @@ def main():
             culture_loss_lambda=args.culture_loss_lambda,
             culture_loss_alpha=args.culture_loss_alpha,
             culture_loss_beta=args.culture_loss_beta,
+            router_temperature=args.router_temperature,
+            load_balance_weight=args.load_balance_weight,
+            entropy_weight=args.entropy_weight,
             num_accumulation_steps=args.gradient_accumulation_steps,
             class_weights=class_weights  # ✅ 传递类别权重
         )

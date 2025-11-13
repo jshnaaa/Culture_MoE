@@ -135,7 +135,7 @@ if [ "$USE_SHARED" = "True" ] || [ "$USE_SHARED" = "true" ]; then
 else
     SHARED_TAG="noshared"
 fi
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_lambda${LAMBDA}_margin${MARGIN}_lambdadiff${LAMBDA_DIFF}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/ft/ft_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_lambda${LAMBDA}_margin${MARGIN}_lambdadiff${LAMBDA_DIFF}_$(date +%Y%m%d_%H%M)"
 
 # 设置 GPU
 if [ "$NUM_GPUS" = "1" ]; then
