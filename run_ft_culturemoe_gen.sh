@@ -28,7 +28,7 @@ DATA_ID="${2:-4}"                   # 默认 CultureLLM (4)
 USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"               # 默认 6 个专家
 MOE_FUSION="${5:-0.4}"              # 默认 MoE 融合系数 0.4（控制 MoE 层的影响力）
-LAMBDA="${6:-0.1}"                  # 默认文化损失权重 lambda 0.1
+LAMBDA="${6:--1}"                   # 默认 -1 表示自动学习权重，其他值表示固定权重
 MARGIN="${7:-0.5}"                  # 默认 margin 0.5（不同文化之间的最小距离）
 LAMBDA_DIFF="${8:-1.0}"             # 默认 lambda_diff 1.0（不同文化排斥力的权重）
 USE_SHARED="${9:-True}"             # 默认使用共享专家
@@ -202,7 +202,7 @@ python ft_culturemoe_from_base_gen.py \
     --load_balance_weight "$LOAD_BAL" \
     --entropy_weight "$ENTROPY" \
     --moe_fusion "$MOE_FUSION" \
-    --num_epochs 30 \
+    --num_epochs 9 \
     --num_experts "$NUM_EXPERTS" \
     --use_shared_experts "$USE_SHARED" \
     --shared_hidden_dim 4096 \

@@ -371,6 +371,7 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
     total_culture_loss = 0
     total_spec_loss = 0
     total_div_loss = 0
+    total_lambda_value = 0  # ✅ 累积 lambda 值
     num_batches = 0
     nan_count = 0
 
@@ -406,6 +407,7 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         culture_loss = outputs.get('culture_loss', torch.tensor(0.0, device=device))
         spec_loss = outputs.get('specialization_loss', torch.tensor(0.0, device=device))
         div_loss = outputs.get('diversity_loss', torch.tensor(0.0, device=device))
+        lambda_value = outputs.get('culture_loss_lambda', 0.0)  # ✅ 获取当前 lambda 值
 
         # ✅ 收集 expert_weights 用于诊断
         if 'expert_weights' in outputs:
@@ -440,6 +442,7 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         total_culture_loss += culture_loss.item() if isinstance(culture_loss, torch.Tensor) else culture_loss
         total_spec_loss += spec_loss.item() if isinstance(spec_loss, torch.Tensor) else spec_loss
         total_div_loss += div_loss.item() if isinstance(div_loss, torch.Tensor) else div_loss
+        total_lambda_value += lambda_value  # ✅ 累积 lambda 值
         num_batches += 1
 
         # 梯度更新
@@ -463,6 +466,7 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
     avg_culture_loss = total_culture_loss / num_batches if num_batches > 0 else 0
     avg_spec_loss = total_spec_loss / num_batches if num_batches > 0 else 0
     avg_div_loss = total_div_loss / num_batches if num_batches > 0 else 0
+    avg_lambda = total_lambda_value / num_batches if num_batches > 0 else 0  # ✅ 计算平均 lambda 值
 
     if nan_count > 0:
         print(f"\n⚠️  WARNING: {nan_count} batches had NaN/Inf loss (skipped)")
@@ -490,6 +494,7 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         'culture_loss': avg_culture_loss,
         'spec_loss': avg_spec_loss,
         'div_loss': avg_div_loss,
+        'culture_loss_lambda': avg_lambda,  # ✅ 返回平均 lambda 值
         'num_batches': num_batches,
         'nan_count': nan_count
     }
@@ -720,6 +725,8 @@ def main():
                         help="Number of experts")
     parser.add_argument("--use_shared_experts", type=lambda x: x.lower() == 'true', default=True,
                         help="Whether to use shared experts (True) or only MoE experts (False)")
+    parser.add_argument("--moe_fusion", type=float, default=0.4,
+                        help="MoE fusion coefficient (default 0.4)")
     parser.add_argument("--shared_hidden_dim", type=int, default=4096,
                         help="Shared layer hidden dimension")
     parser.add_argument("--router_hidden_dim", type=int, default=2048,
@@ -868,8 +875,17 @@ def main():
     model = LlamaSharedRouterExpertsModel(
         llama_model=model,
         config=model.config,
-        args=moe_args
+        args=moe_args,
+        culture_loss_lambda=args.culture_loss_lambda,  # ✅ 传递 lambda 参数
+        moe_fusion=args.moe_fusion  # ✅ 传递 moe_fusion 参数
     )
+
+    # ✅ 打印权重学习模式
+    if model.culture_loss_lambda_learnable:
+        print(f"✅ Culture loss weight is learnable (initial value: {model.culture_loss_lambda.item():.4f})")
+    else:
+        print(f"✅ Culture loss weight is fixed (value: {model.culture_loss_lambda.item():.4f})")
+    print(f"✅ MoE fusion coefficient: {model.moe_fusion_alpha.item():.4f} (learnable)")
 
     # ✅ 强制 MoE 部分使用 float32（防止 NaN）
     print("Setting MoE layers to float32...")
@@ -985,10 +1001,12 @@ def main():
     print("Starting training...")
     print("="*80 + "\n")
 
-    best_eval_accuracy = 0.0  # ✅ 改为根据 accuracy 保存最佳模型
-    best_moe_dir = os.path.join(args.output_dir, 'best_moe')
+best_eval_accuracy = 0.0  # ✅ 改为根据 accuracy 保存最佳模型
+best_moe_dir = os.path.join(args.output_dir, 'best_moe')
+best_lambda = 0.0  # ✅ 记录最佳模型的 lambda 值
+best_epoch = 0  # ✅ 记录最佳 epoch
 
-    epoch_results = []
+epoch_results = []
 
     for epoch in range(args.num_epochs):
         print(f"\n{'='*80}")
@@ -1010,12 +1028,16 @@ def main():
             class_weights=class_weights  # ✅ 传递类别权重
         )
 
+        # ✅ 获取当前 lambda 值
+        current_lambda = train_metrics.get('culture_loss_lambda', 0.0)
+
         print(f"\n📊 Epoch {epoch + 1} Training Results:")
         print(f"   Train Loss: {train_metrics['loss']:.4f}")
         print(f"   Train Gen Loss: {train_metrics['gen_loss']:.4f}")
         print(f"   Train Culture Loss: {train_metrics['culture_loss']:.4f}")
         print(f"   Train Spec Loss: {train_metrics['spec_loss']:.4f}")
         print(f"   Train Div Loss: {train_metrics['div_loss']:.4f}")
+        print(f"   Culture Loss Lambda: {current_lambda:.6f}")  # ✅ 打印 lambda 值
 
         # ✅ 每 eval_interval 个 epoch 进行一次评估
         if (epoch + 1) % args.eval_interval == 0 or (epoch + 1) == args.num_epochs:
@@ -1044,6 +1066,8 @@ def main():
             # ✅ 根据 accuracy 保存最好的模型
             if gen_metrics['accuracy'] > best_eval_accuracy:
                 best_eval_accuracy = gen_metrics['accuracy']
+                best_epoch = epoch + 1  # ✅ 记录最佳 epoch
+                best_lambda = current_lambda  # ✅ 记录最佳模型的 lambda 值
 
                 # 删除旧的最好模型
                 if os.path.exists(best_moe_dir):
@@ -1074,6 +1098,7 @@ def main():
                 'train_loss': train_metrics['loss'],
                 'train_gen_loss': train_metrics['gen_loss'],
                 'train_culture_loss': train_metrics['culture_loss'],
+                'culture_loss_lambda': current_lambda,  # ✅ 记录 lambda 值
                 'eval_loss': val_metrics['loss'],
                 'eval_gen_loss': val_metrics['gen_loss'],
                 'eval_culture_loss': val_metrics['culture_loss'],
@@ -1102,20 +1127,24 @@ def main():
     with open(os.path.join(args.output_dir, 'epoch_eval_results.json'), 'w', encoding='utf-8') as f:
         json.dump(epoch_results, f, indent=2, ensure_ascii=False)
 
-    # 保存配置
-    config = {
-        'base_model': args.base_model_path,
-        'lora_weights': args.lora_weights_path,
-        'num_epochs': args.num_epochs,
-        'batch_size': args.batch_size,
-        'learning_rate': learning_rate,  # ✅ 保存实际使用的学习率
-        'use_culture_loss': args.use_culture_loss,
-        'culture_loss_lambda': args.culture_loss_lambda,
-        'num_experts': args.num_experts,
-        'eval_interval': args.eval_interval,
-        'best_eval_accuracy': best_eval_accuracy,  # ✅ 改为保存最佳准确率
-        'data_format': 'new_format (instruction + instruction_mask + input + output + label)'
-    }
+# 保存配置
+config = {
+'base_model': args.base_model_path,
+'lora_weights': args.lora_weights_path,
+'num_epochs': args.num_epochs,
+'batch_size': args.batch_size,
+'learning_rate': learning_rate,  # ✅ 保存实际使用的学习率
+'use_culture_loss': args.use_culture_loss,
+'culture_loss_lambda_initial': args.culture_loss_lambda,  # ✅ 初始 lambda 值
+'culture_loss_lambda_learnable': model.culture_loss_lambda_learnable,  # ✅ 是否可学习
+'num_experts': args.num_experts,
+'eval_interval': args.eval_interval,
+'best_epoch': best_epoch,  # ✅ 最佳 epoch
+'best_eval_accuracy': best_eval_accuracy,  # ✅ 最佳准确率
+'best_culture_loss_lambda': best_lambda,  # ✅ 最佳模型的 lambda 值
+'moe_fusion': args.moe_fusion,  # ✅ MoE 融合系数
+'data_format': 'new_format (instruction + instruction_mask + input + output + label)'
+}
 
     with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)

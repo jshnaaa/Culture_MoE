@@ -35,7 +35,7 @@ from .router import ExpertRouter
 
 
 class LlamaSharedRouterExpertsModel(nn.Module):
-    def __init__(self, llama_model, config, args: ModelArgs):
+    def __init__(self, llama_model, config, args: ModelArgs, culture_loss_lambda=-1, moe_fusion=0.4):
         super().__init__()
 
         self.llama_model = llama_model
@@ -59,10 +59,19 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         hidden_dim = self.config.hidden_size
 
-        # ✅ 可学习的 MoE 融合系数（替代拼接方式）
+        # ✅ 可学习的 MoE 融合系数
         # h_final = h_shared + alpha * h_moe
-        # 初始值 0.05，让 MoE 初期影响较小，逐步学习增加影响力
-        self.moe_fusion_alpha = nn.Parameter(torch.tensor(0.05, dtype=torch.float32))
+        self.moe_fusion_alpha = nn.Parameter(torch.tensor(moe_fusion, dtype=torch.float32))
+
+        # ✅ 可学习的文化损失权重
+        if culture_loss_lambda < 0:
+            # 自动学习权重（初始值 0.1）
+            self.culture_loss_lambda = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))
+            self.culture_loss_lambda_learnable = True
+        else:
+            # 固定权重
+            self.register_buffer('culture_loss_lambda', torch.tensor(culture_loss_lambda, dtype=torch.float32))
+            self.culture_loss_lambda_learnable = False
 
         # 2. Shared 层 - 改进初始化
         self.shared = nn.Sequential(
@@ -418,11 +427,17 @@ class LlamaSharedRouterExpertsModel(nn.Module):
                 outputs['load_balance_loss'] = load_balance_loss
                 outputs['entropy_loss'] = entropy_loss
 
+                # ✅ 使用模型的可学习 culture_loss_lambda
+                lambda_value = self.culture_loss_lambda
+
                 # ✅ 总损失：生成损失 + 文化损失 + 负载均衡损失 + 熵损失
                 total_loss = (generation_loss +
-                             culture_loss_lambda * culture_loss +
+                             lambda_value * culture_loss +
                              load_balance_weight * load_balance_loss +
                              entropy_weight * entropy_loss)
+
+                # ✅ 记录当前 lambda 值
+                outputs['culture_loss_lambda'] = lambda_value.item()
             else:
                 # ✅ 确保 culture_loss 与 generation_loss 在同一设备上
                 outputs['culture_loss'] = torch.tensor(0.0, device=generation_loss.device)
