@@ -136,7 +136,7 @@ class CultureMoENewFormatDataset(Dataset):
         input_ids_mask = encoded_mask['input_ids'].squeeze(0)
         attention_mask_mask = encoded_mask['attention_mask'].squeeze(0)
 
-        # ✅ 修改：只在答案部分计算 loss
+        # ✅ 只在答案部分计算 loss
         labels = input_ids.clone()
 
         # 找到答案开始的位置（prompt 的长度）

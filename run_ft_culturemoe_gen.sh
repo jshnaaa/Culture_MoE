@@ -4,7 +4,7 @@
 # 使用新数据格式微调 CultureMoE 模型
 #
 # 使用方法：
-#   sh run_ft_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <NUM_GPUS> <LAMBDA> <MARGIN> <LAMBDA_DIFF> <USE_SHARED> [ROUTER_TEMP] [LOAD_BAL] [ENTROPY]
+#   sh run_ft_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <NUM_GPUS> <CULTURE_LOSS_WEIGHT>
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
@@ -12,35 +12,14 @@
 #   USE_CULTURE_LOSS: True 或 False (默认 True)
 #   NUM_EXPERTS: 专家数量 (默认 6)
 #   NUM_GPUS: GPU 数量 (默认 2)
-#   LAMBDA: 文化损失权重 lambda (默认 0.01，初期很小)
-#   MARGIN: 对比学习的 margin（不同文化之间的最小距离，默认 0.5）
-#   LAMBDA_DIFF: 不同文化排斥力的权重（默认 1.0）
-#   USE_SHARED: 是否使用共享专家 True 或 False (默认 True)
-#   ROUTER_TEMP: Router 温度参数（默认 2.0，防止塌陷）
-#   LOAD_BAL: 负载均衡权重（默认 0.01，防止塌陷）
-#   ENTROPY: 熵正则化权重（默认 0.1，防止塌陷）
+#   CULTURE_LOSS_WEIGHT: 文化损失权重 (默认 0.5)
 #
 # 示例：
-#   # 基础训练（使用默认参数，包含共享专家和防塌陷机制）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 True 2.0 0.01 0.1
-#
-#   # 消融实验：不使用共享专家（只用 MoE 专家）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 False 2.0 0.01 0.1
+#   # 基础训练
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.5
 #
 #   # 消融实验：低文化损失权重
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.001 0.5 1.0 True 2.0 0.01 0.1
-#
-#   # 消融实验：更大的 margin（更强的文化差异）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 1.0 1.0 True 2.0 0.01 0.1
-#
-#   # 消融实验：更强的排斥力（lambda_diff）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 2.0 True 2.0 0.01 0.1
-#
-#   # 消融实验：更强的防塌陷机制
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 True 3.0 0.05 0.5
-#
-#   # 消融实验：弱防塌陷机制
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 True 1.5 0.001 0.01
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.1
 # ============================================================
 
 # ✅ 配置参数
@@ -48,14 +27,15 @@ BACKBONE="${1:-llama}"              # 默认使用 llama
 DATA_ID="${2:-4}"                   # 默认 CultureLLM (4)
 USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"               # 默认 6 个专家
-NUM_GPUS="${5:-2}"                  # 默认使用 2 个 GPU
-LAMBDA="${6:-0.01}"                 # 默认文化损失权重 lambda 0.01（初期很小）
+MOE_FUSION="${5:-0.4}"              # 默认 MoE 融合系数 0.4（控制 MoE 层的影响力）
+LAMBDA="${6:-0.1}"                  # 默认文化损失权重 lambda 0.1
 MARGIN="${7:-0.5}"                  # 默认 margin 0.5（不同文化之间的最小距离）
 LAMBDA_DIFF="${8:-1.0}"             # 默认 lambda_diff 1.0（不同文化排斥力的权重）
 USE_SHARED="${9:-True}"             # 默认使用共享专家
 ROUTER_TEMP="${10:-2.0}"            # 默认 Router 温度参数 2.0（防止塌陷）
 LOAD_BAL="${11:-0.01}"              # 默认负载均衡权重 0.01（防止塌陷）
 ENTROPY="${12:-0.1}"                # 默认熵正则化权重 0.1（防止塌陷）
+NUM_GPUS="${13:-2}"                 # 默认使用 2 个 GPU
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -135,7 +115,7 @@ if [ "$USE_SHARED" = "True" ] || [ "$USE_SHARED" = "true" ]; then
 else
     SHARED_TAG="noshared"
 fi
-OUTPUT_DIR="/root/autodl-fs/data/ft/ft_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_lambda${LAMBDA}_margin${MARGIN}_lambdadiff${LAMBDA_DIFF}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/data/ft/ft_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_margin${MARGIN}_lambdadiff${LAMBDA_DIFF}_$(date +%Y%m%d_%H%M)"
 
 # 设置 GPU
 if [ "$NUM_GPUS" = "1" ]; then
@@ -160,6 +140,7 @@ echo "Contrastive margin: $MARGIN"
 echo "Repulsion weight (lambda_diff): $LAMBDA_DIFF"
 echo "Num experts: $NUM_EXPERTS"
 echo "Use shared expert: $USE_SHARED"
+echo "MoE fusion coefficient: $MOE_FUSION"
 echo ""
 echo "Anti-collapse mechanisms:"
 echo "  Router temperature: $ROUTER_TEMP"
@@ -220,6 +201,7 @@ python ft_culturemoe_from_base_gen.py \
     --router_temperature "$ROUTER_TEMP" \
     --load_balance_weight "$LOAD_BAL" \
     --entropy_weight "$ENTROPY" \
+    --moe_fusion "$MOE_FUSION" \
     --num_epochs 30 \
     --num_experts "$NUM_EXPERTS" \
     --use_shared_experts "$USE_SHARED" \
@@ -232,7 +214,7 @@ python ft_culturemoe_from_base_gen.py \
     --num_heads 8 \
     --batch_size 4 \
     --eval_batch_size 4 \
-    --learning_rate 1e-5 \
+    --learning_rate 5e-5 \
     --weight_decay 0.001 \
     --max_length 512 \
     --val_split 0.1 \
