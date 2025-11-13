@@ -270,17 +270,17 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             shared_out = torch.zeros_like(h_all)
 
         # Step 4: Router（基于 pooled representation）
-# ✅ 如果使用共享专家，基于 shared_out 计算路由；否则基于 h_all 计算
-if use_shared_experts:
-    pooled = shared_out.mean(dim=1)  # [B, H]
-else:
-    pooled = h_all.mean(dim=1)  # [B, H]
+        # ✅ 如果使用共享专家，基于 shared_out 计算路由；否则基于 h_all 计算
+        if use_shared_experts:
+            pooled = shared_out.mean(dim=1)  # [B, H]
+        else:
+            pooled = h_all.mean(dim=1)  # [B, H]
 
-# ✅ 使用温度参数调用 router（防止塌陷）
-expert_weights, router_logits = self.router(pooled, temperature=router_temperature)  # [B, E]
+        # ✅ 使用温度参数调用 router（防止塌陷）
+        expert_weights, router_logits = self.router(pooled, temperature=router_temperature)  # [B, E]
 
-# ✅ 保存专家权重
-self._last_expert_weights = expert_weights.detach()
+        # ✅ 保存专家权重
+        self._last_expert_weights = expert_weights.detach()
 
         # Step 5: Experts 层
         h_all = h_all.to(device=device, dtype=dtype)
@@ -404,28 +404,28 @@ self._last_expert_weights = expert_weights.detach()
                  outputs['load_balance_loss'] = load_balance_loss
                  outputs['entropy_loss'] = entropy_loss
 
-                 # ✅ 总损失：生成损失 + 文化损失 + 负载均衡损失 + 熵损失
-                 total_loss = (generation_loss +
-                              culture_loss_lambda * culture_loss +
-                              load_balance_weight * load_balance_loss +
-                              entropy_weight * entropy_loss)
-              else:
-                  # ✅ 确保 culture_loss 与 generation_loss 在同一设备上
-                  outputs['culture_loss'] = torch.tensor(0.0, device=generation_loss.device)
-                 outputs['specialization_loss'] = torch.tensor(0.0, device=generation_loss.device)
-                 outputs['diversity_loss'] = torch.tensor(0.0, device=generation_loss.device)
+                # ✅ 总损失：生成损失 + 文化损失 + 负载均衡损失 + 熵损失
+                total_loss = (generation_loss +
+                             culture_loss_lambda * culture_loss +
+                             load_balance_weight * load_balance_loss +
+                             entropy_weight * entropy_loss)
+            else:
+                # ✅ 确保 culture_loss 与 generation_loss 在同一设备上
+                outputs['culture_loss'] = torch.tensor(0.0, device=generation_loss.device)
+                outputs['specialization_loss'] = torch.tensor(0.0, device=generation_loss.device)
+                outputs['diversity_loss'] = torch.tensor(0.0, device=generation_loss.device)
 
-                 # ✅ 计算防塌陷损失
-                 load_balance_loss = self.router.compute_load_balancing_loss(router_logits)
-                 entropy_loss = self.router.entropy_regularization(expert_weights)
+                # ✅ 计算防塌陷损失
+                load_balance_loss = self.router.compute_load_balancing_loss(router_logits)
+                entropy_loss = self.router.entropy_regularization(expert_weights)
 
-                 outputs['load_balance_loss'] = load_balance_loss
-                 outputs['entropy_loss'] = entropy_loss
+                outputs['load_balance_loss'] = load_balance_loss
+                outputs['entropy_loss'] = entropy_loss
 
-                 # ✅ 总损失：只有生成损失 + 防塌陷损失
-                  total_loss = (generation_loss +
-                               load_balance_weight * load_balance_loss +
-                               entropy_weight * entropy_loss)
+                # ✅ 总损失：只有生成损失 + 防塌陷损失
+                total_loss = (generation_loss +
+                             load_balance_weight * load_balance_loss +
+                             entropy_weight * entropy_loss)
 
             outputs['loss'] = total_loss
 
