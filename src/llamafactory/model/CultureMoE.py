@@ -331,6 +331,14 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         logits = self.llama_model.lm_head(enhanced_hidden)  # [B, L, vocab_size]
 
+        # ✅ 检查 logits 是否有 NaN 或 Inf
+        if torch.isnan(logits).any() or torch.isinf(logits).any():
+            print(f"⚠️  WARNING: NaN or Inf detected in logits before clipping")
+            print(f"   enhanced_hidden max: {enhanced_hidden.abs().max().item():.4f}")
+            print(f"   logits max: {logits.abs().max().item():.4f}")
+            # 将 NaN 和 Inf 替换为 0
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=100.0, neginf=-100.0)
+
         # ✅ 裁剪 logits（防止数值溢出导致异常高的损失）
         logits = torch.clamp(logits, min=-100, max=100)
 

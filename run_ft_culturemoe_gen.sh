@@ -232,7 +232,7 @@ python ft_culturemoe_from_base_gen.py \
     --num_heads 8 \
     --batch_size 4 \
     --eval_batch_size 4 \
-    --learning_rate 1e-4 \
+    --learning_rate 1e-5 \
     --weight_decay 0.001 \
     --max_length 512 \
     --val_split 0.1 \
