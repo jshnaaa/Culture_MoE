@@ -397,12 +397,12 @@ class LlamaSharedRouterExpertsModel(nn.Module):
                     outputs['specialization_loss'] = spec_loss
                     outputs['diversity_loss'] = div_loss
 
-                 # ✅ 计算防塌陷损失
-                 load_balance_loss = self.router.compute_load_balancing_loss(router_logits)
-                 entropy_loss = self.router.entropy_regularization(expert_weights)
+                # ✅ 计算防塌陷损失
+                load_balance_loss = self.router.compute_load_balancing_loss(router_logits)
+                entropy_loss = self.router.entropy_regularization(expert_weights)
 
-                 outputs['load_balance_loss'] = load_balance_loss
-                 outputs['entropy_loss'] = entropy_loss
+                outputs['load_balance_loss'] = load_balance_loss
+                outputs['entropy_loss'] = entropy_loss
 
                 # ✅ 总损失：生成损失 + 文化损失 + 负载均衡损失 + 熵损失
                 total_loss = (generation_loss +

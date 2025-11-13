@@ -136,9 +136,25 @@ class CultureMoENewFormatDataset(Dataset):
         input_ids_mask = encoded_mask['input_ids'].squeeze(0)
         attention_mask_mask = encoded_mask['attention_mask'].squeeze(0)
 
-        # ✅ 临时修复：在整个序列上计算 loss（提供更强的训练信号）
-        # TODO: 后续可以改回只在 Answer 部分计算 loss
+        # ✅ 修改：只在答案部分计算 loss
         labels = input_ids.clone()
+
+        # 找到答案开始的位置（prompt 的长度）
+        # Tokenize prompt (instruction + input) without output
+        prompt_encoded = self.tokenizer(
+            full_input,
+            add_special_tokens=True,  # 保持与完整文本相同的 special tokens
+            truncation=True,
+            max_length=self.max_length
+        )
+        prompt_length = len(prompt_encoded['input_ids'])
+
+        # 将问题部分的 labels 设置为 -100（CrossEntropyLoss 会忽略）
+        # 只在答案部分（从 prompt_length 开始）计算损失
+        labels[:prompt_length] = -100
+
+        # 将 padding 部分也设置为 -100
+        labels[attention_mask == 0] = -100
 
         # 将 label 转换为整数（用于文化损失）
         try:
@@ -151,7 +167,7 @@ class CultureMoENewFormatDataset(Dataset):
             'attention_mask': attention_mask,
             'input_ids_mask': input_ids_mask,
             'attention_mask_mask': attention_mask_mask,
-            'labels': labels,
+            'labels': labels,  # ✅ 只在答案部分有有效标签
             'label': label_int,
             'instruction': instruction,
             'input': input_text,
