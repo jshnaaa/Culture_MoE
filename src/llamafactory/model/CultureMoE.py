@@ -370,12 +370,12 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
             # 文化损失（如果启用）
             if use_culture_loss and culture_labels is not None:
-                # ✅ 新的文化专注性损失（包含 specialization 和 diversity）
+                # ✅ 对比学习框架的文化损失
                 culture_loss = self.compute_culture_loss(
                     expert_weights,
                     culture_labels,
-                    alpha=culture_loss_alpha,  # specialization 权重
-                    beta=culture_loss_beta,   # diversity 权重
+                    margin=culture_loss_alpha,  # margin: 不同文化之间的最小距离
+                    lambda_diff=culture_loss_beta,  # lambda_diff: 不同文化排斥力的权重
                     eps=1e-8,
                     min_samples=2
                 )
@@ -428,15 +428,18 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         return entropy_loss
 
-    def compute_culture_loss(self, expert_weights, culture_labels, alpha=1.0, beta=1.0, eps=1e-8, min_samples=2):
+    def compute_culture_loss(self, expert_weights, culture_labels, margin=0.5, lambda_diff=1.0, eps=1e-8, min_samples=2):
         """
-        ✅ 新的文化专注性损失：鼓励每个文化专注于少数专家，且不同专家专注于不同文化
+        ✅ 对比学习框架的文化损失：
+        - 同文化样本 → 相似的 Router 权重（文化特异性）
+        - 不同文化样本 → 不同的 Router 权重（文化差异性）
+        - 全局 → 自动均衡（不同文化竞争不同专家）
 
         Args:
             expert_weights: [B, E] 专家权重（router 输出的软权重）
             culture_labels: [B] 文化标签
-            alpha: specialization 损失权重（文化内稀疏化）
-            beta: diversity 损失权重（文化间互异化）
+            margin: 不同文化之间的最小距离（默认 0.5）
+            lambda_diff: 不同文化排斥力的权重（默认 1.0）
             eps: 数值稳定性常数
             min_samples: 最小样本数阈值（只对样本数 >= min_samples 的文化计算损失）
 
@@ -473,82 +476,77 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             return torch.tensor(0.0, device=device, dtype=dtype)
 
         # ============================================================
-        # 步骤 1: 构建每文化的专家分配向量 p_k
+        # 对比学习框架：同文化吸引，不同文化排斥
         # ============================================================
-        # 初始化累加矩阵 S [C, E] 和计数向量 nu [C]
-        max_culture_id = culture_labels.max().item() + 1
-        S = torch.zeros(max_culture_id, num_experts, device=device, dtype=dtype)
-        nu = torch.zeros(max_culture_id, device=device, dtype=dtype)
 
-        # 对每个样本累加
-        for b in range(batch_size):
-            k = culture_labels[b].item()
-            S[k, :] += expert_weights[b, :]
-            nu[k] += 1
-
-        # 计算每文化的平均权重 p_k = S_k / nu_k
-        # 只对有样本的文化计算（nu_k > 0）
-        p_k = torch.zeros_like(S)
-        valid_cultures = []
+        # 步骤 1: 计算每个文化的原型（prototype）
+        # prototype_k = mean(expert_weights[culture_labels == k])
+        prototypes = {}  # {culture_id: prototype_vector}
+        culture_counts = {}  # {culture_id: count}
 
         for k in unique_cultures:
             k_idx = k.item()
-            if nu[k_idx] >= min_samples:  # ✅ 只对样本数 >= min_samples 的文化计算
-                p_k[k_idx, :] = S[k_idx, :] / (nu[k_idx] + eps)
-                # 归一化：先加 eps 再归一化
-                p_k[k_idx, :] = (p_k[k_idx, :] + eps) / (p_k[k_idx, :].sum() + num_experts * eps)
-                valid_cultures.append(k_idx)
+            mask = (culture_labels == k_idx)
+            count = mask.sum().item()
 
-        if len(valid_cultures) == 0:
-            # 没有有效的文化（样本数都太少）
+            if count >= min_samples:
+                # 计算该文化的原型向量
+                prototype = expert_weights[mask].mean(dim=0)  # [E]
+                prototypes[k_idx] = prototype
+                culture_counts[k_idx] = count
+
+        if len(prototypes) == 0:
+            # 没有有效的文化
             return torch.tensor(0.0, device=device, dtype=dtype)
 
-        # ============================================================
-        # 步骤 2: 文化内稀疏化 - Specialization Loss（熵最小化）
-        # ============================================================
-        # 对每个文化 k，计算熵 H(p_k) = -sum(p_k[i] * log(p_k[i]))
-        specialization_loss = 0.0
+        # 步骤 2: 计算对比损失
+        # L_contrast = L_same + lambda_diff * L_diff
+        # L_same: 同文化样本应该接近原型
+        # L_diff: 不同文化样本应该远离原型（使用 margin）
 
-        for k_idx in valid_cultures:
-            # 计算熵
-            H_k = -torch.sum(p_k[k_idx, :] * torch.log(p_k[k_idx, :] + eps))
-            specialization_loss += H_k
+        L_same = 0.0
+        L_diff = 0.0
+        total_samples = 0
+
+        for b in range(batch_size):
+            culture_k = culture_labels[b].item()
+
+            # 如果该文化没有有效原型，跳过
+            if culture_k not in prototypes:
+                continue
+
+            w_b = expert_weights[b]  # [E]
+            prototype_k = prototypes[culture_k]
+
+            # 同文化吸引力：最小化距离
+            dist_same = torch.sum((w_b - prototype_k) ** 2)
+            L_same += dist_same
+
+            # 不同文化排斥力：最大化距离（使用 margin）
+            for other_k, prototype_other in prototypes.items():
+                if other_k != culture_k:
+                    dist_diff = torch.sum((w_b - prototype_other) ** 2)
+                    # 使用 hinge loss：max(0, margin - dist)
+                    # 只有当距离小于 margin 时才有损失
+                    L_diff += torch.clamp(margin - dist_diff, min=0.0)
+
+            total_samples += 1
 
         # 平均
-        specialization_loss = specialization_loss / len(valid_cultures)
+        if total_samples > 0:
+            L_same = L_same / total_samples
+            # L_diff 除以 (total_samples * (num_cultures - 1))
+            num_valid_cultures = len(prototypes)
+            if num_valid_cultures > 1:
+                L_diff = L_diff / (total_samples * (num_valid_cultures - 1))
+            else:
+                L_diff = torch.tensor(0.0, device=device, dtype=dtype)
+        else:
+            L_same = torch.tensor(0.0, device=device, dtype=dtype)
+            L_diff = torch.tensor(0.0, device=device, dtype=dtype)
 
-        # ============================================================
-        # 步骤 3: 文化间互异化 - Diversity Loss（专家向量相似度最小化）
-        # ============================================================
-        # 构建专家向量 v_i [num_experts, num_valid_cultures]
-        # v_i[j] = p_{valid_cultures[j]}[i]
-        v = torch.zeros(num_experts, len(valid_cultures), device=device, dtype=dtype)
-        for i, k_idx in enumerate(valid_cultures):
-            v[:, i] = p_k[k_idx, :]
-
-        # L2 归一化
-        v_norm = torch.nn.functional.normalize(v, p=2, dim=1)  # [num_experts, num_valid_cultures]
-
-        # 计算余弦相似度矩阵 sim(i, j) = v_i^T * v_j
-        sim_matrix = torch.mm(v_norm, v_norm.t())  # [num_experts, num_experts]
-
-        # Diversity Loss: 最小化非对角元素的平方相似度
-        # L_div = (2 / (n * (n-1))) * sum_{i<j} sim(i, j)^2
-        diversity_loss = 0.0
-        count = 0
-
-        for i in range(num_experts):
-            for j in range(i + 1, num_experts):
-                diversity_loss += sim_matrix[i, j] ** 2
-                count += 1
-
-        if count > 0:
-            diversity_loss = diversity_loss / count
-
-        # ============================================================
-        # 步骤 4: 合并为文化专注性损失
-        # ============================================================
-        culture_loss = alpha * specialization_loss + beta * diversity_loss
+        # 总对比损失
+        culture_loss = L_same + lambda_diff * L_diff
 
         return culture_loss
 

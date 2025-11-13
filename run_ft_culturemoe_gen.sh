@@ -12,27 +12,26 @@
 #   USE_CULTURE_LOSS: True 或 False (默认 True)
 #   NUM_EXPERTS: 专家数量 (默认 6)
 #   NUM_GPUS: GPU 数量 (默认 2)
-#   CULTURE_LOSS_WEIGHT: 文化损失权重 (默认 0.5)
-#   LAMBDA: 文化损失权重 lambda (默认 0.5)
-#   ALPHA: specialization 损失权重 alpha (默认 1.0)
-#   BETA: diversity 损失权重 beta (默认 0.5)
+#   LAMBDA: 文化损失权重 lambda (默认 0.01，初期很小)
+#   MARGIN: 对比学习的 margin（不同文化之间的最小距离，默认 0.5）
+#   LAMBDA_DIFF: 不同文化排斥力的权重（默认 1.0）
 #   USE_SHARED: 是否使用共享专家 True 或 False (默认 True)
 #
 # 示例：
 #   # 基础训练（使用默认参数，包含共享专家）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.5 1.0 0.5 True
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 True
 #
 #   # 消融实验：不使用共享专家（只用 MoE 专家）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.5 1.0 0.5 False
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 False
 #
 #   # 消融实验：低文化损失权重
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.1 1.0 0.5 True
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.001 0.5 1.0 True
 #
-#   # 消融实验：更强调 specialization
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.5 3.0 1.0 True
+#   # 消融实验：更大的 margin（更强的文化差异）
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 1.0 1.0 True
 #
-#   # 消融实验：更强调 diversity
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.5 2.0 2.0 True
+#   # 消融实验：更强的排斥力（lambda_diff）
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 2.0 True
 # ============================================================
 
 # ✅ 配置参数
@@ -41,9 +40,9 @@ DATA_ID="${2:-4}"                   # 默认 CultureLLM (4)
 USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"               # 默认 6 个专家
 NUM_GPUS="${5:-2}"                  # 默认使用 2 个 GPU
-LAMBDA="${6:-0.2}"                  # 默认文化损失权重 lambda 0.5
-ALPHA="${7:-0.1}"                   # 默认 specialization 权重 alpha 1.0
-BETA="${8:-0.5}"                    # 默认 diversity 权重 beta 0.5
+LAMBDA="${6:-0.01}"                 # 默认文化损失权重 lambda 0.01（初期很小）
+MARGIN="${7:-0.5}"                  # 默认 margin 0.5（不同文化之间的最小距离）
+LAMBDA_DIFF="${8:-1.0}"             # 默认 lambda_diff 1.0（不同文化排斥力的权重）
 USE_SHARED="${9:-True}"             # 默认使用共享专家
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
@@ -124,7 +123,7 @@ if [ "$USE_SHARED" = "True" ] || [ "$USE_SHARED" = "true" ]; then
 else
     SHARED_TAG="noshared"
 fi
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_lambda${LAMBDA}_alpha${ALPHA}_beta${BETA}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_lambda${LAMBDA}_margin${MARGIN}_lambdadiff${LAMBDA_DIFF}_$(date +%Y%m%d_%H%M)"
 
 # 设置 GPU
 if [ "$NUM_GPUS" = "1" ]; then
@@ -145,8 +144,8 @@ echo "Backbone: $BACKBONE ($MODEL_NAME)"
 echo "Dataset: $DATASET_NAME"
 echo "Use culture loss: $USE_CULTURE_LOSS"
 echo "Culture loss weight (lambda): $LAMBDA"
-echo "Specialization weight (alpha): $ALPHA"
-echo "Diversity weight (beta): $BETA"
+echo "Contrastive margin: $MARGIN"
+echo "Repulsion weight (lambda_diff): $LAMBDA_DIFF"
 echo "Num experts: $NUM_EXPERTS"
 echo "Use shared expert: $USE_SHARED"
 echo "GPUs: $GPU_INFO"
@@ -198,8 +197,8 @@ python ft_culturemoe_from_base_gen.py \
     --output_dir "$OUTPUT_DIR" \
     --use_culture_loss "$USE_CULTURE_LOSS" \
     --culture_loss_lambda "$LAMBDA" \
-    --culture_loss_alpha "$ALPHA" \
-    --culture_loss_beta "$BETA" \
+    --culture_loss_alpha "$MARGIN" \
+    --culture_loss_beta "$LAMBDA_DIFF" \
     --num_epochs 30 \
     --num_experts "$NUM_EXPERTS" \
     --use_shared_experts "$USE_SHARED" \
