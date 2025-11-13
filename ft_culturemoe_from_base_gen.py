@@ -302,7 +302,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     with torch.no_grad():
         outputs = actual_model.generate(
             **inputs,
-            max_new_tokens=2,  # ✅ 限制生成长度为 2 个 token（只生成数字）
+            max_new_tokens=1,  # ✅ 只生成 1 个 token（数字）
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
             do_sample=False,
@@ -313,6 +313,18 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     # 解码
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
     generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+    # ✅ 额外的后处理：只保留第一个数字
+    # 如果生成的文本包含非数字字符，只保留开头的数字部分
+    import re
+    match = re.match(r'^(\d+)', generated_text)
+    if match:
+        generated_text = match.group(1)
+    else:
+        # 如果没有匹配到数字，尝试从整个文本中提取第一个数字
+        match = re.search(r'\d+', generated_text)
+        if match:
+            generated_text = match.group(0)
 
     return generated_text
 

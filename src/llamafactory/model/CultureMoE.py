@@ -195,9 +195,9 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         return self.llama_model.prepare_inputs_for_generation(input_ids, **kwargs)
 
     def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None,
-                labels=None, culture_labels=None, use_culture_loss=False, culture_loss_lambda=0.5,
-                culture_loss_alpha=2.0, culture_loss_beta=1.0,
-                use_shared_experts=True, **kwargs):
+                  labels=None, culture_labels=None, use_culture_loss=False, culture_loss_lambda=0.5,
+                 culture_loss_alpha=2.0, culture_loss_beta=1.0,
+                  use_shared_experts=True, router_temperature=2.0, load_balance_weight=0.01, entropy_weight=0.1, **kwargs):
         """
         ✅ 生成式前向传播
 
@@ -270,15 +270,17 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             shared_out = torch.zeros_like(h_all)
 
         # Step 4: Router（基于 pooled representation）
-        # ✅ 如果使用共享专家，基于 shared_out 计算路由；否则基于 h_all 计算
-        if use_shared_experts:
-            pooled = shared_out.mean(dim=1)  # [B, H]
-        else:
-            pooled = h_all.mean(dim=1)  # [B, H]
-        expert_weights, router_logits = self.router(pooled)  # [B, E]
+# ✅ 如果使用共享专家，基于 shared_out 计算路由；否则基于 h_all 计算
+if use_shared_experts:
+    pooled = shared_out.mean(dim=1)  # [B, H]
+else:
+    pooled = h_all.mean(dim=1)  # [B, H]
 
-        # ✅ 保存专家权重
-        self._last_expert_weights = expert_weights.detach()
+# ✅ 使用温度参数调用 router（防止塌陷）
+expert_weights, router_logits = self.router(pooled, temperature=router_temperature)  # [B, E]
+
+# ✅ 保存专家权重
+self._last_expert_weights = expert_weights.detach()
 
         # Step 5: Experts 层
         h_all = h_all.to(device=device, dtype=dtype)
@@ -395,16 +397,35 @@ class LlamaSharedRouterExpertsModel(nn.Module):
                     outputs['specialization_loss'] = spec_loss
                     outputs['diversity_loss'] = div_loss
 
-                # ✅ 总损失：生成损失 + 文化损失
-                # 注意：不再添加 router_entropy_loss，因为它与 specialization 相反
-                total_loss = generation_loss + culture_loss_lambda * culture_loss
-            else:
-                # ✅ 确保 culture_loss 与 generation_loss 在同一设备上
-                outputs['culture_loss'] = torch.tensor(0.0, device=generation_loss.device)
-                outputs['specialization_loss'] = torch.tensor(0.0, device=generation_loss.device)
-                outputs['diversity_loss'] = torch.tensor(0.0, device=generation_loss.device)
-                # ✅ 总损失：只有生成损失
-                total_loss = generation_loss
+                 # ✅ 计算防塌陷损失
+                 load_balance_loss = self.router.compute_load_balancing_loss(router_logits)
+                 entropy_loss = self.router.entropy_regularization(expert_weights)
+
+                 outputs['load_balance_loss'] = load_balance_loss
+                 outputs['entropy_loss'] = entropy_loss
+
+                 # ✅ 总损失：生成损失 + 文化损失 + 负载均衡损失 + 熵损失
+                 total_loss = (generation_loss +
+                              culture_loss_lambda * culture_loss +
+                              load_balance_weight * load_balance_loss +
+                              entropy_weight * entropy_loss)
+              else:
+                  # ✅ 确保 culture_loss 与 generation_loss 在同一设备上
+                  outputs['culture_loss'] = torch.tensor(0.0, device=generation_loss.device)
+                 outputs['specialization_loss'] = torch.tensor(0.0, device=generation_loss.device)
+                 outputs['diversity_loss'] = torch.tensor(0.0, device=generation_loss.device)
+
+                 # ✅ 计算防塌陷损失
+                 load_balance_loss = self.router.compute_load_balancing_loss(router_logits)
+                 entropy_loss = self.router.entropy_regularization(expert_weights)
+
+                 outputs['load_balance_loss'] = load_balance_loss
+                 outputs['entropy_loss'] = entropy_loss
+
+                 # ✅ 总损失：只有生成损失 + 防塌陷损失
+                  total_loss = (generation_loss +
+                               load_balance_weight * load_balance_loss +
+                               entropy_weight * entropy_loss)
 
             outputs['loss'] = total_loss
 
