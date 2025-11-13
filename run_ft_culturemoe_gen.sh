@@ -4,7 +4,7 @@
 # 使用新数据格式微调 CultureMoE 模型
 #
 # 使用方法：
-#   sh run_ft_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <NUM_GPUS> <LAMBDA> <ALPHA> <BETA> <USE_SHARED>
+#   sh run_ft_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <NUM_GPUS> <LAMBDA> <MARGIN> <LAMBDA_DIFF> <USE_SHARED> [ROUTER_TEMP] [LOAD_BAL] [ENTROPY]
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
@@ -16,22 +16,31 @@
 #   MARGIN: 对比学习的 margin（不同文化之间的最小距离，默认 0.5）
 #   LAMBDA_DIFF: 不同文化排斥力的权重（默认 1.0）
 #   USE_SHARED: 是否使用共享专家 True 或 False (默认 True)
+#   ROUTER_TEMP: Router 温度参数（默认 2.0，防止塌陷）
+#   LOAD_BAL: 负载均衡权重（默认 0.01，防止塌陷）
+#   ENTROPY: 熵正则化权重（默认 0.1，防止塌陷）
 #
 # 示例：
-#   # 基础训练（使用默认参数，包含共享专家）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 True
+#   # 基础训练（使用默认参数，包含共享专家和防塌陷机制）
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 True 2.0 0.01 0.1
 #
 #   # 消融实验：不使用共享专家（只用 MoE 专家）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 False
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 False 2.0 0.01 0.1
 #
 #   # 消融实验：低文化损失权重
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.001 0.5 1.0 True
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.001 0.5 1.0 True 2.0 0.01 0.1
 #
 #   # 消融实验：更大的 margin（更强的文化差异）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 1.0 1.0 True
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 1.0 1.0 True 2.0 0.01 0.1
 #
 #   # 消融实验：更强的排斥力（lambda_diff）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 2.0 True
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 2.0 True 2.0 0.01 0.1
+#
+#   # 消融实验：更强的防塌陷机制
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 True 3.0 0.05 0.5
+#
+#   # 消融实验：弱防塌陷机制
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.01 0.5 1.0 True 1.5 0.001 0.01
 # ============================================================
 
 # ✅ 配置参数
@@ -44,6 +53,9 @@ LAMBDA="${6:-0.01}"                 # 默认文化损失权重 lambda 0.01（初
 MARGIN="${7:-0.5}"                  # 默认 margin 0.5（不同文化之间的最小距离）
 LAMBDA_DIFF="${8:-1.0}"             # 默认 lambda_diff 1.0（不同文化排斥力的权重）
 USE_SHARED="${9:-True}"             # 默认使用共享专家
+ROUTER_TEMP="${10:-2.0}"            # 默认 Router 温度参数 2.0（防止塌陷）
+LOAD_BAL="${11:-0.01}"              # 默认负载均衡权重 0.01（防止塌陷）
+ENTROPY="${12:-0.1}"                # 默认熵正则化权重 0.1（防止塌陷）
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -148,6 +160,12 @@ echo "Contrastive margin: $MARGIN"
 echo "Repulsion weight (lambda_diff): $LAMBDA_DIFF"
 echo "Num experts: $NUM_EXPERTS"
 echo "Use shared expert: $USE_SHARED"
+echo ""
+echo "Anti-collapse mechanisms:"
+echo "  Router temperature: $ROUTER_TEMP"
+echo "  Load balance weight: $LOAD_BAL"
+echo "  Entropy weight: $ENTROPY"
+echo ""
 echo "GPUs: $GPU_INFO"
 echo ""
 echo "Components:"
@@ -199,6 +217,9 @@ python ft_culturemoe_from_base_gen.py \
     --culture_loss_lambda "$LAMBDA" \
     --culture_loss_alpha "$MARGIN" \
     --culture_loss_beta "$LAMBDA_DIFF" \
+    --router_temperature "$ROUTER_TEMP" \
+    --load_balance_weight "$LOAD_BAL" \
+    --entropy_weight "$ENTROPY" \
     --num_epochs 30 \
     --num_experts "$NUM_EXPERTS" \
     --use_shared_experts "$USE_SHARED" \
