@@ -209,7 +209,7 @@ python ft_culturemoe_from_base_gen.py \
     --load_balance_weight "$LOAD_BAL" \
     --entropy_weight "$ENTROPY" \
     --moe_fusion "$MOE_FUSION" \
-    --num_epochs 9 \
+    --num_epochs 30 \
     --num_experts "$NUM_EXPERTS" \
     --use_shared_experts "$USE_SHARED" \
     --shared_hidden_dim 4096 \

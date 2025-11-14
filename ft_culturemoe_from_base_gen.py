@@ -274,9 +274,9 @@ def adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5):
         print(f"   Reduced learning rate for {param_group.get('name', 'unknown')}: {old_lr:.2e} -> {param_group['lr']:.2e}")
 
 
-def should_train_base_model(epoch, base_model_start_epoch=3):
+def should_train_base_model(epoch, base_model_start_epoch=5):
     """
-    判断是否应该训练基础模型参数
+    判断是否应该训练基础模型参数（更保守的策略）
 
     Args:
         epoch: 当前epoch (从1开始)
@@ -286,6 +286,28 @@ def should_train_base_model(epoch, base_model_start_epoch=3):
         bool: 是否训练基础模型
     """
     return epoch >= base_model_start_epoch
+
+
+def get_base_model_training_ratio(epoch, base_model_start_epoch=5, full_training_epoch=10):
+    """
+    获取基础模型参数的训练比例（渐进式解冻）
+
+    Args:
+        epoch: 当前epoch (从1开始)
+        base_model_start_epoch: 开始训练基础模型的epoch
+        full_training_epoch: 完全训练基础模型的epoch
+
+    Returns:
+        float: 训练比例 (0.0 到 1.0)
+    """
+    if epoch < base_model_start_epoch:
+        return 0.0
+    elif epoch >= full_training_epoch:
+        return 1.0
+    else:
+        # 线性增长
+        progress = (epoch - base_model_start_epoch) / (full_training_epoch - base_model_start_epoch)
+        return progress
 
 
 def calculate_warmup_factor(epoch, warmup_start=5, warmup_end=10):
@@ -350,19 +372,21 @@ class LayeredOptimizer:
     - Shared Experts: 共享专家（中等学习率）
     """
 
-    def __init__(self, model, base_lr=1e-6, moe_lr_multiplier=10.0, router_lr_multiplier=5.0, weight_decay=0.01):
+    def __init__(self, model, base_lr=1e-6, moe_lr_multiplier=2.0, router_lr_multiplier=3.0, shared_lr_multiplier=0.5, weight_decay=0.01):
         """
         Args:
             model: CultureMoE模型
             base_lr: 基础学习率（用于fine-tuned模型层）
-            moe_lr_multiplier: MoE组件学习率倍数
+            moe_lr_multiplier: MoE专家学习率倍数
             router_lr_multiplier: 路由器学习率倍数
+            shared_lr_multiplier: 共享专家学习率倍数
             weight_decay: 权重衰减
         """
         self.model = model
         self.base_lr = base_lr
         self.moe_lr_multiplier = moe_lr_multiplier
         self.router_lr_multiplier = router_lr_multiplier
+        self.shared_lr_multiplier = shared_lr_multiplier
         self.weight_decay = weight_decay
 
         # 创建参数组
@@ -432,7 +456,7 @@ class LayeredOptimizer:
         if moe_shared_params:
             param_groups.append({
                 'params': moe_shared_params,
-                'lr': self.base_lr * self.router_lr_multiplier,  # 与路由器相同的学习率
+                'lr': self.base_lr * self.shared_lr_multiplier,  # 使用独立的shared学习率
                 'name': 'moe_shared'
             })
 
@@ -909,20 +933,30 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
             for key, norm in grad_norms.items():
                 all_grad_norms[key].append(norm)
 
-            # ✅ 检查真正的梯度爆炸（设置合理阈值）
-            if grad_norms['total'] > 50.0:  # ✅ 合理的阈值：只有真正爆炸时才干预
-                print(f"\n⚠️  Severe gradient explosion detected! Norm: {grad_norms['total']:.2f}")
-                print(f"   Reducing learning rates and skipping this update...")
-
-                # 自适应调整学习率
-                adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5)
-
-                # 跳过这个更新步骤
+            # ✅ 多级梯度监控策略
+            if grad_norms['total'] > 100.0:  # 严重爆炸
+                print(f"\n🚨 CRITICAL gradient explosion! Norm: {grad_norms['total']:.2f}")
+                print(f"   Batch {batch_idx}/{len(train_loader)} in Epoch {current_epoch}")
+                print(f"   Emergency learning rate reduction and skip...")
+                adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.2)  # 更激进的减少
                 optimizer.zero_grad()
                 continue
+            elif grad_norms['total'] > 50.0:  # 中等爆炸
+                print(f"\n⚠️  Moderate gradient explosion! Norm: {grad_norms['total']:.2f}")
+                print(f"   Batch {batch_idx}/{len(train_loader)} in Epoch {current_epoch}")
+                adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5)
+                optimizer.zero_grad()
+                continue
+            elif grad_norms['total'] > 25.0:  # 预警级别
+                print(f"\n⚠️  High gradient detected! Norm: {grad_norms['total']:.2f}")
+                print(f"   Applying stronger clipping and continuing...")
+                # 不跳过，但使用更强的梯度裁剪
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            else:
+                # 正常情况下的温和梯度裁剪
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
 
-            # ✅ 温和的梯度裁剪（允许正常的大梯度）
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+            # 如果没有跳过，继续正常的优化步骤
 
             optimizer.step()
             optimizer.zero_grad()
@@ -1247,8 +1281,10 @@ def main():
     # 分层学习率参数
     parser.add_argument("--moe_lr_multiplier", type=float, default=2.0,
                         help="MoE expert learning rate multiplier (default 2.0, balanced for stability)")
-    parser.add_argument("--router_lr_multiplier", type=float, default=1.5,
-                        help="Router and shared expert learning rate multiplier (default 1.5, balanced for stability)")
+    parser.add_argument("--router_lr_multiplier", type=float, default=3.0,
+                        help="Router learning rate multiplier (default 3.0, increased for better learning)")
+    parser.add_argument("--shared_lr_multiplier", type=float, default=0.5,
+                        help="Shared expert learning rate multiplier (default 0.5, reduced for stability)")
 
     # 预热策略参数
     parser.add_argument("--warmup_start_epoch", type=int, default=5,
@@ -1257,10 +1293,12 @@ def main():
                         help="Epoch to end culture loss warmup (default 10)")
 
     # 渐进式训练参数
-    parser.add_argument("--base_model_start_epoch", type=int, default=3,
-                        help="Epoch to start training base model parameters (default 3)")
+    parser.add_argument("--base_model_start_epoch", type=int, default=5,
+                        help="Epoch to start training base model parameters (default 5, more conservative)")
     parser.add_argument("--enable_progressive_training", type=lambda x: x.lower() == 'true', default=True,
                         help="Enable progressive parameter unfreezing (default True)")
+    parser.add_argument("--full_training_epoch", type=int, default=10,
+                        help="Epoch to reach full base model training (default 10)")
 
     # 内存优化参数
     parser.add_argument("--use_gradient_checkpointing", type=lambda x: x.lower() == 'true', default=False,
@@ -1529,19 +1567,21 @@ def main():
         model=model,
         base_lr=base_learning_rate,
         moe_lr_multiplier=args.moe_lr_multiplier,  # MoE专家网络学习率倍数
-        router_lr_multiplier=args.router_lr_multiplier,  # 路由器和共享专家学习率倍数
+        router_lr_multiplier=args.router_lr_multiplier,  # 路由器学习率倍数
+        shared_lr_multiplier=args.shared_lr_multiplier,  # 共享专家学习率倍数
         weight_decay=args.weight_decay
     )
 
     # 获取实际的优化器对象
     optimizer = layered_optimizer.optimizer
 
-    # ✅ 添加学习率调度（余弦退火）
+    # ✅ 添加更稳定的学习率调度（指数衰减）
     total_steps = args.num_epochs * len(train_loader)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    # 使用更稳定的StepLR而不是CosineAnnealingLR
+    scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
-        T_max=total_steps,
-        eta_min=base_learning_rate * 0.1
+        step_size=total_steps // 4,  # 每1/4训练过程降低一次
+        gamma=0.8  # 每次降低到80%
     )
 
     # 打印分层优化器配置
@@ -1777,6 +1817,7 @@ def main():
     'moe_fusion': args.moe_fusion,  # ✅ MoE 融合系数
     'moe_lr_multiplier': args.moe_lr_multiplier,  # ✅ MoE 学习率倍数
     'router_lr_multiplier': args.router_lr_multiplier,  # ✅ 路由器学习率倍数
+    'shared_lr_multiplier': args.shared_lr_multiplier,  # ✅ 共享专家学习率倍数
     'enable_progressive_training': args.enable_progressive_training,  # ✅ 渐进式训练
     'base_model_start_epoch': args.base_model_start_epoch,  # ✅ 基础模型开始训练轮次
     'warmup_start_epoch': args.warmup_start_epoch,  # ✅ 预热开始轮次
