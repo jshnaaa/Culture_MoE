@@ -488,19 +488,19 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         else:
             print(f"\n✅ Router weights are balanced (max weight: {max_weight:.4f})")
 
-return {
-    'loss': avg_loss,
-    'gen_loss': avg_gen_loss,
-    'culture_loss': avg_culture_loss,
-    'spec_loss': avg_spec_loss,
-    'div_loss': avg_div_loss,
-    'culture_loss_lambda': avg_lambda,  # ✅ 返回平均 lambda 值
-    'load_balance_loss': 0.0,  # ✅ 占位符，实际值在 forward 中计算
-    'entropy_loss': 0.0,  # ✅ 占位符
-    'neg_entropy_loss': 0.0,  # ✅ 占位符，负熵损失
-    'num_batches': num_batches,
-    'nan_count': nan_count
-}
+    return {
+        'loss': avg_loss,
+        'gen_loss': avg_gen_loss,
+        'culture_loss': avg_culture_loss,
+        'spec_loss': avg_spec_loss,
+        'div_loss': avg_div_loss,
+        'culture_loss_lambda': avg_lambda,  # ✅ 返回平均 lambda 值
+        'load_balance_loss': 0.0,  # ✅ 占位符，实际值在 forward 中计算
+        'entropy_loss': 0.0,  # ✅ 占位符
+        'neg_entropy_loss': 0.0,  # ✅ 占位符，负熵损失
+        'num_batches': num_batches,
+        'nan_count': nan_count
+    }
 
 
 def evaluate(model, val_loader, device, use_culture_loss=False, culture_loss_lambda=0.5):
@@ -1004,12 +1004,12 @@ def main():
     print("Starting training...")
     print("="*80 + "\n")
 
-best_eval_accuracy = 0.0  # ✅ 改为根据 accuracy 保存最佳模型
-best_moe_dir = os.path.join(args.output_dir, 'best_moe')
-best_lambda = 0.0  # ✅ 记录最佳模型的 lambda 值
-best_epoch = 0  # ✅ 记录最佳 epoch
+    best_eval_accuracy = 0.0  # ✅ 改为根据 accuracy 保存最佳模型
+    best_moe_dir = os.path.join(args.output_dir, 'best_moe')
+    best_lambda = 0.0  # ✅ 记录最佳模型的 lambda 值
+    best_epoch = 0  # ✅ 记录最佳 epoch
 
-epoch_results = []
+    epoch_results = []
 
     for epoch in range(args.num_epochs):
         print(f"\n{'='*80}")
@@ -1138,24 +1138,24 @@ epoch_results = []
     with open(os.path.join(args.output_dir, 'epoch_eval_results.json'), 'w', encoding='utf-8') as f:
         json.dump(epoch_results, f, indent=2, ensure_ascii=False)
 
-# 保存配置
-config = {
-'base_model': args.base_model_path,
-'lora_weights': args.lora_weights_path,
-'num_epochs': args.num_epochs,
-'batch_size': args.batch_size,
-'learning_rate': learning_rate,  # ✅ 保存实际使用的学习率
-'use_culture_loss': args.use_culture_loss,
-'culture_loss_lambda_initial': args.culture_loss_lambda,  # ✅ 初始 lambda 值
-'culture_loss_lambda_learnable': model.culture_loss_lambda_learnable,  # ✅ 是否可学习
-'num_experts': args.num_experts,
-'eval_interval': args.eval_interval,
-'best_epoch': best_epoch,  # ✅ 最佳 epoch
-'best_eval_accuracy': best_eval_accuracy,  # ✅ 最佳准确率
-'best_culture_loss_lambda': best_lambda,  # ✅ 最佳模型的 lambda 值
-'moe_fusion': args.moe_fusion,  # ✅ MoE 融合系数
-'data_format': 'new_format (instruction + instruction_mask + input + output + label)'
-}
+    # 保存配置
+    config = {
+    'base_model': args.base_model_path,
+    'lora_weights': args.lora_weights_path,
+    'num_epochs': args.num_epochs,
+    'batch_size': args.batch_size,
+    'learning_rate': learning_rate,  # ✅ 保存实际使用的学习率
+    'use_culture_loss': args.use_culture_loss,
+    'culture_loss_lambda_initial': args.culture_loss_lambda,  # ✅ 初始 lambda 值
+    'culture_loss_lambda_learnable': model.culture_loss_lambda_learnable,  # ✅ 是否可学习
+    'num_experts': args.num_experts,
+    'eval_interval': args.eval_interval,
+    'best_epoch': best_epoch,  # ✅ 最佳 epoch
+    'best_eval_accuracy': best_eval_accuracy,  # ✅ 最佳准确率
+    'best_culture_loss_lambda': best_lambda,  # ✅ 最佳模型的 lambda 值
+    'moe_fusion': args.moe_fusion,  # ✅ MoE 融合系数
+    'data_format': 'new_format (instruction + instruction_mask + input + output + label)'
+    }
 
     with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
