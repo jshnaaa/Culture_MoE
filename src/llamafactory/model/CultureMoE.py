@@ -454,6 +454,14 @@ class LlamaSharedRouterExpertsModel(nn.Module):
                 # lambda_entropy = -0.01（负号表示增加负熵，就是降低熵）
                 neg_entropy_loss = self.router.negative_entropy_regularization(expert_weights, lambda_entropy=-0.01)
 
+                # ✅ 如果任何损失为 None，设置为 0
+                if load_balance_loss is None:
+                    load_balance_loss = torch.tensor(0.0, device=generation_loss.device)
+                if entropy_loss is None:
+                    entropy_loss = torch.tensor(0.0, device=generation_loss.device)
+                if neg_entropy_loss is None:
+                    neg_entropy_loss = torch.tensor(0.0, device=generation_loss.device)
+
                 # ✅ 确保所有损失在同一设备上
                 if load_balance_loss.device != generation_loss.device:
                     load_balance_loss = load_balance_loss.to(generation_loss.device)
@@ -489,6 +497,14 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
                 # ✅ 计算负熵正则化损失（尖锐化路由）
                 neg_entropy_loss = self.router.negative_entropy_regularization(expert_weights, lambda_entropy=-0.01)
+
+                # ✅ 如果任何损失为 None，设置为 0
+                if load_balance_loss is None:
+                    load_balance_loss = torch.tensor(0.0, device=generation_loss.device)
+                if entropy_loss is None:
+                    entropy_loss = torch.tensor(0.0, device=generation_loss.device)
+                if neg_entropy_loss is None:
+                    neg_entropy_loss = torch.tensor(0.0, device=generation_loss.device)
 
                 # ✅ 确保所有损失在同一设备上
                 if load_balance_loss.device != generation_loss.device:
