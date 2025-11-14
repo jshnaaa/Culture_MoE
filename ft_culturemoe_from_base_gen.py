@@ -260,18 +260,51 @@ def auto_adjust_batch_size(model, tokenizer, max_length=512, target_memory_gb=30
     return batch_sizes[-1]
 
 
-def adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5):
+def adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5, min_lr=1e-8):
     """
-    在梯度爆炸时调整学习率
+    在梯度爆炸时调整学习率（带最小学习率保护）
 
     Args:
         optimizer: 优化器
         reduction_factor: 学习率减少因子
+        min_lr: 最小学习率阈值
     """
     for param_group in optimizer.param_groups:
         old_lr = param_group['lr']
-        param_group['lr'] = old_lr * reduction_factor
-        print(f"   Reduced learning rate for {param_group.get('name', 'unknown')}: {old_lr:.2e} -> {param_group['lr']:.2e}")
+        new_lr = max(old_lr * reduction_factor, min_lr)  # 不能低于最小学习率
+
+        if new_lr == min_lr and old_lr > min_lr:
+            print(f"   Learning rate for {param_group.get('name', 'unknown')} hit minimum: {old_lr:.2e} -> {new_lr:.2e}")
+        elif new_lr > min_lr:
+            param_group['lr'] = new_lr
+            print(f"   Reduced learning rate for {param_group.get('name', 'unknown')}: {old_lr:.2e} -> {new_lr:.2e}")
+        else:
+            print(f"   Learning rate for {param_group.get('name', 'unknown')} already at minimum: {old_lr:.2e}")
+
+        param_group['lr'] = new_lr
+
+
+def restore_learning_rates_if_stable(optimizer, target_lrs, recovery_factor=1.1, max_recovery_lr=None):
+    """
+    如果训练稳定，逐步恢复学习率
+
+    Args:
+        optimizer: 优化器
+        target_lrs: 目标学习率字典 {group_name: target_lr}
+        recovery_factor: 恢复因子
+        max_recovery_lr: 最大恢复学习率
+    """
+    for param_group in optimizer.param_groups:
+        group_name = param_group.get('name', 'unknown')
+        current_lr = param_group['lr']
+        target_lr = target_lrs.get(group_name, current_lr)
+
+        if current_lr < target_lr:
+            new_lr = min(current_lr * recovery_factor, target_lr)
+            if max_recovery_lr:
+                new_lr = min(new_lr, max_recovery_lr.get(group_name, new_lr))
+            param_group['lr'] = new_lr
+            print(f"   Recovering learning rate for {group_name}: {current_lr:.2e} -> {new_lr:.2e}")
 
 
 def should_train_base_model(epoch, base_model_start_epoch=5):
@@ -934,20 +967,24 @@ def train_epoch(model, train_loader, optimizer, device, current_epoch=1, schedul
             for key, norm in grad_norms.items():
                 all_grad_norms[key].append(norm)
 
-            # ✅ 多级梯度监控策略
-            if grad_norms['total'] > 100.0:  # 严重爆炸
+            # ✅ 更保守的梯度监控策略（避免学习率崩塌）
+            if grad_norms['total'] > 200.0:  # 严重爆炸 - 提高阈值
                 print(f"\n🚨 CRITICAL gradient explosion! Norm: {grad_norms['total']:.2f}")
                 print(f"   Batch {batch_idx}/{len(train_loader)} in Epoch {current_epoch}")
                 print(f"   Emergency learning rate reduction and skip...")
-                adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.2)  # 更激进的减少
+                adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5, min_lr=1e-8)  # 保护最小学习率
                 optimizer.zero_grad()
                 continue
-            elif grad_norms['total'] > 50.0:  # 中等爆炸
+            elif grad_norms['total'] > 100.0:  # 中等爆炸 - 提高阈值
                 print(f"\n⚠️  Moderate gradient explosion! Norm: {grad_norms['total']:.2f}")
                 print(f"   Batch {batch_idx}/{len(train_loader)} in Epoch {current_epoch}")
-                adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5)
-                optimizer.zero_grad()
-                continue
+                print(f"   Applying stronger gradient clipping instead of reducing learning rate...")
+                # 不降低学习率，只使用更强的梯度裁剪
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+            elif grad_norms['total'] > 75.0:  # 高梯度预警
+                print(f"\n⚠️  High gradient detected! Norm: {grad_norms['total']:.2f}")
+                print(f"   Applying stronger clipping and continuing...")
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             else:
                 # 正常情况下的温和梯度裁剪（不报警，除非>50）
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
