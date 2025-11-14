@@ -53,6 +53,25 @@ class LoRAExpert(nn.Module):
         # ✅ 添加 LayerNorm 以稳定专家行为
         self.layer_norm = nn.LayerNorm(output_dim)
 
+        # ✅ 初始化专家网络权重
+        self._init_weights()
+
+    def _init_weights(self):
+        """
+        ✅ 初始化专家网络权重 - 使用小的初始化防止梯度爆炸
+        """
+        # 初始化 MLP 基础模型
+        for module in self.base_model.network:
+            if isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, mean=0, std=0.001)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+        # 初始化 LoRA 层 - 使用极小的初始化
+        nn.init.normal_(self.lora_layer.W, mean=0, std=0.0001)
+        nn.init.normal_(self.lora_layer.A, mean=0, std=0.0001)
+        nn.init.normal_(self.lora_layer.B, mean=0, std=0.0001)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # ✅ 使用 LayerNorm + FFN + LoRA 的结构
         # y = LayerNorm(x)

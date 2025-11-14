@@ -91,8 +91,9 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         # gate = sigmoid(Wg · h + bg)，bg 初始为 -2
         # h_out = shared + gate · moe
         self.gate_linear = nn.Linear(hidden_dim, hidden_dim)
+        # ✅ 使用更小的权重初始化（std=0.001）防止梯度爆炸
         # 初始化 bias 为 -2，使得初期 gate 接近 0
-        nn.init.xavier_uniform_(self.gate_linear.weight)
+        nn.init.normal_(self.gate_linear.weight, mean=0, std=0.001)
         nn.init.constant_(self.gate_linear.bias, -2.0)
         self.gate_sigmoid = nn.Sigmoid()
 
@@ -155,20 +156,21 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
     def _init_shared_layer(self):
         """
-        ✅ 改进 Shared 层初始化
-        使用小的初始化确保 MoE 层不会过度改变 LLaMA 的输出
+        ✅ 改进 Shared 层初始化 - 更保守的策略防止梯度爆炸
+        使用极小的初始化确保 MoE 层不会过度改变 LLaMA 的输出
         """
         for i, module in enumerate(self.shared):
             if isinstance(module, nn.Linear):
                 # 第一层：从 hidden_dim 到 shared_hidden_dim
+                # ✅ 使用更小的初始化（std=0.001）
                 if i == 0:
-                    nn.init.xavier_uniform_(module.weight)
+                    nn.init.normal_(module.weight, mean=0, std=0.001)
                     if module.bias is not None:
                         nn.init.zeros_(module.bias)
                 # 最后一层：从 shared_hidden_dim 回到 hidden_dim
-                # 使用小的初始化，使输出接近 0（接近恒等映射）
+                # ✅ 使用极小的初始化（std=0.0001），使输出接近 0（接近恒等映射）
                 elif i == len(self.shared) - 1:
-                    nn.init.normal_(module.weight, mean=0, std=0.01)
+                    nn.init.normal_(module.weight, mean=0, std=0.0001)
                     if module.bias is not None:
                         nn.init.zeros_(module.bias)
 
