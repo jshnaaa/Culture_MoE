@@ -29,20 +29,25 @@ else
 fi
 # 根据 DATA_ID 选择数据集
 case $DATA_ID in
-    1)
+    11)
         TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
         DATASET_NAME="WVS_Gen"
         OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
-    2)
+    12)
         TEST_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
         DATASET_NAME="WVS_Gen_ID"
         OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_id_${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
-    3)
+    13)
         TEST_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
         DATASET_NAME="WVS_Gen_OOD"
         OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_ood_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        ;;
+    21)
+        TEST_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
+        DATASET_NAME="moral_Gen"
+        OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_moral_${BACKBONE}_$(date +%Y%m%d_%H%M)"
         ;;
 esac
 

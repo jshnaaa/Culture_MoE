@@ -99,6 +99,14 @@ case $DATA_ID in
         DATASET_TAG="CulturalBench_icl"
         echo "Using CulturalBench dataset (new format)"
         ;;
+    61)
+        TRAIN_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
+        DATASET_TAG="moral"
+        ;;
+    62)
+        TRAIN_FILE="/autodl-fs/data/moral_stories_merge_rp_gen.json"
+        DATASET_TAG="moral_rp"
+        ;;
     *)
         echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, or 5."
         echo ""

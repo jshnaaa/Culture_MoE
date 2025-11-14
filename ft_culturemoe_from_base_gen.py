@@ -260,6 +260,34 @@ def auto_adjust_batch_size(model, tokenizer, max_length=512, target_memory_gb=30
     return batch_sizes[-1]
 
 
+def adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5):
+    """
+    在梯度爆炸时调整学习率
+
+    Args:
+        optimizer: 优化器
+        reduction_factor: 学习率减少因子
+    """
+    for param_group in optimizer.param_groups:
+        old_lr = param_group['lr']
+        param_group['lr'] = old_lr * reduction_factor
+        print(f"   Reduced learning rate for {param_group.get('name', 'unknown')}: {old_lr:.2e} -> {param_group['lr']:.2e}")
+
+
+def should_train_base_model(epoch, base_model_start_epoch=3):
+    """
+    判断是否应该训练基础模型参数
+
+    Args:
+        epoch: 当前epoch (从1开始)
+        base_model_start_epoch: 开始训练基础模型的epoch
+
+    Returns:
+        bool: 是否训练基础模型
+    """
+    return epoch >= base_model_start_epoch
+
+
 def calculate_warmup_factor(epoch, warmup_start=5, warmup_end=10):
     """
     计算文化损失的预热因子
@@ -881,15 +909,20 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
             for key, norm in grad_norms.items():
                 all_grad_norms[key].append(norm)
 
-            # ✅ 激进梯度裁剪（0.5）
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-
-            # ✅ 检查梯度爆炸
-            if grad_norms['total'] > 10.0:
+            # ✅ 检查梯度爆炸并跳过
+            if grad_norms['total'] > 5.0:  # 更严格的阈值
                 print(f"\n⚠️  Gradient explosion detected! Norm: {grad_norms['total']:.2f}")
+                print(f"   Reducing learning rates and skipping this update...")
+
+                # 自适应调整学习率
+                adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5)
+
                 # 跳过这个更新步骤
                 optimizer.zero_grad()
                 continue
+
+            # ✅ 更激进的梯度裁剪（0.1）
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
 
             optimizer.step()
             optimizer.zero_grad()
@@ -1212,16 +1245,22 @@ def main():
                         help="Entropy regularization weight (default 0.1, prevents collapse)")
 
     # 分层学习率参数
-    parser.add_argument("--moe_lr_multiplier", type=float, default=10.0,
-                        help="MoE expert learning rate multiplier (default 10.0)")
-    parser.add_argument("--router_lr_multiplier", type=float, default=5.0,
-                        help="Router and shared expert learning rate multiplier (default 5.0)")
+    parser.add_argument("--moe_lr_multiplier", type=float, default=2.0,
+                        help="MoE expert learning rate multiplier (default 2.0, reduced for stability)")
+    parser.add_argument("--router_lr_multiplier", type=float, default=1.5,
+                        help="Router and shared expert learning rate multiplier (default 1.5, reduced for stability)")
 
     # 预热策略参数
     parser.add_argument("--warmup_start_epoch", type=int, default=5,
                         help="Epoch to start culture loss warmup (default 5)")
     parser.add_argument("--warmup_end_epoch", type=int, default=10,
                         help="Epoch to end culture loss warmup (default 10)")
+
+    # 渐进式训练参数
+    parser.add_argument("--base_model_start_epoch", type=int, default=3,
+                        help="Epoch to start training base model parameters (default 3)")
+    parser.add_argument("--enable_progressive_training", type=lambda x: x.lower() == 'true', default=True,
+                        help="Enable progressive parameter unfreezing (default True)")
 
     # 内存优化参数
     parser.add_argument("--use_gradient_checkpointing", type=lambda x: x.lower() == 'true', default=False,
@@ -1530,6 +1569,10 @@ def main():
     best_lambda = 0.0  # ✅ 记录最佳模型的 lambda 值
     best_epoch = 0  # ✅ 记录最佳 epoch
 
+    # ✅ 梯度爆炸监控
+    consecutive_explosions = 0
+    max_consecutive_explosions = 5
+
     epoch_results = []
 
     for epoch in range(args.num_epochs):
@@ -1537,6 +1580,27 @@ def main():
         print(f"\n{'='*80}")
         print(f"Epoch {current_epoch}/{args.num_epochs}")
         print(f"{'='*80}")
+
+        # ✅ 渐进式参数解冻策略
+        if args.enable_progressive_training:
+            train_base_model = should_train_base_model(current_epoch, base_model_start_epoch=args.base_model_start_epoch)
+
+            # 动态调整参数的可训练状态
+            for name, param in model.named_parameters():
+                name_lower = name.lower()
+                is_moe_param = any(keyword in name_lower for keyword in ['router', 'expert', 'shared', 'moe'])
+
+                if is_moe_param:
+                    # MoE参数始终可训练
+                    param.requires_grad = True
+                else:
+                    # 基础模型参数根据epoch决定
+                    param.requires_grad = train_base_model
+        else:
+            # 如果禁用渐进式训练，所有参数都可训练
+            train_base_model = True
+            for param in model.parameters():
+                param.requires_grad = True
 
         # ✅ 计算文化损失预热因子
         warmup_factor = calculate_warmup_factor(current_epoch,
@@ -1546,6 +1610,15 @@ def main():
         # ✅ 内存监控
         memory_before = get_gpu_memory_info()
         print(f"💾 Memory before epoch: {memory_before['allocated_gb']:.2f}GB allocated, {memory_before['available_gb']:.2f}GB available")
+
+        # ✅ 训练状态提示
+        if args.enable_progressive_training:
+            if not train_base_model:
+                print(f"🔧 Progressive Training: Only MoE parameters (base model frozen)")
+            else:
+                print(f"🔧 Progressive Training: All parameters trainable (epoch >= {args.base_model_start_epoch})")
+        else:
+            print(f"🔧 End-to-End Training: All parameters trainable from start")
 
         if warmup_factor == 0.0:
             print(f"🔥 Warmup Phase: Only language modeling loss (warmup_factor={warmup_factor:.1f})")
@@ -1690,7 +1763,7 @@ def main():
     'lora_weights': args.lora_weights_path,
     'num_epochs': args.num_epochs,
     'batch_size': args.batch_size,
-    'learning_rate': learning_rate,  # ✅ 保存实际使用的学习率
+    'learning_rate': args.learning_rate,  # ✅ 保存实际使用的学习率
     'use_culture_loss': args.use_culture_loss,
     'culture_loss_lambda_initial': args.culture_loss_lambda,  # ✅ 初始 lambda 值
     'culture_loss_lambda_learnable': model.culture_loss_lambda_learnable,  # ✅ 是否可学习
@@ -1700,6 +1773,13 @@ def main():
     'best_eval_accuracy': best_eval_accuracy,  # ✅ 最佳准确率
     'best_culture_loss_lambda': best_lambda,  # ✅ 最佳模型的 lambda 值
     'moe_fusion': args.moe_fusion,  # ✅ MoE 融合系数
+    'moe_lr_multiplier': args.moe_lr_multiplier,  # ✅ MoE 学习率倍数
+    'router_lr_multiplier': args.router_lr_multiplier,  # ✅ 路由器学习率倍数
+    'enable_progressive_training': args.enable_progressive_training,  # ✅ 渐进式训练
+    'base_model_start_epoch': args.base_model_start_epoch,  # ✅ 基础模型开始训练轮次
+    'warmup_start_epoch': args.warmup_start_epoch,  # ✅ 预热开始轮次
+    'warmup_end_epoch': args.warmup_end_epoch,  # ✅ 预热结束轮次
+    'training_mode': 'end_to_end_with_stability_fixes',  # ✅ 训练模式标识
     'data_format': 'new_format (instruction + instruction_mask + input + output + label)'
     }
 
