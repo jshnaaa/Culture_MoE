@@ -59,10 +59,6 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         hidden_dim = self.config.hidden_size
 
-        # ✅ 可学习的 MoE 融合系数
-        # h_final = h_shared + alpha * h_moe
-        self.moe_fusion_alpha = nn.Parameter(torch.tensor(moe_fusion, dtype=torch.float32))
-
         # ✅ 可学习的文化损失权重
         if culture_loss_lambda < 0:
             # 自动学习权重（初始值 0.1）
@@ -73,16 +69,29 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             self.register_buffer('culture_loss_lambda', torch.tensor(culture_loss_lambda, dtype=torch.float32))
             self.culture_loss_lambda_learnable = False
 
-        # 2. Shared 层 - 改进初始化
+        # ✅ 方案 1：降低 shared 的 capacity，增大 MoE 的 capacity
+        # Shared 层：4096 → 1024 → 4096（弱一点）
+        # MoE Experts：4096 → 4096 → 4096（强一点）
+
+        # 2. Shared 层 - 降低 capacity（弱化 shared）
         self.shared = nn.Sequential(
-            nn.Linear(hidden_dim, args.shared_hidden_dim),
+            nn.Linear(hidden_dim, 1024),  # ✅ 降低到 1024（原来是 args.shared_hidden_dim=4096）
             nn.ReLU(),
             nn.Dropout(args.dropout),
-            nn.Linear(args.shared_hidden_dim, hidden_dim)
+            nn.Linear(1024, hidden_dim)
         )
 
         # ✅ 改进 Shared 层初始化
         self._init_shared_layer()
+
+        # ✅ 方案 2：添加 Gating 机制
+        # gate = sigmoid(Wg · h + bg)，bg 初始为 -2
+        # h_out = shared + gate · moe
+        self.gate_linear = nn.Linear(hidden_dim, hidden_dim)
+        # 初始化 bias 为 -2，使得初期 gate 接近 0
+        nn.init.xavier_uniform_(self.gate_linear.weight)
+        nn.init.constant_(self.gate_linear.bias, -2.0)
+        self.gate_sigmoid = nn.Sigmoid()
 
         # 3. Router
         self.router = ExpertRouter(
@@ -92,10 +101,11 @@ class LlamaSharedRouterExpertsModel(nn.Module):
             dropout=args.dropout
         )
 
-        # 4. Experts 层
+        # 4. Experts 层 - 增大 capacity（强化 MoE）
+        # 使用 4096 → 4096 → 4096 的结构
         self.experts_layer = ExpertLayer(
             experts_input_dim=hidden_dim,
-            experts_hidden_dim=args.experts_hidden_dim,
+            experts_hidden_dim=4096,  # ✅ 增大到 4096（原来是 args.experts_hidden_dim）
             experts_output_dim=hidden_dim,
             num_experts=args.num_experts,
             lora_rank=args.lora_rank,
@@ -314,23 +324,36 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         expert_sum = torch.stack(weighted_expert_outs, dim=0).sum(dim=0)  # [B, L_all, H]
 
-        # ✅ 处理序列长度不匹配的情况
-        # shared_out 来自 h_no (instruction_mask + input)
-        # expert_sum 来自 h_all (instruction + input)
-        # 它们的长度可能不同
+# ✅ 处理序列长度不匹配的情况
+# shared_out 来自 h_no (instruction_mask + input)
+# expert_sum 来自 h_all (instruction + input)
+# 它们的长度可能不同
 
-        if shared_out.size(1) != expert_sum.size(1):
-            # 取较短的长度
-            min_len = min(shared_out.size(1), expert_sum.size(1))
-            shared_out = shared_out[:, :min_len, :]
-            expert_sum = expert_sum[:, :min_len, :]
+if shared_out.size(1) != expert_sum.size(1):
+    # 取较短的长度
+    min_len = min(shared_out.size(1), expert_sum.size(1))
+    shared_out = shared_out[:, :min_len, :]
+    expert_sum = expert_sum[:, :min_len, :]
 
-        # ✅ 应用可学习的 MoE 融合系数
-        # 初期 alpha 很小（0.05），MoE 影响较小，不会破坏原模型输出分布
-        # 随着训练，alpha 会自动调节，学习 MoE 在文化差异显著样本上的影响力
-        # 同时应用 MoE 预热权重（在预热阶段逐步增加 MoE 的影响）
-        moe_contribution = self.moe_fusion_alpha * expert_sum  # [B, L, H]
-        enhanced_hidden = shared_out + moe_warmup_weight * moe_contribution  # [B, L, H]
+# ✅ 方案 2：使用 Gating 机制
+# 不要仅仅：h_out = shared + α * moe
+# 改成：h_out = shared + gate · moe
+# 其中：gate = sigmoid(Wg · h + bg)，bg 初始为 -2
+#
+# gate 确保 moe 至少有一点被使用
+# Router 决定"哪个文化专家"
+# gate 决定"是否需要专家的文化增强"
+
+# 计算 gate：[B, L, H]
+gate_logits = self.gate_linear(shared_out)  # [B, L, H]
+gate = self.gate_sigmoid(gate_logits)  # [B, L, H]，范围 [0, 1]
+
+# 应用 gating 机制
+# h_out = shared + gate · moe
+# 初期 gate 接近 0（因为 bias 初始为 -2），MoE 影响较小
+# 随着训练，gate 会自动调节，学习何时需要 MoE 增强
+moe_gated = gate * expert_sum  # [B, L, H]
+enhanced_hidden = shared_out + moe_warmup_weight * moe_gated  # [B, L, H]
 
         # ✅ Step 8: 使用 LLaMA 的 lm_head 生成 logits
         # 确保 enhanced_hidden 与 lm_head 的数据类型一致
@@ -418,14 +441,21 @@ class LlamaSharedRouterExpertsModel(nn.Module):
                 load_balance_loss = self.router.compute_load_balancing_loss(router_logits)
                 entropy_loss = self.router.entropy_regularization(expert_weights)
 
+                # ✅ 计算负熵正则化损失（尖锐化路由）
+                # lambda_entropy = -0.01（负号表示增加负熵，就是降低熵）
+                neg_entropy_loss = self.router.negative_entropy_regularization(expert_weights, lambda_entropy=-0.01)
+
                 # ✅ 确保所有损失在同一设备上
                 if load_balance_loss.device != generation_loss.device:
                     load_balance_loss = load_balance_loss.to(generation_loss.device)
                 if entropy_loss.device != generation_loss.device:
                     entropy_loss = entropy_loss.to(generation_loss.device)
+                if neg_entropy_loss.device != generation_loss.device:
+                    neg_entropy_loss = neg_entropy_loss.to(generation_loss.device)
 
                 outputs['load_balance_loss'] = load_balance_loss
                 outputs['entropy_loss'] = entropy_loss
+                outputs['neg_entropy_loss'] = neg_entropy_loss  # ✅ 记录负熵损失
 
                 # ✅ 使用模型的可学习 culture_loss_lambda
                 lambda_value = self.culture_loss_lambda
@@ -448,14 +478,20 @@ class LlamaSharedRouterExpertsModel(nn.Module):
                 load_balance_loss = self.router.compute_load_balancing_loss(router_logits)
                 entropy_loss = self.router.entropy_regularization(expert_weights)
 
+                # ✅ 计算负熵正则化损失（尖锐化路由）
+                neg_entropy_loss = self.router.negative_entropy_regularization(expert_weights, lambda_entropy=-0.01)
+
                 # ✅ 确保所有损失在同一设备上
                 if load_balance_loss.device != generation_loss.device:
                     load_balance_loss = load_balance_loss.to(generation_loss.device)
                 if entropy_loss.device != generation_loss.device:
                     entropy_loss = entropy_loss.to(generation_loss.device)
+                if neg_entropy_loss.device != generation_loss.device:
+                    neg_entropy_loss = neg_entropy_loss.to(generation_loss.device)
 
                 outputs['load_balance_loss'] = load_balance_loss
                 outputs['entropy_loss'] = entropy_loss
+                outputs['neg_entropy_loss'] = neg_entropy_loss  # ✅ 记录负熵损失
 
                 # ✅ 总损失：只有生成损失 + 防塌陷损失
                 total_loss = (generation_loss +

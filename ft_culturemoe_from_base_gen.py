@@ -488,16 +488,19 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         else:
             print(f"\n✅ Router weights are balanced (max weight: {max_weight:.4f})")
 
-    return {
-        'loss': avg_loss,
-        'gen_loss': avg_gen_loss,
-        'culture_loss': avg_culture_loss,
-        'spec_loss': avg_spec_loss,
-        'div_loss': avg_div_loss,
-        'culture_loss_lambda': avg_lambda,  # ✅ 返回平均 lambda 值
-        'num_batches': num_batches,
-        'nan_count': nan_count
-    }
+return {
+    'loss': avg_loss,
+    'gen_loss': avg_gen_loss,
+    'culture_loss': avg_culture_loss,
+    'spec_loss': avg_spec_loss,
+    'div_loss': avg_div_loss,
+    'culture_loss_lambda': avg_lambda,  # ✅ 返回平均 lambda 值
+    'load_balance_loss': 0.0,  # ✅ 占位符，实际值在 forward 中计算
+    'entropy_loss': 0.0,  # ✅ 占位符
+    'neg_entropy_loss': 0.0,  # ✅ 占位符，负熵损失
+    'num_batches': num_batches,
+    'nan_count': nan_count
+}
 
 
 def evaluate(model, val_loader, device, use_culture_loss=False, culture_loss_lambda=0.5):
@@ -1038,6 +1041,14 @@ epoch_results = []
         print(f"   Train Spec Loss: {train_metrics['spec_loss']:.4f}")
         print(f"   Train Div Loss: {train_metrics['div_loss']:.4f}")
         print(f"   Culture Loss Lambda: {current_lambda:.6f}")  # ✅ 打印 lambda 值
+
+        # ✅ 打印防塌陷损失
+        if 'load_balance_loss' in train_metrics:
+            print(f"   Load Balance Loss: {train_metrics['load_balance_loss']:.6f}")
+        if 'entropy_loss' in train_metrics:
+            print(f"   Entropy Loss: {train_metrics['entropy_loss']:.6f}")
+        if 'neg_entropy_loss' in train_metrics:
+            print(f"   Neg Entropy Loss: {train_metrics['neg_entropy_loss']:.6f}")  # ✅ 打印负熵损失
 
         # ✅ 每 eval_interval 个 epoch 进行一次评估
         if (epoch + 1) % args.eval_interval == 0 or (epoch + 1) == args.num_epochs:

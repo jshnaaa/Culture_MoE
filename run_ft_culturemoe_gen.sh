@@ -1,25 +1,32 @@
 #!/bin/bash
 
 # ============================================================
-# 使用新数据格式微调 CultureMoE 模型
+# 使用新数据格式微调 CultureMoE 模型（改进版）
+#
+# ✅ 改进内容：
+#   1. 降低 shared 的 capacity（4096→1024→4096）
+#   2. 增大 MoE experts 的 capacity（4096→4096→4096）
+#   3. 添加 Gating 机制（h_out = shared + gate·moe）
+#   4. 在 Experts 中添加 LayerNorm（稳定训练）
+#   5. 添加负熵正则化（尖锐化路由）
 #
 # 使用方法：
-#   sh run_ft_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <NUM_GPUS> <CULTURE_LOSS_WEIGHT>
+#   sh run_ft_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <MOE_FUSION> <CULTURE_LOSS_WEIGHT>
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
-#   DATA_ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认 4)
+#   DATA_ID: 1=unified_all_datasets, 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认 4)
 #   USE_CULTURE_LOSS: True 或 False (默认 True)
 #   NUM_EXPERTS: 专家数量 (默认 6)
-#   NUM_GPUS: GPU 数量 (默认 2)
-#   CULTURE_LOSS_WEIGHT: 文化损失权重 (默认 0.5)
+#   MOE_FUSION: MoE 融合系数 (默认 0.4，已改为 gating 机制)
+#   CULTURE_LOSS_WEIGHT: 文化损失权重，-1=自动学习，其他值=固定权重 (默认 -1)
 #
 # 示例：
-#   # 基础训练
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.5
+#   # 基础训练（自动学习 lambda）
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 0.4 -1
 #
-#   # 消融实验：低文化损失权重
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 2 0.1
+#   # 固定权重模式
+#   sh run_ft_culturemoe_gen.sh llama 4 True 6 0.4 0.1
 # ============================================================
 
 # ✅ 配置参数

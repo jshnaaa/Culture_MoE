@@ -42,6 +42,7 @@ class LoRA(nn.Module):
 class LoRAExpert(nn.Module):
     """
     结合MLP和LoRA的专家网络。
+    ✅ 添加 LayerNorm 以稳定训练
     """
 
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, lora_rank: int = 8, dropout: float = 0.1):
@@ -49,10 +50,26 @@ class LoRAExpert(nn.Module):
         self.base_model = MLPBase(input_dim, hidden_dim, output_dim, dropout)
         self.lora_layer = LoRA(output_dim, output_dim, lora_rank)
 
+        # ✅ 添加 LayerNorm 以稳定专家行为
+        self.layer_norm = nn.LayerNorm(output_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        features = self.base_model(x)
-        return self.lora_layer(features)
+        # ✅ 使用 LayerNorm + FFN + LoRA 的结构
+        # y = LayerNorm(x)
+        # y = FFN(y)
+        # return x + LoRA(y)
+
+        # 先对输入进行 LayerNorm
+        normalized = self.layer_norm(x)
+
+        # 通过 MLP 基础模型
+        features = self.base_model(normalized)
+
+        # 通过 LoRA 层
+        lora_out = self.lora_layer(features)
+
+        # ✅ 残差连接：x + LoRA(LayerNorm(FFN(x)))
+        return x + lora_out
 
 
 class ExpertLayer(nn.Module):

@@ -149,6 +149,29 @@ class ExpertRouter(nn.Module):
         # 返回负熵（我们希望最大化熵，即最小化负熵）
         entropy_loss = -entropy.mean()
 
+    def negative_entropy_regularization(self, expert_weights: torch.Tensor, lambda_entropy: float = -0.01) -> torch.Tensor:
+        """
+        ✅ 负熵正则化损失，尖锐化路由
+
+        让 router_probs 不要平均，让每个样本更倾向使用某个专家
+        增强专家 specialization
+
+        Args:
+            expert_weights: 专家权重 [batch_size, num_experts]
+            lambda_entropy: 负熵权重（默认 -0.01，负号表示增加负熵，就是降低熵）
+
+        Returns:
+            neg_entropy_loss: 负熵正则化损失
+        """
+        # 计算每个样本的熵
+        entropy = -torch.sum(expert_weights * torch.log(expert_weights + 1e-8), dim=-1)
+
+        # 返回负熵损失：lambda_entropy * entropy
+        # 由于 lambda_entropy 是负数，所以这会最小化熵（让分布更尖锐）
+        neg_entropy_loss = lambda_entropy * entropy.mean()
+
+        return neg_entropy_loss
+
         return entropy_loss
 
 
