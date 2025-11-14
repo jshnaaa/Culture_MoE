@@ -783,7 +783,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     return generated_text
 
 
-def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, culture_loss_alpha=2.0, culture_loss_beta=1.0, router_temperature=2.0, load_balance_weight=0.01, entropy_weight=0.1, num_accumulation_steps=1, class_weights=None, warmup_factor=1.0):
+def train_epoch(model, train_loader, optimizer, device, current_epoch=1, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, culture_loss_alpha=2.0, culture_loss_beta=1.0, router_temperature=2.0, load_balance_weight=0.01, entropy_weight=0.1, num_accumulation_steps=1, class_weights=None, warmup_factor=1.0):
     """
     训练一个 epoch
 
@@ -792,6 +792,7 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         train_loader: 训练数据加载器
         optimizer: 优化器
         device: 设备
+        current_epoch: 当前epoch数（用于诊断信息）
         scheduler: 学习率调度器（可选）
         use_culture_loss: 是否使用文化损失
         culture_loss_lambda: 文化损失权重 (lambda)
@@ -1667,6 +1668,7 @@ def main():
         # 训练
         train_metrics = train_epoch(
             model, train_loader, optimizer, args.device,
+            current_epoch=current_epoch,  # ✅ 传递当前epoch
             scheduler=scheduler,
             use_culture_loss=args.use_culture_loss,
             culture_loss_lambda=args.culture_loss_lambda,
