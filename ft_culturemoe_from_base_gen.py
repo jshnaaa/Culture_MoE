@@ -1730,6 +1730,16 @@ def main():
         print(f"   Train Div Loss: {train_metrics['div_loss']:.4f}")
         print(f"   Culture Loss Lambda: {current_lambda:.6f}")  # ✅ 打印 lambda 值
 
+        # ✅ 添加损失组成分析
+        total_culture_contribution = train_metrics['culture_loss'] * current_lambda
+        gen_loss_ratio = train_metrics['gen_loss'] / (train_metrics['gen_loss'] + total_culture_contribution) if (train_metrics['gen_loss'] + total_culture_contribution) > 0 else 1.0
+        culture_loss_ratio = total_culture_contribution / (train_metrics['gen_loss'] + total_culture_contribution) if (train_metrics['gen_loss'] + total_culture_contribution) > 0 else 0.0
+
+        print(f"   📈 Loss Composition:")
+        print(f"      Generation Loss Ratio: {gen_loss_ratio:.3f} ({gen_loss_ratio*100:.1f}%)")
+        print(f"      Culture Loss Ratio: {culture_loss_ratio:.3f} ({culture_loss_ratio*100:.1f}%)")
+        print(f"      Effective Culture Contribution: {total_culture_contribution:.4f}")
+
         # ✅ 打印防塌陷损失
         if 'load_balance_loss' in train_metrics:
             print(f"   Load Balance Loss: {train_metrics['load_balance_loss']:.6f}")
