@@ -45,6 +45,9 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         # ✅ 用于存储最近一次前向传播的专家权重
         self._last_expert_weights = None
 
+        # ✅ MoE fusion coefficient (learnable parameter)
+        self.moe_fusion_alpha = nn.Parameter(torch.tensor(moe_fusion, dtype=torch.float32))
+
         # ✅ MoE 预热相关
         self.moe_warmup_steps = 0
         self.moe_warmup_total_steps = 0
@@ -345,14 +348,20 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         # gate 决定"是否需要专家的文化增强"
 
         # 计算 gate：[B, L, H]
+        # ✅ 确保 gate_linear 在正确的设备上
+        if self.gate_linear.weight.device != shared_out.device:
+            self.gate_linear = self.gate_linear.to(shared_out.device)
         gate_logits = self.gate_linear(shared_out)  # [B, L, H]
         gate = self.gate_sigmoid(gate_logits)  # [B, L, H]，范围 [0, 1]
 
         # 应用 gating 机制
-        # h_out = shared + gate · moe
+        # h_out = shared + gate · moe_fusion_alpha · moe
         # 初期 gate 接近 0（因为 bias 初始为 -2），MoE 影响较小
         # 随着训练，gate 会自动调节，学习何时需要 MoE 增强
-        moe_gated = gate * expert_sum  # [B, L, H]
+        # moe_fusion_alpha 控制 MoE 的整体融合强度
+        # ✅ 确保 moe_fusion_alpha 在正确的设备上
+        moe_fusion_alpha = self.moe_fusion_alpha.to(device=gate.device, dtype=gate.dtype)
+        moe_gated = gate * moe_fusion_alpha * expert_sum  # [B, L, H]
         enhanced_hidden = shared_out + moe_warmup_weight * moe_gated  # [B, L, H]
 
         # ✅ Step 8: 使用 LLaMA 的 lm_head 生成 logits
