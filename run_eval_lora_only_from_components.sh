@@ -13,6 +13,7 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"           # 默认使用 llama
+DATA_ID="${2:-1}"           # 默认使用1
 
 # 根据 backbone 选择 base 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -23,17 +24,29 @@ if [ "$BACKBONE" = "qwen" ]; then
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_llama_20251112_2135/best_lora"
-#    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/gen/lora_only_gen_all_llama_20251107_2321/best_lora"
+    # LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_llama_20251112_2135/best_lora"
+   LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"
 fi
+# 根据 DATA_ID 选择数据集
+case $DATA_ID in
+    1)
+        TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
+        DATASET_NAME="WVS_Gen"
+        OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        ;;
+    2)
+        TEST_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
+        DATASET_NAME="WVS_Gen_ID"
+        OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_id_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        ;;
+    3)
+        TEST_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
+        DATASET_NAME="WVS_Gen_OOD"
+        OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_ood_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        ;;
+esac
 
-# 测试数据集（WVS 生成式数据集，标签 1-10）
-TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
-DATASET_NAME="WVS_Gen"
 NUM_CLASSES=10  # 1-10 共 10 个类别
-
-# 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft_test_results/ft_lora_only_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "LoRA Only Model Evaluation (From Components)"

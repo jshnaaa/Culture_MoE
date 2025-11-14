@@ -57,7 +57,7 @@ case $DATA_ID in
     4)
         # CultureLLM (默认)
         DATASET_NAME="CultureLLM"
-        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen_small.json"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
         echo "Using CultureLLM dataset (new format)"
         ;;
@@ -73,7 +73,7 @@ case $DATA_ID in
 esac
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_${DATASET_TAG}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/data/ft/ft_lora_only_gen_${DATASET_TAG}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "Fine-tuning LoRA Only Model with New Data Format"
@@ -114,7 +114,7 @@ python ft_lora_only_gen.py \
     --base_model_path "$BASE_MODEL_PATH" \
     --train_file "$TRAIN_FILE" \
     --output_dir "$OUTPUT_DIR" \
-    --num_epochs 9 \
+    --num_epochs 12 \
     --batch_size 8 \
     --eval_batch_size 8 \
     --learning_rate 2e-4 \

@@ -67,30 +67,37 @@ case $DATA_ID in
     22)
         # CulturalBench
         DATASET_NAME="CulturalBench"
-        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_rp_gen.json"
-        DATASET_TAG="CulturalBench"
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_rp_gen.json" # /autodl-fs/data/CulturalBench_merge_gen_small_samples.json
+        DATASET_TAG="CulturalBench_rp"
         echo "Using CulturalBench dataset (new format)"
         ;;
     32)
         # NormAD
         DATASET_NAME="NormAD"
         TRAIN_FILE="/root/autodl-fs/normad_merge_rp_gen.json"
-        DATASET_TAG="normad"
+        DATASET_TAG="normad_rp"
         echo "Using NormAD dataset (new format)"
         ;;
     42)
         # CultureLLM (默认)
         DATASET_NAME="CultureLLM"
         TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_rp_gen.json"
-        DATASET_TAG="cultureLLM"
+        DATASET_TAG="cultureLLM_rp"
         echo "Using CultureLLM dataset (new format)"
         ;;
     52)
         # wvs
         DATASET_NAME="wvs"
         TRAIN_FILE="/root/autodl-fs/wvs_merge_rp_gen.json"
-        DATASET_TAG="wvs"
+        DATASET_TAG="wvs_rp"
         echo "Using wvs dataset (new format)"
+        ;;
+    23)
+        # CulturalBench
+        DATASET_NAME="CulturalBench"
+        TRAIN_FILE="/autodl-fs/data/CulturalBench_merge_gen_samples.json" #
+        DATASET_TAG="CulturalBench_icl"
+        echo "Using CulturalBench dataset (new format)"
         ;;
     *)
         echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, or 5."
@@ -105,7 +112,7 @@ case $DATA_ID in
 esac
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_base_${DATASET_TAG}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/data/ft/ft_base_${DATASET_TAG}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "Evaluating Base Model on CultureLLM Dataset (New Format)"
