@@ -909,9 +909,9 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
             for key, norm in grad_norms.items():
                 all_grad_norms[key].append(norm)
 
-            # ✅ 检查梯度爆炸并跳过
-            if grad_norms['total'] > 1.0:  # ✅ 更严格的阈值（从5.0降到1.0）
-                print(f"\n⚠️  Gradient explosion detected! Norm: {grad_norms['total']:.2f}")
+            # ✅ 检查真正的梯度爆炸（设置合理阈值）
+            if grad_norms['total'] > 50.0:  # ✅ 合理的阈值：只有真正爆炸时才干预
+                print(f"\n⚠️  Severe gradient explosion detected! Norm: {grad_norms['total']:.2f}")
                 print(f"   Reducing learning rates and skipping this update...")
 
                 # 自适应调整学习率
@@ -921,8 +921,8 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
                 optimizer.zero_grad()
                 continue
 
-            # ✅ 更激进的梯度裁剪（0.5，从0.1提高到0.5以避免过度裁剪）
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+            # ✅ 温和的梯度裁剪（允许正常的大梯度）
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
 
             optimizer.step()
             optimizer.zero_grad()
@@ -1245,10 +1245,10 @@ def main():
                         help="Entropy regularization weight (default 0.1, prevents collapse)")
 
     # 分层学习率参数
-    parser.add_argument("--moe_lr_multiplier", type=float, default=1.0,
-                        help="MoE expert learning rate multiplier (default 1.0, reduced for stability)")
-    parser.add_argument("--router_lr_multiplier", type=float, default=0.5,
-                        help="Router and shared expert learning rate multiplier (default 0.5, reduced for stability)")
+    parser.add_argument("--moe_lr_multiplier", type=float, default=2.0,
+                        help="MoE expert learning rate multiplier (default 2.0, balanced for stability)")
+    parser.add_argument("--router_lr_multiplier", type=float, default=1.5,
+                        help="Router and shared expert learning rate multiplier (default 1.5, balanced for stability)")
 
     # 预热策略参数
     parser.add_argument("--warmup_start_epoch", type=int, default=5,
