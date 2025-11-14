@@ -947,13 +947,8 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
                 adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5)
                 optimizer.zero_grad()
                 continue
-            elif grad_norms['total'] > 25.0:  # 预警级别
-                print(f"\n⚠️  High gradient detected! Norm: {grad_norms['total']:.2f}")
-                print(f"   Applying stronger clipping and continuing...")
-                # 不跳过，但使用更强的梯度裁剪
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             else:
-                # 正常情况下的温和梯度裁剪
+                # 正常情况下的温和梯度裁剪（不报警，除非>50）
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
 
             # 如果没有跳过，继续正常的优化步骤
