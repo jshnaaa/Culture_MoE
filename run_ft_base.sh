@@ -60,7 +60,7 @@ case $DATA_ID in
     5)
         # wvs
         DATASET_NAME="wvs"
-        TRAIN_FILE="/root/autodl-fs/wvs_merge_rp_gen.json"
+        TRAIN_FILE="/root/autodl-fs/wvs_merge_gen.json"
         DATASET_TAG="wvs"
         echo "Using wvs dataset (new format)"
         ;;
