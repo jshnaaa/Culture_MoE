@@ -324,36 +324,36 @@ class LlamaSharedRouterExpertsModel(nn.Module):
 
         expert_sum = torch.stack(weighted_expert_outs, dim=0).sum(dim=0)  # [B, L_all, H]
 
-# ✅ 处理序列长度不匹配的情况
-# shared_out 来自 h_no (instruction_mask + input)
-# expert_sum 来自 h_all (instruction + input)
-# 它们的长度可能不同
+        # ✅ 处理序列长度不匹配的情况
+        # shared_out 来自 h_no (instruction_mask + input)
+        # expert_sum 来自 h_all (instruction + input)
+        # 它们的长度可能不同
 
-if shared_out.size(1) != expert_sum.size(1):
-    # 取较短的长度
-    min_len = min(shared_out.size(1), expert_sum.size(1))
-    shared_out = shared_out[:, :min_len, :]
-    expert_sum = expert_sum[:, :min_len, :]
+        if shared_out.size(1) != expert_sum.size(1):
+            # 取较短的长度
+            min_len = min(shared_out.size(1), expert_sum.size(1))
+            shared_out = shared_out[:, :min_len, :]
+            expert_sum = expert_sum[:, :min_len, :]
 
-# ✅ 方案 2：使用 Gating 机制
-# 不要仅仅：h_out = shared + α * moe
-# 改成：h_out = shared + gate · moe
-# 其中：gate = sigmoid(Wg · h + bg)，bg 初始为 -2
-#
-# gate 确保 moe 至少有一点被使用
-# Router 决定"哪个文化专家"
-# gate 决定"是否需要专家的文化增强"
+        # ✅ 方案 2：使用 Gating 机制
+        # 不要仅仅：h_out = shared + α * moe
+        # 改成：h_out = shared + gate · moe
+        # 其中：gate = sigmoid(Wg · h + bg)，bg 初始为 -2
+        #
+        # gate 确保 moe 至少有一点被使用
+        # Router 决定"哪个文化专家"
+        # gate 决定"是否需要专家的文化增强"
 
-# 计算 gate：[B, L, H]
-gate_logits = self.gate_linear(shared_out)  # [B, L, H]
-gate = self.gate_sigmoid(gate_logits)  # [B, L, H]，范围 [0, 1]
+        # 计算 gate：[B, L, H]
+        gate_logits = self.gate_linear(shared_out)  # [B, L, H]
+        gate = self.gate_sigmoid(gate_logits)  # [B, L, H]，范围 [0, 1]
 
-# 应用 gating 机制
-# h_out = shared + gate · moe
-# 初期 gate 接近 0（因为 bias 初始为 -2），MoE 影响较小
-# 随着训练，gate 会自动调节，学习何时需要 MoE 增强
-moe_gated = gate * expert_sum  # [B, L, H]
-enhanced_hidden = shared_out + moe_warmup_weight * moe_gated  # [B, L, H]
+        # 应用 gating 机制
+        # h_out = shared + gate · moe
+        # 初期 gate 接近 0（因为 bias 初始为 -2），MoE 影响较小
+        # 随着训练，gate 会自动调节，学习何时需要 MoE 增强
+        moe_gated = gate * expert_sum  # [B, L, H]
+        enhanced_hidden = shared_out + moe_warmup_weight * moe_gated  # [B, L, H]
 
         # ✅ Step 8: 使用 LLaMA 的 lm_head 生成 logits
         # 确保 enhanced_hidden 与 lm_head 的数据类型一致
