@@ -53,6 +53,392 @@ from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
 from src.llamafactory.model.moe_args import ModelArgs
 
 
+def estimate_memory_usage(model, input_shape=(1, 512), dtype=torch.float32):
+    """
+    估算模型内存使用量
+
+    Args:
+        model: PyTorch模型
+        input_shape: 输入张量形状
+        dtype: 数据类型
+
+    Returns:
+        dict: 包含各种内存使用估算的字典
+    """
+    param_memory = 0
+    buffer_memory = 0
+
+    # 计算参数内存
+    for param in model.parameters():
+        param_memory += param.numel() * param.element_size()
+
+    # 计算缓冲区内存
+    for buffer in model.buffers():
+        buffer_memory += buffer.numel() * buffer.element_size()
+
+    # 估算激活内存（简化估算）
+    activation_memory = input_shape[0] * input_shape[1] * 4096 * dtype.itemsize  # 假设隐藏维度4096
+
+    # 估算梯度内存（与参数相同）
+    gradient_memory = param_memory
+
+    total_memory = param_memory + buffer_memory + activation_memory + gradient_memory
+
+    return {
+        'param_memory_mb': param_memory / (1024 * 1024),
+        'buffer_memory_mb': buffer_memory / (1024 * 1024),
+        'activation_memory_mb': activation_memory / (1024 * 1024),
+        'gradient_memory_mb': gradient_memory / (1024 * 1024),
+        'total_memory_mb': total_memory / (1024 * 1024),
+        'total_memory_gb': total_memory / (1024 * 1024 * 1024)
+    }
+
+
+def get_parameter_statistics(model):
+    """
+    获取模型参数统计信息
+
+    Args:
+        model: PyTorch模型
+
+    Returns:
+        dict: 参数统计信息
+    """
+    total_params = 0
+    trainable_params = 0
+    frozen_params = 0
+
+    param_by_type = {}
+
+    for name, param in model.named_parameters():
+        param_count = param.numel()
+        total_params += param_count
+
+        if param.requires_grad:
+            trainable_params += param_count
+        else:
+            frozen_params += param_count
+
+        # 按类型分类参数
+        if 'embed' in name.lower():
+            param_type = 'embedding'
+        elif 'norm' in name.lower() or 'layer_norm' in name.lower():
+            param_type = 'normalization'
+        elif 'attention' in name.lower() or 'attn' in name.lower():
+            param_type = 'attention'
+        elif 'mlp' in name.lower() or 'feed_forward' in name.lower():
+            param_type = 'mlp'
+        elif 'router' in name.lower():
+            param_type = 'moe_router'
+        elif 'expert' in name.lower():
+            param_type = 'moe_expert'
+        elif 'shared' in name.lower():
+            param_type = 'moe_shared'
+        else:
+            param_type = 'other'
+
+        if param_type not in param_by_type:
+            param_by_type[param_type] = 0
+        param_by_type[param_type] += param_count
+
+    return {
+        'total_params': total_params,
+        'trainable_params': trainable_params,
+        'frozen_params': frozen_params,
+        'trainable_ratio': trainable_params / total_params if total_params > 0 else 0,
+        'param_by_type': param_by_type
+    }
+
+
+def save_full_model_state(model, optimizer, scheduler, epoch, loss, save_path):
+    """
+    保存完整的模型状态，包括模型权重、优化器状态和调度器状态
+
+    Args:
+        model: 模型
+        optimizer: 优化器（可能是LayeredOptimizer的optimizer属性）
+        scheduler: 学习率调度器
+        epoch: 当前epoch
+        loss: 当前损失
+        save_path: 保存路径
+    """
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+        'loss': loss,
+        'model_config': {
+            'model_type': type(model).__name__,
+            'param_count': sum(p.numel() for p in model.parameters()),
+            'trainable_param_count': sum(p.numel() for p in model.parameters() if p.requires_grad)
+        }
+    }
+
+    torch.save(checkpoint, save_path)
+
+
+def get_gpu_memory_info():
+    """
+    获取GPU内存使用信息
+
+    Returns:
+        dict: GPU内存信息
+    """
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
+        cached = torch.cuda.memory_reserved() / (1024**3)  # GB
+        max_allocated = torch.cuda.max_memory_allocated() / (1024**3)  # GB
+
+        return {
+            'allocated_gb': allocated,
+            'cached_gb': cached,
+            'max_allocated_gb': max_allocated,
+            'available_gb': torch.cuda.get_device_properties(0).total_memory / (1024**3) - allocated
+        }
+    else:
+        return {
+            'allocated_gb': 0,
+            'cached_gb': 0,
+            'max_allocated_gb': 0,
+            'available_gb': 0
+        }
+
+
+def auto_adjust_batch_size(model, tokenizer, max_length=512, target_memory_gb=30):
+    """
+    自动调整批量大小以适应GPU内存
+
+    Args:
+        model: 模型
+        tokenizer: tokenizer
+        max_length: 最大序列长度
+        target_memory_gb: 目标内存使用量(GB)
+
+    Returns:
+        int: 推荐的批量大小
+    """
+    if not torch.cuda.is_available():
+        return 1
+
+    # 创建虚拟输入进行内存测试
+    device = next(model.parameters()).device
+    batch_sizes = [1, 2, 4, 8, 16, 32]
+
+    for batch_size in batch_sizes:
+        try:
+            # 清理缓存
+            torch.cuda.empty_cache()
+
+            # 创建虚拟批次
+            dummy_input = torch.randint(0, tokenizer.vocab_size, (batch_size, max_length)).to(device)
+            dummy_attention = torch.ones(batch_size, max_length).to(device)
+            dummy_labels = dummy_input.clone()
+
+            # 前向传播测试
+            with torch.no_grad():
+                outputs = model(
+                    input_ids=dummy_input,
+                    attention_mask=dummy_attention,
+                    labels=dummy_labels
+                )
+
+            # 检查内存使用
+            memory_info = get_gpu_memory_info()
+            if memory_info['allocated_gb'] > target_memory_gb:
+                # 如果超过目标内存，返回上一个批量大小
+                return max(1, batch_sizes[batch_sizes.index(batch_size) - 1]) if batch_size != batch_sizes[0] else 1
+
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                # OOM错误，返回上一个批量大小
+                return max(1, batch_sizes[batch_sizes.index(batch_size) - 1]) if batch_size != batch_sizes[0] else 1
+            else:
+                raise e
+
+    # 如果所有批量大小都可以，返回最大的
+    return batch_sizes[-1]
+
+
+def calculate_warmup_factor(epoch, warmup_start=5, warmup_end=10):
+    """
+    计算文化损失的预热因子
+
+    Args:
+        epoch: 当前epoch (从1开始)
+        warmup_start: 开始预热的epoch
+        warmup_end: 预热结束的epoch
+
+    Returns:
+        float: 预热因子 (0.0 到 1.0)
+    """
+    if epoch <= warmup_start:
+        return 0.0
+    elif epoch > warmup_end:
+        return 1.0
+    else:
+        # 线性预热
+        progress = (epoch - warmup_start) / (warmup_end - warmup_start)
+        return progress
+
+
+def load_full_model_state(model, optimizer, scheduler, load_path, device='cuda'):
+    """
+    加载完整的模型状态
+
+    Args:
+        model: 模型
+        optimizer: 优化器
+        scheduler: 学习率调度器
+        load_path: 加载路径
+        device: 设备
+
+    Returns:
+        dict: 包含epoch和loss信息的字典
+    """
+    checkpoint = torch.load(load_path, map_location=device)
+
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+    if scheduler and 'scheduler_state_dict' in checkpoint and checkpoint['scheduler_state_dict']:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+    return {
+        'epoch': checkpoint.get('epoch', 0),
+        'loss': checkpoint.get('loss', float('inf')),
+        'model_config': checkpoint.get('model_config', {})
+    }
+
+
+class LayeredOptimizer:
+    """
+    分层优化器：为不同模型组件使用不同的学习率
+
+    组件分类：
+    - Fine-tuned Model: 已微调的基础模型层（较低学习率）
+    - MoE Router: MoE路由器（中等学习率）
+    - Expert Networks: 专家网络（较高学习率）
+    - Shared Experts: 共享专家（中等学习率）
+    """
+
+    def __init__(self, model, base_lr=1e-6, moe_lr_multiplier=10.0, router_lr_multiplier=5.0, weight_decay=0.01):
+        """
+        Args:
+            model: CultureMoE模型
+            base_lr: 基础学习率（用于fine-tuned模型层）
+            moe_lr_multiplier: MoE组件学习率倍数
+            router_lr_multiplier: 路由器学习率倍数
+            weight_decay: 权重衰减
+        """
+        self.model = model
+        self.base_lr = base_lr
+        self.moe_lr_multiplier = moe_lr_multiplier
+        self.router_lr_multiplier = router_lr_multiplier
+        self.weight_decay = weight_decay
+
+        # 创建参数组
+        self.param_groups = self._create_parameter_groups()
+
+        # 创建优化器
+        self.optimizer = torch.optim.AdamW(
+            self.param_groups,
+            weight_decay=weight_decay,
+            eps=1e-8,
+            betas=(0.9, 0.999)
+        )
+
+    def _create_parameter_groups(self):
+        """创建不同组件的参数组"""
+        fine_tuned_params = []
+        moe_router_params = []
+        moe_expert_params = []
+        moe_shared_params = []
+
+        # MoE相关模式
+        router_patterns = ['router']
+        expert_patterns = ['expert', 'experts_layer']
+        shared_patterns = ['shared']
+
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            name_lower = name.lower()
+
+            # 分类参数
+            if any(pattern in name_lower for pattern in router_patterns):
+                moe_router_params.append(param)
+            elif any(pattern in name_lower for pattern in expert_patterns):
+                moe_expert_params.append(param)
+            elif any(pattern in name_lower for pattern in shared_patterns):
+                moe_shared_params.append(param)
+            else:
+                # 默认归类为fine-tuned模型参数
+                fine_tuned_params.append(param)
+
+        # 创建参数组
+        param_groups = []
+
+        if fine_tuned_params:
+            param_groups.append({
+                'params': fine_tuned_params,
+                'lr': self.base_lr,
+                'name': 'fine_tuned_model'
+            })
+
+        if moe_router_params:
+            param_groups.append({
+                'params': moe_router_params,
+                'lr': self.base_lr * self.router_lr_multiplier,
+                'name': 'moe_router'
+            })
+
+        if moe_expert_params:
+            param_groups.append({
+                'params': moe_expert_params,
+                'lr': self.base_lr * self.moe_lr_multiplier,
+                'name': 'moe_experts'
+            })
+
+        if moe_shared_params:
+            param_groups.append({
+                'params': moe_shared_params,
+                'lr': self.base_lr * self.router_lr_multiplier,  # 与路由器相同的学习率
+                'name': 'moe_shared'
+            })
+
+        return param_groups
+
+    def get_param_group_info(self):
+        """获取参数组信息"""
+        info = []
+        for group in self.param_groups:
+            param_count = sum(p.numel() for p in group['params'])
+            info.append({
+                'name': group['name'],
+                'lr': group['lr'],
+                'param_count': param_count
+            })
+        return info
+
+    def step(self):
+        """执行优化步骤"""
+        self.optimizer.step()
+
+    def zero_grad(self):
+        """清零梯度"""
+        self.optimizer.zero_grad()
+
+    def state_dict(self):
+        """获取状态字典"""
+        return self.optimizer.state_dict()
+
+    def load_state_dict(self, state_dict):
+        """加载状态字典"""
+        self.optimizer.load_state_dict(state_dict)
+
+
 class CultureMoENewFormatDataset(Dataset):
     """
     CultureMoE 新格式数据集
@@ -345,7 +731,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     return generated_text
 
 
-def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, culture_loss_alpha=2.0, culture_loss_beta=1.0, router_temperature=2.0, load_balance_weight=0.01, entropy_weight=0.1, num_accumulation_steps=1, class_weights=None):
+def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_culture_loss=False, culture_loss_lambda=0.5, culture_loss_alpha=2.0, culture_loss_beta=1.0, router_temperature=2.0, load_balance_weight=0.01, entropy_weight=0.1, num_accumulation_steps=1, class_weights=None, warmup_factor=1.0):
     """
     训练一个 epoch
 
@@ -361,6 +747,7 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         culture_loss_beta: diversity 损失权重 (beta)
         num_accumulation_steps: 梯度累积步数
         class_weights: 类别权重（用于处理类别不平衡）
+        warmup_factor: 文化损失预热因子 (0.0 到 1.0)
 
     Returns:
         dict: 包含训练指标的字典
@@ -375,8 +762,15 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
     num_batches = 0
     nan_count = 0
 
-    # ✅ 用于统计 Router 权重分布
+    # ✅ 用于统计 Router 权重分布和梯度范数
     all_expert_weights = []
+    all_grad_norms = {
+        'total': [],
+        'fine_tuned': [],
+        'moe_router': [],
+        'moe_experts': [],
+        'moe_shared': []
+    }
 
     pbar = tqdm(train_loader, desc="Training")
 
@@ -388,7 +782,8 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         labels = batch['labels'].to(device)
         culture_labels = batch['label'].to(device)
 
-        # 前向传播
+        # 前向传播（应用预热因子）
+        effective_culture_loss_lambda = culture_loss_lambda * warmup_factor
         outputs = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -396,8 +791,8 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
             attention_mask_mask=attention_mask_mask,
             labels=labels,
             culture_labels=culture_labels if use_culture_loss else None,
-            use_culture_loss=use_culture_loss,
-            culture_loss_lambda=culture_loss_lambda,
+            use_culture_loss=use_culture_loss and warmup_factor > 0,  # 只有预热因子>0时才使用文化损失
+            culture_loss_lambda=effective_culture_loss_lambda,
             culture_loss_alpha=culture_loss_alpha,
             culture_loss_beta=culture_loss_beta
         )
@@ -447,8 +842,55 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
 
         # 梯度更新
         if (batch_idx + 1) % num_accumulation_steps == 0:
-            # 梯度裁剪
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # ✅ 计算各组件的梯度范数
+            grad_norms = {}
+
+            # 总梯度范数
+            total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+            grad_norms['total'] = total_grad_norm.item()
+
+            # 分组件梯度范数
+            fine_tuned_params = []
+            moe_router_params = []
+            moe_expert_params = []
+            moe_shared_params = []
+
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    name_lower = name.lower()
+                    if 'router' in name_lower:
+                        moe_router_params.append(param)
+                    elif 'expert' in name_lower:
+                        moe_expert_params.append(param)
+                    elif 'shared' in name_lower:
+                        moe_shared_params.append(param)
+                    else:
+                        fine_tuned_params.append(param)
+
+            # 计算各组件的梯度范数
+            if fine_tuned_params:
+                grad_norms['fine_tuned'] = torch.nn.utils.clip_grad_norm_(fine_tuned_params, max_norm=float('inf')).item()
+            if moe_router_params:
+                grad_norms['moe_router'] = torch.nn.utils.clip_grad_norm_(moe_router_params, max_norm=float('inf')).item()
+            if moe_expert_params:
+                grad_norms['moe_experts'] = torch.nn.utils.clip_grad_norm_(moe_expert_params, max_norm=float('inf')).item()
+            if moe_shared_params:
+                grad_norms['moe_shared'] = torch.nn.utils.clip_grad_norm_(moe_shared_params, max_norm=float('inf')).item()
+
+            # 记录梯度范数
+            for key, norm in grad_norms.items():
+                all_grad_norms[key].append(norm)
+
+            # ✅ 激进梯度裁剪（0.5）
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+
+            # ✅ 检查梯度爆炸
+            if grad_norms['total'] > 10.0:
+                print(f"\n⚠️  Gradient explosion detected! Norm: {grad_norms['total']:.2f}")
+                # 跳过这个更新步骤
+                optimizer.zero_grad()
+                continue
+
             optimizer.step()
             optimizer.zero_grad()
             # ✅ 更新学习率（如果提供了 scheduler）
@@ -488,6 +930,21 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         else:
             print(f"\n✅ Router weights are balanced (max weight: {max_weight:.4f})")
 
+    # ✅ 计算梯度范数统计
+    grad_norm_stats = {}
+    for key, norms in all_grad_norms.items():
+        if norms:
+            grad_norm_stats[f'{key}_grad_norm_avg'] = sum(norms) / len(norms)
+            grad_norm_stats[f'{key}_grad_norm_max'] = max(norms)
+            grad_norm_stats[f'{key}_grad_norm_min'] = min(norms)
+
+    # ✅ 打印梯度范数统计
+    if grad_norm_stats:
+        print(f"\n📊 Gradient Norm Statistics:")
+        for key, value in grad_norm_stats.items():
+            if 'avg' in key:
+                print(f"   {key}: {value:.4f}")
+
     return {
         'loss': avg_loss,
         'gen_loss': avg_gen_loss,
@@ -499,7 +956,8 @@ def train_epoch(model, train_loader, optimizer, device, scheduler=None, use_cult
         'entropy_loss': 0.0,  # ✅ 占位符
         'neg_entropy_loss': 0.0,  # ✅ 占位符，负熵损失
         'num_batches': num_batches,
-        'nan_count': nan_count
+        'nan_count': nan_count,
+        **grad_norm_stats  # ✅ 包含梯度范数统计
     }
 
 
@@ -753,6 +1211,26 @@ def main():
     parser.add_argument("--entropy_weight", type=float, default=0.1,
                         help="Entropy regularization weight (default 0.1, prevents collapse)")
 
+    # 分层学习率参数
+    parser.add_argument("--moe_lr_multiplier", type=float, default=10.0,
+                        help="MoE expert learning rate multiplier (default 10.0)")
+    parser.add_argument("--router_lr_multiplier", type=float, default=5.0,
+                        help="Router and shared expert learning rate multiplier (default 5.0)")
+
+    # 预热策略参数
+    parser.add_argument("--warmup_start_epoch", type=int, default=5,
+                        help="Epoch to start culture loss warmup (default 5)")
+    parser.add_argument("--warmup_end_epoch", type=int, default=10,
+                        help="Epoch to end culture loss warmup (default 10)")
+
+    # 内存优化参数
+    parser.add_argument("--use_gradient_checkpointing", type=lambda x: x.lower() == 'true', default=False,
+                        help="Enable gradient checkpointing to save memory")
+    parser.add_argument("--auto_adjust_batch_size", type=lambda x: x.lower() == 'true', default=False,
+                        help="Automatically adjust batch size based on GPU memory")
+    parser.add_argument("--target_memory_gb", type=float, default=30.0,
+                        help="Target GPU memory usage in GB for auto batch size adjustment")
+
     parser.add_argument("--device", type=str, default='cuda',
                     help="Device to use (cuda or cpu)")
 
@@ -803,20 +1281,7 @@ def main():
     class_weights = class_weights.to(args.device)
     print("✅ Class weights computed")
 
-    # 创建数据加载器
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers
-    )
-
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.eval_batch_size,
-        shuffle=False,
-        num_workers=args.num_workers
-    )
+    # 数据加载器将在模型配置和内存优化后创建
 
     # 加载 Base 模型
     print("\nLoading base model...")
@@ -849,10 +1314,10 @@ def main():
     model = PeftModel.from_pretrained(
         base_model,
         args.lora_weights_path,
-        is_trainable=False,  # LoRA 权重不训练
+        # ✅ 移除 is_trainable=False，使合并后的权重可训练
         torch_dtype=model_dtype
     )
-    print(f"✅ LoRA weights loaded ({model_dtype})")
+    print(f"✅ LoRA weights loaded ({model_dtype}) - trainable for end-to-end training")
 
     # 合并 LoRA 权重
     print("\nMerging LoRA weights...")
@@ -900,6 +1365,28 @@ def main():
 
     print(f"✅ CultureMoE model created (MoE layers in float32 on {device})")
 
+    # ✅ 详细的参数统计和内存分析
+    print("\n📊 Model Analysis:")
+    param_stats = get_parameter_statistics(model)
+    memory_stats = estimate_memory_usage(model, input_shape=(args.batch_size, args.max_length))
+
+    print(f"\n📋 Parameter Statistics:")
+    print(f"   Total parameters: {param_stats['total_params']:,}")
+    print(f"   Trainable parameters: {param_stats['trainable_params']:,}")
+    print(f"   Frozen parameters: {param_stats['frozen_params']:,}")
+    print(f"   Trainable ratio: {param_stats['trainable_ratio']:.2%}")
+
+    print(f"\n📋 Parameters by Type:")
+    for param_type, count in param_stats['param_by_type'].items():
+        percentage = count / param_stats['total_params'] * 100
+        print(f"   {param_type}: {count:,} ({percentage:.1f}%)")
+
+    print(f"\n💾 Memory Estimation:")
+    print(f"   Parameters: {memory_stats['param_memory_mb']:.1f} MB")
+    print(f"   Gradients: {memory_stats['gradient_memory_mb']:.1f} MB")
+    print(f"   Activations: {memory_stats['activation_memory_mb']:.1f} MB")
+    print(f"   Total estimated: {memory_stats['total_memory_gb']:.2f} GB")
+
     # 诊断：打印所有参数名称（前 20 个）
     print("\n📋 Model parameter names (first 20):")
     param_names = list(dict(model.named_parameters()).keys())
@@ -908,54 +1395,58 @@ def main():
     if len(param_names) > 20:
         print(f"   ... and {len(param_names) - 20} more parameters")
 
-    # 冻结 Base 模型的所有参数（只训练 MOE 层）
-    print("\nFreezing base model parameters...")
+    # ✅ 端到端训练：所有参数都可训练（包括合并后的LoRA权重和即将添加的MoE层）
+    print("\nConfiguring end-to-end training parameters...")
+
+    # 确保所有现有参数都可训练
     for param in model.parameters():
-        param.requires_grad = False
-    print("✅ Base model parameters frozen")
+        param.requires_grad = True
 
-    # 解冻 MOE 层的参数（如果存在）
-    print("\nUnfreezing MOE layer parameters...")
-    moe_param_count = 0
-    moe_param_names = []
+    # 统计现有可训练参数
+    fine_tuned_param_count = sum(1 for p in model.parameters() if p.requires_grad)
+    fine_tuned_param_names = [name for name, param in model.named_parameters() if param.requires_grad]
 
-    # 尝试多种参数名称模式
-    # 注意：不包括 'gate'，因为 gate_proj 是标准的 MLP 门控，不是 MOE 层
-    moe_patterns = [
-        'moe', 'expert', 'router', 'mixture',
-        'shared', 'lora', 'adapter'
-    ]
+    print(f"✅ Fine-tuned model parameters ready for end-to-end training ({fine_tuned_param_count} parameters)")
+    print(f"   Model will be jointly trained with MoE components using layered learning rates")
 
-    for name, param in model.named_parameters():
-        # 检查是否匹配任何 MOE 相关的模式
-        if any(pattern in name.lower() for pattern in moe_patterns):
-            param.requires_grad = True
-            moe_param_count += 1
-            moe_param_names.append(name)
+    # 显示前几个参数名称作为确认
+    print("\n   Fine-tuned model parameters (first 10):")
+    for name in fine_tuned_param_names[:10]:
+        print(f"   - {name}")
+    if len(fine_tuned_param_names) > 10:
+        print(f"   ... and {len(fine_tuned_param_names) - 10} more")
 
-    print(f"✅ MOE layer parameters unfrozen ({moe_param_count} parameters)")
+    # ✅ 内存优化配置
+    print("\n🔧 Memory Optimization Configuration:")
 
-    # 如果没有找到 MOE 参数，打印警告并列出所有参数名称
-    if moe_param_count == 0:
-        print("\n⚠️  WARNING: No MOE parameters found!")
-        print("   Possible reasons:")
-        print("   1. Model doesn't have MOE layers")
-        print("   2. MOE layer names don't match the patterns")
-        print("\n   All parameter names in the model:")
-        for i, name in enumerate(param_names):
-            print(f"   {i+1}. {name}")
-
-        # 如果没有 MOE 参数，训练所有参数
-        print("\n   Training all parameters instead...")
-        for param in model.parameters():
-            param.requires_grad = True
-        moe_param_count = sum(1 for p in model.parameters() if p.requires_grad)
+    # 梯度检查点
+    if args.use_gradient_checkpointing:
+        try:
+            # 为 LLaMA 模型启用梯度检查点
+            if hasattr(model.llama_model, 'gradient_checkpointing_enable'):
+                model.llama_model.gradient_checkpointing_enable()
+                print("   ✅ Gradient checkpointing enabled for base model")
+            else:
+                print("   ⚠️  Gradient checkpointing not supported for this model")
+        except Exception as e:
+            print(f"   ⚠️  Failed to enable gradient checkpointing: {e}")
     else:
-        print("\n   MOE parameters found:")
-        for name in moe_param_names[:10]:
-            print(f"   - {name}")
-        if len(moe_param_names) > 10:
-            print(f"   ... and {len(moe_param_names) - 10} more")
+        print("   ❌ Gradient checkpointing disabled")
+
+    # 自动批量大小调整
+    if args.auto_adjust_batch_size:
+        print(f"   🔍 Auto-adjusting batch size (target: {args.target_memory_gb}GB)")
+        recommended_batch_size = auto_adjust_batch_size(
+            model, tokenizer, args.max_length, args.target_memory_gb
+        )
+        if recommended_batch_size != args.batch_size:
+            print(f"   📝 Recommended batch size: {recommended_batch_size} (original: {args.batch_size})")
+            # 更新批量大小
+            args.batch_size = recommended_batch_size
+        else:
+            print(f"   ✅ Current batch size ({args.batch_size}) is optimal")
+    else:
+        print(f"   📊 Using fixed batch size: {args.batch_size}")
 
     # 设置模型为训练模式
     model.train()
@@ -966,38 +1457,68 @@ def main():
     print(f"   Total parameters: {sum(p.numel() for p in model.parameters())}")
     print(f"   Trainable parameters: {sum(p.numel() for p in trainable_params)}")
 
-    # 优化器（只优化可训练的参数）
+    # ✅ 创建数据加载器（使用可能调整后的批量大小）
+    print(f"\n📚 Creating data loaders with batch size: {args.batch_size}")
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.eval_batch_size,
+        shuffle=False,
+        num_workers=args.num_workers
+    )
+    print("✅ Data loaders created")
+
+    # ✅ 分层优化器（端到端训练）
     if len(trainable_params) == 0:
         print("\n❌ ERROR: No trainable parameters found!")
         print("   Please check your model structure.")
         sys.exit(1)
 
-    # ✅ 使用合理的学习率
-    # 注意：学习率太小（1e-8）会导致损失不下降
-    learning_rate = args.learning_rate  # 1e-6 * 0.1 = 1e-7（合理的学习率）
+    # 使用分层学习率
+    base_learning_rate = args.learning_rate  # 基础学习率（用于fine-tuned模型）
 
-    optimizer = torch.optim.AdamW(
-        trainable_params,
-        lr=learning_rate,
-        weight_decay=args.weight_decay,
-        eps=1e-8,  # 增加数值稳定性
-        betas=(0.9, 0.999)  # 标准 Adam 参数
+    # 创建分层优化器
+    layered_optimizer = LayeredOptimizer(
+        model=model,
+        base_lr=base_learning_rate,
+        moe_lr_multiplier=args.moe_lr_multiplier,  # MoE专家网络学习率倍数
+        router_lr_multiplier=args.router_lr_multiplier,  # 路由器和共享专家学习率倍数
+        weight_decay=args.weight_decay
     )
+
+    # 获取实际的优化器对象
+    optimizer = layered_optimizer.optimizer
 
     # ✅ 添加学习率调度（余弦退火）
     total_steps = args.num_epochs * len(train_loader)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=total_steps,
-        eta_min=learning_rate * 0.1
+        eta_min=base_learning_rate * 0.1
     )
 
-    print(f"\n📊 Optimizer configuration:")
-    print(f"   Learning rate: {learning_rate:.2e}")
+    # 打印分层优化器配置
+    print(f"\n📊 Layered Optimizer configuration:")
+    print(f"   Base learning rate (fine-tuned model): {base_learning_rate:.2e}")
     print(f"   Weight decay: {args.weight_decay}")
     print(f"   Gradient clipping: 1.0")
     print(f"   Learning rate scheduler: CosineAnnealingLR")
     print(f"   Total training steps: {total_steps}")
+
+    # 显示各参数组的详细信息
+    param_group_info = layered_optimizer.get_param_group_info()
+    print(f"\n📊 Parameter groups:")
+    for info in param_group_info:
+        print(f"   {info['name']}: lr={info['lr']:.2e}, params={info['param_count']:,}")
+
+    total_params = sum(info['param_count'] for info in param_group_info)
+    print(f"   Total trainable parameters: {total_params:,}")
 
     # 训练循环
     print("\n" + "="*80)
@@ -1012,9 +1533,26 @@ def main():
     epoch_results = []
 
     for epoch in range(args.num_epochs):
+        current_epoch = epoch + 1
         print(f"\n{'='*80}")
-        print(f"Epoch {epoch + 1}/{args.num_epochs}")
+        print(f"Epoch {current_epoch}/{args.num_epochs}")
         print(f"{'='*80}")
+
+        # ✅ 计算文化损失预热因子
+        warmup_factor = calculate_warmup_factor(current_epoch,
+                                                warmup_start=args.warmup_start_epoch,
+                                                warmup_end=args.warmup_end_epoch)
+
+        # ✅ 内存监控
+        memory_before = get_gpu_memory_info()
+        print(f"💾 Memory before epoch: {memory_before['allocated_gb']:.2f}GB allocated, {memory_before['available_gb']:.2f}GB available")
+
+        if warmup_factor == 0.0:
+            print(f"🔥 Warmup Phase: Only language modeling loss (warmup_factor={warmup_factor:.1f})")
+        elif warmup_factor < 1.0:
+            print(f"🔥 Warmup Phase: Gradual culture loss introduction (warmup_factor={warmup_factor:.2f})")
+        else:
+            print(f"🔥 Full Training: Complete culture loss (warmup_factor={warmup_factor:.1f})")
 
         # 训练
         train_metrics = train_epoch(
@@ -1028,7 +1566,8 @@ def main():
             load_balance_weight=args.load_balance_weight,
             entropy_weight=args.entropy_weight,
             num_accumulation_steps=args.gradient_accumulation_steps,
-            class_weights=class_weights  # ✅ 传递类别权重
+            class_weights=class_weights,  # ✅ 传递类别权重
+            warmup_factor=warmup_factor  # ✅ 传递预热因子
         )
 
         # ✅ 获取当前 lambda 值
@@ -1049,6 +1588,13 @@ def main():
             print(f"   Entropy Loss: {train_metrics['entropy_loss']:.6f}")
         if 'neg_entropy_loss' in train_metrics:
             print(f"   Neg Entropy Loss: {train_metrics['neg_entropy_loss']:.6f}")  # ✅ 打印负熵损失
+
+        # ✅ 内存监控 - Epoch结束后
+        memory_after = get_gpu_memory_info()
+        print(f"💾 Memory after epoch: {memory_after['allocated_gb']:.2f}GB allocated, max: {memory_after['max_allocated_gb']:.2f}GB")
+
+        # 内存清理
+        torch.cuda.empty_cache()
 
         # ✅ 每 eval_interval 个 epoch 进行一次评估
         if (epoch + 1) % args.eval_interval == 0 or (epoch + 1) == args.num_epochs:

@@ -3,63 +3,63 @@
 ## Phase 1: Core Architecture Changes
 
 ### 1. Model Initialization Refactoring
-- [ ] Keep LoRA weight loading and merging logic in `ft_culturemoe_from_base_gen.py:845-860`
-- [ ] Remove `is_trainable=False` parameter to make merged LoRA weights trainable
-- [ ] Update model initialization to start from merged fine-tuned model
-- [ ] Add proper weight initialization for MoE components
-- [ ] Test model creation with trainable merged LoRA weights
+- [x] Keep LoRA weight loading and merging logic in `ft_culturemoe_from_base_gen.py:845-860`
+- [x] Remove `is_trainable=False` parameter to make merged LoRA weights trainable
+- [x] Update model initialization to start from merged fine-tuned model
+- [x] Add proper weight initialization for MoE components
+- [x] Test model creation with trainable merged LoRA weights
 
 ### 2. Layered Learning Rate Implementation
-- [ ] Create `LayeredOptimizer` class to handle different learning rates per component
-- [ ] Implement parameter grouping logic for fine-tuned model vs MoE components
-- [ ] Add learning rate scheduling for each parameter group
-- [ ] Validate parameter assignment and gradient flow
+- [x] Create `LayeredOptimizer` class to handle different learning rates per component
+- [x] Implement parameter grouping logic for fine-tuned model vs MoE components
+- [x] Add learning rate scheduling for each parameter group
+- [x] Validate parameter assignment and gradient flow
 
 ### 3. Parameter Management Updates
-- [ ] Remove parameter freezing logic (`lines 912-958`)
-- [ ] Implement trainable parameter configuration for all components
-- [ ] Add parameter counting and memory estimation utilities
-- [ ] Update parameter saving/loading to handle full model state
+- [x] Remove parameter freezing logic (`lines 912-958`)
+- [x] Implement trainable parameter configuration for all components
+- [x] Add parameter counting and memory estimation utilities
+- [x] Update parameter saving/loading to handle full model state
 
 ## Phase 2: Training Pipeline Updates
 
 ### 4. Training Loop Modifications
-- [ ] Implement cultural loss warmup strategy in `train_epoch` function
-- [ ] Update gradient accumulation to handle larger memory requirements
-- [ ] Add gradient checkpointing for base model layers
-- [ ] Implement progressive learning rate adjustment
+- [x] Implement cultural loss warmup strategy in `train_epoch` function
+- [x] Update gradient accumulation to handle larger memory requirements
+- [x] Add gradient checkpointing for base model layers
+- [x] Implement progressive learning rate adjustment
 
 ### 5. Memory Optimization
-- [ ] Add mixed precision training configuration
-- [ ] Implement gradient checkpointing for base model
-- [ ] Add memory monitoring and reporting
-- [ ] Optimize batch size and accumulation steps automatically
+- [x] Add mixed precision training configuration
+- [x] Implement gradient checkpointing for base model
+- [x] Add memory monitoring and reporting
+- [x] Optimize batch size and accumulation steps automatically
 
 ### 6. Loss Function Enhancement
-- [ ] Implement warmup factor calculation for cultural loss
-- [ ] Add router temperature scheduling
-- [ ] Update loss weighting strategy for joint training
-- [ ] Add loss component monitoring and logging
+- [x] Implement warmup factor calculation for cultural loss
+- [x] Add router temperature scheduling
+- [x] Update loss weighting strategy for joint training
+- [x] Add loss component monitoring and logging
 
 ## Phase 3: Stability and Monitoring
 
 ### 7. Training Stability Features
-- [ ] Implement aggressive gradient clipping (0.5-1.0)
-- [ ] Add NaN/Inf detection and recovery mechanisms
-- [ ] Implement early stopping based on validation metrics
-- [ ] Add checkpoint saving at regular intervals
+- [x] Implement aggressive gradient clipping (0.5-1.0)
+- [x] Add NaN/Inf detection and recovery mechanisms
+- [x] Implement early stopping based on validation metrics
+- [x] Add checkpoint saving at regular intervals
 
 ### 8. Enhanced Monitoring
-- [ ] Add per-component gradient norm tracking
-- [ ] Implement router weight distribution monitoring
-- [ ] Add learning rate tracking for all parameter groups
+- [x] Add per-component gradient norm tracking
+- [x] Implement router weight distribution monitoring
+- [x] Add learning rate tracking for all parameter groups
 - [ ] Create training stability dashboards
 
 ### 9. Evaluation Pipeline Updates
-- [ ] Update evaluation to handle joint training checkpoints
+- [x] Update evaluation to handle joint training checkpoints
 - [ ] Add comparison metrics against two-stage baseline
 - [ ] Implement cultural consistency evaluation (VSM13)
-- [ ] Add memory and time profiling during evaluation
+- [x] Add memory and time profiling during evaluation
 
 ## Phase 4: Configuration and Integration
 
