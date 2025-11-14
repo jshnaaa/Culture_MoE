@@ -3,14 +3,15 @@
 ## Phase 1: Core Architecture Changes
 
 ### 1. Model Initialization Refactoring
-- [ ] Remove LoRA weight loading and merging logic from `ft_culturemoe_from_base_gen.py:845-860`
-- [ ] Update model initialization to start directly from base model
+- [ ] Keep LoRA weight loading and merging logic in `ft_culturemoe_from_base_gen.py:845-860`
+- [ ] Remove `is_trainable=False` parameter to make merged LoRA weights trainable
+- [ ] Update model initialization to start from merged fine-tuned model
 - [ ] Add proper weight initialization for MoE components
-- [ ] Test model creation without LoRA dependency
+- [ ] Test model creation with trainable merged LoRA weights
 
 ### 2. Layered Learning Rate Implementation
 - [ ] Create `LayeredOptimizer` class to handle different learning rates per component
-- [ ] Implement parameter grouping logic for base model vs MoE components
+- [ ] Implement parameter grouping logic for fine-tuned model vs MoE components
 - [ ] Add learning rate scheduling for each parameter group
 - [ ] Validate parameter assignment and gradient flow
 

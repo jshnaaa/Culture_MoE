@@ -14,9 +14,11 @@ CultureMoE Model (only MoE trainable)
 ### Proposed End-to-End Architecture
 ```
 Base Model (LLaMA/Qwen)
+  ↓ (LoRA fine-tuning - existing)
+Fine-tuned Model (load & merge LoRA)
   ↓ (joint training)
 CultureMoE Model (all components trainable)
-  ├── Base Model Layers (trainable with lower LR)
+  ├── Fine-tuned Model Layers (trainable with lower LR)
   ├── MoE Router (trainable)
   ├── Expert Networks (trainable)
   └── Shared Experts (trainable)
@@ -25,22 +27,22 @@ CultureMoE Model (all components trainable)
 ## Key Design Decisions
 
 ### 1. Parameter Initialization Strategy
-- **Base Model**: Initialize from pre-trained weights (LLaMA-3.1-8B-Instruct or Qwen-2.5-7B-Instruct)
+- **Fine-tuned Model**: Load pre-trained base model + merge existing LoRA weights
 - **MoE Components**: Initialize from scratch with careful weight initialization
-- **No LoRA Pre-training**: Skip the intermediate LoRA fine-tuning stage
+- **Preserve LoRA Knowledge**: Keep the existing LoRA fine-tuning results as starting point
 
 ### 2. Learning Rate Strategy
-Implement layered learning rates to balance base model stability with MoE adaptation:
-- **Base Model Layers**: Lower learning rate (1e-6 to 5e-6)
+Implement layered learning rates to balance fine-tuned model stability with MoE adaptation:
+- **Fine-tuned Model Layers**: Lower learning rate (1e-6 to 5e-6) to preserve existing knowledge
 - **MoE Router**: Medium learning rate (1e-5 to 5e-5)
 - **Expert Networks**: Higher learning rate (1e-4 to 5e-4)
 - **Shared Experts**: Medium learning rate (1e-5 to 5e-5)
 
 ### 3. Memory Management
-- **Mixed Precision**: Use bfloat16 for base model, float32 for MoE components
+- **Mixed Precision**: Use bfloat16 for fine-tuned model, float32 for MoE components
 - **Gradient Accumulation**: Increase accumulation steps to handle larger effective batch sizes
-- **Gradient Checkpointing**: Enable for base model layers to reduce memory usage
-- **Parameter Efficient Training**: Use LoRA for base model layers if memory is constrained
+- **Gradient Checkpointing**: Enable for fine-tuned model layers to reduce memory usage
+- **Efficient Fine-tuning**: Fine-tuned model already optimized, focus MoE memory management
 
 ### 4. Training Stability
 - **Warmup Strategy**: Gradual introduction of cultural loss

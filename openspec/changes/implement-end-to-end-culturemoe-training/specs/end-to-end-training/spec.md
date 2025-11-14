@@ -7,16 +7,18 @@ The system MUST support simultaneous training of base language model and MoE com
 
 #### Scenario: Initialize End-to-End Training
 - **Given** a pre-trained base model (LLaMA-3.1-8B-Instruct or Qwen-2.5-7B-Instruct)
+- **And** existing fine-tuned LoRA weights
 - **And** MoE architecture configuration (number of experts, hidden dimensions)
 - **When** initializing the CultureMoE model for end-to-end training
-- **Then** all model parameters must be trainable (no frozen layers)
+- **Then** LoRA weights must be loaded and merged into the base model
+- **And** all model parameters (including merged LoRA) must be trainable (no frozen layers)
 - **And** MoE components must be initialized with appropriate random weights
-- **And** base model parameters must retain their pre-trained values
+- **And** fine-tuned model parameters must retain their learned values
 
 #### Scenario: Configure Layered Learning Rates
-- **Given** a CultureMoE model with base model and MoE components
+- **Given** a CultureMoE model with fine-tuned model and MoE components
 - **When** setting up the optimizer for end-to-end training
-- **Then** base model parameters must use a lower learning rate (1e-6 to 5e-6)
+- **Then** fine-tuned model parameters must use a lower learning rate (1e-6 to 5e-6)
 - **And** MoE router parameters must use a medium learning rate (1e-5 to 5e-5)
 - **And** expert network parameters must use a higher learning rate (1e-4 to 5e-4)
 - **And** shared expert parameters must use a medium learning rate (1e-5 to 5e-5)
@@ -27,7 +29,7 @@ The system MUST handle memory constraints during joint training through optimiza
 #### Scenario: Apply Mixed Precision Training
 - **Given** a CultureMoE model ready for end-to-end training
 - **When** configuring training precision
-- **Then** base model layers must use bfloat16 precision
+- **Then** fine-tuned model layers must use bfloat16 precision
 - **And** MoE components must use float32 precision for stability
 - **And** gradient scaling must be applied appropriately for mixed precision
 
@@ -39,9 +41,9 @@ The system MUST handle memory constraints during joint training through optimiza
 - **And** gradients must be properly normalized by accumulation steps
 
 #### Scenario: Enable Gradient Checkpointing
-- **Given** base model layers consuming significant memory
+- **Given** fine-tuned model layers consuming significant memory
 - **When** memory usage exceeds available GPU memory
-- **Then** gradient checkpointing must be enabled for base model layers
+- **Then** gradient checkpointing must be enabled for fine-tuned model layers
 - **And** memory usage must be reduced at the cost of computation time
 - **And** gradient computation must remain mathematically correct
 
@@ -134,22 +136,19 @@ The system MUST modify the training loop to handle joint optimization requiremen
 
 ## REMOVED Requirements
 
-### Requirement: LoRA Weight Loading and Merging
-Remove dependency on pre-trained LoRA weights for CultureMoE training.
-
-#### Scenario: Skip LoRA Pre-training Stage
-- **Given** end-to-end training configuration
-- **When** initializing the CultureMoE model
-- **Then** LoRA weight loading must be skipped
-- **And** LoRA merging operations must be bypassed
-- **And** model must start directly from base pre-trained weights
-
 ### Requirement: Selective Parameter Freezing
 Remove parameter freezing mechanisms that prevent joint optimization.
 
 #### Scenario: Eliminate Parameter Freezing
 - **Given** a CultureMoE model ready for training
 - **When** setting up the training configuration
-- **Then** base model parameter freezing must be disabled
+- **Then** fine-tuned model parameter freezing must be disabled
 - **And** selective parameter unfreezing logic must be removed
 - **And** all parameters must participate in gradient computation
+
+#### Scenario: Remove Trainable Parameter Restrictions
+- **Given** LoRA weight loading and merging process
+- **When** creating the PeftModel from pre-trained weights
+- **Then** `is_trainable=False` parameter must be removed
+- **And** merged LoRA weights must remain trainable
+- **And** no artificial parameter restrictions must be imposed

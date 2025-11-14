@@ -4,31 +4,31 @@
 Convert the current two-stage training approach (LoRA pre-training + frozen MoE training) to a unified end-to-end training methodology that jointly optimizes both the base language model and MoE components simultaneously.
 
 ## Problem Statement
-The current `ft_culturemoe_from_base_gen.py` implementation follows a suboptimal two-stage approach:
+The current `ft_culturemoe_from_base_gen.py` implementation follows a suboptimal approach:
 1. Load pre-trained base model + fine-tuned LoRA weights (merged and frozen)
 2. Add MoE layers on top and only train the MoE components
-3. Base model parameters remain frozen during MoE training
+3. Fine-tuned base model parameters remain frozen during MoE training
 
 This approach has several limitations:
-- **Limited Adaptation**: The base model cannot adapt to the MoE routing decisions
-- **Suboptimal Integration**: MoE layers are trained independently of base model representations
-- **Training Inefficiency**: The base model's knowledge is not jointly optimized with cultural specialization
-- **Performance Gap**: Two-stage training typically underperforms compared to end-to-end approaches
+- **Limited Adaptation**: The fine-tuned base model cannot further adapt to the MoE routing decisions
+- **Suboptimal Integration**: MoE layers are trained independently of the fine-tuned base model representations
+- **Training Inefficiency**: The fine-tuned base model's knowledge is not jointly optimized with cultural specialization
+- **Performance Gap**: Frozen fine-tuned models typically underperform compared to continued joint training
 
 ## Proposed Solution
 Implement a unified end-to-end training approach that:
-1. Starts from the base model (without pre-trained LoRA weights)
-2. Adds MoE layers to the base model architecture
-3. Jointly trains both base model and MoE components with cultural objectives
+1. Starts from the fine-tuned model (loads and merges pre-trained LoRA weights)
+2. Adds MoE layers to the fine-tuned model architecture
+3. Jointly trains both fine-tuned model and MoE components with cultural objectives
 4. Uses gradient accumulation and mixed precision to handle memory constraints
-5. Applies different learning rates for base model vs MoE components (layered learning rates)
+5. Applies different learning rates for fine-tuned model vs MoE components (layered learning rates)
 
 ## Benefits
-- **Better Performance**: Joint optimization typically yields superior results
-- **Unified Training**: Single training script instead of multiple stages
-- **Better Integration**: MoE routing can influence base model representations
-- **Simplified Workflow**: Eliminates need for separate LoRA pre-training step
-- **More Flexible**: Easier to experiment with different architectural combinations
+- **Better Performance**: Joint optimization of fine-tuned model + MoE typically yields superior results
+- **Leverages Existing Work**: Builds upon already fine-tuned LoRA weights rather than starting from scratch
+- **Better Integration**: MoE routing can influence and adapt the fine-tuned model representations
+- **Simplified Workflow**: Single training stage instead of frozen parameter training
+- **More Flexible**: Easier to experiment with different architectural combinations while preserving fine-tuned knowledge
 
 ## Implementation Scope
 This change affects:
