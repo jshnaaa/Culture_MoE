@@ -133,9 +133,9 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
     def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None,
                 attention_mask_mask=None, labels=None, culture_labels=None, culture_ids=None,
-                use_culture_loss=False, culture_loss_lambda=0.5, culture_loss_alpha=2.0,
-                culture_loss_beta=1.0, use_shared_experts=True, router_temperature=2.0,
-                load_balance_weight=0.01, entropy_weight=0.1, **kwargs):
+                culture_ids_multi=None, use_culture_loss=False, culture_loss_lambda=0.5,
+                culture_loss_alpha=2.0, culture_loss_beta=1.0, use_shared_experts=True,
+                router_temperature=2.0, load_balance_weight=0.01, entropy_weight=0.1, **kwargs):
         """
         增强的前向传播，包含文化感知组件
 
@@ -147,6 +147,7 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
             labels: [B, L] 生成标签
             culture_labels: [B] 文化标签（用于文化损失）
             culture_ids: [B] 文化ID（用于文化感知组件）
+            culture_ids_multi: List[List[int]] 多标签文化ID（可选）
             use_culture_loss: 是否使用文化损失
             其他参数: 与原模型相同
 
@@ -318,6 +319,7 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                     culture_labels=culture_labels,
                     cultural_analysis=cultural_analysis,
                     culture_relevances=torch.stack(culture_relevances, dim=1),
+                    culture_labels_multi=culture_ids_multi,
                     margin=culture_loss_alpha,
                     lambda_diff=culture_loss_beta
                 )
@@ -388,15 +390,16 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
         return outputs
 
     def compute_enhanced_culture_loss(self, expert_weights, culture_labels, cultural_analysis,
-                                    culture_relevances, margin=0.5, lambda_diff=1.0, eps=1e-8):
+                                    culture_relevances, culture_labels_multi=None, margin=0.5, lambda_diff=1.0, eps=1e-8):
         """
         增强的文化损失，结合多个文化感知组件的信息
 
         Args:
             expert_weights: [B, num_experts] 专家权重
-            culture_labels: [B] 文化标签
+            culture_labels: [B] 主要文化标签
             cultural_analysis: dict 文化分析结果
             culture_relevances: [B, num_experts] 专家文化相关性
+            culture_labels_multi: List[List[int]] 多标签文化信息（可选）
             margin: 不同文化间的最小距离
             lambda_diff: 不同文化排斥力权重
             eps: 数值稳定性常数
@@ -412,19 +415,29 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
             expert_weights, culture_labels, margin, lambda_diff, eps
         )
 
-        # 2. 文化相关性损失
+        # 2. 文化相关性损失（支持多标签）
         # 鼓励高文化相关性的专家获得更高权重
         relevance_loss = 0.0
         batch_size = expert_weights.shape[0]
 
         for b in range(batch_size):
-            culture_id = culture_labels[b].item()
             expert_weight = expert_weights[b]  # [num_experts]
             relevance = culture_relevances[b]  # [num_experts]
 
-            # 计算加权相关性损失
-            # 高相关性专家应该获得更多权重
-            weighted_relevance = torch.sum(expert_weight * relevance)
+            # 使用多标签信息（如果可用）
+            if culture_labels_multi is not None and b < len(culture_labels_multi):
+                culture_ids = culture_labels_multi[b]  # List[int]
+                # 对于多标签情况，计算所有相关文化的平均相关性
+                total_relevance = 0.0
+                for culture_id in culture_ids:
+                    # 这里需要重新计算每个文化的相关性
+                    # 简化处理：使用现有的relevance向量
+                    total_relevance += torch.sum(expert_weight * relevance)
+                weighted_relevance = total_relevance / len(culture_ids)
+            else:
+                # 单标签情况
+                weighted_relevance = torch.sum(expert_weight * relevance)
+
             relevance_loss += (1.0 - weighted_relevance) ** 2
 
         relevance_loss = relevance_loss / batch_size

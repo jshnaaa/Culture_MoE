@@ -131,7 +131,7 @@ class CultureDataset(Dataset):
             'attention_mask_mask': attention_mask_mask,
             'labels': labels,
             'culture_ids': torch.tensor(continent_id, dtype=torch.long),
-            'culture_ids_multi': continent_ids_multi  # 用于多标签文化损失
+            'culture_ids_multi': continent_ids_multi  # 保留多标签大洲信息
         }
 
     def _parse_continent_label(self, label: str) -> tuple[int, List[int]]:
@@ -348,6 +348,13 @@ class EnhancedCultureMoETrainer:
         # 移动到设备
         self.model = self.model.to(self.device)
 
+        # 支持多GPU训练
+        if torch.cuda.device_count() > 1:
+            logging.info(f"Using {torch.cuda.device_count()} GPUs for training")
+            self.model = torch.nn.DataParallel(self.model)
+        else:
+            logging.info("Using single GPU for training")
+
         # 计算参数统计
         self.log_model_info()
 
@@ -375,15 +382,18 @@ class EnhancedCultureMoETrainer:
 
     def log_model_info(self):
         """记录模型信息"""
-        total_params = sum(p.numel() for p in self.model.parameters())
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        # 处理DataParallel包装的情况
+        model_for_info = self.model.module if isinstance(self.model, torch.nn.DataParallel) else self.model
+
+        total_params = sum(p.numel() for p in model_for_info.parameters())
+        trainable_params = sum(p.numel() for p in model_for_info.parameters() if p.requires_grad)
 
         logging.info(f"Model loaded successfully")
         logging.info(f"Total parameters: {total_params:,}")
         logging.info(f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params*100:.2f}%)")
 
         # 记录文化专家信息
-        expert_info = self.model.get_culture_expert_info()
+        expert_info = model_for_info.get_culture_expert_info()
         logging.info("Culture Expert Assignments:")
         for info in expert_info:
             logging.info(f"  Expert {info['expert_id']}: {info['role']} ({info['param_count']:,} params)")
@@ -469,15 +479,25 @@ class EnhancedCultureMoETrainer:
         progress_bar = tqdm(self.train_loader, desc=f"Epoch {epoch+1}")
 
         for batch in progress_bar:
-            # 移动数据到设备
-            batch = {k: v.to(self.device) for k, v in batch.items()}
+            # 移动数据到设备，特殊处理culture_ids_multi
+            batch_device = {}
+            for k, v in batch.items():
+                if k == 'culture_ids_multi':
+                    # culture_ids_multi是列表，不能直接.to(device)
+                    batch_device[k] = v
+                else:
+                    batch_device[k] = v.to(self.device)
+            batch = batch_device
 
             # 前向传播
             outputs = self.model(
                 input_ids=batch['input_ids'],
                 attention_mask=batch['attention_mask'],
+                input_ids_mask=batch['input_ids_mask'],
+                attention_mask_mask=batch['attention_mask_mask'],
                 labels=batch['labels'],
                 culture_ids=batch['culture_ids'],
+                culture_ids_multi=batch['culture_ids_multi'],
                 use_culture_loss=self.args.use_culture_loss,
                 culture_loss_lambda=self.args.culture_loss_lambda,
                 culture_loss_alpha=self.args.culture_loss_alpha,
@@ -548,15 +568,25 @@ class EnhancedCultureMoETrainer:
 
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Evaluating"):
-                # 移动数据到设备
-                batch = {k: v.to(self.device) for k, v in batch.items()}
+                # 移动数据到设备，特殊处理culture_ids_multi
+                batch_device = {}
+                for k, v in batch.items():
+                    if k == 'culture_ids_multi':
+                        # culture_ids_multi是列表，不能直接.to(device)
+                        batch_device[k] = v
+                    else:
+                        batch_device[k] = v.to(self.device)
+                batch = batch_device
 
                 # 前向传播
                 outputs = self.model(
                     input_ids=batch['input_ids'],
                     attention_mask=batch['attention_mask'],
+                    input_ids_mask=batch['input_ids_mask'],
+                    attention_mask_mask=batch['attention_mask_mask'],
                     labels=batch['labels'],
                     culture_ids=batch['culture_ids'],
+                    culture_ids_multi=batch['culture_ids_multi'],
                     use_culture_loss=self.args.use_culture_loss,
                     culture_loss_lambda=self.args.culture_loss_lambda,
                     culture_loss_alpha=self.args.culture_loss_alpha,
@@ -624,9 +654,12 @@ class EnhancedCultureMoETrainer:
 
         os.makedirs(save_dir, exist_ok=True)
 
+        # 处理DataParallel包装的情况
+        model_for_save = self.model.module if isinstance(self.model, torch.nn.DataParallel) else self.model
+
         # 只保存MoE相关参数
         moe_state_dict = {}
-        for name, param in self.model.named_parameters():
+        for name, param in model_for_save.named_parameters():
             if param.requires_grad:  # 只保存可训练参数
                 moe_state_dict[name] = param.cpu()
 
