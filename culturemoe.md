@@ -510,3 +510,661 @@ total_loss = generation_loss +           # 生成质量
 - **文化相关性**: 跟踪专家与大洲的匹配度
 - **跨洲处理**: 分析跨洲样本的路由行为
 - **收敛稳定性**: 防止专家塌陷和梯度爆炸
+
+## 损失函数详解
+
+Enhanced CultureMoE 使用了一个复合损失函数，结合了生成质量、文化专业化、负载均衡和熵正则化等多个目标。以下是详细的损失函数组成和计算方法：
+
+### 总损失函数
+
+```python
+total_loss = generation_loss +                          # 生成质量损失
+             culture_loss_lambda * enhanced_culture_loss +  # 增强文化损失
+             load_balance_weight * load_balance_loss +       # 负载均衡损失
+             entropy_weight * entropy_loss                   # 熵正则化损失
+```
+
+**默认权重配置**:
+- `culture_loss_lambda`: 0.5 (可学习参数)
+- `load_balance_weight`: 0.01
+- `entropy_weight`: 0.1
+
+### 1. 生成损失 (Generation Loss)
+
+**文件位置**: `src/llamafactory/model/enhanced_culturemoe.py:306-318`
+
+**作用**: 确保模型生成高质量的文本，这是语言模型的基础任务
+
+**计算方法**:
+```python
+# 标准的下一个token预测损失
+shift_logits = logits[..., :-1, :].contiguous()    # [B, L-1, vocab_size]
+shift_labels = labels[..., 1:].contiguous()        # [B, L-1]
+
+loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+generation_loss = loss_fct(
+    shift_logits.view(-1, shift_logits.size(-1)),   # [B*(L-1), vocab_size]
+    shift_labels.view(-1)                           # [B*(L-1)]
+)
+```
+
+**特点**:
+- 使用标准的交叉熵损失
+- 忽略padding tokens (index=-100)
+- 确保模型保持基本的语言生成能力
+
+### 2. 增强文化损失 (Enhanced Culture Loss)
+
+**文件位置**: `src/llamafactory/model/enhanced_culturemoe.py:435-506`
+
+**作用**: 通过多个组件综合优化文化专业化和跨文化理解能力
+
+**组成结构**:
+```python
+enhanced_culture_loss = base_culture_loss +           # 基础对比学习损失
+                       0.1 * relevance_loss +         # 文化相关性损失
+                       0.05 * conflict_penalty +      # 文化冲突惩罚
+                       0.02 * sensitivity_loss        # 文化敏感性损失
+```
+
+#### 2.1 基础文化损失 (Base Culture Loss)
+
+**文件位置**: `src/llamafactory/model/CultureMoE.py:551-674`
+
+**作用**: 使用对比学习框架优化文化专业化
+
+**核心思想**:
+- **同文化吸引**: 同一文化的样本应使用相似的专家权重
+- **异文化排斥**: 不同文化的样本应使用不同的专家权重
+
+**计算步骤**:
+
+1. **构建文化原型**:
+```python
+# 对每个文化计算专家权重的平均值作为原型
+for k in unique_cultures:
+    mask = (culture_labels == k)
+    prototype_k = expert_weights[mask].mean(dim=0)  # [num_experts]
+    prototypes[k] = prototype_k
+```
+
+2. **对比损失计算**:
+```python
+L_same = 0.0    # 同文化吸引损失
+L_diff = 0.0    # 异文化排斥损失
+
+for b in range(batch_size):
+    culture_k = culture_labels[b]
+    w_b = expert_weights[b]  # 当前样本的专家权重
+
+    # 同文化吸引：最小化与本文化原型的距离
+    prototype_k = prototypes[culture_k]
+    L_same += torch.sum((w_b - prototype_k) ** 2)
+
+    # 异文化排斥：最大化与其他文化原型的距离
+    for other_k, prototype_other in prototypes.items():
+        if other_k != culture_k:
+            dist_diff = torch.sum((w_b - prototype_other) ** 2)
+            # 使用hinge loss: max(0, margin - dist)
+            L_diff += torch.clamp(margin - dist_diff, min=0.0)
+
+culture_loss = L_same + lambda_diff * L_diff
+```
+
+3. **单文化批次处理**:
+```python
+if num_cultures == 1:
+    # 鼓励专家权重分布均匀，避免专家塌陷
+    uniform_weights = torch.ones_like(expert_weights[0]) / num_experts
+    uniformity_loss = F.mse_loss(expert_weights.mean(dim=0), uniform_weights)
+    return uniformity_loss * 0.1
+```
+
+#### 2.2 文化相关性损失 (Relevance Loss)
+
+**作用**: 鼓励高文化相关性的专家获得更高的权重
+
+**计算方法**:
+```python
+relevance_loss = 0.0
+for b in range(batch_size):
+    expert_weight = expert_weights[b]      # [num_experts]
+    relevance = culture_relevances[b]      # [num_experts]
+
+    # 计算加权相关性得分
+    weighted_relevance = torch.sum(expert_weight * relevance)
+
+    # 损失 = (1 - 相关性)^2，鼓励高相关性
+    relevance_loss += (1.0 - weighted_relevance) ** 2
+
+relevance_loss = relevance_loss / batch_size
+```
+
+**多标签支持**:
+```python
+# 对于跨文化样本 (如 "0,1")
+if culture_labels_multi is not None:
+    culture_ids = culture_labels_multi[b]  # [0, 1]
+    total_relevance = 0.0
+    for culture_id in culture_ids:
+        total_relevance += torch.sum(expert_weight * relevance)
+    weighted_relevance = total_relevance / len(culture_ids)
+```
+
+#### 2.3 文化冲突惩罚 (Conflict Penalty)
+
+**作用**: 当检测到文化冲突时，增加损失以鼓励更谨慎的处理
+
+**计算方法**:
+```python
+# 使用文化上下文感知组件的冲突检测结果
+conflict_penalty = cultural_analysis['conflict_probability'].mean()
+```
+
+**冲突检测机制**:
+- 由 `CulturalContextAwareness` 模块检测
+- 基于文本内容判断是否存在文化冲突
+- 输出概率值 [0, 1]，1表示高冲突概率
+
+#### 2.4 文化敏感性损失 (Sensitivity Loss)
+
+**作用**: 当内容具有文化敏感性时，如果专家使用不当，增加损失
+
+**计算方法**:
+```python
+sensitivity_score = cultural_analysis['sensitivity_score'].mean()
+# 敏感性高但相关性低时损失大
+sensitivity_loss = torch.clamp(
+    sensitivity_score * (1.0 - relevance_loss),
+    min=0.0
+)
+```
+
+**设计思想**:
+- 文化敏感内容应该使用相关的专家处理
+- 如果敏感内容被不相关的专家处理，增加损失
+
+### 3. 负载均衡损失 (Load Balance Loss)
+
+**文件位置**: `src/llamafactory/model/cultural_components.py:251-256`
+
+**作用**: 防止专家使用不均衡，避免部分专家被过度使用而其他专家被忽略
+
+**计算方法**:
+```python
+def compute_load_balancing_loss(expert_weights):
+    # 计算每个专家的平均使用率
+    expert_usage = expert_weights.mean(dim=0)  # [num_experts]
+
+    # 理想的均匀分布
+    uniform_distribution = torch.ones_like(expert_usage) / num_experts
+
+    # MSE损失：鼓励专家使用率接近均匀分布
+    load_balancing_loss = F.mse_loss(expert_usage, uniform_distribution)
+    return load_balancing_loss
+```
+
+**目标**:
+- 每个专家的使用率接近 1/num_experts
+- 防止专家塌陷和负载不均衡
+
+### 4. 熵正则化损失 (Entropy Loss)
+
+**文件位置**: `src/llamafactory/model/cultural_components.py:258-270`
+
+**作用**: 鼓励路由器产生均匀的专家权重分布，防止路由塌陷
+
+**计算方法**:
+```python
+def entropy_regularization(expert_weights):
+    # 计算每个样本的熵
+    entropy = -torch.sum(expert_weights * torch.log(expert_weights + 1e-8), dim=-1)
+
+    # 最大熵（均匀分布的熵）
+    max_entropy = torch.log(torch.tensor(expert_weights.size(-1)))
+
+    # 熵正则化损失 = max_entropy - current_entropy
+    # 值越大表示分布越不均匀
+    entropy_loss = (max_entropy - entropy).mean()
+    return entropy_loss
+```
+
+**设计思想**:
+- 高熵 = 均匀分布 = 避免路由塌陷
+- 最小化 (max_entropy - current_entropy) = 最大化当前熵
+- 防止路由器总是选择少数几个专家
+
+### 损失函数权重调优
+
+#### 自适应权重调整
+
+**文件位置**: `src/llamafactory/model/enhanced_culturemoe.py:369-384`
+
+当总损失出现异常时，模型会自动调整权重：
+
+```python
+if torch.isnan(total_loss) or torch.isinf(total_loss):
+    # 出现NaN或Inf时，只使用生成损失
+    total_loss = generation_loss
+elif total_loss < 0:
+    # 总损失为负时，减少正则化权重
+    total_loss = (
+        generation_loss +
+        lambda_value * culture_loss +
+        0.001 * load_balance_loss +  # 减少到0.001
+        0.01 * entropy_loss          # 减少到0.01
+    )
+    if total_loss < 0:
+        # 仍为负则只保留主要损失
+        total_loss = generation_loss + lambda_value * culture_loss
+```
+
+#### 可学习的文化损失权重
+
+```python
+# 文化损失权重可以是可学习参数
+if culture_loss_lambda < 0:
+    # 自动学习权重（初始值0.1）
+    self.culture_loss_lambda = nn.Parameter(torch.tensor(0.1))
+else:
+    # 固定权重
+    self.culture_loss_lambda = torch.tensor(culture_loss_lambda)
+```
+
+### 损失监控和调试
+
+#### 训练过程中的损失分解
+
+每个epoch结束后，模型会输出详细的损失分解：
+
+```python
+# 训练日志示例
+=== Epoch 1 Training Results ===
+Total Loss: 2.345678
+  ├─ Generation Loss: 2.123456      # 主要的语言建模损失
+  ├─ Culture Loss: 0.234567         # 文化专业化损失
+  ├─ Load Balance Loss: 0.012345    # 负载均衡损失
+  ├─ Entropy Loss: 0.098765         # 熵正则化损失
+  ├─ Specialization Loss: 0.054321  # 专业化分量（监控用）
+  └─ Diversity Loss: 0.087654       # 多样性分量（监控用）
+```
+
+#### 异常检测和预警
+
+```python
+# 损失异常检测
+if train_metrics['train_loss'] < 0:
+    logging.warning("⚠️  WARNING: Total loss is negative!")
+if train_metrics['train_entropy_loss'] < -1.0:
+    logging.warning("⚠️  WARNING: Entropy loss is very negative, possible expert collapse!")
+if train_metrics['train_generation_loss'] < 0.001:
+    logging.warning("⚠️  WARNING: Generation loss is very low, possible overfitting!")
+```
+
+### 损失函数设计原理
+
+#### 1. 多目标平衡
+
+Enhanced CultureMoE的损失函数设计平衡了以下目标：
+
+- **生成质量** (Generation Loss): 保持基本的语言建模能力
+- **文化专业化** (Culture Loss): 不同文化使用不同专家
+- **负载均衡** (Load Balance): 避免专家使用不均
+- **分布均匀** (Entropy): 防止路由塌陷
+
+#### 2. 层次化权重设计
+
+```
+总权重: 1.0
+├─ 生成损失: ~0.7-0.8 (主导)
+├─ 文化损失: ~0.1-0.2 (重要)
+├─ 负载均衡: ~0.01 (调节)
+└─ 熵正则化: ~0.05-0.1 (稳定)
+```
+
+#### 3. 鲁棒性设计
+
+- **数值稳定性**: 所有计算都添加了eps (1e-8) 防止除零
+- **异常处理**: 自动检测和修正NaN、Inf、负值
+- **梯度裁剪**: 防止梯度爆炸
+- **自适应权重**: 根据训练状态动态调整
+
+### 超参数调优建议
+
+#### 文化损失相关参数
+
+```python
+# 对比学习参数
+margin = 0.5          # 不同文化间最小距离
+lambda_diff = 1.0     # 异文化排斥权重
+
+# 增强损失权重
+relevance_weight = 0.1    # 相关性损失权重
+conflict_weight = 0.05    # 冲突惩罚权重
+sensitivity_weight = 0.02 # 敏感性损失权重
+```
+
+#### 正则化参数
+
+```python
+# MoE正则化
+load_balance_weight = 0.01    # 负载均衡权重
+entropy_weight = 0.1          # 熵正则化权重
+router_temperature = 2.0      # 路由器温度(防塌陷)
+```
+
+#### 调优策略
+
+1. **初期训练**: 降低文化损失权重，专注生成质量
+2. **中期训练**: 逐步增加文化损失权重
+3. **后期训练**: 微调正则化权重，防止过拟合
+
+这套损失函数设计确保了Enhanced CultureMoE能够在保持高质量文本生成的同时，学习到有效的文化专业化和跨文化理解能力。
+
+## 损失函数消融实验设计
+
+为了全面评估Enhanced CultureMoE中各个损失函数组件的贡献，我们设计了一套系统性的消融实验方案。这些实验将帮助理解每个损失函数的作用，并找到最优的权重配置。
+
+### 实验设计原理
+
+#### 1. 控制变量法
+- 每次实验只改变一个变量，保持其他条件不变
+- 使用相同的数据集、模型架构和训练配置
+- 确保实验结果的可比性
+
+#### 2. 基准配置
+所有实验使用以下基准配置：
+```bash
+# 基准配置
+BACKBONE="llama"           # 基础模型
+DATA_ID="4"               # CultureLLM数据集
+NUM_EXPERTS="12"          # 12个专家
+MOE_FUSION="0.4"          # MoE融合系数
+NUM_EPOCHS="20"           # 训练轮数
+```
+
+#### 3. 评估指标
+- **生成质量**: Perplexity, BLEU, Rouge-L
+- **文化准确性**: 文化分类准确率
+- **专家利用率**: 专家使用分布的均匀性
+- **收敛稳定性**: 训练损失曲线的稳定性
+
+### 实验组设计
+
+#### 🧪 实验组1: 文化损失开关消融
+
+**目标**: 验证文化损失的整体有效性
+
+**实验配置**:
+
+**1.1 不使用文化损失 (Baseline)**
+```bash
+# 基础MoE模型，无文化感知
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 False 12 0.4 0.0 0.5 1.0 True 2.0 0.01 0.1
+```
+
+**1.2 使用文化损失**
+```bash
+# 只使用基础对比学习文化损失
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+```
+
+#### 🧪 实验组2: 文化损失权重探索
+
+**目标**: 找到文化损失的最优权重
+
+**实验配置**:
+
+**2.1 低权重系列**
+```bash
+# λ = 0.1 (低文化约束)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.1 0.5 1.0 True 2.0 0.01 0.1
+
+# λ = 0.3 (中低文化约束)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.3 0.5 1.0 True 2.0 0.01 0.1
+```
+
+**2.2 中等权重系列**
+```bash
+# λ = 0.5 (标准配置)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+
+# λ = 0.7 (中高文化约束)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.7 0.5 1.0 True 2.0 0.01 0.1
+```
+
+**2.3 高权重系列**
+```bash
+# λ = 1.0 (高文化约束)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 1.0 0.5 1.0 True 2.0 0.01 0.1
+
+# λ = 1.5 (极高文化约束)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 1.5 0.5 1.0 True 2.0 0.01 0.1
+```
+
+**预期结果**:
+- 权重过低: 文化专业化不足
+- 权重适中: 平衡生成质量和文化准确性
+- 权重过高: 可能损害生成质量
+
+#### 🧪 实验组3: 对比学习参数消融
+
+**目标**: 优化基础文化损失的对比学习参数
+
+**实验配置**:
+
+**3.1 Margin参数探索**
+```bash
+# margin = 0.2 (小间距)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.2 1.0 True 2.0 0.01 0.1
+
+# margin = 0.5 (标准间距)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+
+# margin = 0.8 (大间距)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.8 1.0 True 2.0 0.01 0.1
+
+# margin = 1.2 (极大间距)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 1.2 1.0 True 2.0 0.01 0.1
+```
+
+**3.2 Lambda_diff参数探索**
+```bash
+# λ_diff = 0.5 (弱排斥)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 0.5 True 2.0 0.01 0.1
+
+# λ_diff = 1.0 (标准排斥)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+
+# λ_diff = 1.5 (强排斥)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.5 True 2.0 0.01 0.1
+
+# λ_diff = 2.0 (极强排斥)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 2.0 True 2.0 0.01 0.1
+```
+
+**预期结果**:
+- margin过小: 文化区分度不足
+- margin过大: 可能导致训练不稳定
+- λ_diff过小: 异文化排斥不足
+- λ_diff过大: 可能过度惩罚
+
+#### 🧪 实验组4: MoE正则化权重消融
+
+**目标**: 平衡负载均衡和熵正则化的权重
+
+**实验配置**:
+
+**4.1 负载均衡权重探索**
+```bash
+# 无负载均衡
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.0 0.1
+
+# 低负载均衡权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.1
+
+# 标准负载均衡权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+
+# 高负载均衡权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.05 0.1
+
+# 极高负载均衡权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.1 0.1
+```
+
+**4.2 熵正则化权重探索**
+```bash
+# 无熵正则化
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.0
+
+# 低熵正则化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.01
+
+# 标准熵正则化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+
+# 高熵正则化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.2
+
+# 极高熵正则化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.5
+```
+
+**预期结果**:
+- 无正则化: 可能出现专家塌陷
+- 权重过低: 专家使用不均衡
+- 权重适中: 平衡专业化和均衡性
+- 权重过高: 可能抑制专家专业化
+
+#### 🧪 实验组5: 路由器温度消融
+
+**目标**: 优化路由器的温度参数以防止塌陷
+
+**实验配置**:
+
+```bash
+# 低温度 (尖锐分布)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 1.0 0.01 0.1
+
+# 中低温度
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 1.5 0.01 0.1
+
+# 标准温度
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+
+# 中高温度
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 3.0 0.01 0.1
+
+# 高温度 (平滑分布)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 5.0 0.01 0.1
+```
+
+**预期结果**:
+- 温度过低: 路由过于确定性，可能塌陷
+- 温度适中: 平衡确定性和多样性
+- 温度过高: 路由过于随机，专业化不足
+
+#### 🧪 实验组6: 共享专家消融
+
+**目标**: 验证共享专家层的必要性
+
+**实验配置**:
+
+```bash
+# 不使用共享专家
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 False 2.0 0.01 0.1
+
+# 使用共享专家 (标准配置)
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+```
+
+**预期结果**:
+- 无共享专家: 可能缺乏通用知识处理能力
+- 有共享专家: 更好的通用性和文化专业化平衡
+
+#### 🧪 实验组7: 专家数量与损失权重联合消融
+
+**目标**: 探索专家数量与损失权重的最佳组合
+
+**实验配置**:
+
+**7.1 少专家配置 (6专家)**
+```bash
+# 6专家 + 低文化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 6 0.4 0.3 0.5 1.0 True 2.0 0.01 0.1
+
+# 6专家 + 标准文化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 6 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+
+# 6专家 + 高文化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 6 0.4 0.8 0.5 1.0 True 2.0 0.01 0.1
+```
+
+**7.2 标准专家配置 (12专家)**
+```bash
+# 12专家 + 低文化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.3 0.5 1.0 True 2.0 0.01 0.1
+
+# 12专家 + 标准文化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+
+# 12专家 + 高文化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.8 0.5 1.0 True 2.0 0.01 0.1
+```
+
+**7.3 多专家配置 (24专家)**
+```bash
+# 24专家 + 低文化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 24 0.4 0.3 0.5 1.0 True 2.0 0.01 0.1
+
+# 24专家 + 标准文化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 24 0.4 0.5 0.5 1.0 True 2.0 0.01 0.1
+
+# 24专家 + 高文化权重
+sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 24 0.4 0.8 0.5 1.0 True 2.0 0.01 0.1
+```
+
+**预期结果**:
+- 专家数量与文化权重存在最优组合
+- 专家越多，可能需要更高的文化权重来促进专业化
+
+### 实验执行方案
+
+#### 📋 实验执行顺序
+
+**阶段1: 基础验证 (1-2天)**
+1. 实验组1: 文化损失开关消融
+2. 实验组6: 共享专家消融
+
+**阶段2: 权重优化 (3-4天)**
+3. 实验组2: 文化损失权重探索
+4. 实验组3: 对比学习参数消融
+
+**阶段3: 正则化优化 (2-3天)**
+5. 实验组4: MoE正则化权重消融
+6. 实验组5: 路由器温度消融
+
+**阶段4: 联合优化 (3-4天)**
+7. 实验组7: 专家数量与损失权重联合消融
+
+#### 🎯 预期发现和最优配置
+
+基于理论分析，我们预期的最优配置范围：
+
+**文化损失权重**: 0.3 - 0.7
+- 过低(<0.3): 文化专业化不足
+- 过高(>0.7): 可能损害生成质量
+
+**对比学习参数**:
+- Margin: 0.5 - 0.8 (适中的文化间距离)
+- Lambda_diff: 1.0 - 1.5 (适度的异文化排斥)
+
+**MoE正则化**:
+- 负载均衡权重: 0.001 - 0.01
+- 熵正则化权重: 0.01 - 0.1
+- 路由器温度: 1.5 - 3.0
+
+**架构配置**:
+- 专家数量: 12 (平衡专业化和计算效率)
+- 共享专家: True (提供通用知识处理)
