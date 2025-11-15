@@ -57,7 +57,7 @@ USE_SHARED="${9:-True}"             # 默认使用共享专家
 ROUTER_TEMP="${10:-2.0}"            # 默认 Router 温度参数 2.0
 LOAD_BAL="${11:-0.001}"             # 默认负载均衡权重 0.001 (降低)
 ENTROPY="${12:-0.01}"               # 默认熵正则化权重 0.01 (降低)
-NUM_GPUS="${13:-2}"                 # 默认使用 2 个 GPU
+NUM_GPUS="${13:-1}"                 # 默认使用 2 个 GPU
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
