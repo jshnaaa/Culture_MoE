@@ -51,13 +51,21 @@ class CultureDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
 
-        # 文化映射
-        self.culture_map = {
-            'chinese': 0, 'american': 1, 'british': 2, 'japanese': 3, 'korean': 4,
-            'indian': 5, 'german': 6, 'french': 7, 'italian': 8, 'spanish': 9,
-            'russian': 10, 'brazilian': 11, 'canadian': 12, 'australian': 13, 'mexican': 14,
-            'thai': 15, 'vietnamese': 16, 'indonesian': 17, 'turkish': 18, 'arabic': 19
+        # 大洲映射 (基于实际数据集的label字段)
+        self.continent_map = {
+            '0': 0,      # 亚洲 (Asia)
+            '1': 1,      # 欧洲 (Europe)
+            '2': 2,      # 北美洲 (North America)
+            '3': 3,      # 南美洲 (South America)
+            '4': 4,      # 非洲 (Africa)
+            '5': 5,      # 大洋洲 (Oceania)
         }
+
+        # 支持的大洲数量
+        self.num_continents = 6  # 0-5 共6个大洲
+
+        # 默认大洲 (当无法解析label时)
+        self.default_continent = 0  # 默认为亚洲
 
     def __len__(self):
         return len(self.data)
@@ -65,20 +73,21 @@ class CultureDataset(Dataset):
     def __getitem__(self, idx):
         item = self.data[idx]
 
-        # 构建对话
-        if 'conversations' in item:
-            conversations = item['conversations']
-            instruction = conversations[0]['value'] if conversations else ""
-            response = conversations[1]['value'] if len(conversations) > 1 else ""
-        else:
-            instruction = item.get('instruction', '')
-            response = item.get('output', item.get('response', ''))
+        # 获取数据字段
+        instruction = item.get('instruction', '')
+        instruction_mask = item.get('instruction_mask', instruction)  # mask版本的instruction
+        output = item.get('output', '')
+        label = item.get('label', '0')  # 大洲标签
 
-        # 构建输入文本
+        # 构建输入文本 (使用原始instruction，不是mask版本)
         input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-        full_text = input_text + response + "<|eot_id|>"
+        full_text = input_text + output + "<|eot_id|>"
 
-        # 分词
+        # 构建mask版本的输入文本 (用于共享专家)
+        input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        full_text_mask = input_text_mask + output + "<|eot_id|>"
+
+        # 分词 - 原始版本
         encoding = self.tokenizer(
             full_text,
             truncation=True,
@@ -87,8 +96,19 @@ class CultureDataset(Dataset):
             return_tensors='pt'
         )
 
+        # 分词 - mask版本
+        encoding_mask = self.tokenizer(
+            full_text_mask,
+            truncation=True,
+            padding='max_length',
+            max_length=self.max_length,
+            return_tensors='pt'
+        )
+
         input_ids = encoding['input_ids'].squeeze(0)
         attention_mask = encoding['attention_mask'].squeeze(0)
+        input_ids_mask = encoding_mask['input_ids'].squeeze(0)
+        attention_mask_mask = encoding_mask['attention_mask'].squeeze(0)
 
         # 创建标签
         labels = input_ids.clone()
@@ -101,16 +121,45 @@ class CultureDataset(Dataset):
         # 掩盖instruction部分
         labels[:assistant_start_idx] = -100
 
-        # 获取文化标签
-        culture_name = item.get('culture', 'chinese').lower()
-        culture_id = self.culture_map.get(culture_name, 0)
+        # 解析大洲标签
+        continent_id, continent_ids_multi = self._parse_continent_label(label)
 
         return {
             'input_ids': input_ids,
             'attention_mask': attention_mask,
+            'input_ids_mask': input_ids_mask,
+            'attention_mask_mask': attention_mask_mask,
             'labels': labels,
-            'culture_ids': torch.tensor(culture_id, dtype=torch.long)
+            'culture_ids': torch.tensor(continent_id, dtype=torch.long),
+            'culture_ids_multi': continent_ids_multi  # 用于多标签文化损失
         }
+
+    def _parse_continent_label(self, label: str) -> tuple[int, List[int]]:
+        """解析大洲标签，返回主要大洲ID和所有相关大洲ID列表"""
+        # 清理标签
+        label = str(label).strip()
+
+        continent_ids = []
+
+        # 处理多大洲情况 (例如 "0,1" 或 "1,0")
+        if ',' in label:
+            continents = [c.strip() for c in label.split(',')]
+            for continent in continents:
+                if continent in self.continent_map:
+                    continent_ids.append(self.continent_map[continent])
+        else:
+            # 单个大洲
+            if label in self.continent_map:
+                continent_ids.append(self.continent_map[label])
+
+        # 如果没有找到任何有效的大洲，使用默认值
+        if not continent_ids:
+            continent_ids.append(self.default_continent)
+
+        # 主要大洲ID (用于模型输入，取第一个)
+        primary_continent_id = continent_ids[0]
+
+        return primary_continent_id, continent_ids
 
 
 # ===== 分层优化器 =====
@@ -288,7 +337,7 @@ class EnhancedCultureMoETrainer:
             args=moe_args,
             culture_loss_lambda=self.args.culture_loss_lambda,
             moe_fusion=self.args.moe_fusion,
-            num_cultures=20,  # 支持20种文化
+            num_cultures=6,   # 支持6个大洲 (0-5: 亚洲、欧洲、北美、南美、非洲、大洋洲)
             culture_dim=256   # 文化嵌入维度
         )
 

@@ -15,10 +15,10 @@ from .experts import LoRA
 
 class CulturalEmbeddingLayer(nn.Module):
     """
-    文化嵌入层：将文化标识映射为稠密向量表示
-    提供文化上下文感知和细粒度文化控制
+    文化嵌入层：将大洲标识映射为稠密向量表示
+    提供大洲文化上下文感知和细粒度文化控制
     """
-    def __init__(self, num_cultures: int = 20, culture_dim: int = 256, hidden_dim: int = 4096):
+    def __init__(self, num_cultures: int = 6, culture_dim: int = 256, hidden_dim: int = 4096):
         super().__init__()
 
         self.num_cultures = num_cultures
@@ -112,10 +112,10 @@ class CulturalEmbeddingLayer(nn.Module):
 
 class CulturalAwareRouter(nn.Module):
     """
-    文化感知路由器：结合文化信息进行专家选择
-    支持多维度路由决策：内容驱动、文化驱动、亲和性驱动
+    文化感知路由器：结合大洲文化信息进行专家选择
+    支持多维度路由决策：内容驱动、大洲文化驱动、亲和性驱动
     """
-    def __init__(self, hidden_dim: int = 4096, num_experts: int = 12, num_cultures: int = 20,
+    def __init__(self, hidden_dim: int = 4096, num_experts: int = 12, num_cultures: int = 6,
                  culture_dim: int = 256, router_hidden_dim: int = 2048, dropout: float = 0.1):
         super().__init__()
 
@@ -433,10 +433,10 @@ class CultureSpecificExpert(nn.Module):
 
 class CulturalContextAwareness(nn.Module):
     """
-    文化上下文感知：理解文本中的文化线索和上下文
-    提供文化冲突检测和跨文化理解能力
+    文化上下文感知：理解文本中的大洲文化线索和上下文
+    提供大洲文化冲突检测和跨大洲理解能力
     """
-    def __init__(self, hidden_dim: int = 4096, num_cultures: int = 20, context_dim: int = 512,
+    def __init__(self, hidden_dim: int = 4096, num_cultures: int = 6, context_dim: int = 512,
                  dropout: float = 0.1):
         super().__init__()
 
@@ -542,7 +542,7 @@ class CulturalContextAwareness(nn.Module):
         return context_aware_states, cultural_analysis
 
 
-def create_culture_assignments(num_experts: int, num_cultures: int = 20) -> List[List[int]]:
+def create_culture_assignments(num_experts: int, num_cultures: int = 6) -> List[List[int]]:
     """
     动态创建文化分配方案
 

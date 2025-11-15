@@ -33,7 +33,7 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
     """
 
     def __init__(self, llama_model, config, args: ModelArgs, culture_loss_lambda=-1,
-                 moe_fusion=0.4, num_cultures=20, culture_dim=256):
+                 moe_fusion=0.4, num_cultures=6, culture_dim=256):
         # 调用父类初始化，但不使用其 router 和 experts_layer
         super().__init__(llama_model, config, args, culture_loss_lambda, moe_fusion)
 
