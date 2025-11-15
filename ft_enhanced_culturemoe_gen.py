@@ -479,6 +479,8 @@ class EnhancedCultureMoETrainer:
         total_culture_loss = 0.0
         total_load_balance_loss = 0.0
         total_entropy_loss = 0.0
+        total_specialization_loss = 0.0
+        total_diversity_loss = 0.0
         num_batches = 0
 
         progress_bar = tqdm(self.train_loader, desc=f"Epoch {epoch+1}")
@@ -536,15 +538,21 @@ class EnhancedCultureMoETrainer:
                 total_load_balance_loss += outputs['load_balance_loss'].item()
             if 'entropy_loss' in outputs:
                 total_entropy_loss += outputs['entropy_loss'].item()
+            if 'specialization_loss' in outputs:
+                total_specialization_loss += outputs['specialization_loss'].item()
+            if 'diversity_loss' in outputs:
+                total_diversity_loss += outputs['diversity_loss'].item()
 
             num_batches += 1
             self.global_step += 1
 
-            # 更新进度条
+            # 更新进度条 - 添加更多损失信息
             progress_bar.set_postfix({
                 'loss': f"{loss.item():.4f}",
-                'gen_loss': f"{outputs.get('generation_loss', 0):.4f}",
-                'cult_loss': f"{outputs.get('culture_loss', 0):.4f}"
+                'gen': f"{outputs.get('generation_loss', torch.tensor(0)).item():.4f}",
+                'cult': f"{outputs.get('culture_loss', torch.tensor(0)).item():.4f}",
+                'load': f"{outputs.get('load_balance_loss', torch.tensor(0)).item():.4f}",
+                'ent': f"{outputs.get('entropy_loss', torch.tensor(0)).item():.4f}"
             })
 
             # 清理内存
@@ -557,6 +565,8 @@ class EnhancedCultureMoETrainer:
             'train_culture_loss': total_culture_loss / num_batches,
             'train_load_balance_loss': total_load_balance_loss / num_batches,
             'train_entropy_loss': total_entropy_loss / num_batches,
+            'train_specialization_loss': total_specialization_loss / num_batches,
+            'train_diversity_loss': total_diversity_loss / num_batches,
         }
 
     def evaluate(self, epoch: int) -> Dict[str, float]:
@@ -696,10 +706,28 @@ class EnhancedCultureMoETrainer:
                 metrics = {**train_metrics, **eval_metrics, 'epoch': epoch + 1}
                 self.epoch_results.append(metrics)
 
-                # 记录结果
-                logging.info(f"Train Loss: {train_metrics['train_loss']:.4f}")
-                logging.info(f"Eval Loss: {eval_metrics['eval_loss']:.4f}")
+                # 记录详细结果
+                logging.info(f"=== Epoch {epoch+1} Training Results ===")
+                logging.info(f"Total Loss: {train_metrics['train_loss']:.6f}")
+                logging.info(f"  ├─ Generation Loss: {train_metrics['train_generation_loss']:.6f}")
+                logging.info(f"  ├─ Culture Loss: {train_metrics['train_culture_loss']:.6f}")
+                logging.info(f"  ├─ Load Balance Loss: {train_metrics['train_load_balance_loss']:.6f}")
+                logging.info(f"  ├─ Entropy Loss: {train_metrics['train_entropy_loss']:.6f}")
+                logging.info(f"  ├─ Specialization Loss: {train_metrics['train_specialization_loss']:.6f}")
+                logging.info(f"  └─ Diversity Loss: {train_metrics['train_diversity_loss']:.6f}")
+                logging.info(f"")
+                logging.info(f"=== Epoch {epoch+1} Evaluation Results ===")
+                logging.info(f"Eval Loss: {eval_metrics['eval_loss']:.6f}")
                 logging.info(f"Eval Accuracy: {eval_metrics['eval_accuracy']:.4f}")
+
+                # 检查异常损失值
+                if train_metrics['train_loss'] < 0:
+                    logging.warning("⚠️  WARNING: Total loss is negative!")
+                    logging.warning("This may indicate training instability or incorrect loss calculation.")
+                if train_metrics['train_entropy_loss'] < -1.0:
+                    logging.warning("⚠️  WARNING: Entropy loss is very negative, possible expert collapse!")
+                if train_metrics['train_generation_loss'] < 0.001:
+                    logging.warning("⚠️  WARNING: Generation loss is very low, possible overfitting!")
 
                 # 保存最佳模型
                 if eval_metrics['eval_accuracy'] > self.best_accuracy:

@@ -256,9 +256,17 @@ class CulturalAwareRouter(nn.Module):
         return load_balancing_loss
 
     def entropy_regularization(self, expert_weights: torch.Tensor) -> torch.Tensor:
-        """计算熵正则化损失"""
+        """计算熵正则化损失 - 鼓励均匀分布"""
+        # 计算熵：H = -sum(p * log(p))
         entropy = -torch.sum(expert_weights * torch.log(expert_weights + 1e-8), dim=-1)
-        entropy_loss = -entropy.mean()  # 负熵（最小化负熵 = 最大化熵）
+
+        # 最大熵（均匀分布）
+        max_entropy = torch.log(torch.tensor(expert_weights.size(-1), dtype=entropy.dtype, device=entropy.device))
+
+        # 熵正则化损失：鼓励高熵（均匀分布）
+        # 损失 = max_entropy - current_entropy，值越大表示分布越不均匀
+        entropy_loss = (max_entropy - entropy).mean()
+
         return entropy_loss
 
 

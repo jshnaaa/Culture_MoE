@@ -358,13 +358,30 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 # 使用模型的可学习culture_loss_lambda
                 lambda_value = self.culture_loss_lambda
 
-                # 总损失
+                # 总损失计算
                 total_loss = (
                     generation_loss +
                     lambda_value * culture_loss +
                     load_balance_weight * load_balance_loss +
                     entropy_weight * entropy_loss
                 )
+
+                # 损失检查和修正
+                if torch.isnan(total_loss) or torch.isinf(total_loss):
+                    logging.warning("⚠️  Total loss is NaN or Inf, using generation loss only")
+                    total_loss = generation_loss
+                elif total_loss < 0:
+                    logging.warning(f"⚠️  Total loss is negative ({total_loss:.6f}), adjusting weights")
+                    # 如果总损失为负，减少正则化项的权重
+                    total_loss = (
+                        generation_loss +
+                        lambda_value * culture_loss +
+                        0.001 * load_balance_loss +  # 减少负载均衡权重
+                        0.01 * entropy_loss          # 减少熵权重
+                    )
+                    if total_loss < 0:
+                        # 如果仍为负，只使用生成损失和文化损失
+                        total_loss = generation_loss + lambda_value * culture_loss
 
                 # DataParallel兼容性：标量值处理
                 if not is_dataparallel:
@@ -388,12 +405,28 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 outputs['load_balance_loss'] = load_balance_loss
                 outputs['entropy_loss'] = entropy_loss
 
-                # 总损失
+                # 总损失计算
                 total_loss = (
                     generation_loss +
                     load_balance_weight * load_balance_loss +
                     entropy_weight * entropy_loss
                 )
+
+                # 损失检查和修正
+                if torch.isnan(total_loss) or torch.isinf(total_loss):
+                    logging.warning("⚠️  Total loss is NaN or Inf, using generation loss only")
+                    total_loss = generation_loss
+                elif total_loss < 0:
+                    logging.warning(f"⚠️  Total loss is negative ({total_loss:.6f}), adjusting weights")
+                    # 如果总损失为负，减少正则化项的权重
+                    total_loss = (
+                        generation_loss +
+                        0.001 * load_balance_loss +  # 减少负载均衡权重
+                        0.01 * entropy_loss          # 减少熵权重
+                    )
+                    if total_loss < 0:
+                        # 如果仍为负，只使用生成损失
+                        total_loss = generation_loss
 
             outputs['loss'] = total_loss
 
@@ -456,16 +489,18 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
         # 当检测到文化冲突时，增加损失以鼓励更谨慎的处理
         conflict_penalty = cultural_analysis['conflict_probability'].mean()
 
-        # 4. 文化敏感性奖励
-        # 当内容具有文化敏感性时，鼓励使用专门的文化专家
-        sensitivity_reward = cultural_analysis['sensitivity_score'].mean()
+        # 4. 文化敏感性损失（转换为正向损失）
+        # 当内容具有文化敏感性时，如果专家使用不当，增加损失
+        sensitivity_score = cultural_analysis['sensitivity_score'].mean()
+        # 转换为损失：敏感性高但相关性低时损失大
+        sensitivity_loss = torch.clamp(sensitivity_score * (1.0 - relevance_loss), min=0.0)
 
-        # 5. 综合增强损失
+        # 5. 综合增强损失（全部为正值）
         enhanced_culture_loss = (
             base_culture_loss +
             0.1 * relevance_loss +
             0.05 * conflict_penalty +
-            -0.02 * sensitivity_reward  # 负号表示奖励
+            0.02 * sensitivity_loss  # 改为正向损失
         )
 
         return enhanced_culture_loss

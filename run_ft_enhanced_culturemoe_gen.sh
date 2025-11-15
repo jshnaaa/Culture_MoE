@@ -29,8 +29,8 @@
 #   LAMBDA_DIFF: 文化损失lambda_diff (默认 1.0)
 #   USE_SHARED: 是否使用共享专家 (默认 True)
 #   ROUTER_TEMP: 路由器温度 (默认 2.0)
-#   LOAD_BAL: 负载均衡权重 (默认 0.01)
-#   ENTROPY: 熵正则化权重 (默认 0.1)
+#   LOAD_BAL: 负载均衡权重 (默认 0.001, 降低避免负损失)
+#   ENTROPY: 熵正则化权重 (默认 0.01, 降低避免负损失)
 #   NUM_GPUS: GPU数量 (默认 2)
 #
 # 示例：
@@ -55,8 +55,8 @@ MARGIN="${7:-0.5}"                  # 默认 margin 0.5
 LAMBDA_DIFF="${8:-1.0}"             # 默认 lambda_diff 1.0
 USE_SHARED="${9:-True}"             # 默认使用共享专家
 ROUTER_TEMP="${10:-2.0}"            # 默认 Router 温度参数 2.0
-LOAD_BAL="${11:-0.01}"              # 默认负载均衡权重 0.01
-ENTROPY="${12:-0.1}"                # 默认熵正则化权重 0.1
+LOAD_BAL="${11:-0.001}"             # 默认负载均衡权重 0.001 (降低)
+ENTROPY="${12:-0.01}"               # 默认熵正则化权重 0.01 (降低)
 NUM_GPUS="${13:-1}"                 # 默认使用 2 个 GPU
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
