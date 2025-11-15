@@ -246,7 +246,7 @@ python ft_enhanced_culturemoe_gen.py \
     --entropy_weight "$ENTROPY" \
     --moe_fusion "$MOE_FUSION" \
     --freeze_base_model True \
-    --num_epochs 20 \
+    --num_epochs 12 \
     --num_experts "$NUM_EXPERTS" \
     --use_shared_experts "$USE_SHARED" \
     --shared_hidden_dim 4096 \

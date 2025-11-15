@@ -645,80 +645,106 @@ class EnhancedCultureMoETrainer:
 
     def evaluate(self, epoch: int) -> Dict[str, float]:
         """评估模型"""
-        self.model.eval()
+        try:
+            logging.info(f"Starting evaluation for epoch {epoch+1}")
+            self.model.eval()
 
-        total_loss = 0.0
-        total_generation_loss = 0.0
-        total_culture_loss = 0.0
-        correct_predictions = 0
-        total_predictions = 0
+            total_loss = 0.0
+            total_generation_loss = 0.0
+            total_culture_loss = 0.0
+            correct_predictions = 0
+            total_predictions = 0
 
-        generated_answers = []
+            generated_answers = []
 
-        with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc="Evaluating"):
-                # 移动数据到设备，特殊处理culture_ids_multi
-                batch_device = {}
-                for k, v in batch.items():
-                    if k == 'culture_ids_multi':
-                        # culture_ids_multi是列表，不能直接.to(device)
-                        batch_device[k] = v
-                    else:
-                        batch_device[k] = v.to(self.device)
-                batch = batch_device
+            # 检查验证集大小
+            logging.info(f"Validation dataset size: {len(self.val_dataset)}")
+            logging.info(f"Validation dataloader batches: {len(self.val_loader)}")
 
-                # 前向传播
-                outputs = self.model(
-                    input_ids=batch['input_ids'],
-                    attention_mask=batch['attention_mask'],
-                    input_ids_mask=batch['input_ids_mask'],
-                    attention_mask_mask=batch['attention_mask_mask'],
-                    labels=batch['labels'],
-                    culture_labels=batch['culture_ids'],  # 传递给文化损失计算
-                    culture_ids=batch['culture_ids'],     # 传递给文化感知组件
-                    culture_ids_multi=batch['culture_ids_multi'],
-                    use_culture_loss=self.args.use_culture_loss,
-                    culture_loss_lambda=self.args.culture_loss_lambda,
-                    culture_loss_alpha=self.args.culture_loss_alpha,
-                    culture_loss_beta=self.args.culture_loss_beta,
-                    use_shared_experts=self.args.use_shared_experts,
-                    router_temperature=self.args.router_temperature,
-                    load_balance_weight=self.args.load_balance_weight,
-                    entropy_weight=self.args.entropy_weight
-                )
+            with torch.no_grad():
+                for batch_idx, batch in enumerate(tqdm(self.val_loader, desc="Evaluating")):
+                    try:
+                        # 移动数据到设备，特殊处理culture_ids_multi
+                        batch_device = {}
+                        for k, v in batch.items():
+                            if k == 'culture_ids_multi':
+                                # culture_ids_multi是列表，不能直接.to(device)
+                                batch_device[k] = v
+                            else:
+                                batch_device[k] = v.to(self.device)
+                        batch = batch_device
 
-                loss = outputs['loss']
-                logits = outputs['logits']
-
-                # 统计损失
-                total_loss += loss.item()
-                if 'generation_loss' in outputs:
-                    total_generation_loss += outputs['generation_loss'].item()
-                if 'culture_loss' in outputs:
-                    total_culture_loss += outputs['culture_loss'].item()
-
-                # 计算准确率
-                labels = batch['labels']
-                predictions = torch.argmax(logits, dim=-1)
-
-                # 只计算非-100位置的准确率
-                mask = (labels != -100)
-                correct = (predictions == labels) & mask
-                correct_predictions += correct.sum().item()
-                total_predictions += mask.sum().item()
-
-                # 生成答案示例（前5个batch）
-                if len(generated_answers) < 5:
-                    for i in range(min(2, batch['input_ids'].size(0))):
-                        input_text = self.tokenizer.decode(
-                            batch['input_ids'][i],
-                            skip_special_tokens=True
+                        # 前向传播
+                        outputs = self.model(
+                            input_ids=batch['input_ids'],
+                            attention_mask=batch['attention_mask'],
+                            input_ids_mask=batch['input_ids_mask'],
+                            attention_mask_mask=batch['attention_mask_mask'],
+                            labels=batch['labels'],
+                            culture_labels=batch['culture_ids'],  # 传递给文化损失计算
+                            culture_ids=batch['culture_ids'],     # 传递给文化感知组件
+                            culture_ids_multi=batch['culture_ids_multi'],
+                            use_culture_loss=self.args.use_culture_loss,
+                            culture_loss_lambda=self.args.culture_loss_lambda,
+                            culture_loss_alpha=self.args.culture_loss_alpha,
+                            culture_loss_beta=self.args.culture_loss_beta,
+                            use_shared_experts=self.args.use_shared_experts,
+                            router_temperature=self.args.router_temperature,
+                            load_balance_weight=self.args.load_balance_weight,
+                            entropy_weight=self.args.entropy_weight
                         )
-                        generated_answers.append({
-                            'input': input_text,
-                            'culture_id': batch['culture_ids'][i].item(),
-                            'expert_weights': outputs['expert_weights'][i].cpu().tolist()
-                        })
+
+                        loss = outputs['loss']
+                        logits = outputs['logits']
+
+                        # 统计损失
+                        total_loss += loss.item()
+                        if 'generation_loss' in outputs:
+                            total_generation_loss += outputs['generation_loss'].item()
+                        if 'culture_loss' in outputs:
+                            total_culture_loss += outputs['culture_loss'].item()
+
+                        # 计算准确率
+                        labels = batch['labels']
+                        predictions = torch.argmax(logits, dim=-1)
+
+                        # 只计算非-100位置的准确率
+                        mask = (labels != -100)
+                        correct = (predictions == labels) & mask
+                        correct_predictions += correct.sum().item()
+                        total_predictions += mask.sum().item()
+
+                        # 生成答案示例（前3个batch，减少内存使用）
+                        if len(generated_answers) < 3 and batch_idx < 3:
+                            try:
+                                for i in range(min(1, batch['input_ids'].size(0))):  # 每批只取1个样本
+                                    input_text = self.tokenizer.decode(
+                                        batch['input_ids'][i],
+                                        skip_special_tokens=True
+                                    )
+
+                                    # 安全获取expert_weights
+                                    if 'expert_weights' in outputs:
+                                        expert_weights = outputs['expert_weights'][i].cpu().tolist()
+                                    else:
+                                        expert_weights = []
+
+                                    generated_answers.append({
+                                        'input': input_text,
+                                        'culture_id': batch['culture_ids'][i].item(),
+                                        'expert_weights': expert_weights
+                                    })
+                            except Exception as e:
+                                logging.warning(f"Failed to collect sample for batch {batch_idx}: {e}")
+
+                        # LLaMA内存优化：每5个batch清理一次内存
+                        if 'llama' in str(self.args.base_model_path).lower() and batch_idx % 5 == 0:
+                            torch.cuda.empty_cache()
+
+                    except Exception as e:
+                        logging.error(f"Error processing evaluation batch {batch_idx}: {e}")
+                        # 继续处理下一个batch，不中断评估
+                        continue
 
         # 保存生成的答案
         answers_file = os.path.join(self.args.output_dir, 'generated_answers.json')
