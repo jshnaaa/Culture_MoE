@@ -247,6 +247,14 @@ class EnhancedCultureMoETrainer:
         self.args = args
         self.device = torch.device(args.device)
 
+        # 根据模型类型调整梯度累积
+        if hasattr(args, 'base_model_path') and 'llama' in args.base_model_path.lower():
+            self.gradient_accumulation_steps = 2  # LLaMA需要更多梯度累积
+            logging.info("Detected LLaMA model, using gradient accumulation steps: 2")
+        else:
+            self.gradient_accumulation_steps = 1
+            logging.info("Using gradient accumulation steps: 1")
+
         # 设置随机种子
         set_seed(42)
 
@@ -350,6 +358,25 @@ class EnhancedCultureMoETrainer:
 
         # 移动到设备
         self.model = self.model.to(self.device)
+
+        # LLaMA特殊内存优化
+        if 'llama' in self.args.base_model_path.lower():
+            logging.info("Applying LLaMA-specific memory optimizations")
+            # 启用混合精度训练
+            self.use_amp = True
+            # 更频繁的内存清理
+            self.memory_cleanup_interval = 10
+        else:
+            self.use_amp = False
+            self.memory_cleanup_interval = 50
+
+        # 初始化AMP scaler（在use_amp设置后）
+        if self.use_amp:
+            from torch.cuda.amp import GradScaler
+            self.scaler = GradScaler()
+            logging.info("AMP scaler initialized for LLaMA model")
+        else:
+            self.scaler = None
 
         # 多GPU支持
         gpu_count = torch.cuda.device_count()
@@ -496,25 +523,47 @@ class EnhancedCultureMoETrainer:
                     batch_device[k] = v.to(self.device)
             batch = batch_device
 
-            # 前向传播
-            outputs = self.model(
-                input_ids=batch['input_ids'],
-                attention_mask=batch['attention_mask'],
-                input_ids_mask=batch['input_ids_mask'],
-                attention_mask_mask=batch['attention_mask_mask'],
-                labels=batch['labels'],
-                culture_labels=batch['culture_ids'],  # 传递给文化损失计算
-                culture_ids=batch['culture_ids'],     # 传递给文化感知组件
-                culture_ids_multi=batch['culture_ids_multi'],
-                use_culture_loss=self.args.use_culture_loss,
-                culture_loss_lambda=self.args.culture_loss_lambda,
-                culture_loss_alpha=self.args.culture_loss_alpha,
-                culture_loss_beta=self.args.culture_loss_beta,
-                use_shared_experts=self.args.use_shared_experts,
-                router_temperature=self.args.router_temperature,
-                load_balance_weight=self.args.load_balance_weight,
-                entropy_weight=self.args.entropy_weight
-            )
+            # 前向传播（使用AMP如果启用）
+            if self.use_amp:
+                from torch.cuda.amp import autocast
+                with autocast():
+                    outputs = self.model(
+                        input_ids=batch['input_ids'],
+                        attention_mask=batch['attention_mask'],
+                        input_ids_mask=batch['input_ids_mask'],
+                        attention_mask_mask=batch['attention_mask_mask'],
+                        labels=batch['labels'],
+                        culture_labels=batch['culture_ids'],
+                        culture_ids=batch['culture_ids'],
+                        culture_ids_multi=batch['culture_ids_multi'],
+                        use_culture_loss=self.args.use_culture_loss,
+                        culture_loss_lambda=self.args.culture_loss_lambda,
+                        culture_loss_alpha=self.args.culture_loss_alpha,
+                        culture_loss_beta=self.args.culture_loss_beta,
+                        use_shared_experts=self.args.use_shared_experts,
+                        router_temperature=self.args.router_temperature,
+                        load_balance_weight=self.args.load_balance_weight,
+                        entropy_weight=self.args.entropy_weight
+                    )
+            else:
+                outputs = self.model(
+                    input_ids=batch['input_ids'],
+                    attention_mask=batch['attention_mask'],
+                    input_ids_mask=batch['input_ids_mask'],
+                    attention_mask_mask=batch['attention_mask_mask'],
+                    labels=batch['labels'],
+                    culture_labels=batch['culture_ids'],
+                    culture_ids=batch['culture_ids'],
+                    culture_ids_multi=batch['culture_ids_multi'],
+                    use_culture_loss=self.args.use_culture_loss,
+                    culture_loss_lambda=self.args.culture_loss_lambda,
+                    culture_loss_alpha=self.args.culture_loss_alpha,
+                    culture_loss_beta=self.args.culture_loss_beta,
+                    use_shared_experts=self.args.use_shared_experts,
+                    router_temperature=self.args.router_temperature,
+                    load_balance_weight=self.args.load_balance_weight,
+                    entropy_weight=self.args.entropy_weight
+                )
 
             loss = outputs['loss']
 
@@ -527,16 +576,31 @@ class EnhancedCultureMoETrainer:
                 if self.global_step == 0:
                     logging.info(f"use_culture_loss: {self.args.use_culture_loss}")
 
-            # 反向传播
-            loss.backward()
+            # 梯度累积反向传播
+            loss = loss / self.gradient_accumulation_steps
 
-            # 梯度裁剪
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            if self.use_amp and self.scaler:
+                # 使用AMP的反向传播
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
-            # 优化器步骤
-            self.optimizer.step()
-            self.scheduler.step()
-            self.optimizer.zero_grad()
+            # 每隔gradient_accumulation_steps步更新一次
+            if (self.global_step + 1) % self.gradient_accumulation_steps == 0:
+                if self.use_amp and self.scaler:
+                    # AMP优化器步骤
+                    self.scaler.unscale_(self.optimizer.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    self.scaler.step(self.optimizer.optimizer)
+                    self.scaler.update()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
+                else:
+                    # 标准优化器步骤
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    self.optimizer.step()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
 
             # 统计
             total_loss += loss.item()
@@ -565,8 +629,8 @@ class EnhancedCultureMoETrainer:
                 'ent': f"{outputs.get('entropy_loss', torch.tensor(0)).item():.4f}"
             })
 
-            # 清理内存
-            if self.global_step % 50 == 0:
+            # 清理内存（使用动态间隔）
+            if self.global_step % self.memory_cleanup_interval == 0:
                 torch.cuda.empty_cache()
 
         return {
