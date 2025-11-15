@@ -424,11 +424,90 @@ class EnhancedCultureMoETrainer:
             generator=torch.Generator().manual_seed(42)
         )
 
-        # 创建数据加载器
+        # 创建文化平衡的数据加载器
+        # 使用自定义采样器确保每个batch包含多种大洲
+        from torch.utils.data import BatchSampler, RandomSampler
+
+        # 分析数据集中的大洲分布
+        culture_counts = {}
+        for i, sample in enumerate(self.train_dataset):
+            culture_id = sample[2]['culture_ids'].item()  # 获取culture_ids
+            if culture_id not in culture_counts:
+                culture_counts[culture_id] = []
+            culture_counts[culture_id].append(i)
+
+        logging.info(f"Culture distribution in training set:")
+        for culture_id, indices in culture_counts.items():
+            logging.info(f"  Culture {culture_id}: {len(indices)} samples")
+
+        # 创建平衡采样器
+        class CultureBalancedBatchSampler:
+            def __init__(self, culture_indices, batch_size, drop_last=False):
+                self.culture_indices = culture_indices
+                self.batch_size = batch_size
+                self.drop_last = drop_last
+                self.cultures = list(culture_indices.keys())
+
+            def __iter__(self):
+                # 为每个大洲创建随机索引
+                culture_iters = {}
+                for culture_id, indices in self.culture_indices.items():
+                    shuffled_indices = indices.copy()
+                    import random
+                    random.shuffle(shuffled_indices)
+                    culture_iters[culture_id] = iter(shuffled_indices)
+
+                while True:
+                    batch = []
+                    cultures_in_batch = set()
+
+                    # 尽量确保每个batch包含多种大洲
+                    for _ in range(self.batch_size):
+                        # 优先选择还没有在当前batch中的大洲
+                        available_cultures = [c for c in self.cultures if c not in cultures_in_batch]
+                        if not available_cultures:
+                            available_cultures = self.cultures
+
+                        # 随机选择一个大洲
+                        import random
+                        culture_id = random.choice(available_cultures)
+
+                        try:
+                            idx = next(culture_iters[culture_id])
+                            batch.append(idx)
+                            cultures_in_batch.add(culture_id)
+                        except StopIteration:
+                            # 如果某个大洲的样本用完了，重新洗牌
+                            shuffled_indices = self.culture_indices[culture_id].copy()
+                            random.shuffle(shuffled_indices)
+                            culture_iters[culture_id] = iter(shuffled_indices)
+                            try:
+                                idx = next(culture_iters[culture_id])
+                                batch.append(idx)
+                                cultures_in_batch.add(culture_id)
+                            except StopIteration:
+                                break
+
+                    if len(batch) == self.batch_size:
+                        yield batch
+                    elif len(batch) > 0 and not self.drop_last:
+                        yield batch
+                    else:
+                        break
+
+            def __len__(self):
+                total_samples = sum(len(indices) for indices in self.culture_indices.values())
+                if self.drop_last:
+                    return total_samples // self.batch_size
+                else:
+                    return (total_samples + self.batch_size - 1) // self.batch_size
+
+        # 使用平衡采样器
+        balanced_sampler = CultureBalancedBatchSampler(culture_counts, self.args.batch_size, drop_last=False)
+
         self.train_loader = DataLoader(
             self.train_dataset,
-            batch_size=self.args.batch_size,
-            shuffle=True,
+            batch_sampler=balanced_sampler,
             num_workers=self.args.num_workers,
             pin_memory=True
         )
@@ -503,7 +582,8 @@ class EnhancedCultureMoETrainer:
                 input_ids_mask=batch['input_ids_mask'],
                 attention_mask_mask=batch['attention_mask_mask'],
                 labels=batch['labels'],
-                culture_ids=batch['culture_ids'],
+                culture_labels=batch['culture_ids'],  # 传递给文化损失计算
+                culture_ids=batch['culture_ids'],     # 传递给文化感知组件
                 culture_ids_multi=batch['culture_ids_multi'],
                 use_culture_loss=self.args.use_culture_loss,
                 culture_loss_lambda=self.args.culture_loss_lambda,
@@ -516,6 +596,21 @@ class EnhancedCultureMoETrainer:
             )
 
             loss = outputs['loss']
+
+            # 调试：检查文化损失计算
+            if self.global_step <= 10:  # 前10步输出调试信息
+                unique_cultures = torch.unique(batch['culture_ids'])
+                logging.info(f"Step {self.global_step}: unique_cultures={unique_cultures.tolist()}, "
+                           f"culture_loss={'culture_loss' in outputs and outputs['culture_loss'].item():.6f if 'culture_loss' in outputs else 'N/A'}")
+
+                if self.global_step == 0:
+                    logging.info("=== First Step Debug Info ===")
+                    logging.info(f"use_culture_loss: {self.args.use_culture_loss}")
+                    logging.info(f"culture_ids shape: {batch['culture_ids'].shape}")
+                    logging.info(f"culture_ids values: {batch['culture_ids'].tolist()}")
+                    logging.info(f"unique cultures in batch: {unique_cultures.tolist()}")
+                    logging.info(f"num unique cultures: {len(unique_cultures)}")
+                    logging.info("=" * 30)
 
             # 反向传播
             loss.backward()
@@ -600,7 +695,8 @@ class EnhancedCultureMoETrainer:
                     input_ids_mask=batch['input_ids_mask'],
                     attention_mask_mask=batch['attention_mask_mask'],
                     labels=batch['labels'],
-                    culture_ids=batch['culture_ids'],
+                    culture_labels=batch['culture_ids'],  # 传递给文化损失计算
+                    culture_ids=batch['culture_ids'],     # 传递给文化感知组件
                     culture_ids_multi=batch['culture_ids_multi'],
                     use_culture_loss=self.args.use_culture_loss,
                     culture_loss_lambda=self.args.culture_loss_lambda,
