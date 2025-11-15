@@ -142,8 +142,8 @@ OUTPUT_DIR="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_${DATASET_TAG}_${BACKBON
 
 # 设置 GPU
 if [ "$NUM_GPUS" = "1" ]; then
-    export CUDA_VISIBLE_DEVICES=0
-    GPU_INFO="Single GPU (GPU 0)"
+#    export CUDA_VISIBLE_DEVICES=0
+    GPU_INFO="Single GPU (GPU)"
 elif [ "$NUM_GPUS" = "2" ]; then
     export CUDA_VISIBLE_DEVICES=0,1
     GPU_INFO="Dual GPUs (GPU 0,1)"
