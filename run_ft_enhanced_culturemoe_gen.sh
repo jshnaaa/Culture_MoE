@@ -31,7 +31,7 @@
 #   ROUTER_TEMP: 路由器温度 (默认 2.0)
 #   LOAD_BAL: 负载均衡权重 (默认 0.01)
 #   ENTROPY: 熵正则化权重 (默认 0.1)
-#   NUM_GPUS: GPU数量 (默认 2)
+#   NUM_GPUS: GPU数量 (强制单GPU，避免DataParallel问题)
 #
 # 示例：
 #   # 使用默认12个专家
@@ -57,7 +57,7 @@ USE_SHARED="${9:-True}"             # 默认使用共享专家
 ROUTER_TEMP="${10:-2.0}"            # 默认 Router 温度参数 2.0
 LOAD_BAL="${11:-0.01}"              # 默认负载均衡权重 0.01
 ENTROPY="${12:-0.1}"                # 默认熵正则化权重 0.1
-NUM_GPUS="${13:-2}"                 # 默认使用 2 个 GPU
+NUM_GPUS="${13:-1}"                 # 强制单GPU避免DataParallel问题
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -140,17 +140,10 @@ else
 fi
 OUTPUT_DIR="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_$(date +%Y%m%d_%H%M)"
 
-# 设置 GPU
-if [ "$NUM_GPUS" = "1" ]; then
-    export CUDA_VISIBLE_DEVICES=0
-    GPU_INFO="Single GPU (GPU 0)"
-elif [ "$NUM_GPUS" = "2" ]; then
-    export CUDA_VISIBLE_DEVICES=0,1
-    GPU_INFO="Dual GPUs (GPU 0,1)"
-else
-    export CUDA_VISIBLE_DEVICES=0,1
-    GPU_INFO="Dual GPUs (GPU 0,1)"
-fi
+# 设置 GPU - 强制使用单GPU避免DataParallel问题
+# Enhanced CultureMoE输出包含复杂类型，DataParallel无法处理
+export CUDA_VISIBLE_DEVICES=0
+GPU_INFO="Single GPU (GPU 0) - DataParallel disabled for model compatibility"
 
 echo "============================================================"
 echo "🚀 Enhanced CultureMoE Training with Cultural Awareness Components"
@@ -189,6 +182,10 @@ echo "  Load balance weight: $LOAD_BAL"
 echo "  Entropy weight: $ENTROPY"
 echo ""
 echo "GPUs: $GPU_INFO"
+echo ""
+echo "⚠️  Note: Enhanced CultureMoE uses single GPU only"
+echo "   Reason: Complex model outputs (lists, dicts) incompatible with DataParallel"
+echo "   Impact: Slightly slower training but full functionality preserved"
 echo ""
 echo "Components:"
 echo "  Base model: $BASE_MODEL_PATH"

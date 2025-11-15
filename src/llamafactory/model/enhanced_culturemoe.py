@@ -154,6 +154,10 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
         Returns:
             outputs: dict 包含所有输出和分析结果
         """
+        # 检查是否被DataParallel包装，如果是则抛出错误
+        if hasattr(self, 'module'):
+            raise RuntimeError("Enhanced CultureMoE should not be wrapped with DataParallel due to complex output types")
+
         device = input_ids.device
         dtype = self.shared[0].weight.dtype
 
