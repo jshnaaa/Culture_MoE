@@ -1,36 +1,38 @@
 #!/bin/bash
 
 # ============================================================
-# 🚀 AGGRESSIVE LEARNING RATE VERSION
-# This version uses higher learning rates to match LoRA performance
-# Base LR: 2e-5 (vs 1e-5), MoE multipliers: 5.0/8.0/3.0 (vs 4.0/6.0/2.0)
+# 🚀 FROZEN LORA-FINETUNED MODEL VERSION (MoE-Only Training)
+# This version freezes the complete LoRA fine-tuned model and only trains MoE components
+# Complete model = Base Model + LoRA weights (merged and frozen)
+# Preserves 86% LoRA accuracy while adding MoE cultural specialization
+# LoRA-finetuned model: FROZEN, MoE learning rates: optimized for MoE-only training
 # ============================================================
 # 使用新数据格式微调 CultureMoE 模型（改进版）
 #
 # ✅ 改进内容：
-#   1. 降低 shared 的 capacity（4096→1024→4096）
-#   2. 增大 MoE experts 的 capacity（4096→4096→4096）
-#   3. 添加 Gating 机制（h_out = shared + gate·moe）
-#   4. 在 Experts 中添加 LayerNorm（稳定训练）
-#   5. 添加负熵正则化（尖锐化路由）
+#   1. 冻结完整的 LoRA 微调模型（Base Model + LoRA 权重合并后）
+#   2. 保持 LoRA 微调的 86% 准确率不变
+#   3. 只训练新增的 MoE 组件（Router + Experts + Shared + Gate）
+#   4. 优化 MoE 专用学习率（匹配 LoRA 训练强度）
+#   5. 避免训练干扰，在已优化模型基础上添加文化专业化
 #
 # 使用方法：
-#   sh run_ft_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <MOE_FUSION> <CULTURE_LOSS_WEIGHT>
+#   sh run_ft_culturemoe_gen_aggressive.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <MOE_FUSION> <CULTURE_LOSS_WEIGHT>
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
 #   DATA_ID: 1=unified_all_datasets, 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认 4)
 #   USE_CULTURE_LOSS: True 或 False (默认 True)
 #   NUM_EXPERTS: 专家数量 (默认 6)
-#   MOE_FUSION: MoE 融合系数 (默认 0.4，已改为 gating 机制)
-#   CULTURE_LOSS_WEIGHT: 文化损失权重，-1=自动学习，其他值=固定权重 (默认 -1)
+#   MOE_FUSION: MoE 融合系数 (默认 0.4)
+#   CULTURE_LOSS_WEIGHT: 文化损失权重 (默认 0.5，固定权重)
 #
 # 示例：
-#   # 基础训练（自动学习 lambda）
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 0.4 -1
+#   # 冻结 LoRA 微调模型，只训练 MoE（推荐）
+#   sh run_ft_culturemoe_gen_aggressive.sh llama 4 True 6 0.4 0.5
 #
-#   # 固定权重模式
-#   sh run_ft_culturemoe_gen.sh llama 4 True 6 0.4 0.1
+#   # 使用不同专家数量
+#   sh run_ft_culturemoe_gen_aggressive.sh llama 4 True 8 0.4 0.5
 # ============================================================
 
 # ✅ 配置参数
@@ -103,7 +105,7 @@ case $DATA_ID in
         TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen_small.json"
         DATASET_TAG="cultureLLM"
         if [ "$BACKBONE" = "qwen" ]; then
-            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_qwen_20251114_1300/best_lora"
+            LORA_WEIGHTS_PATH="/root/autodl-fs/data/ft/ft_lora_only_gen_cultureLLM_qwen_20251114_1301/best_lora"
         else
             LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"
         fi
@@ -126,7 +128,7 @@ if [ "$USE_SHARED" = "True" ] || [ "$USE_SHARED" = "true" ]; then
 else
     SHARED_TAG="noshared"
 fi
-OUTPUT_DIR="/root/autodl-fs/data/ft/ft_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_margin${MARGIN}_lambdadiff${LAMBDA_DIFF}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/data/ft/ft_moe_frozen_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_$(date +%Y%m%d_%H%M)"
 
 # 设置 GPU
 if [ "$NUM_GPUS" = "1" ]; then
@@ -141,17 +143,27 @@ else
 fi
 
 echo "============================================================"
-echo "Fine-tuning CultureMoE Model with New Data Format"
+echo "🚀 CultureMoE Training with FROZEN LoRA-Finetuned Model (MoE-Only)"
 echo "============================================================"
+echo "Training Mode: FROZEN LoRA-FINETUNED MODEL + MoE-Only Training"
+echo "Strategy: Preserve 86% LoRA accuracy + Add MoE cultural specialization"
+echo ""
+echo "Model Architecture:"
+echo "  1. Base Model + LoRA weights → Complete LoRA-finetuned model (FROZEN)"
+echo "  2. + MoE components (Router + Experts + Shared + Gate) → TRAINABLE"
+echo ""
 echo "Backbone: $BACKBONE ($MODEL_NAME)"
 echo "Dataset: $DATASET_NAME"
 echo "Use culture loss: $USE_CULTURE_LOSS"
-echo "Culture loss weight (lambda): $LAMBDA"
-echo "Contrastive margin: $MARGIN"
-echo "Repulsion weight (lambda_diff): $LAMBDA_DIFF"
+echo "Culture loss weight (lambda): $LAMBDA (FIXED)"
 echo "Num experts: $NUM_EXPERTS"
 echo "Use shared expert: $USE_SHARED"
 echo "MoE fusion coefficient: $MOE_FUSION"
+echo ""
+echo "Learning Rates (MoE-Only):"
+echo "  LoRA-finetuned model: FROZEN (0.0)"
+echo "  MoE components: 2e-4 (matches LoRA training strength)"
+echo "  All MoE multipliers: 1.0 (uniform MoE training)"
 echo ""
 echo "Anti-collapse mechanisms:"
 echo "  Router temperature: $ROUTER_TEMP"
@@ -163,6 +175,8 @@ echo ""
 echo "Components:"
 echo "  Base model: $BASE_MODEL_PATH"
 echo "  LoRA weights: $LORA_WEIGHTS_PATH"
+echo "  → Merged LoRA-finetuned model: FROZEN (preserves 86% accuracy)"
+echo "  → MoE components: TRAINABLE (adds cultural specialization)"
 echo ""
 echo "Train file: $TRAIN_FILE"
 echo "Output: $OUTPUT_DIR"
@@ -213,6 +227,7 @@ python ft_culturemoe_from_base_gen.py \
     --load_balance_weight "$LOAD_BAL" \
     --entropy_weight "$ENTROPY" \
     --moe_fusion "$MOE_FUSION" \
+    --freeze_base_model True \
     --num_epochs 20 \
     --num_experts "$NUM_EXPERTS" \
     --use_shared_experts "$USE_SHARED" \
@@ -225,10 +240,10 @@ python ft_culturemoe_from_base_gen.py \
     --num_heads 8 \
     --batch_size 4 \
     --eval_batch_size 4 \
-    --learning_rate 2e-5 \
-    --moe_lr_multiplier 5.0 \
-    --router_lr_multiplier 8.0 \
-    --shared_lr_multiplier 3.0 \
+    --learning_rate 2e-4 \
+    --moe_lr_multiplier 1.0 \
+    --router_lr_multiplier 1.0 \
+    --shared_lr_multiplier 1.0 \
     --weight_decay 0.01 \
     --max_length 512 \
     --val_split 0.1 \

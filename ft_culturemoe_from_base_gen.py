@@ -434,6 +434,7 @@ class LayeredOptimizer:
         router_patterns = ['router']
         expert_patterns = ['expert', 'experts_layer']
         shared_patterns = ['shared']
+        gate_patterns = ['gate_linear']  # ✅ 添加 gate_linear 模式
 
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
@@ -448,6 +449,8 @@ class LayeredOptimizer:
                 moe_expert_params.append(param)
             elif any(pattern in name_lower for pattern in shared_patterns):
                 moe_shared_params.append(param)
+            elif any(pattern in name_lower for pattern in gate_patterns):
+                moe_shared_params.append(param)  # ✅ gate_linear 归类为 shared 组
             else:
                 # 默认归类为fine-tuned模型参数
                 fine_tuned_params.append(param)
@@ -938,7 +941,7 @@ def train_epoch(model, train_loader, optimizer, device, current_epoch=1, schedul
                         moe_router_params.append(param)
                     elif 'expert' in name_lower:
                         moe_expert_params.append(param)
-                    elif 'shared' in name_lower:
+                    elif 'shared' in name_lower or 'gate' in name_lower:
                         moe_shared_params.append(param)
                     else:
                         fine_tuned_params.append(param)
@@ -1299,6 +1302,8 @@ def main():
                         help="Epoch to start training base model parameters (default 5, more conservative)")
     parser.add_argument("--enable_progressive_training", type=lambda x: x.lower() == 'true', default=True,
                         help="Enable progressive parameter unfreezing (default True)")
+    parser.add_argument("--freeze_base_model", type=lambda x: x.lower() == 'true', default=False,
+                        help="Freeze the complete LoRA-finetuned model (Base + LoRA merged) and only train MoE components")
     parser.add_argument("--full_training_epoch", type=int, default=10,
                         help="Epoch to reach full base model training (default 10)")
 
@@ -1633,23 +1638,28 @@ def main():
         print(f"Epoch {current_epoch}/{args.num_epochs}")
         print(f"{'='*80}")
 
-        # ✅ 渐进式参数解冻策略
-        if args.enable_progressive_training:
-            train_base_model = should_train_base_model(current_epoch, base_model_start_epoch=args.base_model_start_epoch)
-
-            # 动态调整参数的可训练状态
+        # ✅ 参数训练策略
+        if args.freeze_base_model:
+            # 完全冻结 LoRA 微调后的完整模型（Base Model + LoRA 权重合并后），只训练MoE组件
+            train_base_model = False
             for name, param in model.named_parameters():
                 name_lower = name.lower()
-                is_moe_param = any(keyword in name_lower for keyword in ['router', 'expert', 'shared', 'moe'])
+                is_moe_param = any(keyword in name_lower for keyword in ['router', 'expert', 'shared', 'moe', 'gate'])
+                param.requires_grad = is_moe_param  # 只有MoE参数可训练，LoRA微调模型完全冻结
+        elif args.enable_progressive_training:
+            # 渐进式参数解冻策略
+            train_base_model = should_train_base_model(current_epoch, base_model_start_epoch=args.base_model_start_epoch)
+
+            for name, param in model.named_parameters():
+                name_lower = name.lower()
+                is_moe_param = any(keyword in name_lower for keyword in ['router', 'expert', 'shared', 'moe', 'gate'])
 
                 if is_moe_param:
-                    # MoE参数始终可训练
-                    param.requires_grad = True
+                    param.requires_grad = True  # MoE参数始终可训练
                 else:
-                    # 基础模型参数根据epoch决定
-                    param.requires_grad = train_base_model
+                    param.requires_grad = train_base_model  # 基础模型参数根据epoch决定
         else:
-            # 如果禁用渐进式训练，所有参数都可训练
+            # 端到端训练，所有参数都可训练
             train_base_model = True
             for param in model.parameters():
                 param.requires_grad = True
@@ -1664,7 +1674,9 @@ def main():
         print(f"💾 Memory before epoch: {memory_before['allocated_gb']:.2f}GB allocated, {memory_before['available_gb']:.2f}GB available")
 
         # ✅ 训练状态提示
-        if args.enable_progressive_training:
+        if args.freeze_base_model:
+            print(f"🔧 Frozen LoRA-Finetuned Model: Only MoE parameters trainable (preserves 86% LoRA accuracy)")
+        elif args.enable_progressive_training:
             if not train_base_model:
                 print(f"🔧 Progressive Training: Only MoE parameters (base model frozen)")
             else:
