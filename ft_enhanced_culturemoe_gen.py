@@ -714,8 +714,8 @@ class EnhancedCultureMoETrainer:
                         correct_predictions += correct.sum().item()
                         total_predictions += mask.sum().item()
 
-                        # 生成答案示例（前3个batch，减少内存使用）
-                        if len(generated_answers) < 3 and batch_idx < 3:
+                        # 生成答案示例（前5个batch，但每批减少样本数）
+                        if len(generated_answers) < 5 and batch_idx < 5:
                             try:
                                 for i in range(min(1, batch['input_ids'].size(0))):  # 每批只取1个样本
                                     input_text = self.tokenizer.decode(
@@ -746,20 +746,40 @@ class EnhancedCultureMoETrainer:
                         # 继续处理下一个batch，不中断评估
                         continue
 
-        # 保存生成的答案
-        answers_file = os.path.join(self.args.output_dir, 'generated_answers.json')
-        with open(answers_file, 'w', encoding='utf-8') as f:
-            json.dump(generated_answers, f, indent=2, ensure_ascii=False)
+            # 保存生成的答案
+            try:
+                answers_file = os.path.join(self.args.output_dir, 'generated_answers.json')
+                with open(answers_file, 'w', encoding='utf-8') as f:
+                    json.dump(generated_answers, f, indent=2, ensure_ascii=False)
+                logging.info(f"Saved {len(generated_answers)} generated answer samples")
+            except Exception as e:
+                logging.warning(f"Failed to save generated answers: {e}")
 
-        accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0.0
+            accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0.0
 
-        return {
-            'eval_loss': total_loss / len(self.val_loader),
-            'eval_generation_loss': total_generation_loss / len(self.val_loader),
-            'eval_culture_loss': total_culture_loss / len(self.val_loader),
-            'eval_accuracy': accuracy,
-            'eval_samples': len(self.val_dataset)
-        }
+            logging.info(f"Evaluation completed - Loss: {total_loss / len(self.val_loader):.6f}, Accuracy: {accuracy:.4f}")
+
+            return {
+                'eval_loss': total_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0.0,
+                'eval_generation_loss': total_generation_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0.0,
+                'eval_culture_loss': total_culture_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0.0,
+                'eval_accuracy': accuracy,
+                'eval_samples': len(self.val_dataset)
+            }
+
+        except Exception as e:
+            logging.error(f"Critical error during evaluation: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # 返回默认值以避免训练中断
+            return {
+                'eval_loss': float('inf'),
+                'eval_generation_loss': float('inf'),
+                'eval_culture_loss': 0.0,
+                'eval_accuracy': 0.0,
+                'eval_samples': len(self.val_dataset) if hasattr(self, 'val_dataset') else 0
+            }
 
     def save_model(self, epoch: int, is_best: bool = False):
         """保存模型"""
@@ -825,11 +845,26 @@ class EnhancedCultureMoETrainer:
 
             # 评估
             if (epoch + 1) % self.args.eval_interval == 0:
-                eval_metrics = self.evaluate(epoch)
+                logging.info(f"Starting evaluation for epoch {epoch+1}")
+                try:
+                    eval_metrics = self.evaluate(epoch)
+                    logging.info(f"Evaluation completed successfully for epoch {epoch+1}")
 
-                # 合并指标
-                metrics = {**train_metrics, **eval_metrics, 'epoch': epoch + 1}
-                self.epoch_results.append(metrics)
+                    # 合并指标
+                    metrics = {**train_metrics, **eval_metrics, 'epoch': epoch + 1}
+                    self.epoch_results.append(metrics)
+                except Exception as e:
+                    logging.error(f"Evaluation failed for epoch {epoch+1}: {e}")
+                    # 创建默认评估指标以继续训练
+                    eval_metrics = {
+                        'eval_loss': float('inf'),
+                        'eval_generation_loss': float('inf'),
+                        'eval_culture_loss': 0.0,
+                        'eval_accuracy': 0.0,
+                        'eval_samples': 0
+                    }
+                    metrics = {**train_metrics, **eval_metrics, 'epoch': epoch + 1}
+                    self.epoch_results.append(metrics)
 
                 # 记录详细结果
                 logging.info(f"=== Epoch {epoch+1} Training Results ===")
@@ -854,23 +889,58 @@ class EnhancedCultureMoETrainer:
                 if train_metrics['train_generation_loss'] < 0.001:
                     logging.warning("⚠️  WARNING: Generation loss is very low, possible overfitting!")
 
-                # 保存最佳模型
-                if eval_metrics['eval_accuracy'] > self.best_accuracy:
-                    self.best_accuracy = eval_metrics['eval_accuracy']
-                    self.save_model(epoch, is_best=True)
-                    logging.info(f"New best accuracy: {self.best_accuracy:.4f}")
+                # 保存最佳模型（只在评估成功时）
+                if 'eval_accuracy' in eval_metrics and eval_metrics['eval_accuracy'] != float('inf'):
+                    current_accuracy = eval_metrics['eval_accuracy']
+                    if current_accuracy > self.best_accuracy:
+                        old_best = self.best_accuracy
+                        self.best_accuracy = current_accuracy
+                        try:
+                            self.save_model(epoch, is_best=True)
+                            logging.info(f"🎉 NEW BEST MODEL SAVED!")
+                            logging.info(f"   Previous best accuracy: {old_best:.4f}")
+                            logging.info(f"   New best accuracy: {self.best_accuracy:.4f}")
+                            logging.info(f"   Improvement: +{self.best_accuracy - old_best:.4f}")
+                        except Exception as e:
+                            logging.error(f"Failed to save best model: {e}")
+                    else:
+                        logging.info(f"Current accuracy: {current_accuracy:.4f} (Best: {self.best_accuracy:.4f})")
+                else:
+                    logging.warning("Evaluation failed, skipping best model check")
 
             # 保存epoch结果
             results_file = os.path.join(self.args.output_dir, 'epoch_eval_results.json')
             with open(results_file, 'w', encoding='utf-8') as f:
                 json.dump(self.epoch_results, f, indent=2, ensure_ascii=False)
 
+            # 保存最后一个epoch的模型（作为备份）
+            if epoch == self.args.num_epochs - 1:  # 最后一个epoch
+                try:
+                    self.save_model(epoch, is_best=False)
+                    logging.info(f"Final epoch model saved as backup")
+                except Exception as e:
+                    logging.error(f"Failed to save final epoch model: {e}")
+
             # 内存清理
             torch.cuda.empty_cache()
             gc.collect()
 
         logging.info("\nTraining completed!")
-        logging.info(f"Best accuracy: {self.best_accuracy:.4f}")
+        logging.info(f"Best accuracy achieved: {self.best_accuracy:.4f}")
+
+        # 训练完成总结
+        if len(self.epoch_results) > 0:
+            final_results = self.epoch_results[-1]
+            logging.info(f"Final epoch results:")
+            logging.info(f"  Final accuracy: {final_results.get('eval_accuracy', 'N/A'):.4f}")
+            logging.info(f"  Final loss: {final_results.get('eval_loss', 'N/A'):.6f}")
+
+            # 显示所有评估轮次的准确率
+            eval_accuracies = [r.get('eval_accuracy', 0) for r in self.epoch_results if 'eval_accuracy' in r]
+            if eval_accuracies:
+                logging.info(f"Accuracy progression: {[f'{acc:.4f}' for acc in eval_accuracies]}")
+        else:
+            logging.warning("No evaluation results recorded during training")
 
         # 检查输出目录总大小
         total_size = 0

@@ -158,6 +158,12 @@ echo "============================================================"
 echo "Training Mode: FROZEN LoRA-FINETUNED MODEL + Enhanced MoE Training"
 echo "Strategy: Preserve LoRA accuracy + Add advanced cultural specialization"
 echo ""
+echo "📊 Evaluation Strategy:"
+echo "  - Evaluation interval: Every 3 epochs (Epoch 3, 6, 9, 12)"
+echo "  - Best model saving: Automatically saves model with highest eval accuracy"
+echo "  - Backup saving: Final epoch model saved as backup"
+echo "  - Memory optimization: Enhanced for both LLaMA and Qwen models"
+echo ""
 echo "🔬 Cultural Awareness Components:"
 echo "  1. Cultural Embedding Layer: 文化嵌入和上下文融合"
 echo "  2. Cultural Aware Router: 多维度路由决策"
@@ -254,7 +260,7 @@ python ft_enhanced_culturemoe_gen.py \
     --experts_hidden_dim 4096 \
     --moe_lora_rank 32 \
     --dropout 0.05 \
-    --batch_size $(if [ "$BACKBONE" = "llama" ]; then echo "4"; else echo "8"; fi) \
+    --batch_size $(if [ "$BACKBONE" = "llama" ]; then echo "3"; else echo "8"; fi) \
     --eval_batch_size $(if [ "$BACKBONE" = "llama" ]; then echo "2"; else echo "4"; fi) \
     --learning_rate 2e-4 \
     --moe_lr_multiplier 1.0 \
