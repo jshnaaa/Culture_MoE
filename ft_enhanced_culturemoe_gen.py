@@ -673,18 +673,42 @@ class EnhancedCultureMoETrainer:
         # DataParallel兼容性：获取实际模型
         actual_model = self.model.module if self.use_dataparallel else self.model
         moe_state_dict = {}
+        moe_param_count = 0
+
         for name, param in actual_model.named_parameters():
             if param.requires_grad:  # 只保存可训练参数
-                moe_state_dict[name] = param.cpu()
+                # 确保只保存MoE相关参数
+                if any(keyword in name for keyword in [
+                    'cultural_experts', 'router', 'shared', 'cultural_gate',
+                    'cultural_embedding', 'cultural_context', 'culture_loss'
+                ]):
+                    # 保存为float16节省空间
+                    moe_state_dict[name] = param.half().cpu()
+                    moe_param_count += param.numel()
+                else:
+                    logging.warning(f"⚠️  Unexpected trainable parameter: {name}")
 
-        torch.save(moe_state_dict, os.path.join(save_dir, 'moe_weights.pth'))
+        # 保存MoE权重
+        moe_weights_path = os.path.join(save_dir, 'moe_weights.pth')
+        torch.save(moe_state_dict, moe_weights_path)
 
-        # 保存优化器状态
-        if is_best:
+        # 计算文件大小
+        file_size_mb = os.path.getsize(moe_weights_path) / (1024 * 1024)
+        param_size_mb = moe_param_count * 2 / (1024 * 1024)  # float16 = 2 bytes per param
+
+        logging.info(f"MoE weights saved to {save_dir}")
+        logging.info(f"  Parameters: {moe_param_count:,}")
+        logging.info(f"  File size: {file_size_mb:.1f} MB")
+        logging.info(f"  Expected size: {param_size_mb:.1f} MB")
+
+        if file_size_mb > 500:  # 如果超过500MB，发出警告
+            logging.warning(f"⚠️  MoE weights file is unexpectedly large: {file_size_mb:.1f} MB")
+
+        # 只在最佳模型时保存训练状态（可选）
+        if is_best and hasattr(self.args, 'save_optimizer_state') and self.args.save_optimizer_state:
             torch.save(self.optimizer.state_dict(), os.path.join(save_dir, 'optimizer.pth'))
             torch.save(self.scheduler.state_dict(), os.path.join(save_dir, 'scheduler.pth'))
-
-        logging.info(f"Model saved to {save_dir}")
+            logging.info("Optimizer and scheduler states saved")
 
     def train(self):
         """主训练循环"""
@@ -746,6 +770,38 @@ class EnhancedCultureMoETrainer:
 
         logging.info("\nTraining completed!")
         logging.info(f"Best accuracy: {self.best_accuracy:.4f}")
+
+        # 检查输出目录总大小
+        total_size = 0
+        for dirpath, dirnames, filenames in os.walk(self.args.output_dir):
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                total_size += os.path.getsize(filepath)
+
+        total_size_mb = total_size / (1024 * 1024)
+        total_size_gb = total_size_mb / 1024
+
+        logging.info(f"\nOutput directory analysis:")
+        logging.info(f"  Total size: {total_size_mb:.1f} MB ({total_size_gb:.2f} GB)")
+        logging.info(f"  Location: {self.args.output_dir}")
+
+        if total_size_gb > 1.0:
+            logging.warning(f"⚠️  Output directory is large: {total_size_gb:.2f} GB")
+            logging.warning("This may indicate unexpected files or optimizer states being saved")
+
+            # 列出最大的文件
+            file_sizes = []
+            for dirpath, dirnames, filenames in os.walk(self.args.output_dir):
+                for filename in filenames:
+                    filepath = os.path.join(dirpath, filename)
+                    size_mb = os.path.getsize(filepath) / (1024 * 1024)
+                    file_sizes.append((filepath, size_mb))
+
+            file_sizes.sort(key=lambda x: x[1], reverse=True)
+            logging.info("Largest files:")
+            for filepath, size_mb in file_sizes[:5]:
+                rel_path = os.path.relpath(filepath, self.args.output_dir)
+                logging.info(f"  {rel_path}: {size_mb:.1f} MB")
 
 
 def main():
