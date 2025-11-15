@@ -1,6 +1,7 @@
 # src/llamafactory/model/CultureMoE.py
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .experts import ExpertLayer
 from .moe_args import ModelArgs
@@ -591,8 +592,11 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         num_cultures = len(unique_cultures)
 
         if num_cultures == 1:
-            # 如果 batch 中只有一个文化，返回 0
-            return torch.tensor(0.0, device=device, dtype=dtype)
+            # 如果 batch 中只有一个文化，计算专家分布的均匀性损失
+            # 鼓励专家权重不要过于集中在少数专家上
+            uniform_weights = torch.ones_like(expert_weights[0]) / num_experts
+            uniformity_loss = F.mse_loss(expert_weights.mean(dim=0), uniform_weights)
+            return uniformity_loss * 0.1  # 较小的权重，避免过度影响
 
         # ============================================================
         # 对比学习框架：同文化吸引，不同文化排斥
