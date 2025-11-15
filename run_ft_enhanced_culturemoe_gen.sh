@@ -251,7 +251,7 @@ python ft_enhanced_culturemoe_gen.py \
     --experts_hidden_dim 4096 \
     --moe_lora_rank 32 \
     --dropout 0.05 \
-    --batch_size 4 \
+    --batch_size 8 \
     --eval_batch_size 4 \
     --learning_rate 2e-4 \
     --moe_lr_multiplier 1.0 \
