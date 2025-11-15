@@ -186,11 +186,14 @@ class LayeredOptimizer:
             if not param.requires_grad:
                 continue
 
-            if 'cultural_experts' in name or 'culture' in name:
+            # DataParallel兼容性：移除module.前缀
+            clean_name = name.replace('module.', '')
+
+            if 'cultural_experts' in clean_name or 'culture' in clean_name:
                 moe_params.append(param)
-            elif 'router' in name:
+            elif 'router' in clean_name:
                 router_params.append(param)
-            elif 'shared' in name:
+            elif 'shared' in clean_name:
                 shared_params.append(param)
             else:
                 moe_params.append(param)  # 默认归入MoE组
@@ -242,13 +245,7 @@ class EnhancedCultureMoETrainer:
 
     def __init__(self, args):
         self.args = args
-
-        # 强制设置单GPU环境，避免任何DataParallel自动应用
-        import os
-        os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-
-        # 强制使用cuda:0避免DataParallel问题
-        self.device = torch.device('cuda:0' if args.device == 'cuda' else args.device)
+        self.device = torch.device(args.device)
 
         # 设置随机种子
         set_seed(42)
@@ -354,24 +351,15 @@ class EnhancedCultureMoETrainer:
         # 移动到设备
         self.model = self.model.to(self.device)
 
-        # 强制使用单GPU - 禁用DataParallel
-        # Enhanced CultureMoE输出包含复杂的非tensor类型，DataParallel无法处理
+        # 多GPU支持
         gpu_count = torch.cuda.device_count()
         if gpu_count > 1:
-            logging.info(f"Detected {gpu_count} GPUs, but using single GPU due to model complexity")
-            logging.info("Enhanced CultureMoE contains complex outputs that DataParallel cannot handle")
-            # 强制设置为单GPU模式
-            os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-            self.device = torch.device('cuda:0')
-            self.model = self.model.to(self.device)
+            logging.info(f"Using {gpu_count} GPUs with DataParallel")
+            self.model = nn.DataParallel(self.model)
+            self.use_dataparallel = True
         else:
             logging.info("Using single GPU for training")
-
-        # 确保模型不被DataParallel包装
-        if hasattr(self.model, 'module'):
-            # 如果模型已经被DataParallel包装，解除包装
-            self.model = self.model.module
-            logging.info("Unwrapped model from DataParallel")
+            self.use_dataparallel = False
 
         # 计算参数统计
         self.log_model_info()
@@ -408,7 +396,9 @@ class EnhancedCultureMoETrainer:
         logging.info(f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params*100:.2f}%)")
 
         # 记录文化专家信息
-        expert_info = self.model.get_culture_expert_info()
+        # DataParallel兼容性：访问实际模型
+        actual_model = self.model.module if self.use_dataparallel else self.model
+        expert_info = actual_model.get_culture_expert_info()
         logging.info("Culture Expert Assignments:")
         for info in expert_info:
             logging.info(f"  Expert {info['expert_id']}: {info['role']} ({info['param_count']:,} params)")
@@ -670,8 +660,10 @@ class EnhancedCultureMoETrainer:
         os.makedirs(save_dir, exist_ok=True)
 
         # 只保存MoE相关参数
+        # DataParallel兼容性：获取实际模型
+        actual_model = self.model.module if self.use_dataparallel else self.model
         moe_state_dict = {}
-        for name, param in self.model.named_parameters():
+        for name, param in actual_model.named_parameters():
             if param.requires_grad:  # 只保存可训练参数
                 moe_state_dict[name] = param.cpu()
 

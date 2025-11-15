@@ -154,9 +154,8 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
         Returns:
             outputs: dict 包含所有输出和分析结果
         """
-        # 检查是否被DataParallel包装，如果是则抛出错误
-        if hasattr(self, 'module'):
-            raise RuntimeError("Enhanced CultureMoE should not be wrapped with DataParallel due to complex output types")
+        # DataParallel兼容性处理
+        is_dataparallel = hasattr(self, 'module')
 
         device = input_ids.device
         dtype = self.shared[0].weight.dtype
@@ -282,9 +281,12 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
             'cultural_analysis': cultural_analysis,
             'culture_attention': culture_attention,
             'routing_info': routing_info,
-            'culture_relevances': torch.stack(culture_relevances, dim=1),
-            'culture_assignments': self.culture_assignments
+            'culture_relevances': torch.stack(culture_relevances, dim=1)
         }
+
+        # DataParallel兼容性：只在非DataParallel模式下添加复杂类型
+        if not is_dataparallel:
+            outputs['culture_assignments'] = self.culture_assignments
 
         # ✅ Step 15: 计算损失
         if labels is not None:
@@ -364,7 +366,11 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                     entropy_weight * entropy_loss
                 )
 
-                outputs['culture_loss_lambda'] = lambda_value.item()
+                # DataParallel兼容性：标量值处理
+                if not is_dataparallel:
+                    outputs['culture_loss_lambda'] = lambda_value.item()
+                else:
+                    outputs['culture_loss_lambda'] = lambda_value
             else:
                 outputs['culture_loss'] = torch.tensor(0.0, device=generation_loss.device)
                 outputs['specialization_loss'] = torch.tensor(0.0, device=generation_loss.device)
