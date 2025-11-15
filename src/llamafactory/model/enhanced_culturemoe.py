@@ -224,6 +224,9 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
         expert_weights, routing_info = self.router(pooled, culture_ids, router_temperature)
 
+        # 为DataParallel兼容性提取final_logits
+        final_logits = routing_info['final_logits']
+
         # ✅ Step 7: 文化特定专家处理
         expert_outputs = []
         culture_relevances = []
@@ -277,16 +280,19 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
         # ✅ Step 14: 构建输出
         outputs = {
             'logits': logits,
-            'expert_weights': expert_weights,
-            'cultural_analysis': cultural_analysis,
-            'culture_attention': culture_attention,
-            'routing_info': routing_info,
-            'culture_relevances': torch.stack(culture_relevances, dim=1)
+            'expert_weights': expert_weights
         }
 
         # DataParallel兼容性：只在非DataParallel模式下添加复杂类型
         if not is_dataparallel:
+            outputs['cultural_analysis'] = cultural_analysis
+            outputs['culture_attention'] = culture_attention
+            outputs['routing_info'] = routing_info
+            outputs['culture_relevances'] = torch.stack(culture_relevances, dim=1)
             outputs['culture_assignments'] = self.culture_assignments
+        else:
+            # DataParallel模式下只返回基本tensor
+            outputs['culture_relevances'] = torch.stack(culture_relevances, dim=1)
 
         # ✅ Step 15: 计算损失
         if labels is not None:
@@ -319,16 +325,25 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
             # 文化损失
             if use_culture_loss and culture_labels is not None:
-                # 增强的文化损失
-                culture_loss = self.compute_enhanced_culture_loss(
-                    expert_weights=expert_weights,
-                    culture_labels=culture_labels,
-                    cultural_analysis=cultural_analysis,
-                    culture_relevances=torch.stack(culture_relevances, dim=1),
-                    culture_labels_multi=culture_ids_multi,
-                    margin=culture_loss_alpha,
-                    lambda_diff=culture_loss_beta
-                )
+                if is_dataparallel:
+                    # DataParallel模式下使用基础文化损失
+                    culture_loss = self.compute_culture_loss(
+                        expert_weights=expert_weights,
+                        culture_labels=culture_labels,
+                        margin=culture_loss_alpha,
+                        lambda_diff=culture_loss_beta
+                    )
+                else:
+                    # 非DataParallel模式下使用增强的文化损失
+                    culture_loss = self.compute_enhanced_culture_loss(
+                        expert_weights=expert_weights,
+                        culture_labels=culture_labels,
+                        cultural_analysis=cultural_analysis,
+                        culture_relevances=torch.stack(culture_relevances, dim=1),
+                        culture_labels_multi=culture_ids_multi,
+                        margin=culture_loss_alpha,
+                        lambda_diff=culture_loss_beta
+                    )
 
                 if culture_loss.device != generation_loss.device:
                     culture_loss = culture_loss.to(generation_loss.device)
@@ -344,7 +359,7 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                     outputs['diversity_loss'] = div_loss
 
                 # 防塌陷损失
-                load_balance_loss = self.router.compute_load_balancing_loss(routing_info['final_logits'])
+                load_balance_loss = self.router.compute_load_balancing_loss(final_logits)
                 entropy_loss = self.router.entropy_regularization(expert_weights)
 
                 if load_balance_loss is None:
@@ -394,7 +409,7 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 outputs['diversity_loss'] = torch.tensor(0.0, device=generation_loss.device)
 
                 # 防塌陷损失
-                load_balance_loss = self.router.compute_load_balancing_loss(routing_info['final_logits'])
+                load_balance_loss = self.router.compute_load_balancing_loss(final_logits)
                 entropy_loss = self.router.entropy_regularization(expert_weights)
 
                 if load_balance_loss is None:
