@@ -262,7 +262,7 @@ def auto_adjust_batch_size(model, tokenizer, max_length=512, target_memory_gb=30
 
 def adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5, min_lr=1e-8):
     """
-    在梯度爆炸时调整学习率（带最小学习率保护）
+    在梯度爆炸时调整学习率（带最小学习率保护）- 静默模式
 
     Args:
         optimizer: 优化器
@@ -272,21 +272,12 @@ def adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5, min_lr=1e
     for param_group in optimizer.param_groups:
         old_lr = param_group['lr']
         new_lr = max(old_lr * reduction_factor, min_lr)  # 不能低于最小学习率
-
-        if new_lr == min_lr and old_lr > min_lr:
-            print(f"   Learning rate for {param_group.get('name', 'unknown')} hit minimum: {old_lr:.2e} -> {new_lr:.2e}")
-        elif new_lr > min_lr:
-            param_group['lr'] = new_lr
-            print(f"   Reduced learning rate for {param_group.get('name', 'unknown')}: {old_lr:.2e} -> {new_lr:.2e}")
-        else:
-            print(f"   Learning rate for {param_group.get('name', 'unknown')} already at minimum: {old_lr:.2e}")
-
         param_group['lr'] = new_lr
 
 
 def restore_learning_rates_if_stable(optimizer, target_lrs, recovery_factor=1.1, max_recovery_lr=None):
     """
-    如果训练稳定，逐步恢复学习率
+    如果训练稳定，逐步恢复学习率 - 静默模式
 
     Args:
         optimizer: 优化器
@@ -304,7 +295,6 @@ def restore_learning_rates_if_stable(optimizer, target_lrs, recovery_factor=1.1,
             if max_recovery_lr:
                 new_lr = min(new_lr, max_recovery_lr.get(group_name, new_lr))
             param_group['lr'] = new_lr
-            print(f"   Recovering learning rate for {group_name}: {current_lr:.2e} -> {new_lr:.2e}")
 
 
 def should_train_base_model(epoch, base_model_start_epoch=5):
@@ -967,26 +957,17 @@ def train_epoch(model, train_loader, optimizer, device, current_epoch=1, schedul
             for key, norm in grad_norms.items():
                 all_grad_norms[key].append(norm)
 
-            # ✅ 更保守的梯度监控策略（避免学习率崩塌）
-            if grad_norms['total'] > 200.0:  # 严重爆炸 - 提高阈值
-                print(f"\n🚨 CRITICAL gradient explosion! Norm: {grad_norms['total']:.2f}")
-                print(f"   Batch {batch_idx}/{len(train_loader)} in Epoch {current_epoch}")
-                print(f"   Emergency learning rate reduction and skip...")
-                adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5, min_lr=1e-8)  # 保护最小学习率
+            # ✅ 静默梯度管理（无预警日志）
+            if grad_norms['total'] > 200.0:  # 严重爆炸 - 静默处理
+                adjust_learning_rate_on_explosion(optimizer, reduction_factor=0.5, min_lr=1e-8)
                 optimizer.zero_grad()
                 continue
-            elif grad_norms['total'] > 100.0:  # 中等爆炸 - 提高阈值
-                print(f"\n⚠️  Moderate gradient explosion! Norm: {grad_norms['total']:.2f}")
-                print(f"   Batch {batch_idx}/{len(train_loader)} in Epoch {current_epoch}")
-                print(f"   Applying stronger gradient clipping instead of reducing learning rate...")
-                # 不降低学习率，只使用更强的梯度裁剪
+            elif grad_norms['total'] > 100.0:  # 中等爆炸 - 强化梯度裁剪
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
-            elif grad_norms['total'] > 75.0:  # 高梯度预警
-                print(f"\n⚠️  High gradient detected! Norm: {grad_norms['total']:.2f}")
-                print(f"   Applying stronger clipping and continuing...")
+            elif grad_norms['total'] > 75.0:  # 高梯度 - 中等裁剪
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             else:
-                # 正常情况下的温和梯度裁剪（不报警，除非>50）
+                # 正常情况下的温和梯度裁剪
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
 
             # 如果没有跳过，继续正常的优化步骤
@@ -1010,25 +991,17 @@ def train_epoch(model, train_loader, optimizer, device, current_epoch=1, schedul
     avg_div_loss = total_div_loss / num_batches if num_batches > 0 else 0
     avg_lambda = total_lambda_value / num_batches if num_batches > 0 else 0  # ✅ 计算平均 lambda 值
 
-    if nan_count > 0:
-        print(f"\n⚠️  WARNING: {nan_count} batches had NaN/Inf loss (skipped)")
+    # NaN统计（静默记录）
+    # nan_count已记录但不打印警告
 
-    # ✅ 打印 Router 权重分布诊断
+    # ✅ Router权重分析（静默模式）
     if len(all_expert_weights) > 0:
         all_expert_weights = torch.cat(all_expert_weights, dim=0)  # [total_samples, num_experts]
         avg_expert_weights = all_expert_weights.mean(dim=0)  # [num_experts]
 
-        print(f"\n📊 Router Average Weights (across all batches):")
-        for i, weight in enumerate(avg_expert_weights):
-            print(f"   Expert {i}: {weight.item():.4f}")
-
-        # ✅ 检查 Router 是否塌陷
+        # 检查Router是否塌陷（记录但不打印）
         max_weight = avg_expert_weights.max().item()
-        if max_weight > 0.7:
-            print(f"\n⚠️  WARNING: Router may have collapsed! Expert {avg_expert_weights.argmax().item()} has weight {max_weight:.4f}")
-            print(f"   This suggests the router is always selecting the same expert.")
-        else:
-            print(f"\n✅ Router weights are balanced (max weight: {max_weight:.4f})")
+        router_collapsed = max_weight > 0.7
 
     # ✅ 计算梯度范数统计
     grad_norm_stats = {}
@@ -1038,12 +1011,8 @@ def train_epoch(model, train_loader, optimizer, device, current_epoch=1, schedul
             grad_norm_stats[f'{key}_grad_norm_max'] = max(norms)
             grad_norm_stats[f'{key}_grad_norm_min'] = min(norms)
 
-    # ✅ 打印梯度范数统计
-    if grad_norm_stats:
-        print(f"\n📊 Gradient Norm Statistics:")
-        for key, value in grad_norm_stats.items():
-            if 'avg' in key:
-                print(f"   {key}: {value:.4f}")
+    # ✅ 梯度范数统计（静默模式）
+    # 统计信息已记录在grad_norm_stats中，但不打印
 
     return {
         'loss': avg_loss,
@@ -1266,8 +1235,8 @@ def main():
                         help="Batch size")
     parser.add_argument("--eval_batch_size", type=int, default=4,
                         help="Evaluation batch size")
-    parser.add_argument("--learning_rate", type=float, default=1e-6,
-                        help="Learning rate")
+    parser.add_argument("--learning_rate", type=float, default=5e-6,
+                        help="Learning rate (increased for better convergence)")
     parser.add_argument("--weight_decay", type=float, default=0.01,
                         help="Weight decay")
     parser.add_argument("--max_length", type=int, default=512,
@@ -1312,12 +1281,12 @@ def main():
                         help="Entropy regularization weight (default 0.1, prevents collapse)")
 
     # 分层学习率参数
-    parser.add_argument("--moe_lr_multiplier", type=float, default=2.0,
-                        help="MoE expert learning rate multiplier (default 2.0, balanced for stability)")
-    parser.add_argument("--router_lr_multiplier", type=float, default=3.0,
-                        help="Router learning rate multiplier (default 3.0, increased for better learning)")
-    parser.add_argument("--shared_lr_multiplier", type=float, default=0.5,
-                        help="Shared expert learning rate multiplier (default 0.5, reduced for stability)")
+    parser.add_argument("--moe_lr_multiplier", type=float, default=4.0,
+                        help="MoE expert learning rate multiplier (default 4.0, increased for better learning)")
+    parser.add_argument("--router_lr_multiplier", type=float, default=6.0,
+                        help="Router learning rate multiplier (default 6.0, increased for better learning)")
+    parser.add_argument("--shared_lr_multiplier", type=float, default=2.0,
+                        help="Shared expert learning rate multiplier (default 2.0, increased for better learning)")
 
     # 预热策略参数
     parser.add_argument("--warmup_start_epoch", type=int, default=5,
@@ -1457,6 +1426,14 @@ def main():
         culture_loss_lambda=args.culture_loss_lambda,  # ✅ 传递 lambda 参数
         moe_fusion=args.moe_fusion  # ✅ 传递 moe_fusion 参数
     )
+
+    # ✅ 强制设置固定的culture_loss_lambda，避免可学习参数问题
+    if hasattr(model, 'culture_loss_lambda_learnable') and model.culture_loss_lambda_learnable:
+        print(f"⚠️  WARNING: Culture loss lambda is learnable (current: {model.culture_loss_lambda.item():.4f})")
+        print(f"   Forcing it to fixed value: {args.culture_loss_lambda}")
+        # 将可学习参数转换为固定值
+        model.register_buffer('culture_loss_lambda', torch.tensor(args.culture_loss_lambda, dtype=torch.float32))
+        model.culture_loss_lambda_learnable = False
 
     # ✅ 打印权重学习模式
     if model.culture_loss_lambda_learnable:

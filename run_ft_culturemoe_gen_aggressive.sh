@@ -1,6 +1,10 @@
 #!/bin/bash
 
 # ============================================================
+# 🚀 AGGRESSIVE LEARNING RATE VERSION
+# This version uses higher learning rates to match LoRA performance
+# Base LR: 2e-5 (vs 1e-5), MoE multipliers: 5.0/8.0/3.0 (vs 4.0/6.0/2.0)
+# ============================================================
 # 使用新数据格式微调 CultureMoE 模型（改进版）
 #
 # ✅ 改进内容：
@@ -35,7 +39,7 @@ DATA_ID="${2:-4}"                   # 默认 CultureLLM (4)
 USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-6}"               # 默认 6 个专家
 MOE_FUSION="${5:-0.4}"              # 默认 MoE 融合系数 0.4（控制 MoE 层的影响力）
-LAMBDA="${6:-0.5}"                   # 默认 -1 表示自动学习权重，其他值表示固定权重
+LAMBDA="${6:--1}"                   # 默认 -1 表示自动学习权重，其他值表示固定权重
 MARGIN="${7:-0.5}"                  # 默认 margin 0.5（不同文化之间的最小距离）
 LAMBDA_DIFF="${8:-1.0}"             # 默认 lambda_diff 1.0（不同文化排斥力的权重）
 USE_SHARED="${9:-True}"             # 默认使用共享专家
@@ -221,10 +225,10 @@ python ft_culturemoe_from_base_gen.py \
     --num_heads 8 \
     --batch_size 4 \
     --eval_batch_size 4 \
-    --learning_rate 1e-5 \
-    --moe_lr_multiplier 4.0 \
-    --router_lr_multiplier 6.0 \
-    --shared_lr_multiplier 2.0 \
+    --learning_rate 2e-5 \
+    --moe_lr_multiplier 5.0 \
+    --router_lr_multiplier 8.0 \
+    --shared_lr_multiplier 3.0 \
     --weight_decay 0.01 \
     --max_length 512 \
     --val_split 0.1 \
