@@ -118,7 +118,7 @@ case $DATA_ID in
         TEST_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
         DATASET_NAME="WVS_Gen_ID"
         ;;
-    500)
+    502)
         TEST_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
         DATASET_NAME="WVS_Gen_OOD"
         ;;
