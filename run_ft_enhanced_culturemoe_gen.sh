@@ -275,7 +275,7 @@ python ft_enhanced_culturemoe_gen.py \
     --experts_hidden_dim 4096 \
     --moe_lora_rank 32 \
     --dropout 0.05 \
-    --batch_size $(if [ "$BACKBONE" = "llama" ]; then echo "3"; else echo "8"; fi) \
+    --batch_size $(if [ "$BACKBONE" = "llama" ]; then echo "3"; else echo "6"; fi) \
     --eval_batch_size $(if [ "$BACKBONE" = "llama" ]; then echo "2"; else echo "4"; fi) \
     --learning_rate 2e-4 \
     --moe_lr_multiplier 1.0 \
