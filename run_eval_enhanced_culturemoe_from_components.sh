@@ -72,10 +72,28 @@ fi
 MOE_WEIGHTS_PATH="$MOE_WEIGHTS_BASE/best_enhanced_moe"
 
 # 测试数据集
-TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
-
+#TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
+# 根据 DATA_ID 选择数据集
+case $DATA_ID in
+    11)
+        TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
+        DATASET_NAME="WVS_Gen"
+        ;;
+    12)
+        TEST_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
+        DATASET_NAME="WVS_Gen_ID"
+        ;;
+    13)
+        TEST_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
+        DATASET_NAME="WVS_Gen_OOD"
+        ;;
+    21)
+        TEST_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
+        DATASET_NAME="moral_Gen"
+        ;;
+esac
 # 输出目录
-OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_enhanced_culturemoe_${BACKBONE}_cultureLLM_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_enhanced_culturemoe_${BACKBONE}_cultureLLM_${DATASET_NAME}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "🧪 Enhanced CultureMoE Evaluation (From Components)"

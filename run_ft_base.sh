@@ -114,6 +114,14 @@ case $DATA_ID in
         TRAIN_FILE="/autodl-fs/data/moral_stories_merge_rp_gen.json"
         DATASET_TAG="moral_rp"
         ;;
+    501)
+        TEST_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
+        DATASET_NAME="WVS_Gen_ID"
+        ;;
+    500)
+        TEST_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
+        DATASET_NAME="WVS_Gen_OOD"
+        ;;
     *)
         echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, or 5."
         echo ""
