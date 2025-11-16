@@ -67,7 +67,7 @@ class EnhancedCultureMoEEvaluator:
         """设置日志"""
         log_file = os.path.join(self.args.output_dir, 'evaluation.log')
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG,  # 启用调试级别
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(log_file),
@@ -339,9 +339,13 @@ class EnhancedCultureMoEEvaluator:
         with torch.no_grad():
             for i, item in enumerate(tqdm(test_data, desc="Evaluating")):
                 try:
-                    # 构建输入
-                    prompt = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{item['full_text']}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-                    prompt_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{item['full_text_mask']}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+                    # 构建输入 - 使用更简单的格式，避免复杂的LLaMA格式
+                    prompt = f"{item['full_text']}"
+                    prompt_mask = f"{item['full_text_mask']}"
+
+                    # 调试信息：记录prompt内容（前100字符）
+                    logging.debug(f"Sample {i}: Prompt preview: '{prompt[:100]}...'")
+                    logging.debug(f"Sample {i}: Expected answer: '{item['output']}')")
 
                     # 分词
                     inputs = tokenizer(prompt, return_tensors="pt", max_length=max_length, truncation=True)
@@ -391,17 +395,42 @@ class EnhancedCultureMoEEvaluator:
                             temperature=0.7,
                             pad_token_id=tokenizer.eos_token_id,
                             eos_token_id=tokenizer.eos_token_id,
+                            repetition_penalty=1.1,  # 避免重复
+                            length_penalty=1.0,      # 长度惩罚
                         )
+
+                        # 调试信息：检查输入和输出的token长度
+                        input_length = input_ids.shape[1]
+                        output_length = outputs[0].shape[0]
+                        logging.debug(f"Sample {i}: Input length: {input_length}, Output length: {output_length}, New tokens: {output_length - input_length}")
 
                     # 解码生成的文本
                     generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
+                    # 调试信息：记录生成的原始文本长度
+                    logging.debug(f"Sample {i}: Generated text length: {len(generated_text)}")
+
                     # 提取生成的答案部分
-                    assistant_start = "<|start_header_id|>assistant<|end_header_id|>"
-                    if assistant_start in generated_text:
-                        generated_answer = generated_text.split(assistant_start)[-1].strip()
-                    else:
-                        generated_answer = generated_text[len(prompt):].strip()
+                    try:
+                        prompt_end_marker = "### Answer: "
+                        if prompt_end_marker in generated_text:
+                            # 找到"### Answer: "之后的内容
+                            generated_answer = generated_text.split(prompt_end_marker)[-1].strip()
+                            logging.debug(f"Sample {i}: Extracted using Answer marker")
+                        elif len(generated_text) > len(prompt):
+                            # 如果生成的文本比prompt长，提取新生成的部分
+                            generated_answer = generated_text[len(prompt):].strip()
+                            logging.debug(f"Sample {i}: Extracted using prompt length")
+                        else:
+                            # 如果生成的文本长度和prompt一样或更短，可能没有生成新内容
+                            generated_answer = ""
+                            logging.warning(f"Sample {i}: No new content generated (input: {len(prompt)}, output: {len(generated_text)})")
+                    except Exception as e:
+                        logging.warning(f"Sample {i}: Error in answer extraction: {e}")
+                        generated_answer = generated_text.strip()
+
+                    # 记录提取结果
+                    logging.debug(f"Sample {i}: Final generated_answer: '{generated_answer[:50]}...' (length: {len(generated_answer)})")
 
                     # 简单的答案匹配（提取首字母作为预测）
                     pred_answer = self._extract_answer(generated_answer)
@@ -556,8 +585,26 @@ class EnhancedCultureMoEEvaluator:
         # 查找常见的答案模式
         import re
 
-        # 查找 "答案是 X" 或 "答案：X" 或 "选择 X"
-        patterns = [
+        # 优先查找数字答案（1-10）
+        number_patterns = [
+            r'答案[是：:]\s*(\d+)',
+            r'选择\s*(\d+)',
+            r'应该选择\s*(\d+)',
+            r'正确答案[是：:]\s*(\d+)',
+            r'^(\d+)[\.。]',
+            r'\b(\d+)\b'
+        ]
+
+        for pattern in number_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                number = match.group(1)
+                # 确保数字在合理范围内（1-10）
+                if number.isdigit() and 1 <= int(number) <= 10:
+                    return number
+
+        # 查找字母答案（A-D）作为备用
+        letter_patterns = [
             r'答案[是：:]\s*([A-D])',
             r'选择\s*([A-D])',
             r'应该选择\s*([A-D])',
@@ -566,17 +613,22 @@ class EnhancedCultureMoEEvaluator:
             r'\b([A-D])\b'
         ]
 
-        for pattern in patterns:
+        for pattern in letter_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 return match.group(1).upper()
 
-        # 如果没有找到明确的答案，返回第一个大写字母
+        # 如果没有找到明确的答案，优先查找单独的数字
+        for char in text:
+            if char.isdigit() and 1 <= int(char) <= 10:
+                return char
+
+        # 查找单独的字母作为备用
         for char in text:
             if char.upper() in ['A', 'B', 'C', 'D']:
                 return char.upper()
 
-        # 默认返回A
+        # 默认返回A（如果完全没有找到）
         return 'A'
 
     def save_results(self, evaluation_results: Dict[str, Any], generated_answers: List[Dict]):
