@@ -57,8 +57,8 @@ if [ "$BACKBONE" = "qwen" ]; then
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"
-    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_cultureLLM_llama_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_0957"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_qwen_20251111_1421/best_lora"
+    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/t_enhanced_moe_gen_unified_all_datasets_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_1537"
 fi
 
 if [ -z "$MOE_WEIGHTS_BASE" ] || [ ! -d "$MOE_WEIGHTS_BASE" ]; then
@@ -94,7 +94,7 @@ case $DATA_ID in
         ;;
 esac
 # 输出目录
-OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_enhanced_culturemoe_${BACKBONE}_cultureLLM_${DATASET_NAME}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_enhanced_culturemoe_${BACKBONE}_${DATASET_NAME}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "🧪 Enhanced CultureMoE Evaluation (From Components)"
