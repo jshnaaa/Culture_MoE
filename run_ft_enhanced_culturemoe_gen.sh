@@ -148,7 +148,7 @@ export NUM_GPUS="$NUM_GPUS"  # 传递给Python脚本
 
 if [ "$NUM_GPUS" = "1" ]; then
 #    export CUDA_VISIBLE_DEVICES=0
-    GPU_INFO="Single GPU (GPU 0)"
+    GPU_INFO="Single GPU"
     echo "🔧 GPU Configuration: Single GPU training"
 elif [ "$NUM_GPUS" = "2" ]; then
     export CUDA_VISIBLE_DEVICES=0,1
@@ -157,8 +157,8 @@ elif [ "$NUM_GPUS" = "2" ]; then
 else
     # 任何其他值都默认为单GPU
     export NUM_GPUS="1"
-    export CUDA_VISIBLE_DEVICES=0
-    GPU_INFO="Single GPU (GPU 0) - fallback"
+#    export CUDA_VISIBLE_DEVICES=0
+    GPU_INFO="Single GPU (GPU) - fallback"
     echo "🔧 GPU Configuration: Invalid NUM_GPUS=$NUM_GPUS, falling back to single GPU"
 fi
 
