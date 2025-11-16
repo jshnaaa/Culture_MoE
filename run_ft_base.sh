@@ -99,6 +99,13 @@ case $DATA_ID in
         DATASET_TAG="CulturalBench_icl"
         echo "Using CulturalBench dataset (new format)"
         ;;
+    33)
+        # CulturalBench
+        DATASET_NAME="norma的"
+        TRAIN_FILE="/autodl-fs/data/normad_merge_gen_samples.json" #
+        DATASET_TAG="normad_icl"
+        echo "Using CulturalBench dataset (new format)"
+        ;;
     61)
         TRAIN_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
         DATASET_TAG="moral"
