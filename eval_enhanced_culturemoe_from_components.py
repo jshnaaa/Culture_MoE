@@ -316,6 +316,18 @@ class EnhancedCultureMoEEvaluator:
 
         return primary_continent_id, continent_ids
 
+    def _get_continent_name(self, continent_id: int) -> str:
+        """获取大洲名称"""
+        continent_names = {
+            0: "亚洲 (Asia)",
+            1: "欧洲 (Europe)",
+            2: "北美洲 (North America)",
+            3: "南美洲 (South America)",
+            4: "非洲 (Africa)",
+            5: "大洋洲 (Oceania)"
+        }
+        return continent_names.get(continent_id, f"未知大洲 (Unknown-{continent_id})")
+
     def evaluate_model(self, model, tokenizer, test_data: List[Dict]) -> Dict[str, Any]:
         """评估模型"""
         logging.info("Starting model evaluation...")
@@ -350,7 +362,25 @@ class EnhancedCultureMoEEvaluator:
                     culture_ids = torch.tensor([item['continent_id']], dtype=torch.long, device=self.device)
 
                     # 生成回答
+                    expert_weights = None
                     with torch.cuda.amp.autocast():
+                        # 首先进行一次前向传播获取专家权重
+                        try:
+                            model_outputs = model(
+                                input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                culture_ids=culture_ids,
+                                use_culture_loss=False  # 评估时不计算损失
+                            )
+                            # 提取专家权重信息
+                            if hasattr(model_outputs, 'get') and 'expert_weights' in model_outputs:
+                                expert_weights = model_outputs['expert_weights']
+                                if isinstance(expert_weights, torch.Tensor):
+                                    expert_weights = expert_weights.detach().cpu().numpy().tolist()
+                        except Exception as e:
+                            logging.warning(f"Failed to extract expert weights for sample {i}: {e}")
+
+                        # 生成文本
                         outputs = model.generate(
                             input_ids=input_ids,
                             attention_mask=attention_mask,
@@ -378,18 +408,38 @@ class EnhancedCultureMoEEvaluator:
                     predictions.append(pred_answer)
                     true_labels.append(true_answer)
 
-                    # 保存生成答案样本（前50个）
-                    if len(generated_answers) < 50:
-                        generated_answers.append({
-                            'index': i,
-                            'input': item['full_text'],
-                            'true_answer': true_answer,
-                            'generated_answer': generated_answer,
-                            'predicted_answer': pred_answer,
-                            'continent_id': item['continent_id'],
-                            'continent_label': item['label'],
-                            'match': pred_answer.lower() == true_answer.lower()
-                        })
+                    # 保存所有生成答案（不再限制数量）
+                    answer_data = {
+                        'index': i,
+                        'question': item['full_text'],
+                        'true_answer': true_answer,
+                        'generated_answer': generated_answer,
+                        'predicted_answer': pred_answer,
+                        'continent_id': item['continent_id'],
+                        'continent_label': item['label'],
+                        'is_correct': pred_answer.lower() == true_answer.lower(),
+                        'culture_context': {
+                            'instruction': item['instruction'],
+                            'input_text': item['input'],
+                            'continent_name': self._get_continent_name(item['continent_id'])
+                        }
+                    }
+
+                    # 添加专家权重信息（如果可用）
+                    if expert_weights is not None:
+                        answer_data['expert_weights'] = expert_weights
+                        # 计算专家权重统计信息
+                        if isinstance(expert_weights, list) and len(expert_weights) > 0:
+                            # 如果是二维数组，取第一个样本
+                            weights = expert_weights[0] if isinstance(expert_weights[0], list) else expert_weights
+                            answer_data['expert_analysis'] = {
+                                'dominant_expert': int(weights.index(max(weights))),
+                                'max_weight': float(max(weights)),
+                                'weight_distribution': 'concentrated' if max(weights) > 0.3 else 'distributed',
+                                'num_active_experts': sum(1 for w in weights if w > 0.05)
+                            }
+
+                    generated_answers.append(answer_data)
 
                     # 内存清理
                     if i % 100 == 0:
@@ -429,12 +479,44 @@ class EnhancedCultureMoEEvaluator:
             'evaluation_time': datetime.now().isoformat()
         }
 
+        # 计算按大洲的准确率统计
+        continent_stats = {}
+        for answer in generated_answers:
+            continent_name = answer['culture_context']['continent_name']
+            if continent_name not in continent_stats:
+                continent_stats[continent_name] = {'correct': 0, 'total': 0}
+            continent_stats[continent_name]['total'] += 1
+            if answer['is_correct']:
+                continent_stats[continent_name]['correct'] += 1
+
+        # 计算每个大洲的准确率
+        for continent, stats in continent_stats.items():
+            stats['accuracy'] = stats['correct'] / stats['total'] if stats['total'] > 0 else 0
+
+        # 添加详细统计到结果中
+        results['continent_statistics'] = continent_stats
+        results['answer_distribution'] = {}
+
+        # 统计答案分布
+        for label in ['A', 'B', 'C', 'D']:
+            true_count = sum(1 for answer in generated_answers if answer['true_answer'] == label)
+            pred_count = sum(1 for answer in generated_answers if answer['predicted_answer'] == label)
+            results['answer_distribution'][label] = {
+                'true_count': true_count,
+                'predicted_count': pred_count
+            }
+
         logging.info(f"Evaluation completed:")
         logging.info(f"  Accuracy: {accuracy:.4f}")
         logging.info(f"  Precision: {precision:.4f}")
         logging.info(f"  Recall: {recall:.4f}")
         logging.info(f"  F1 Score: {f1:.4f}")
         logging.info(f"  Total samples: {len(test_data)}")
+
+        # 输出按大洲的统计
+        logging.info(f"  Continent-wise accuracy:")
+        for continent, stats in continent_stats.items():
+            logging.info(f"    {continent}: {stats['accuracy']:.4f} ({stats['correct']}/{stats['total']})")
 
         return results, generated_answers
 
