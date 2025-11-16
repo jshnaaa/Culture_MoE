@@ -223,6 +223,7 @@ if [ $? -eq 0 ]; then
     echo "  - DataParallel：已禁用（避免generate方法兼容性问题）"
     echo "  - 专家权重：尝试提取但不影响主要评估"
     echo "  - 多答案支持：支持逗号分隔的多个正确答案（如 '1,2'）"
+    echo "  - 简洁回答模式：max_new_tokens=5，贪婪解码，只提取数字答案"
     echo ""
     echo "💡 Quick commands to view results:"
     echo ""

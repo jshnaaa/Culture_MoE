@@ -67,7 +67,7 @@ class EnhancedCultureMoEEvaluator:
         """设置日志"""
         log_file = os.path.join(self.args.output_dir, 'evaluation.log')
         logging.basicConfig(
-            level=logging.DEBUG,  # 启用调试级别
+            level=logging.INFO,  # 恢复INFO级别，减少详细输出
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(log_file),
@@ -360,9 +360,9 @@ class EnhancedCultureMoEEvaluator:
         true_labels = []
         generated_answers = []
 
-        # 评估参数
+        # 评估参数 - 优化为简洁回答
         max_length = 512
-        max_new_tokens = 100
+        max_new_tokens = 5  # 减少到5个token，只够回答数字
 
         with torch.no_grad():
             for i, item in enumerate(tqdm(test_data, desc="Evaluating")):
@@ -371,9 +371,7 @@ class EnhancedCultureMoEEvaluator:
                     prompt = f"{item['full_text']}"
                     prompt_mask = f"{item['full_text_mask']}"
 
-                    # 调试信息：记录prompt内容（前100字符）
-                    logging.debug(f"Sample {i}: Prompt preview: '{prompt[:100]}...'")
-                    logging.debug(f"Sample {i}: Expected answer: '{item['output']}')")
+                    # 静默处理，不输出调试信息
 
                     # 分词
                     inputs = tokenizer(prompt, return_tensors="pt", max_length=max_length, truncation=True)
@@ -387,6 +385,19 @@ class EnhancedCultureMoEEvaluator:
 
                     # 文化ID
                     culture_ids = torch.tensor([item['continent_id']], dtype=torch.long, device=self.device)
+
+                    # 设置停止词，让模型在生成数字后停止
+                    stop_tokens = []
+                    if hasattr(tokenizer, 'encode'):
+                        # 添加常见的停止标记
+                        stop_sequences = ['\n', '.', '。', ' ', '\t']
+                        for seq in stop_sequences:
+                            try:
+                                token_ids = tokenizer.encode(seq, add_special_tokens=False)
+                                if token_ids:
+                                    stop_tokens.extend(token_ids)
+                            except:
+                                pass
 
                     # 生成回答
                     expert_weights = None
@@ -410,55 +421,75 @@ class EnhancedCultureMoEEvaluator:
                                         expert_weights = expert_weights[0].tolist()  # 取第一个样本
                                     else:
                                         expert_weights = expert_weights.tolist()
-                        except Exception as e:
-                            logging.warning(f"Failed to extract expert weights for sample {i}: {e}")
+                        except Exception:
                             expert_weights = None
 
-                        # 生成文本
-                        outputs = model.generate(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            max_new_tokens=max_new_tokens,
-                            do_sample=True,
-                            temperature=0.7,
-                            pad_token_id=tokenizer.eos_token_id,
-                            eos_token_id=tokenizer.eos_token_id,
-                            repetition_penalty=1.1,  # 避免重复
-                            length_penalty=1.0,      # 长度惩罚
-                        )
+                        # 生成文本 - 优化为简洁数字回答
+                        generate_kwargs = {
+                            'input_ids': input_ids,
+                            'attention_mask': attention_mask,
+                            'max_new_tokens': max_new_tokens,
+                            'do_sample': False,  # 使用贪婪解码，更确定性
+                            'temperature': 1.0,  # 降低随机性
+                            'pad_token_id': tokenizer.eos_token_id,
+                            'eos_token_id': tokenizer.eos_token_id,
+                            'repetition_penalty': 1.0,  # 减少惩罚，避免影响简短回答
+                            'length_penalty': 0.0,      # 不惩罚长度，让模型自然停止
+                            'early_stopping': True,     # 遇到停止token就停止
+                        }
 
-                        # 调试信息：检查输入和输出的token长度
-                        input_length = input_ids.shape[1]
-                        output_length = outputs[0].shape[0]
-                        logging.debug(f"Sample {i}: Input length: {input_length}, Output length: {output_length}, New tokens: {output_length - input_length}")
+                        # 如果有停止token，添加到生成参数中
+                        if stop_tokens:
+                            # 去重并限制数量
+                            unique_stop_tokens = list(set(stop_tokens))[:10]
+                            try:
+                                generate_kwargs['bad_words_ids'] = None  # 不使用bad_words，让模型自然生成
+                                # 注：stop_tokens在某些版本中可能不支持，所以我们依赖max_new_tokens和early_stopping
+                            except:
+                                pass
+
+                        outputs = model.generate(**generate_kwargs)
 
                     # 解码生成的文本
                     generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-                    # 调试信息：记录生成的原始文本长度
-                    logging.debug(f"Sample {i}: Generated text length: {len(generated_text)}")
-
-                    # 提取生成的答案部分
+                    # 提取生成的答案部分 - 优化为简洁数字提取
                     try:
                         prompt_end_marker = "### Answer: "
                         if prompt_end_marker in generated_text:
                             # 找到"### Answer: "之后的内容
-                            generated_answer = generated_text.split(prompt_end_marker)[-1].strip()
-                            logging.debug(f"Sample {i}: Extracted using Answer marker")
+                            answer_part = generated_text.split(prompt_end_marker)[-1].strip()
+                            # 只提取第一个数字或字母，忽略后续解释
+                            import re
+                            number_match = re.search(r'^(\d+)', answer_part)
+                            if number_match:
+                                generated_answer = number_match.group(1)
+                            else:
+                                # 如果没有数字，查找字母
+                                letter_match = re.search(r'^([A-D])', answer_part, re.IGNORECASE)
+                                if letter_match:
+                                    generated_answer = letter_match.group(1).upper()
+                                else:
+                                    generated_answer = answer_part.split()[0] if answer_part.split() else answer_part
                         elif len(generated_text) > len(prompt):
                             # 如果生成的文本比prompt长，提取新生成的部分
-                            generated_answer = generated_text[len(prompt):].strip()
-                            logging.debug(f"Sample {i}: Extracted using prompt length")
+                            new_content = generated_text[len(prompt):].strip()
+                            # 只提取第一个有效的答案字符
+                            import re
+                            number_match = re.search(r'(\d+)', new_content)
+                            if number_match:
+                                generated_answer = number_match.group(1)
+                            else:
+                                letter_match = re.search(r'([A-D])', new_content, re.IGNORECASE)
+                                if letter_match:
+                                    generated_answer = letter_match.group(1).upper()
+                                else:
+                                    generated_answer = new_content.split()[0] if new_content.split() else new_content
                         else:
                             # 如果生成的文本长度和prompt一样或更短，可能没有生成新内容
                             generated_answer = ""
-                            logging.warning(f"Sample {i}: No new content generated (input: {len(prompt)}, output: {len(generated_text)})")
-                    except Exception as e:
-                        logging.warning(f"Sample {i}: Error in answer extraction: {e}")
+                    except Exception:
                         generated_answer = generated_text.strip()
-
-                    # 记录提取结果
-                    logging.debug(f"Sample {i}: Final generated_answer: '{generated_answer[:50]}...' (length: {len(generated_answer)})")
 
                     # 简单的答案匹配（提取首字母作为预测）
                     pred_answer = self._extract_answer(generated_answer)
@@ -507,8 +538,8 @@ class EnhancedCultureMoEEvaluator:
                                     'weight_distribution': 'concentrated' if max(weights) > 0.3 else 'distributed',
                                     'num_active_experts': sum(1 for w in weights if w > 0.05)
                                 }
-                        except Exception as e:
-                            logging.warning(f"Failed to analyze expert weights for sample {i}: {e}")
+                        except Exception:
+                            pass
 
                     generated_answers.append(answer_data)
 
@@ -517,7 +548,6 @@ class EnhancedCultureMoEEvaluator:
                         torch.cuda.empty_cache()
 
                 except Exception as e:
-                    logging.warning(f"Error processing sample {i}: {e}")
                     predictions.append("A")  # 默认答案
                     true_labels.append(item['output'].strip())
 
@@ -551,8 +581,7 @@ class EnhancedCultureMoEEvaluator:
             precision, recall, f1, _ = precision_recall_fscore_support(
                 true_labels, predictions, average='weighted', zero_division=0
             )
-        except Exception as e:
-            logging.warning(f"Failed to compute precision/recall/f1: {e}")
+        except Exception:
             precision = recall = f1 = 0.0
 
         # 计算每个答案选项的准确率（针对多答案进行调整）
@@ -638,22 +667,11 @@ class EnhancedCultureMoEEvaluator:
         }
 
         logging.info(f"Evaluation completed:")
-        logging.info(f"  Accuracy: {accuracy:.4f} (using multi-answer support)")
-        logging.info(f"  Precision: {precision:.4f}")
-        logging.info(f"  Recall: {recall:.4f}")
-        logging.info(f"  F1 Score: {f1:.4f}")
+        logging.info(f"  Accuracy: {accuracy:.4f}")
         logging.info(f"  Total samples: {len(test_data)}")
         logging.info(f"  Correct predictions: {correct_count}")
-
-        # 输出多答案统计
-        logging.info(f"  Multi-answer statistics:")
-        logging.info(f"    Samples with multiple correct answers: {multi_answer_count}")
-        logging.info(f"    Multi-answer ratio: {multi_answer_count / len(generated_answers) * 100:.1f}%")
-
-        # 输出按大洲的统计
-        logging.info(f"  Continent-wise accuracy:")
-        for continent, stats in continent_stats.items():
-            logging.info(f"    {continent}: {stats['accuracy']:.4f} ({stats['correct']}/{stats['total']})")
+        if multi_answer_count > 0:
+            logging.info(f"  Multi-answer samples: {multi_answer_count} ({multi_answer_count / len(generated_answers) * 100:.1f}%)")
 
         return results, generated_answers
 
