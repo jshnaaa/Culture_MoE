@@ -31,17 +31,20 @@
 #   ROUTER_TEMP: 路由器温度 (默认 2.0)
 #   LOAD_BAL: 负载均衡权重 (默认 0.001, 降低避免负损失)
 #   ENTROPY: 熵正则化权重 (默认 0.01, 降低避免负损失)
-#   NUM_GPUS: GPU数量 (默认 2)
+#   NUM_GPUS: GPU数量 (默认 1，只有设置为2时才启用双GPU)
 #
 # 示例：
-#   # 使用默认12个专家
-#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5
+#   # 单GPU训练（默认）
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 1
 #
-#   # 消融实验：使用6个专家
-#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 6 0.4 0.5
+#   # 双GPU训练
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 2
 #
-#   # 消融实验：使用24个专家
-#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 24 0.4 0.5
+#   # 消融实验：使用6个专家（单GPU）
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 6 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 1
+#
+#   # 消融实验：使用24个专家（双GPU）
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 24 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 2
 # ============================================================
 
 # ✅ 配置参数
@@ -57,7 +60,7 @@ USE_SHARED="${9:-True}"             # 默认使用共享专家
 ROUTER_TEMP="${10:-2.0}"            # 默认 Router 温度参数 2.0
 LOAD_BAL="${11:-0.001}"             # 默认负载均衡权重 0.001 (降低)
 ENTROPY="${12:-0.01}"               # 默认熵正则化权重 0.01 (降低)
-NUM_GPUS="${13:-1}"                 # 默认使用 2 个 GPU
+NUM_GPUS="${13:-1}"                 # 默认使用 1 个 GPU
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -140,16 +143,23 @@ else
 fi
 OUTPUT_DIR="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_$(date +%Y%m%d_%H%M)"
 
-# 设置 GPU
+# 设置 GPU - 明确的单卡/双卡逻辑
+export NUM_GPUS="$NUM_GPUS"  # 传递给Python脚本
+
 if [ "$NUM_GPUS" = "1" ]; then
 #    export CUDA_VISIBLE_DEVICES=0
-    GPU_INFO="Single GPU (GPU)"
+    GPU_INFO="Single GPU (GPU 0)"
+    echo "🔧 GPU Configuration: Single GPU training"
 elif [ "$NUM_GPUS" = "2" ]; then
     export CUDA_VISIBLE_DEVICES=0,1
     GPU_INFO="Dual GPUs (GPU 0,1)"
+    echo "🔧 GPU Configuration: Dual GPU training with DataParallel"
 else
-    export CUDA_VISIBLE_DEVICES=0,1
-    GPU_INFO="Dual GPUs (GPU 0,1)"
+    # 任何其他值都默认为单GPU
+    export NUM_GPUS="1"
+    export CUDA_VISIBLE_DEVICES=0
+    GPU_INFO="Single GPU (GPU 0) - fallback"
+    echo "🔧 GPU Configuration: Invalid NUM_GPUS=$NUM_GPUS, falling back to single GPU"
 fi
 
 echo "============================================================"
@@ -163,6 +173,11 @@ echo "  - Evaluation interval: Every 3 epochs (Epoch 3, 6, 9, 12)"
 echo "  - Best model saving: Automatically saves model with highest eval accuracy"
 echo "  - Backup saving: Final epoch model saved as backup"
 echo "  - Memory optimization: Enhanced for both LLaMA and Qwen models"
+echo ""
+echo "🖥️  GPU Configuration:"
+echo "  - NUM_GPUS=1: Single GPU training (default, no DataParallel)"
+echo "  - NUM_GPUS=2: Dual GPU training (DataParallel enabled)"
+echo "  - Current setting: NUM_GPUS=$NUM_GPUS"
 echo ""
 echo "🔬 Cultural Awareness Components:"
 echo "  1. Cultural Embedding Layer: 文化嵌入和上下文融合"
@@ -296,7 +311,14 @@ if [ $? -eq 0 ]; then
     echo "💡 To view accuracy:"
     echo "   python -c \"import json; data = json.load(open('$OUTPUT_DIR/epoch_eval_results.json')); print(f'Final Accuracy: {data[-1][\\\"eval_accuracy\\\"]:.4f}')\""
     echo ""
-    echo "🔬 Ablation Study Tips:"
+    echo "🔬 Usage Examples:"
+    echo "   # Single GPU training (default):"
+    echo "   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5"
+    echo ""
+    echo "   # Dual GPU training:"
+    echo "   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 2"
+    echo ""
+    echo "   # Ablation studies:"
     echo "   - Try different expert counts: 6, 8, 12, 16, 24"
     echo "   - Compare cultural vs non-cultural routing"
     echo "   - Analyze expert specialization patterns"

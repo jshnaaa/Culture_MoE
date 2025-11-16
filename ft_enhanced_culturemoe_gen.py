@@ -378,15 +378,48 @@ class EnhancedCultureMoETrainer:
         else:
             self.scaler = None
 
-        # 多GPU支持
-        gpu_count = torch.cuda.device_count()
-        if gpu_count > 1:
-            logging.info(f"Using {gpu_count} GPUs with DataParallel")
-            self.model = nn.DataParallel(self.model)
-            self.use_dataparallel = True
+        # 多GPU支持 - 基于NUM_GPUS参数决定
+        import os
+        total_gpu_count = torch.cuda.device_count()
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+        num_gpus_requested = int(os.environ.get('NUM_GPUS', '1'))  # 从环境变量获取NUM_GPUS
+
+        logging.info(f"System total GPUs: {total_gpu_count}")
+        logging.info(f"CUDA_VISIBLE_DEVICES: {cuda_visible}")
+        logging.info(f"Requested NUM_GPUS: {num_gpus_requested}")
+
+        # 计算实际可用GPU数量
+        if cuda_visible:
+            visible_gpus = [x.strip() for x in cuda_visible.split(',') if x.strip()]
+            actual_gpu_count = len(visible_gpus)
         else:
-            logging.info("Using single GPU for training")
+            actual_gpu_count = total_gpu_count
+
+        # 核心逻辑：只有当NUM_GPUS=2且实际可用GPU>=2时才启用DataParallel
+        if num_gpus_requested == 2 and actual_gpu_count >= 2:
+            logging.info(f"NUM_GPUS=2 requested and {actual_gpu_count} GPUs available, enabling DataParallel")
+            try:
+                self.model = nn.DataParallel(self.model)
+                self.use_dataparallel = True
+                logging.info("✅ DataParallel enabled successfully")
+            except Exception as e:
+                logging.warning(f"❌ DataParallel initialization failed: {e}")
+                logging.info("Falling back to single GPU training")
+                self.use_dataparallel = False
+        else:
+            # 所有其他情况都使用单GPU训练
+            if num_gpus_requested == 2 and actual_gpu_count < 2:
+                logging.warning(f"⚠️  NUM_GPUS=2 requested but only {actual_gpu_count} GPUs available")
+                logging.info("Falling back to single GPU training")
+            else:
+                logging.info(f"Using single GPU training (NUM_GPUS={num_gpus_requested})")
             self.use_dataparallel = False
+
+        # 最终确认DataParallel状态
+        if hasattr(self.model, 'module'):
+            logging.info("Model is wrapped with DataParallel")
+        else:
+            logging.info("Model is NOT wrapped with DataParallel")
 
         # 计算参数统计
         self.log_model_info()
