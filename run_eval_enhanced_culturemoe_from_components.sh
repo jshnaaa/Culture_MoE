@@ -37,8 +37,8 @@ MOE_FUSION="${4:-0.4}"              # 默认 MoE 融合系数 0.4
 LAMBDA="${5:-0.5}"                  # 默认文化损失权重 0.5
 
 # 设置数据集信息（固定为CultureLLM）
-DATASET_TAG="cultureLLM"
-DATA_ID="4"
+#DATASET_TAG="cultureLLM"
+#DATA_ID="4"
 
 # 确定共享专家标签（需要在使用前定义）
 USE_SHARED="True"  # Enhanced CultureMoE 默认使用共享专家
