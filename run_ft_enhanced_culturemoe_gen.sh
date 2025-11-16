@@ -79,6 +79,18 @@ fi
 
 # 根据 DATA_ID 选择数据集
 case $DATA_ID in
+    0)
+        # unified_all_datasets
+        DATASET_NAME="unified_all_datasets"
+        TRAIN_FILE="/root/autodl-fs/unified_all_datasets_small.json"
+        DATASET_TAG="unified_all_datasets_small"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_qwen_20251111_1421/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_llama_20251112_/best_lora"
+        fi
+        echo "Using unified_all_datasets dataset (enhanced format)"
+        ;;
     1)
         # unified_all_datasets
         DATASET_NAME="unified_all_datasets"

@@ -11,22 +11,22 @@
 #   3. 保存生成答案、评估指标、模型配置等信息
 #
 # 使用方法：
-#   sh run_eval_enhanced_culturemoe_from_components.sh <BACKBONE> <DATA_ID> <NUM_EXPERTS> <MOE_FUSION> <LAMBDA> [TIMESTAMP]
+#   sh run_eval_enhanced_culturemoe_from_components.sh <BACKBONE> <NUM_EXPERTS> <MOE_FUSION> <LAMBDA>
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
-#   DATA_ID: 训练时使用的数据集ID (默认 1)
 #   NUM_EXPERTS: 专家数量 (默认 12)
 #   MOE_FUSION: MoE融合系数 (默认 0.4)
 #   LAMBDA: 文化损失权重 (默认 0.5)
-#   TIMESTAMP: 可选的时间戳，用于指定特定的训练结果目录
+#
+# 注意：此脚本固定使用CultureLLM数据集训练的模型和特定时间戳
 #
 # 示例：
-#   # 评估默认配置的模型
-#   sh run_eval_enhanced_culturemoe_from_components.sh llama 1 12 0.4 0.5
+#   # 评估默认配置的LLaMA模型
+#   sh run_eval_enhanced_culturemoe_from_components.sh llama 12 0.4 0.5
 #
-#   # 评估特定时间戳的模型
-#   sh run_eval_enhanced_culturemoe_from_components.sh llama 4 12 0.4 0.5 20251116_1430
+#   # 评估Qwen模型
+#   sh run_eval_enhanced_culturemoe_from_components.sh qwen 12 0.4 0.5
 # ============================================================
 
 # ✅ 配置参数
@@ -35,23 +35,11 @@ NUM_EXPERTS="${2:-12}"              # 默认 12 个专家
 MOE_FUSION="${3:-0.4}"              # 默认 MoE 融合系数 0.4
 LAMBDA="${4:-0.5}"                  # 默认文化损失权重 0.5
 
-# 根据 backbone 选择 base 模型路径和 LoRA 权重路径
-if [ "$BACKBONE" = "qwen" ]; then
-    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-    MODEL_NAME="Qwen 2.5-7B-Instruct"
-#    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_qwen_20251111_1421/best_lora"
-    LORA_WEIGHTS_PATH="/root/autodl-fs/data/ft/ft_lora_only_gen_cultureLLM_qwen_20251114_1301/best_lora"
-    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_cultureLLM_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_1006"
+# 设置数据集信息（固定为CultureLLM）
+DATASET_TAG="cultureLLM"
+DATA_ID="4"
 
-else
-    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-    MODEL_NAME="LLaMA 3.1-8B-Instruct"
-#    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_llama_20251112_/best_lora"
-    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"
-    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_cultureLLM_llama_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_0957"
-fi
-
-# 确定共享专家标签
+# 确定共享专家标签（需要在使用前定义）
 USE_SHARED="True"  # Enhanced CultureMoE 默认使用共享专家
 if [ "$USE_SHARED" = "True" ]; then
     SHARED_TAG="shared"
@@ -59,9 +47,22 @@ else
     SHARED_TAG="noshared"
 fi
 
+# 根据 backbone 选择 base 模型路径和 LoRA 权重路径
+if [ "$BACKBONE" = "qwen" ]; then
+    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
+    MODEL_NAME="Qwen 2.5-7B-Instruct"
+    LORA_WEIGHTS_PATH="/root/autodl-fs/data/ft/ft_lora_only_gen_cultureLLM_qwen_20251114_1301/best_lora"
+    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_cultureLLM_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_1006"
+else
+    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
+    MODEL_NAME="LLaMA 3.1-8B-Instruct"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"
+    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_cultureLLM_llama_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_0957"
+fi
+
 if [ -z "$MOE_WEIGHTS_BASE" ] || [ ! -d "$MOE_WEIGHTS_BASE" ]; then
     echo "❌ Error: Enhanced MoE training directory not found"
-    echo "Expected pattern: $MOE_WEIGHTS_PATTERN"
+    echo "Expected directory: $MOE_WEIGHTS_BASE"
     echo ""
     echo "Please first run enhanced CultureMoE training:"
     echo "  sh run_ft_enhanced_culturemoe_gen.sh $BACKBONE $DATA_ID True $NUM_EXPERTS $MOE_FUSION $LAMBDA"
