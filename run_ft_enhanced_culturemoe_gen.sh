@@ -25,6 +25,10 @@
 #   NUM_EXPERTS: 专家数量 (默认 12，支持消融实验)
 #   MOE_FUSION: MoE 融合系数 (默认 0.4)
 #   CULTURE_LOSS_WEIGHT: 文化损失权重 (默认 0.5)
+#
+# 📦 批次大小自动配置：
+#   DATA_ID=2或3 (CulturalBench/NormAD): llama=3, qwen=8 (训练) / llama=2, qwen=4 (评估)
+#   DATA_ID=1或4 (unified/CultureLLM): llama=2, qwen=4 (训练) / llama=1, qwen=2 (评估)
 #   MARGIN: 文化损失margin (默认 0.5)
 #   LAMBDA_DIFF: 文化损失lambda_diff (默认 1.0)
 #   USE_SHARED: 是否使用共享专家 (默认 True)
@@ -190,13 +194,37 @@ echo "Model Architecture:"
 echo "  Base Model + LoRA weights → Complete LoRA-finetuned model (FROZEN)"
 echo "  + Enhanced MoE components → TRAINABLE"
 echo ""
+# 计算批次大小（用于显示）
+if [ "$DATA_ID" = "2" ] || [ "$DATA_ID" = "3" ]; then
+    if [ "$BACKBONE" = "llama" ]; then
+        TRAIN_BATCH_SIZE=3
+        EVAL_BATCH_SIZE=2
+    else
+        TRAIN_BATCH_SIZE=8
+        EVAL_BATCH_SIZE=4
+    fi
+else
+    if [ "$BACKBONE" = "llama" ]; then
+        TRAIN_BATCH_SIZE=2
+        EVAL_BATCH_SIZE=1
+    else
+        TRAIN_BATCH_SIZE=4
+        EVAL_BATCH_SIZE=2
+    fi
+fi
+
 echo "Backbone: $BACKBONE ($MODEL_NAME)"
-echo "Dataset: $DATASET_NAME"
+echo "Dataset: $DATASET_NAME (ID: $DATA_ID)"
 echo "Use culture loss: $USE_CULTURE_LOSS"
 echo "Culture loss weight (lambda): $LAMBDA"
 echo "Num experts: $NUM_EXPERTS (configurable for ablation studies)"
 echo "Use shared expert: $USE_SHARED"
 echo "MoE fusion coefficient: $MOE_FUSION"
+echo ""
+echo "📦 Batch Size Configuration:"
+echo "  Train batch size: $TRAIN_BATCH_SIZE"
+echo "  Eval batch size: $EVAL_BATCH_SIZE"
+echo "  Logic: DATA_ID=$DATA_ID + BACKBONE=$BACKBONE"
 echo ""
 echo "Enhanced Learning Configuration:"
 echo "  LoRA-finetuned model: FROZEN (0.0)"
@@ -275,8 +303,20 @@ python ft_enhanced_culturemoe_gen.py \
     --experts_hidden_dim 4096 \
     --moe_lora_rank 32 \
     --dropout 0.05 \
-    --batch_size $(if [ "$BACKBONE" = "llama" ]; then echo "3"; else echo "6"; fi) \
-    --eval_batch_size $(if [ "$BACKBONE" = "llama" ]; then echo "2"; else echo "4"; fi) \
+    --batch_size $(
+        if [ "$DATA_ID" = "2" ] || [ "$DATA_ID" = "3" ]; then
+            if [ "$BACKBONE" = "llama" ]; then echo "3"; else echo "8"; fi
+        else
+            if [ "$BACKBONE" = "llama" ]; then echo "2"; else echo "4"; fi
+        fi
+    ) \
+    --eval_batch_size $(
+        if [ "$DATA_ID" = "2" ] || [ "$DATA_ID" = "3" ]; then
+            if [ "$BACKBONE" = "llama" ]; then echo "2"; else echo "4"; fi
+        else
+            if [ "$BACKBONE" = "llama" ]; then echo "1"; else echo "2"; fi
+        fi
+    ) \
     --learning_rate 2e-4 \
     --moe_lr_multiplier 1.0 \
     --router_lr_multiplier 1.0 \
