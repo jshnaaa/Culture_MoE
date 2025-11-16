@@ -208,15 +208,10 @@ class EnhancedCultureMoEEvaluator:
         if unexpected_keys:
             logging.info(f"   ⚠️  Unexpected keys: {len(unexpected_keys)}")
 
-        # 6. 设置多GPU支持
-        if self.args.use_multi_gpu and torch.cuda.device_count() > 1:
-            logging.info(f"6. Setting up multi-GPU support ({torch.cuda.device_count()} GPUs)...")
-            enhanced_culturemoe_model = nn.DataParallel(enhanced_culturemoe_model)
-            self.use_dataparallel = True
-            logging.info("   ✅ DataParallel enabled")
-        else:
-            logging.info("6. Using single GPU...")
-            self.use_dataparallel = False
+        # 6. 强制使用单GPU评估（避免DataParallel兼容性问题）
+        logging.info("6. Using single GPU for evaluation...")
+        self.use_dataparallel = False
+        logging.info("   ✅ Single GPU mode enabled (DataParallel disabled for evaluation)")
 
         # 7. 移动到设备
         logging.info(f"7. Moving model to {self.device}...")
@@ -363,22 +358,29 @@ class EnhancedCultureMoEEvaluator:
 
                     # 生成回答
                     expert_weights = None
-                    with torch.cuda.amp.autocast():
-                        # 首先进行一次前向传播获取专家权重
+                    with torch.amp.autocast('cuda'):
+                        # 尝试获取专家权重（简化版本，避免DataParallel问题）
                         try:
+                            # 直接调用模型进行前向传播
                             model_outputs = model(
                                 input_ids=input_ids,
                                 attention_mask=attention_mask,
                                 culture_ids=culture_ids,
-                                use_culture_loss=False  # 评估时不计算损失
+                                use_culture_loss=False
                             )
-                            # 提取专家权重信息
-                            if hasattr(model_outputs, 'get') and 'expert_weights' in model_outputs:
+                            # 简化专家权重提取
+                            if isinstance(model_outputs, dict) and 'expert_weights' in model_outputs:
                                 expert_weights = model_outputs['expert_weights']
                                 if isinstance(expert_weights, torch.Tensor):
-                                    expert_weights = expert_weights.detach().cpu().numpy().tolist()
+                                    expert_weights = expert_weights.detach().cpu().numpy()
+                                    # 确保是列表格式
+                                    if expert_weights.ndim > 1:
+                                        expert_weights = expert_weights[0].tolist()  # 取第一个样本
+                                    else:
+                                        expert_weights = expert_weights.tolist()
                         except Exception as e:
                             logging.warning(f"Failed to extract expert weights for sample {i}: {e}")
+                            expert_weights = None
 
                         # 生成文本
                         outputs = model.generate(
@@ -426,18 +428,27 @@ class EnhancedCultureMoEEvaluator:
                     }
 
                     # 添加专家权重信息（如果可用）
-                    if expert_weights is not None:
+                    if expert_weights is not None and isinstance(expert_weights, list) and len(expert_weights) > 0:
                         answer_data['expert_weights'] = expert_weights
                         # 计算专家权重统计信息
-                        if isinstance(expert_weights, list) and len(expert_weights) > 0:
-                            # 如果是二维数组，取第一个样本
-                            weights = expert_weights[0] if isinstance(expert_weights[0], list) else expert_weights
-                            answer_data['expert_analysis'] = {
-                                'dominant_expert': int(weights.index(max(weights))),
-                                'max_weight': float(max(weights)),
-                                'weight_distribution': 'concentrated' if max(weights) > 0.3 else 'distributed',
-                                'num_active_experts': sum(1 for w in weights if w > 0.05)
-                            }
+                        try:
+                            # 确保是一维列表
+                            weights = expert_weights
+                            if isinstance(weights[0], list):
+                                weights = weights[0]  # 如果是二维，取第一个样本
+
+                            # 确保所有权重都是数值
+                            weights = [float(w) for w in weights if isinstance(w, (int, float))]
+
+                            if len(weights) > 0:
+                                answer_data['expert_analysis'] = {
+                                    'dominant_expert': int(weights.index(max(weights))),
+                                    'max_weight': float(max(weights)),
+                                    'weight_distribution': 'concentrated' if max(weights) > 0.3 else 'distributed',
+                                    'num_active_experts': sum(1 for w in weights if w > 0.05)
+                                }
+                        except Exception as e:
+                            logging.warning(f"Failed to analyze expert weights for sample {i}: {e}")
 
                     generated_answers.append(answer_data)
 
@@ -449,6 +460,24 @@ class EnhancedCultureMoEEvaluator:
                     logging.warning(f"Error processing sample {i}: {e}")
                     predictions.append("A")  # 默认答案
                     true_labels.append(item['output'].strip())
+
+                    # 即使出错也保存基本信息
+                    generated_answers.append({
+                        'index': i,
+                        'question': item['full_text'],
+                        'true_answer': item['output'].strip(),
+                        'generated_answer': f"Error: {str(e)}",
+                        'predicted_answer': "A",
+                        'continent_id': item['continent_id'],
+                        'continent_label': item['label'],
+                        'is_correct': False,
+                        'culture_context': {
+                            'instruction': item['instruction'],
+                            'input_text': item['input'],
+                            'continent_name': self._get_continent_name(item['continent_id'])
+                        },
+                        'error': str(e)
+                    })
                     continue
 
         # 计算评估指标

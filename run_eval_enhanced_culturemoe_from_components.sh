@@ -140,18 +140,13 @@ echo ""
 # 创建输出目录
 mkdir -p "$OUTPUT_DIR"
 
-# 检测GPU配置
+# 强制单GPU评估（避免DataParallel兼容性问题）
 NUM_GPUS=$(nvidia-smi --list-gpus | wc -l 2>/dev/null || echo "0")
 echo "🖥️  GPU Configuration:"
 echo "  Detected GPUs: $NUM_GPUS"
-
-if [ "$NUM_GPUS" -gt 1 ]; then
-    echo "  Using: Multi-GPU evaluation"
-    USE_MULTI_GPU="--use_multi_gpu"
-else
-    echo "  Using: Single-GPU evaluation"
-    USE_MULTI_GPU=""
-fi
+echo "  Using: Single-GPU evaluation (forced for stability)"
+echo "  Note: Multi-GPU disabled to avoid DataParallel issues with Enhanced CultureMoE"
+USE_MULTI_GPU=""
 echo ""
 
 # 运行评估
@@ -203,6 +198,11 @@ if [ $? -eq 0 ]; then
     echo "  - 文化背景信息（大洲、语言等）"
     echo "  - 专家权重分布（如果可用）"
     echo "  - 专家激活分析"
+    echo ""
+    echo "🔧 评估配置："
+    echo "  - 单GPU模式：强制启用以确保稳定性"
+    echo "  - DataParallel：已禁用（避免generate方法兼容性问题）"
+    echo "  - 专家权重：尝试提取但不影响主要评估"
     echo ""
     echo "💡 Quick commands to view results:"
     echo ""
