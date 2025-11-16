@@ -31,9 +31,10 @@
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"              # 默认使用 llama
-NUM_EXPERTS="${2:-12}"              # 默认 12 个专家
-MOE_FUSION="${3:-0.4}"              # 默认 MoE 融合系数 0.4
-LAMBDA="${4:-0.5}"                  # 默认文化损失权重 0.5
+DATA_ID="${2:-12}"
+NUM_EXPERTS="${3:-12}"              # 默认 12 个专家
+MOE_FUSION="${4:-0.4}"              # 默认 MoE 融合系数 0.4
+LAMBDA="${5:-0.5}"                  # 默认文化损失权重 0.5
 
 # 设置数据集信息（固定为CultureLLM）
 DATASET_TAG="cultureLLM"
