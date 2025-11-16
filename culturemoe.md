@@ -771,36 +771,6 @@ else:
     self.culture_loss_lambda = torch.tensor(culture_loss_lambda)
 ```
 
-### 损失监控和调试
-
-#### 训练过程中的损失分解
-
-每个epoch结束后，模型会输出详细的损失分解：
-
-```python
-# 训练日志示例
-=== Epoch 1 Training Results ===
-Total Loss: 2.345678
-  ├─ Generation Loss: 2.123456      # 主要的语言建模损失
-  ├─ Culture Loss: 0.234567         # 文化专业化损失
-  ├─ Load Balance Loss: 0.012345    # 负载均衡损失
-  ├─ Entropy Loss: 0.098765         # 熵正则化损失
-  ├─ Specialization Loss: 0.054321  # 专业化分量（监控用）
-  └─ Diversity Loss: 0.087654       # 多样性分量（监控用）
-```
-
-#### 异常检测和预警
-
-```python
-# 损失异常检测
-if train_metrics['train_loss'] < 0:
-    logging.warning("⚠️  WARNING: Total loss is negative!")
-if train_metrics['train_entropy_loss'] < -1.0:
-    logging.warning("⚠️  WARNING: Entropy loss is very negative, possible expert collapse!")
-if train_metrics['train_generation_loss'] < 0.001:
-    logging.warning("⚠️  WARNING: Generation loss is very low, possible overfitting!")
-```
-
 ### 损失函数设计原理
 
 #### 1. 多目标平衡
