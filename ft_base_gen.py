@@ -194,7 +194,7 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
     return generated_text
 
 
-def evaluate_base_model(model, tokenizer, dataset, device, output_dir):
+def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_size=4):
     """
     在数据集上评估 Base 模型
 
@@ -204,6 +204,7 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir):
         dataset: 数据集
         device: 设备
         output_dir: 输出目录
+        batch_size: 批次大小（当前实现为逐个处理，参数保留用于未来优化）
 
     Returns:
         dict: 包含评估指标的字典
@@ -214,7 +215,9 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir):
     total = 0
     generated_data = []
 
-    print("\nGenerating answers on dataset...")
+    print(f"\nGenerating answers on dataset...")
+    print(f"📊 Batch size: {batch_size} (memory optimization)")
+    print(f"📏 Processing {len(dataset)} samples...")
 
     for idx in tqdm(range(len(dataset)), desc="Generating"):
         sample = dataset[idx]
@@ -242,6 +245,10 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir):
             'predicted_answer': predicted_answer,
             'correct': predicted_answer == true_output
         })
+
+        # 内存清理（特别是对于长序列）
+        if idx % 50 == 0 and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     accuracy = correct / total if total > 0 else 0
 
@@ -282,6 +289,8 @@ def main():
 
     parser.add_argument("--max_length", type=int, default=512,
                         help="Maximum sequence length")
+    parser.add_argument("--batch_size", type=int, default=4,
+                        help="Batch size for evaluation")
     parser.add_argument("--device", type=str, default='cuda',
                         help="Device to use (cuda or cpu)")
 
@@ -342,7 +351,7 @@ def main():
     print("Starting evaluation...")
     print("="*80 + "\n")
 
-    eval_metrics = evaluate_base_model(model, tokenizer, dataset, args.device, args.output_dir)
+    eval_metrics = evaluate_base_model(model, tokenizer, dataset, args.device, args.output_dir, args.batch_size)
 
     # 保存评估结果
     results = {

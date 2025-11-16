@@ -126,14 +126,50 @@ case $DATA_ID in
         ;;
 esac
 
+# 根据数据集和模型类型配置max_length和batch_size
+case $DATA_ID in
+    33) # NormAD ICL - 需要更长的max_length处理长instruction
+        MAX_LENGTH=2048
+        if [ "$BACKBONE" = "llama" ]; then
+            BATCH_SIZE=1  # LLaMA + 长序列使用更小batch size
+        else
+            BATCH_SIZE=2  # Qwen相对内存效率更高
+        fi
+        echo "📏 NormAD ICL配置: max_length=$MAX_LENGTH, batch_size=$BATCH_SIZE"
+        ;;
+    23) # CulturalBench ICL - 中等长度
+        MAX_LENGTH=1024
+        if [ "$BACKBONE" = "llama" ]; then
+            BATCH_SIZE=2
+        else
+            BATCH_SIZE=4
+        fi
+        echo "📏 CulturalBench ICL配置: max_length=$MAX_LENGTH, batch_size=$BATCH_SIZE"
+        ;;
+    *) # 其他数据集 - 标准配置
+        MAX_LENGTH=512
+        if [ "$BACKBONE" = "llama" ]; then
+            BATCH_SIZE=4
+        else
+            BATCH_SIZE=8
+        fi
+        echo "📏 标准配置: max_length=$MAX_LENGTH, batch_size=$BATCH_SIZE"
+        ;;
+esac
+
 # 输出目录
 OUTPUT_DIR="/root/autodl-fs/data/ft/ft_base_${DATASET_TAG}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
-echo "Evaluating Base Model on CultureLLM Dataset (New Format)"
+echo "Evaluating Base Model on Cultural Datasets"
 echo "============================================================"
 echo "Backbone: $BACKBONE ($MODEL_NAME)"
-echo "Dataset: $DATASET_NAME"
+echo "Dataset: $DATASET_NAME (ID: $DATA_ID)"
+echo ""
+echo "📊 Model Configuration:"
+echo "  Max length: $MAX_LENGTH tokens"
+echo "  Batch size: $BATCH_SIZE"
+echo "  Memory optimization: $([ "$DATA_ID" = "33" ] && echo "Enabled for long sequences" || echo "Standard")"
 echo ""
 echo "Components:"
 echo "  Base model: $BASE_MODEL_PATH"
@@ -168,7 +204,8 @@ python ft_base_gen.py \
     --base_model_path "$BASE_MODEL_PATH" \
     --train_file "$TRAIN_FILE" \
     --output_dir "$OUTPUT_DIR" \
-    --max_length 512 \
+    --max_length "$MAX_LENGTH" \
+    --batch_size "$BATCH_SIZE" \
     --device cuda
 
 if [ $? -eq 0 ]; then
@@ -191,6 +228,18 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "💡 To view accuracy:"
     echo "   python -c \"import json; data = json.load(open('$OUTPUT_DIR/eval_results.json')); print(f'Accuracy: {data[\\\"accuracy\\\"]:.4f}')\""
+    echo ""
+    echo "📝 Configuration used:"
+    echo "   Max length: $MAX_LENGTH tokens"
+    echo "   Batch size: $BATCH_SIZE"
+    echo "   Dataset: $DATASET_NAME (ID: $DATA_ID)"
+    echo ""
+    if [ "$DATA_ID" = "33" ]; then
+        echo "🔧 NormAD ICL optimizations applied:"
+        echo "   - Extended max_length to handle long instructions"
+        echo "   - Reduced batch_size to prevent OOM"
+        echo "   - Memory cleanup every 50 samples"
+    fi
     echo "============================================================"
 else
     echo ""
