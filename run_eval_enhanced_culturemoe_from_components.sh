@@ -222,6 +222,7 @@ if [ $? -eq 0 ]; then
     echo "  - 单GPU模式：强制启用以确保稳定性"
     echo "  - DataParallel：已禁用（避免generate方法兼容性问题）"
     echo "  - 专家权重：尝试提取但不影响主要评估"
+    echo "  - 多答案支持：支持逗号分隔的多个正确答案（如 '1,2'）"
     echo ""
     echo "💡 Quick commands to view results:"
     echo ""
@@ -245,6 +246,9 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "  # View expert weight analysis (if available):"
     echo "  cat $OUTPUT_DIR/generated_answers.json | python -c \"import json,sys; data=json.load(sys.stdin); correct=[item for item in data if item.get('expert_analysis') and item['is_correct']]; wrong=[item for item in data if item.get('expert_analysis') and not item['is_correct']]; print(f'Correct answers: avg dominant expert weight = {sum(item[\\\"expert_analysis\\\"][\\\"max_weight\\\"] for item in correct)/len(correct):.3f}'); print(f'Wrong answers: avg dominant expert weight = {sum(item[\\\"expert_analysis\\\"][\\\"max_weight\\\"] for item in wrong)/len(wrong):.3f}') if len(correct)>0 and len(wrong)>0 else None\""
+    echo ""
+    echo "  # View multi-answer statistics:"
+    echo "  cat $OUTPUT_DIR/evaluation_results.json | python -c \"import json,sys; data=json.load(sys.stdin); stats=data['multi_answer_statistics']; print(f'Multi-answer samples: {stats[\\\"multi_answer_samples\\\"]}/{stats[\\\"total_samples\\\"]} ({stats[\\\"multi_answer_ratio\\\"]:.1%})')\""
     echo "============================================================"
 else
     echo ""

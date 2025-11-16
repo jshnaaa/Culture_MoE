@@ -323,6 +323,34 @@ class EnhancedCultureMoEEvaluator:
         }
         return continent_names.get(continent_id, f"未知大洲 (Unknown-{continent_id})")
 
+    def _is_answer_correct(self, predicted_answer: str, true_answer: str) -> bool:
+        """
+        检查预测答案是否正确，支持逗号分隔的多个正确答案
+
+        Args:
+            predicted_answer: 模型预测的答案
+            true_answer: 真实答案，可能包含逗号分隔的多个正确答案
+
+        Returns:
+            bool: 预测答案是否正确
+
+        Examples:
+            _is_answer_correct("1", "1") -> True
+            _is_answer_correct("1", "1,2") -> True
+            _is_answer_correct("2", "1,2") -> True
+            _is_answer_correct("3", "1,2") -> False
+        """
+        predicted = predicted_answer.strip()
+        true_answer = true_answer.strip()
+
+        # 如果true_answer包含逗号，说明有多个正确答案
+        if ',' in true_answer:
+            valid_answers = [ans.strip() for ans in true_answer.split(',')]
+            return predicted in valid_answers
+        else:
+            # 单一答案的情况
+            return predicted == true_answer
+
     def evaluate_model(self, model, tokenizer, test_data: List[Dict]) -> Dict[str, Any]:
         """评估模型"""
         logging.info("Starting model evaluation...")
@@ -436,6 +464,9 @@ class EnhancedCultureMoEEvaluator:
                     pred_answer = self._extract_answer(generated_answer)
                     true_answer = item['output'].strip()
 
+                    # 使用多答案支持的正确性检查
+                    is_correct = self._is_answer_correct(pred_answer, true_answer)
+
                     predictions.append(pred_answer)
                     true_labels.append(true_answer)
 
@@ -448,7 +479,7 @@ class EnhancedCultureMoEEvaluator:
                         'predicted_answer': pred_answer,
                         'continent_id': item['continent_id'],
                         'continent_label': item['label'],
-                        'is_correct': pred_answer.lower() == true_answer.lower(),
+                        'is_correct': is_correct,
                         'culture_context': {
                             'instruction': item['instruction'],
                             'input_text': item['input'],
@@ -509,22 +540,31 @@ class EnhancedCultureMoEEvaluator:
                     })
                     continue
 
-        # 计算评估指标
-        accuracy = accuracy_score(true_labels, predictions)
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            true_labels, predictions, average='weighted', zero_division=0
-        )
+        # 计算评估指标 - 使用自定义的多答案正确性检查
+        correct_count = sum(1 for answer in generated_answers if answer['is_correct'])
+        total_count = len(generated_answers)
+        accuracy = correct_count / total_count if total_count > 0 else 0
 
-        # 计算每个答案选项的准确率
-        unique_labels = sorted(list(set(true_labels + predictions)))
+        # 为了兼容现有的评估指标，我们仍然计算precision, recall, f1
+        # 但这些指标在多答案情况下的意义有所不同
+        try:
+            precision, recall, f1, _ = precision_recall_fscore_support(
+                true_labels, predictions, average='weighted', zero_division=0
+            )
+        except Exception as e:
+            logging.warning(f"Failed to compute precision/recall/f1: {e}")
+            precision = recall = f1 = 0.0
+
+        # 计算每个答案选项的准确率（针对多答案进行调整）
+        unique_labels = sorted(list(set(predictions)))  # 只考虑预测的标签
         per_class_accuracy = {}
+
         for label in unique_labels:
-            mask = np.array(true_labels) == label
-            if mask.sum() > 0:
-                per_class_accuracy[label] = accuracy_score(
-                    np.array(true_labels)[mask],
-                    np.array(predictions)[mask]
-                )
+            # 找到预测为该标签的样本
+            label_samples = [answer for answer in generated_answers if answer['predicted_answer'] == label]
+            if label_samples:
+                label_correct = sum(1 for sample in label_samples if sample['is_correct'])
+                per_class_accuracy[label] = label_correct / len(label_samples)
 
         results = {
             'accuracy': float(accuracy),
@@ -533,7 +573,7 @@ class EnhancedCultureMoEEvaluator:
             'f1_score': float(f1),
             'per_class_accuracy': per_class_accuracy,
             'total_samples': len(test_data),
-            'correct_predictions': int((np.array(predictions) == np.array(true_labels)).sum()),
+            'correct_predictions': int(correct_count),
             'evaluation_time': datetime.now().isoformat()
         }
 
@@ -555,21 +595,60 @@ class EnhancedCultureMoEEvaluator:
         results['continent_statistics'] = continent_stats
         results['answer_distribution'] = {}
 
-        # 统计答案分布
-        for label in ['A', 'B', 'C', 'D']:
-            true_count = sum(1 for answer in generated_answers if answer['true_answer'] == label)
+        # 统计答案分布（支持数字答案）
+        all_true_answers = set()
+        all_pred_answers = set()
+        multi_answer_count = 0
+
+        for answer in generated_answers:
+            # 收集所有真实答案（包括多答案的拆分）
+            true_ans = answer['true_answer']
+            if ',' in true_ans:
+                multi_answer_count += 1
+                all_true_answers.update(ans.strip() for ans in true_ans.split(','))
+            else:
+                all_true_answers.add(true_ans)
+
+            # 收集预测答案
+            all_pred_answers.add(answer['predicted_answer'])
+
+        # 生成答案分布统计
+        for label in sorted(all_true_answers.union(all_pred_answers)):
+            true_count = 0
+            for answer in generated_answers:
+                true_ans = answer['true_answer']
+                if ',' in true_ans:
+                    if label in [ans.strip() for ans in true_ans.split(',')]:
+                        true_count += 1
+                else:
+                    if label == true_ans:
+                        true_count += 1
+
             pred_count = sum(1 for answer in generated_answers if answer['predicted_answer'] == label)
             results['answer_distribution'][label] = {
                 'true_count': true_count,
                 'predicted_count': pred_count
             }
 
+        # 添加多答案统计信息
+        results['multi_answer_statistics'] = {
+            'total_samples': len(generated_answers),
+            'multi_answer_samples': multi_answer_count,
+            'multi_answer_ratio': multi_answer_count / len(generated_answers) if generated_answers else 0
+        }
+
         logging.info(f"Evaluation completed:")
-        logging.info(f"  Accuracy: {accuracy:.4f}")
+        logging.info(f"  Accuracy: {accuracy:.4f} (using multi-answer support)")
         logging.info(f"  Precision: {precision:.4f}")
         logging.info(f"  Recall: {recall:.4f}")
         logging.info(f"  F1 Score: {f1:.4f}")
         logging.info(f"  Total samples: {len(test_data)}")
+        logging.info(f"  Correct predictions: {correct_count}")
+
+        # 输出多答案统计
+        logging.info(f"  Multi-answer statistics:")
+        logging.info(f"    Samples with multiple correct answers: {multi_answer_count}")
+        logging.info(f"    Multi-answer ratio: {multi_answer_count / len(generated_answers) * 100:.1f}%")
 
         # 输出按大洲的统计
         logging.info(f"  Continent-wise accuracy:")
