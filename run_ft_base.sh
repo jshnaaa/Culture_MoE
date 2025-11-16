@@ -100,11 +100,11 @@ case $DATA_ID in
         echo "Using CulturalBench dataset (new format)"
         ;;
     33)
-        # CulturalBench
-        DATASET_NAME="norma的"
-        TRAIN_FILE="/autodl-fs/data/normad_merge_gen_samples.json" #
+        # NormAD ICL
+        DATASET_NAME="NormAD ICL"
+        TRAIN_FILE="/autodl-fs/data/normad_merge_gen_samples.json"
         DATASET_TAG="normad_icl"
-        echo "Using CulturalBench dataset (new format)"
+        echo "Using NormAD ICL dataset (long instruction format)"
         ;;
     61)
         TRAIN_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
@@ -236,9 +236,14 @@ if [ $? -eq 0 ]; then
     echo ""
     if [ "$DATA_ID" = "33" ]; then
         echo "🔧 NormAD ICL optimizations applied:"
-        echo "   - Extended max_length to handle long instructions"
-        echo "   - Reduced batch_size to prevent OOM"
+        echo "   - Extended max_length from 512 to $MAX_LENGTH tokens"
+        echo "   - Reduced batch_size to $BATCH_SIZE to prevent OOM"
         echo "   - Memory cleanup every 50 samples"
+        echo "   - Fixed: generate_answer now uses dynamic max_length"
+    elif [ "$DATA_ID" = "23" ]; then
+        echo "🔧 CulturalBench ICL optimizations applied:"
+        echo "   - Extended max_length to $MAX_LENGTH tokens"
+        echo "   - Adjusted batch_size to $BATCH_SIZE"
     fi
     echo "============================================================"
 else

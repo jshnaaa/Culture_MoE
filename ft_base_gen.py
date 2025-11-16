@@ -139,7 +139,7 @@ def extract_answer_from_text(text: str) -> str:
     return ""
 
 
-def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_tokens: int = 10) -> str:
+def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_tokens: int = 10, max_length: int = 512) -> str:
     """
     使用模型生成答案
 
@@ -157,7 +157,7 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
     if not text or text.strip() == "":
         return ""
 
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     # ✅ 检查 input_ids 是否为空
@@ -194,7 +194,7 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
     return generated_text
 
 
-def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_size=4):
+def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_size=4, max_length=512):
     """
     在数据集上评估 Base 模型
 
@@ -205,6 +205,7 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_siz
         device: 设备
         output_dir: 输出目录
         batch_size: 批次大小（当前实现为逐个处理，参数保留用于未来优化）
+        max_length: 输入序列的最大长度
 
     Returns:
         dict: 包含评估指标的字典
@@ -217,7 +218,8 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_siz
 
     print(f"\nGenerating answers on dataset...")
     print(f"📊 Batch size: {batch_size} (memory optimization)")
-    print(f"📏 Processing {len(dataset)} samples...")
+    print(f"📏 Max length: {max_length} tokens")
+    print(f"📋 Processing {len(dataset)} samples...")
 
     for idx in tqdm(range(len(dataset)), desc="Generating"):
         sample = dataset[idx]
@@ -226,7 +228,7 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_siz
         label = sample['label']
 
         # 生成答案
-        generated_text = generate_answer(model, tokenizer, text, device)
+        generated_text = generate_answer(model, tokenizer, text, device, max_new_tokens=10, max_length=max_length)
 
         # 提取答案
         predicted_answer = extract_answer_from_text(generated_text)
@@ -351,7 +353,7 @@ def main():
     print("Starting evaluation...")
     print("="*80 + "\n")
 
-    eval_metrics = evaluate_base_model(model, tokenizer, dataset, args.device, args.output_dir, args.batch_size)
+    eval_metrics = evaluate_base_model(model, tokenizer, dataset, args.device, args.output_dir, args.batch_size, args.max_length)
 
     # 保存评估结果
     results = {

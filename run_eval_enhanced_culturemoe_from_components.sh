@@ -72,7 +72,7 @@ fi
 MOE_WEIGHTS_PATH="$MOE_WEIGHTS_BASE/best_enhanced_moe"
 
 # 测试数据集
-TEST_FILE="/root/autodl-fs/wvs_merge_gen_small.json"
+TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
 
 # 输出目录
 OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_enhanced_culturemoe_${BACKBONE}_cultureLLM_$(date +%Y%m%d_%H%M)"
