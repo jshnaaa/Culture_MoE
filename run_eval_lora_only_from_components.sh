@@ -24,34 +24,46 @@ if [ "$BACKBONE" = "qwen" ]; then
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    # LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_llama_20251112_2135/best_lora"
-   LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"
+    LORA_WEIGHTS_PATH="/autodl-fs/data/data/ft/ft_lora_only_gen_unified_all_datasets_llama_20251117_1218/best_lora"
+#    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"
 fi
 # 根据 DATA_ID 选择数据集
 case $DATA_ID in
-    11)
-        TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
-        DATASET_NAME="WVS_Gen"
-        OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_${BACKBONE}_$(date +%Y%m%d_%H%M)"
-        ;;
-    12)
-        TEST_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
-        DATASET_NAME="WVS_Gen_ID"
-        OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_id_${BACKBONE}_$(date +%Y%m%d_%H%M)"
-        ;;
-    13)
-        TEST_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
-        DATASET_NAME="WVS_Gen_OOD"
-        OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_ood_${BACKBONE}_$(date +%Y%m%d_%H%M)"
-        ;;
-    21)
+    # 11)
+    #     TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
+    #     DATASET_NAME="WVS_Gen"
+        # OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        # ;;
+    # 12)
+    #     TEST_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
+    #     DATASET_NAME="WVS_Gen_ID"
+    #     OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_id_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+    #     ;;
+    # 13)
+    #     TEST_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
+    #     DATASET_NAME="WVS_Gen_OOD"
+    #     OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_ood_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+    #     ;;
+    6)
         TEST_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
         DATASET_NAME="moral_Gen"
-        OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_moral_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+        NUM_CLASSES=2
+        ;;
+    7)
+        TEST_FILE="/autodl-fs/data/cultureAtlas_merge_gen.json"
+        DATASET_NAME="cultureAtlas"
+        NUM_CLASSES=3
+        ;;
+    8)
+        TEST_FILE="/autodl-fs/data/bbq_merge_gen.json"
+        DATASET_NAME="bbq"
+        NUM_CLASSES=10
         ;;
 esac
 
-NUM_CLASSES=10  # 1-10 共 10 个类别
+OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_${DATASET_NAME}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+
+# NUM_CLASSES=10  # 1-10 共 10 个类别
 
 echo "============================================================"
 echo "LoRA Only Model Evaluation (From Components)"

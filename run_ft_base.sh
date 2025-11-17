@@ -106,6 +106,13 @@ case $DATA_ID in
         DATASET_TAG="normad_icl"
         echo "Using NormAD ICL dataset (long instruction format)"
         ;;
+    43)
+        # CultureLLM (默认)
+        DATASET_NAME="CultureLLM_icl"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen_samples.json"
+        DATASET_TAG="cultureLLM_icl"
+        echo "Using CultureLLM dataset (new format)"
+        ;;
     61)
         TRAIN_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
         DATASET_TAG="moral"
@@ -114,14 +121,42 @@ case $DATA_ID in
         TRAIN_FILE="/autodl-fs/data/moral_stories_merge_rp_gen.json"
         DATASET_TAG="moral_rp"
         ;;
-    501)
-        TRAIN_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
-        DATASET_NAME="WVS_Gen_ID"
+    63)
+        TRAIN_FILE="/autodl-fs/data/moral_stories_merge_gen_samples.json"
+        DATASET_TAG="moral_icl"
         ;;
-    502)
-        TRAIN_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
-        DATASET_NAME="WVS_Gen_OOD"
+    71)
+        TRAIN_FILE="/autodl-fs/data/cultureAtlas_merge_gen.json"
+        DATASET_TAG="cultureAtlas"
         ;;
+    72)
+        TRAIN_FILE="/autodl-fs/data/cultureAtlas_merge_rp_gen.json"
+        DATASET_TAG="cultureAtlas_rp"
+        ;;
+    73)
+        TRAIN_FILE="/autodl-fs/data/cultureAtlas_merge_gen_samples.json"
+        DATASET_TAG="cultureAtlas_icl"
+        ;;
+    81)
+        TRAIN_FILE="/autodl-fs/data/bbq_merge_gen.json"
+        DATASET_TAG="bbq"
+        ;;
+    82)
+        TRAIN_FILE="/autodl-fs/data/bbq_merge_rp_gen.json"
+        DATASET_TAG="bbq_rp"
+        ;;
+    83)
+        TRAIN_FILE="/autodl-fs/data/bbq_merge_gen_samples.json"
+        DATASET_TAG="bbq_icl"
+        ;;
+    # 501)
+    #     TRAIN_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
+    #     DATASET_NAME="WVS_Gen_ID"
+    #     ;;
+    # 502)
+    #     TRAIN_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
+    #     DATASET_NAME="WVS_Gen_OOD"
+    #     ;;
     *)
         echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, or 5."
         echo ""
@@ -154,10 +189,19 @@ case $DATA_ID in
         fi
         echo "📏 CulturalBench ICL配置: max_length=$MAX_LENGTH, batch_size=$BATCH_SIZE"
         ;;
+    63) # moral ICL - 中等长度
+        MAX_LENGTH=1024
+        if [ "$BACKBONE" = "llama" ]; then
+            BATCH_SIZE=2
+        else
+            BATCH_SIZE=4
+        fi
+        echo "📏 moral ICL配置: max_length=$MAX_LENGTH, batch_size=$BATCH_SIZE"
+        ;;
     *) # 其他数据集 - 标准配置
         MAX_LENGTH=512
         if [ "$BACKBONE" = "llama" ]; then
-            BATCH_SIZE=4
+            BATCH_SIZE=8
         else
             BATCH_SIZE=8
         fi

@@ -52,13 +52,13 @@ fi
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
-    LORA_WEIGHTS_PATH="/root/autodl-fs/data/ft/ft_lora_only_gen_cultureLLM_qwen_20251114_1301/best_lora"
+    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_qwen_20251111_1421/best_lora"
     MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_cultureLLM_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_1006"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_qwen_20251111_1421/best_lora"
-    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/t_enhanced_moe_gen_unified_all_datasets_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_1537"
+    LORA_WEIGHTS_PATH="/autodl-fs/data/data/ft/ft_lora_only_gen_unified_all_datasets_llama_20251117_1218/best_lora"
+    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/t_enhanced_moe_gen_unified_all_datasets_llama_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_1537"
 fi
 
 if [ -z "$MOE_WEIGHTS_BASE" ] || [ ! -d "$MOE_WEIGHTS_BASE" ]; then
@@ -76,25 +76,36 @@ MOE_WEIGHTS_PATH="$MOE_WEIGHTS_BASE/best_enhanced_moe"
 #TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
 # 根据 DATA_ID 选择数据集
 case $DATA_ID in
-    11)
-        TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
-        DATASET_NAME="WVS_Gen"
-        ;;
-    12)
-        TEST_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
-        DATASET_NAME="WVS_Gen_ID"
-        ;;
-    13)
-        TEST_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
-        DATASET_NAME="WVS_Gen_OOD"
-        ;;
-    21)
+    # 11)
+    #     TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
+    #     DATASET_NAME="WVS_Gen"
+    #     ;;
+    # 12)
+    #     TEST_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
+    #     DATASET_NAME="WVS_Gen_ID"
+    #     ;;
+    # 13)
+    #     TEST_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
+    #     DATASET_NAME="WVS_Gen_OOD"
+    #     ;;
+    6)
         TEST_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
         DATASET_NAME="moral_Gen"
+        NUM_CLASSES=2
+        ;;
+    7)
+        TEST_FILE="/autodl-fs/data/cultureAtlas_merge_gen.json"
+        DATASET_NAME="cultureAtlas"
+        NUM_CLASSES=3
+        ;;
+    8)
+        TEST_FILE="/autodl-fs/data/bbq_merge_gen.json"
+        DATASET_NAME="bbq"
+        NUM_CLASSES=3
         ;;
 esac
 # 输出目录
-OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_enhanced_culturemoe_${BACKBONE}_${DATASET_NAME}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_enhanced_culturemoe_${DATASET_NAME}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "🧪 Enhanced CultureMoE Evaluation (From Components)"

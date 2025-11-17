@@ -126,7 +126,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
         full_input = instruction
 
     # Tokenize
-    inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
+    inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=1024)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     # ✅ 生成答案
