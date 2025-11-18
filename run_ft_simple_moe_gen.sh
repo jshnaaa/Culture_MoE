@@ -1,54 +1,103 @@
 #!/bin/bash
 
 # ============================================================
-# Simple MoE 模型训练脚本
+# Simple MoE 模型训练脚本 - 支持多数据集和8:1:1数据划分
 # 在 LoRA 微调后的完整模型基础上添加简单的 MoE 结构
+#
+# 功能：
+# 1. 支持 CulturalBench、NormAD、CultureLLM、unified_all_datasets 数据集
+# 2. 8:1:1数据划分（训练:验证:测试）
+# 3. 验证集选择最佳模型，测试集最终评估
+# 4. 保存最佳MoE权重和生成答案
 #
 # 使用方法：
 #   sh run_ft_simple_moe_gen.sh <BACKBONE> <DATA_ID> <NUM_EXPERTS> <TOP_K>
 #
+# 参数说明：
+#   BACKBONE: llama 或 qwen (默认 llama)
+#   DATA_ID: 1=unified_all_datasets, 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认 1)
+#   NUM_EXPERTS: 专家数量 (默认 12)
+#   TOP_K: Top-K路由 (默认 2)
+#
 # 示例：
-#   sh run_ft_simple_moe_gen.sh llama 4 12 2
-#   sh run_ft_simple_moe_gen.sh qwen 2 8 2
+#   sh run_ft_simple_moe_gen.sh llama 1 12 2  # unified_all_datasets
+#   sh run_ft_simple_moe_gen.sh llama 2 12 2  # CulturalBench
+#   sh run_ft_simple_moe_gen.sh qwen 3 8 2    # NormAD
 # ============================================================
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"           # 默认使用 llama
-DATA_ID="${2:-4}"               # 默认使用数据集4 (CultureLLM)
+DATA_ID="${2:-1}"               # 默认使用数据集1 (unified_all_datasets)
 NUM_EXPERTS="${3:-12}"          # 默认12个专家
 TOP_K="${4:-2}"                 # 默认top-2路由
 
-# 根据 backbone 选择 base 模型路径和 LoRA 权重路径
+# 根据 backbone 选择 base 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
-    LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_qwen_20251111_1421/best_lora"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    LORA_WEIGHTS_PATH="/autodl-fs/data/data/ft/ft_lora_only_gen_unified_all_datasets_llama_20251117_1218/best_lora"
 fi
 
-# 根据 DATA_ID 选择数据集
+# 根据 DATA_ID 选择数据集和对应的LoRA权重
 case $DATA_ID in
     1)
-        TRAIN_FILE="/autodl-fs/data/wvs_merge_gen.json"
-        DATASET_NAME="WVS_Gen"
+        # unified_all_datasets
+        DATASET_NAME="unified_all_datasets"
+        TRAIN_FILE="/root/autodl-fs/unified_all_datasets.json"
+        DATASET_TAG="unified_all_datasets"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_qwen_20251111_1421/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/autodl-fs/data/data/ft/ft_lora_only_gen_unified_all_datasets_llama_20251117_1218/best_lora"
+        fi
+        echo "Using unified_all_datasets dataset"
         ;;
     2)
-        TRAIN_FILE="/autodl-fs/data/culturebench_merge_gen.json"
-        DATASET_NAME="CultureBench"
+        # CulturalBench
+        DATASET_NAME="CulturalBench"
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
+        DATASET_TAG="CulturalBench"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_qwen_20251112_1228/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_llama_20251112_1141/best_lora"
+        fi
+        echo "Using CulturalBench dataset"
         ;;
     3)
-        TRAIN_FILE="/autodl-fs/data/normad_icl_merge_gen.json"
-        DATASET_NAME="NormAD_ICL"
+        # NormAD
+        DATASET_NAME="NormAD"
+        TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
+        DATASET_TAG="normad"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_qwen_20251111_1204/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_llama_20251112_1335/best_lora"
+        fi
+        echo "Using NormAD dataset"
         ;;
     4)
-        TRAIN_FILE="/autodl-fs/data/cultureLLM_merge_gen.json"
+        # CultureLLM
         DATASET_NAME="CultureLLM"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
+        DATASET_TAG="cultureLLM"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-fs/data/ft/ft_lora_only_gen_cultureLLM_qwen_20251114_1301/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"
+        fi
+        echo "Using CultureLLM dataset"
         ;;
     *)
-        echo "❌ Error: Invalid DATA_ID. Use 1-4."
+        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 1, 2, 3, or 4."
+        echo ""
+        echo "DATA_ID options:"
+        echo "  1 - unified_all_datasets"
+        echo "  2 - CulturalBench"
+        echo "  3 - NormAD"
+        echo "  4 - CultureLLM"
         exit 1
         ;;
 esac
@@ -71,7 +120,7 @@ else
 fi
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-fs/data/ft/ft_simple_moe_${DATASET_NAME}_${BACKBONE}_experts${NUM_EXPERTS}_top${TOP_K}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/data/ft/ft_simple_moe_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_top${TOP_K}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "Simple MoE Training"
