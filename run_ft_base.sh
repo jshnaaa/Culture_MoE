@@ -198,6 +198,15 @@ case $DATA_ID in
         fi
         echo "📏 moral ICL配置: max_length=$MAX_LENGTH, batch_size=$BATCH_SIZE"
         ;;
+    73) # atlas ICL - 中等长度
+        MAX_LENGTH=1024
+        if [ "$BACKBONE" = "llama" ]; then
+            BATCH_SIZE=2
+        else
+            BATCH_SIZE=4
+        fi
+        echo "📏 atlas ICL配置: max_length=$MAX_LENGTH, batch_size=$BATCH_SIZE"
+        ;;
     *) # 其他数据集 - 标准配置
         MAX_LENGTH=512
         if [ "$BACKBONE" = "llama" ]; then
