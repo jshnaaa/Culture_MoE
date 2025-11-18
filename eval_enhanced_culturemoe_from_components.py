@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Enhanced CultureMoE 模型评估脚本
+Enhanced CultureMoE 模型评估脚本（修复版本）
 从 Base 模型 + LoRA 权重 + Enhanced MoE 权重还原完整模型并评估
+
+修复内容：
+✅ 增加max_length到2048（避免重要信息截断）
+✅ 使用数据集原生### Answer:格式
+✅ 添加截断检测和警告
+✅ 保持原始prompt结构
 
 功能：
 1. 从三个组件还原完整的 Enhanced CultureMoE 模型
@@ -360,8 +366,8 @@ class EnhancedCultureMoEEvaluator:
         true_labels = []
         generated_answers = []
 
-        # 评估参数 - 优化为简洁回答
-        max_length = 512
+        # 评估参数 - 优化为简洁回答，增加max_length避免截断
+        max_length = 2048  # 增加到2048以避免重要信息被截断
         max_new_tokens = 5  # 减少到5个token，只够回答数字
 
         with torch.no_grad():
@@ -376,6 +382,12 @@ class EnhancedCultureMoEEvaluator:
                     # 分词
                     inputs = tokenizer(prompt, return_tensors="pt", max_length=max_length, truncation=True)
                     inputs_mask = tokenizer(prompt_mask, return_tensors="pt", max_length=max_length, truncation=True)
+
+                    # 检查截断（偶尔打印警告）
+                    import random
+                    if inputs['input_ids'].shape[1] >= max_length and random.random() < 0.01:
+                        logging.warning(f"⚠️  Input truncated at {max_length} tokens for sample {i}")
+                        logging.warning(f"   Prompt length: {len(prompt)} characters")
 
                     # 移动到设备
                     input_ids = inputs['input_ids'].to(self.device)
