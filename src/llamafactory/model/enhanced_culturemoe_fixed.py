@@ -137,7 +137,17 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
         self.cultural_context = self.cultural_context.to(dtype=base_dtype)
         self.cultural_gate = self.cultural_gate.to(dtype=base_dtype)
 
+        # 确保参数也使用正确的数据类型
+        self.culture_loss_alpha_enhanced = self.culture_loss_alpha_enhanced.to(dtype=base_dtype)
+        self.culture_loss_beta_enhanced = self.culture_loss_beta_enhanced.to(dtype=base_dtype)
+
         logging.info(f"All components converted to dtype: {base_dtype}")
+
+    def _to_consistent_dtype(self, tensor, reference_tensor):
+        """将tensor转换为与reference_tensor一致的数据类型"""
+        if tensor.dtype != reference_tensor.dtype:
+            return tensor.to(dtype=reference_tensor.dtype)
+        return tensor
 
     def _log_culture_assignments(self):
         """记录文化分配方案"""
@@ -253,10 +263,14 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
 
         # ✅ Step 4: 文化上下文分析
         try:
-            cultural_analysis = self.cultural_context(hidden_states, cultural_embeddings)
-            cultural_analysis = self._check_numerical_stability(cultural_analysis, "cultural_analysis")
+            context_aware_states, cultural_analysis = self.cultural_context(hidden_states, culture_ids)
+            # 对字典中的每个tensor进行数值稳定性检查
+            for key, tensor in cultural_analysis.items():
+                if isinstance(tensor, torch.Tensor):
+                    cultural_analysis[key] = self._check_numerical_stability(tensor, f"cultural_analysis_{key}")
         except Exception as e:
             logging.warning(f"Error in cultural context: {e}")
+            context_aware_states = hidden_states  # 使用原始状态作为fallback
             cultural_analysis = {
                 'cultural_cues': torch.zeros(batch_size, seq_len, device=device, dtype=dtype),
                 'cross_cultural_conflicts': torch.zeros(batch_size, seq_len, device=device, dtype=dtype),
@@ -268,8 +282,8 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
 
         # ✅ Step 5: 文化感知路由
         try:
-            # 池化hidden_states到序列级别用于路由
-            pooled_hidden = hidden_states.mean(dim=1)  # [B, H]
+            # 池化context_aware_states到序列级别用于路由
+            pooled_hidden = context_aware_states.mean(dim=1)  # [B, H]
             expert_weights_per_sample, routing_info = self.router(
                 pooled_hidden,
                 culture_ids,
@@ -287,12 +301,12 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
         expert_outputs = []
         for i, expert in enumerate(self.cultural_experts):
             try:
-                expert_out, culture_relevance = expert(hidden_states, culture_ids)
+                expert_out, culture_relevance = expert(context_aware_states, culture_ids)
                 expert_out = self._check_numerical_stability(expert_out, f"expert_{i}_output")
                 expert_outputs.append(expert_out)
             except Exception as e:
                 logging.warning(f"Error in expert {i}: {e}")
-                expert_outputs.append(torch.zeros_like(hidden_states))
+                expert_outputs.append(torch.zeros_like(context_aware_states))
 
         expert_outputs = torch.stack(expert_outputs, dim=-1)  # [B, L, H, num_experts]
 
@@ -504,4 +518,40 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
 
         except Exception as e:
             logging.warning(f"Error in enhanced culture loss: {e}")
+            return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype)
+
+    def compute_load_balance_loss(self, expert_weights):
+        """计算负载均衡损失"""
+        try:
+            if expert_weights.dim() == 3:  # [B, L, num_experts]
+                # 计算每个专家的平均使用率
+                expert_usage = expert_weights.mean(dim=(0, 1))  # [num_experts]
+            else:  # [B, num_experts]
+                expert_usage = expert_weights.mean(dim=0)  # [num_experts]
+
+            # 计算方差作为负载均衡损失
+            ideal_usage = 1.0 / self.args.num_experts
+            load_balance_loss = torch.var(expert_usage)
+
+            return self._check_numerical_stability(load_balance_loss, "load_balance_loss")
+        except Exception as e:
+            logging.warning(f"Error in compute_load_balance_loss: {e}")
+            return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype)
+
+    def compute_entropy_loss(self, expert_weights):
+        """计算熵损失"""
+        try:
+            # 计算专家权重的熵
+            # 添加小值避免log(0)
+            eps = 1e-8
+            expert_probs = expert_weights + eps
+            expert_probs = expert_probs / expert_probs.sum(dim=-1, keepdim=True)
+
+            # 计算熵
+            entropy = -torch.sum(expert_probs * torch.log(expert_probs + eps), dim=-1)
+            entropy_loss = -entropy.mean()  # 负熵，鼓励多样性
+
+            return self._check_numerical_stability(entropy_loss, "entropy_loss")
+        except Exception as e:
+            logging.warning(f"Error in compute_entropy_loss: {e}")
             return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype)
