@@ -108,6 +108,9 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
         # 初始化新增组件
         self._init_enhanced_components()
 
+        # 确保所有新增组件使用与base模型相同的数据类型
+        self._ensure_dtype_consistency()
+
         logging.info("Enhanced CultureMoE (Fixed) initialization completed")
         self._log_culture_assignments()
 
@@ -121,6 +124,20 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
                 if module.bias is not None:
                     # 门控的bias初始化为更小的负值
                     nn.init.constant_(module.bias, -0.5)
+
+    def _ensure_dtype_consistency(self):
+        """确保所有组件使用相同的数据类型"""
+        # 获取base模型的数据类型
+        base_dtype = next(self.llama_model.parameters()).dtype
+
+        # 将所有新增组件转换为相同的数据类型
+        self.cultural_embedding = self.cultural_embedding.to(dtype=base_dtype)
+        self.router = self.router.to(dtype=base_dtype)
+        self.cultural_experts = self.cultural_experts.to(dtype=base_dtype)
+        self.cultural_context = self.cultural_context.to(dtype=base_dtype)
+        self.cultural_gate = self.cultural_gate.to(dtype=base_dtype)
+
+        logging.info(f"All components converted to dtype: {base_dtype}")
 
     def _log_culture_assignments(self):
         """记录文化分配方案"""
@@ -220,7 +237,15 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
 
         # ✅ Step 3: 文化嵌入
         try:
-            cultural_embeddings = self.cultural_embedding(culture_ids)  # [B, culture_dim]
+            culturally_aware_states, culture_attention_weights = self.cultural_embedding(hidden_states, culture_ids)
+            # 提取文化嵌入向量（从culturally_aware_states中获取平均池化）
+            cultural_embeddings = culturally_aware_states.mean(dim=1)  # [B, H] -> [B, culture_dim]
+            # 投影到正确的维度
+            if cultural_embeddings.size(-1) != self.culture_dim:
+                # 如果维度不匹配，创建一个简单的投影
+                if not hasattr(self, 'culture_dim_projection'):
+                    self.culture_dim_projection = nn.Linear(cultural_embeddings.size(-1), self.culture_dim).to(device)
+                cultural_embeddings = self.culture_dim_projection(cultural_embeddings)
             cultural_embeddings = self._check_numerical_stability(cultural_embeddings, "cultural_embeddings")
         except Exception as e:
             logging.warning(f"Error in cultural embedding: {e}")
@@ -243,13 +268,15 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
 
         # ✅ Step 5: 文化感知路由
         try:
-            router_outputs = self.router(
-                hidden_states,
-                cultural_embeddings,
-                culture_relevances,
+            # 池化hidden_states到序列级别用于路由
+            pooled_hidden = hidden_states.mean(dim=1)  # [B, H]
+            expert_weights_per_sample, routing_info = self.router(
+                pooled_hidden,
+                culture_ids,
                 temperature=router_temperature
             )
-            expert_weights = router_outputs['weights']  # [B, L, num_experts]
+            # 扩展到序列维度
+            expert_weights = expert_weights_per_sample.unsqueeze(1).expand(-1, seq_len, -1)  # [B, L, num_experts]
             expert_weights = self._check_numerical_stability(expert_weights, "expert_weights")
         except Exception as e:
             logging.warning(f"Error in cultural router: {e}")
@@ -260,7 +287,7 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
         expert_outputs = []
         for i, expert in enumerate(self.cultural_experts):
             try:
-                expert_out = expert(hidden_states, cultural_embeddings, culture_relevances)
+                expert_out, culture_relevance = expert(hidden_states, culture_ids)
                 expert_out = self._check_numerical_stability(expert_out, f"expert_{i}_output")
                 expert_outputs.append(expert_out)
             except Exception as e:
@@ -311,10 +338,12 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
             cultural_gate_values = torch.ones_like(hidden_states) * 0.5
 
         # ✅ Step 10: 最终融合
+        # 使用父类的可学习参数 moe_fusion_alpha
+        moe_fusion_alpha = self.moe_fusion_alpha.to(device=hidden_states.device, dtype=hidden_states.dtype)
         enhanced_hidden = (
             hidden_states +
-            self.moe_fusion * cultural_gate_values * moe_output +
-            (1 - self.moe_fusion) * shared_output
+            moe_fusion_alpha * cultural_gate_values * moe_output +
+            (1 - moe_fusion_alpha) * shared_output
         )
         enhanced_hidden = self._check_numerical_stability(enhanced_hidden, "enhanced_hidden")
 
