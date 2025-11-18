@@ -290,7 +290,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     raw_answer = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
     # Debug: 打印生成的原始答案（增加频率以便调试空答案问题）
-    if random.random() < 0.05:  # 增加到5%的概率打印debug信息
+    if random.random() < 0.01:  # 增加到5%的概率打印debug信息
         print(f"🔍 DEBUG - Raw generated answer: '{raw_answer}'")
         full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
         print(f"🔍 DEBUG - Full output (last 200 chars): '...{full_output[-200:]}'")
@@ -320,7 +320,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
         full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
         # 调试：打印完整输出长度比较
-        if random.random() < 0.05:
+        if random.random() < 0.01:
             print(f"🔍 DEBUG - Full input length: {len(full_input)}")
             print(f"🔍 DEBUG - Full output length: {len(full_output)}")
             print(f"🔍 DEBUG - Length difference: {len(full_output) - len(full_input)}")
@@ -336,11 +336,11 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
             parts = full_output.split("你的回答：")
             if len(parts) > 1:
                 raw_answer = parts[-1].strip()
-                if random.random() < 0.05:
+                if random.random() < 0.01:
                     print(f"🔍 DEBUG - Found answer after '你的回答：': '{raw_answer}'")
         elif len(full_output) > len(full_input):
             raw_answer = full_output[len(full_input):].strip()
-            if random.random() < 0.05:
+            if random.random() < 0.01:
                 print(f"🔍 DEBUG - Extracted new content: '{raw_answer}'")
 
         # 方案3：如果还是空的，尝试不跳过特殊token
@@ -348,7 +348,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
             raw_answer_with_tokens = tokenizer.decode(generated_ids, skip_special_tokens=False)
             # 移除特殊token但保留内容
             raw_answer = re.sub(r'<[^>]*>', '', raw_answer_with_tokens).strip()
-            if raw_answer and random.random() < 0.05:
+            if raw_answer and random.random() < 0.01:
                 print(f"🔍 DEBUG - Found answer with special tokens: '{raw_answer}'")
 
         # 方案4：如果生成的tokens不为空但解码为空，可能是特殊tokens问题
@@ -359,7 +359,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
                     token_text = tokenizer.decode([token_id], skip_special_tokens=True)
                     if token_text and token_text.strip() and token_text.strip() in '123456789':
                         raw_answer = token_text.strip()
-                        if random.random() < 0.05:
+                        if random.random() < 0.01:
                             print(f"🔍 DEBUG - Found digit in token {i}: '{raw_answer}'")
                         break
                 except:
