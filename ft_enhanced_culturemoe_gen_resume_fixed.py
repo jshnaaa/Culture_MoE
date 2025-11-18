@@ -288,14 +288,14 @@ class EnhancedCultureMoEResumeTrainerFixed:
         logging.info("Merging LoRA weights...")
         merged_model = peft_model.merge_and_unload()
 
-        # 创建模型参数
+        # 创建模型参数（基于ModelArgs的实际字段）
         model_args = ModelArgs(
             num_experts=getattr(self.args, 'num_experts', 12),
-            top_k=2,
-            router_hidden_dim=getattr(self.args, 'router_hidden_dim', 2048),
-            experts_hidden_dim=getattr(self.args, 'experts_hidden_dim', 4096),
-            lora_rank=getattr(self.args, 'moe_lora_rank', 32),
-            dropout=getattr(self.args, 'dropout', 0.05)
+            router_hidden_dim=getattr(self.args, 'router_hidden_dim', 256),  # 使用默认值
+            experts_hidden_dim=getattr(self.args, 'experts_hidden_dim', 256),  # 使用默认值
+            shared_hidden_dim=getattr(self.args, 'shared_hidden_dim', 512),   # 新增
+            lora_rank=getattr(self.args, 'moe_lora_rank', 8),  # 使用默认值
+            dropout=getattr(self.args, 'dropout', 0.1)  # 使用默认值
         )
 
         # 创建Enhanced CultureMoE模型 - 使用修复NaN问题的版本

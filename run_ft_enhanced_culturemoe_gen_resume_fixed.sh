@@ -193,8 +193,11 @@ echo ""
 echo "🚀 Starting NaN-fixed resume training..."
 echo ""
 
+# 获取脚本所在目录
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # 运行修复版本的恢复训练
-python ft_enhanced_culturemoe_gen_resume_fixed.py \
+python "$SCRIPT_DIR/ft_enhanced_culturemoe_gen_resume_fixed.py" \
     --resume_dir "$RESUME_DIR" \
     --base_model_path "$BASE_MODEL_PATH" \
     --lora_weights_path "$LORA_WEIGHTS_PATH" \
