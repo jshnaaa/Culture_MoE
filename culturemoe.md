@@ -740,7 +740,7 @@ def entropy_regularization(expert_weights):
 
 **文件位置**: `src/llamafactory/model/enhanced_culturemoe.py:369-384`
 
-当总损失出现异常时，模型会自动调整权重：
+当总损失出现异常时，模型会自动调整权重： 
 
 ```python
 if torch.isnan(total_loss) or torch.isinf(total_loss):
