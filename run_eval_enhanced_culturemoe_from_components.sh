@@ -53,7 +53,7 @@ if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
     LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_qwen_20251111_1421/best_lora"
-    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_cultureLLM_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_1006"
+    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_unified_all_datasets_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251118_1006"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
@@ -70,7 +70,6 @@ if [ -z "$MOE_WEIGHTS_BASE" ] || [ ! -d "$MOE_WEIGHTS_BASE" ]; then
     exit 1
 fi
 
-MOE_WEIGHTS_PATH="$MOE_WEIGHTS_BASE/best_enhanced_moe"
 
 # 测试数据集
 #TEST_FILE="/root/autodl-fs/wvs_merge_gen.json"
@@ -88,9 +87,45 @@ case $DATA_ID in
     #     TEST_FILE="/root/autodl-fs/wvs_merge_gen_ood.json"
     #     DATASET_NAME="WVS_Gen_OOD"
     #     ;;
+    2)
+        TEST_FILE="/autodl-fs/data/culturalBench_merge_gen_small.json"
+        DATASET_NAME="culturalBench_small"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_qwen_20251112_1228/best_lora"
+            MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_culturalBench_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251115_2201"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_llama_20251112_1141/best_lora"
+            MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/t_enhanced_moe_gen_culturalBench_llama_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_0016"
+        fi
+        NUM_CLASSES=2
+        ;;
+    3)
+        TEST_FILE="/autodl-fs/data/normad_merge_gen_small.json"
+        DATASET_NAME="normad_small"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_qwen_20251111_1204/best_lora"
+            MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_normad_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251115_2238"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_llama_20251112_1335/best_lora"
+            MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/t_enhanced_moe_gen_normad_llama_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_0014"
+        fi
+        NUM_CLASSES=3
+        ;;
+    4)
+        TEST_FILE="/autodl-fs/data/cultureLLM_merge_gen_small.json"
+        DATASET_NAME="cultureLLM_small"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-fs/data/ft/ft_lora_only_gen_cultureLLM_qwen_20251114_1301/best_lora"
+            MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_cultureLLM_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_0957"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"
+            MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/t_enhanced_moe_gen_cultureLLM_llama_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_1006"
+        fi
+        NUM_CLASSES=10
+        ;;
     6)
         TEST_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
-        DATASET_NAME="moral_Gen"
+        DATASET_NAME="moral_stories"
         NUM_CLASSES=2
         ;;
     7)
@@ -104,6 +139,8 @@ case $DATA_ID in
         NUM_CLASSES=2
         ;;
 esac
+
+MOE_WEIGHTS_PATH="$MOE_WEIGHTS_BASE/best_enhanced_moe"
 # 输出目录
 OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_enhanced_culturemoe_${DATASET_NAME}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
