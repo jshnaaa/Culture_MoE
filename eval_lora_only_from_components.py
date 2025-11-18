@@ -220,7 +220,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
 
     # Debug: 打印前几个样本的prompt来理解问题
     import random
-    if random.random() < 0.01:  # 1%的概率打印debug信息
+    if random.random() < 0.001:  # 0.1%的概率打印debug信息（降低频率）
         print(f"\n🔍 DEBUG - Sample prompt (first 500 chars):")
         print(f"{full_input[:500]}...")
         print(f"Prompt length: {len(full_input)} characters")
@@ -262,7 +262,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     raw_answer = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
     # Debug: 打印生成的原始答案
-    if random.random() < 0.01:  # 1%的概率打印debug信息
+    if random.random() < 0.001:  # 0.1%的概率打印debug信息（降低频率）
         print(f"🔍 DEBUG - Raw generated answer: '{raw_answer}'")
         full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
         print(f"🔍 DEBUG - Full output (last 200 chars): '...{full_output[-200:]}'")
