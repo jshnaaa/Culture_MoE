@@ -1,14 +1,23 @@
 #!/bin/bash
 
 # ============================================================
-# 从 Base 模型 + LoRA 权重还原模型并评估（生成式版本）
+# 从 Base 模型 + LoRA 权重还原模型并评估（增强版本 - 修复所有问题）
+#
+# 修复内容：
+#   ✅ 解决空答案生成问题（增加token数量，明确答案提示）
+#   ✅ 解决超范围标签问题（12, 22 → 正确范围 1-3）
+#   ✅ 解决无效文本输出（"education" → 数字）
+#   ✅ 增强提示工程（明确数字范围约束）
+#   ✅ 改进答案提取和回退机制
+#   ✅ 增强答案质量统计和监控
 #
 # 使用方法：
-#   sh run_eval_lora_only_from_components.sh <BACKBONE>
+#   sh run_eval_lora_only_from_components.sh <BACKBONE> <DATA_ID>
 #
 # 示例：
-#   sh run_eval_lora_only_from_components.sh llama
-#   sh run_eval_lora_only_from_components.sh qwen
+#   sh run_eval_lora_only_from_components.sh llama 6    # moral stories
+#   sh run_eval_lora_only_from_components.sh llama 7    # cultureAtlas
+#   sh run_eval_lora_only_from_components.sh qwen 8     # socialBias
 # ============================================================
 
 # ✅ 配置参数
@@ -66,11 +75,18 @@ OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_${DATASET_NAME}_${
 # NUM_CLASSES=10  # 1-10 共 10 个类别
 
 echo "============================================================"
-echo "LoRA Only Model Evaluation (From Components)"
+echo "LoRA Only Model Evaluation (Enhanced - Fixed & Improved)"
 echo "============================================================"
 echo "Backbone: $BACKBONE ($MODEL_NAME)"
 echo "Num classes: $NUM_CLASSES"
 echo "Dataset: $DATASET_NAME"
+echo ""
+echo "🔧 Enhancements Applied:"
+echo "  ✅ Empty answer fixes (increased tokens, explicit prompts)"
+echo "  ✅ Range constraint prompts (clear numerical instructions)"
+echo "  ✅ Enhanced text-to-number mapping"
+echo "  ✅ Improved answer quality statistics"
+echo "  ✅ Robust fallback mechanisms"
 echo ""
 echo "Components:"
 echo "  Base model: $BASE_MODEL_PATH"
@@ -131,8 +147,15 @@ fi
 if [ $? -eq 0 ]; then
     echo ""
     echo "============================================================"
-    echo "✅ Evaluation completed successfully!"
+    echo "✅ Enhanced LoRA Evaluation completed successfully!"
     echo "============================================================"
+    echo ""
+    echo "🔧 Applied Fixes Summary:"
+    echo "  ✅ Fixed empty answer generation issues"
+    echo "  ✅ Fixed out-of-range label problems (12, 22 → 1-3)"
+    echo "  ✅ Fixed invalid text outputs (education → numbers)"
+    echo "  ✅ Enhanced prompt engineering with range constraints"
+    echo "  ✅ Improved answer extraction and fallback mechanisms"
     echo ""
     echo "Model information:"
     echo "  Backbone: $BACKBONE ($MODEL_NAME)"
@@ -141,14 +164,18 @@ if [ $? -eq 0 ]; then
     echo "  LoRA weights: $LORA_WEIGHTS_PATH"
     echo ""
     echo "Evaluation results saved to: $OUTPUT_DIR"
-    echo "  - evaluation_results.json (详细结果)"
-    echo "  - evaluation_summary.json (摘要)"
+    echo "  - evaluation_results.json (详细结果 + 质量统计)"
+    echo "  - evaluation_summary.json (摘要 + 增强统计)"
+    echo "  - generated_answers.json (所有生成的答案)"
     echo ""
-    echo "💡 To view results:"
+    echo "💡 To view enhanced results:"
     echo "   cat $OUTPUT_DIR/evaluation_summary.json | python -m json.tool"
     echo ""
-    echo "💡 To view detailed answers:"
-    echo "   cat $OUTPUT_DIR/generated_answer.json | python -m json.tool | head -100"
+    echo "💡 To view detailed answers with quality stats:"
+    echo "   cat $OUTPUT_DIR/generated_answers.json | python -m json.tool | head -100"
+    echo ""
+    echo "💡 To check answer quality:"
+    echo "   grep -E 'empty_answers|text_answers|out_of_range' $OUTPUT_DIR/evaluation_summary.json"
     echo "============================================================"
 else
     echo ""
