@@ -20,6 +20,8 @@ Qwen模型特别优化：
   🎯 重复token检测和截断
   🎯 增强的debug模式用于Qwen问题诊断
   🎯 多层约束机制确保数字在正确范围内
+  🎯 解决空答案生成问题（平衡生成参数，增强fallback机制）
+  🎯 多重答案提取策略（逐token解码，特殊token处理）
 
 用法：
     python eval_lora_only_from_components.py \
@@ -241,42 +243,30 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     # 生成答案 - 针对Qwen模型优化的参数
     with torch.no_grad():
         try:
-            # 针对Qwen模型的特殊处理
+            # 针对Qwen模型的平衡处理（避免过度约束）
             generate_kwargs = {
                 **inputs,
-                'max_new_tokens': 3,              # 减少到3个token，只够回答数字
+                'max_new_tokens': 8,              # 增加到8个token，给更多生成空间
                 'min_new_tokens': 1,              # 强制至少生成1个token
                 'do_sample': False,               # 贪婪解码，确保确定性
                 'temperature': 1.0,
                 'pad_token_id': tokenizer.pad_token_id,
                 'eos_token_id': tokenizer.eos_token_id,
                 'num_beams': 1,
-                'repetition_penalty': 1.2,       # 增加重复惩罚，防止Qwen生成重复tokens
-                'length_penalty': -1.0,          # 鼓励短答案
-                'early_stopping': True           # 遇到EOS就停止
+                'repetition_penalty': 1.05,      # 轻微重复惩罚，避免过度约束
+                'length_penalty': 0.0,           # 不惩罚长度，让模型自然生成
+                'early_stopping': False          # 不提前停止，确保生成内容
             }
 
-            # 为Qwen添加额外的停止tokens
-            if hasattr(tokenizer, 'encode'):
-                stop_tokens = []
-                # 添加常见的停止标记
-                stop_sequences = ['\n', '.', '。', ' ', '\t', '1', '2', '3']
-                for seq in stop_sequences:
-                    try:
-                        token_ids = tokenizer.encode(seq, add_special_tokens=False)
-                        if token_ids and len(token_ids) == 1:  # 只要单个token
-                            stop_tokens.append(token_ids[0])
-                    except:
-                        pass
-
-                # 去重
-                stop_tokens = list(set(stop_tokens))
-                if stop_tokens:
-                    # 某些版本支持stop_tokens_ids
-                    try:
-                        generate_kwargs['bad_words_ids'] = [[token] for token in stop_tokens if token not in [tokenizer.eos_token_id, tokenizer.pad_token_id]]
-                    except:
-                        pass
+            # 简化停止tokens处理（避免过度约束）
+            # 只添加明确的停止序列，不干扰数字生成
+            try:
+                # 只阻止明显的无关token，不影响数字1,2,3的生成
+                newline_tokens = tokenizer.encode('\n', add_special_tokens=False)
+                if newline_tokens and len(newline_tokens) == 1:
+                    generate_kwargs['bad_words_ids'] = [[newline_tokens[0]]]
+            except:
+                pass  # 如果失败就不添加任何约束
 
             outputs = actual_model.generate(**generate_kwargs)
         except Exception as e:
@@ -299,40 +289,81 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
 
     raw_answer = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
-    # Debug: 打印生成的原始答案（增加频率以便调试Qwen问题）
-    if random.random() < 0.01:  # 增加到1%的概率打印debug信息
+    # Debug: 打印生成的原始答案（增加频率以便调试空答案问题）
+    if random.random() < 0.05:  # 增加到5%的概率打印debug信息
         print(f"🔍 DEBUG - Raw generated answer: '{raw_answer}'")
         full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
         print(f"🔍 DEBUG - Full output (last 200 chars): '...{full_output[-200:]}'")
         print(f"🔍 DEBUG - Generated tokens: {generated_ids.tolist()}")
-        print(f"🔍 DEBUG - Unique tokens: {set(generated_ids.tolist())}")
+        print(f"🔍 DEBUG - Generated tokens length: {len(generated_ids)}")
+        print(f"🔍 DEBUG - Input length: {input_length}")
+        print(f"🔍 DEBUG - Output length: {len(outputs[0])}")
+
+        # 检查是否真的有生成内容
+        if len(generated_ids) == 0:
+            print(f"⚠️  No tokens were generated!")
+        elif len(generated_ids) > 0:
+            print(f"🔍 DEBUG - First generated token: {generated_ids[0].item()}")
+            print(f"🔍 DEBUG - Unique tokens: {set(generated_ids.tolist())}")
+
+            # 尝试不跳过特殊tokens的解码
+            raw_with_special = tokenizer.decode(generated_ids, skip_special_tokens=False)
+            print(f"🔍 DEBUG - Raw with special tokens: '{raw_with_special}'")
 
         # 检查是否是Qwen的问题tokens
         if 151643 in generated_ids.tolist():
             print(f"⚠️  Detected Qwen special token 151643 in generation")
 
-    # 如果仍然为空，尝试备用方法
+    # 如果仍然为空，尝试多种备用方法
     if not raw_answer:
         # 方案2：解码完整输出并手动提取
         full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        # 调试：打印完整输出长度比较
+        if random.random() < 0.05:
+            print(f"🔍 DEBUG - Full input length: {len(full_input)}")
+            print(f"🔍 DEBUG - Full output length: {len(full_output)}")
+            print(f"🔍 DEBUG - Length difference: {len(full_output) - len(full_input)}")
 
         # 尝试多种分割方式
         if "### Answer:" in full_output:
             parts = full_output.split("### Answer:")
             if len(parts) > 1:
                 raw_answer = parts[-1].strip()
+                if random.random() < 0.05:
+                    print(f"🔍 DEBUG - Found answer after '### Answer:': '{raw_answer}'")
         elif "你的回答：" in full_output:
             parts = full_output.split("你的回答：")
             if len(parts) > 1:
                 raw_answer = parts[-1].strip()
+                if random.random() < 0.05:
+                    print(f"🔍 DEBUG - Found answer after '你的回答：': '{raw_answer}'")
         elif len(full_output) > len(full_input):
             raw_answer = full_output[len(full_input):].strip()
+            if random.random() < 0.05:
+                print(f"🔍 DEBUG - Extracted new content: '{raw_answer}'")
 
         # 方案3：如果还是空的，尝试不跳过特殊token
         if not raw_answer:
             raw_answer_with_tokens = tokenizer.decode(generated_ids, skip_special_tokens=False)
             # 移除特殊token但保留内容
             raw_answer = re.sub(r'<[^>]*>', '', raw_answer_with_tokens).strip()
+            if raw_answer and random.random() < 0.05:
+                print(f"🔍 DEBUG - Found answer with special tokens: '{raw_answer}'")
+
+        # 方案4：如果生成的tokens不为空但解码为空，可能是特殊tokens问题
+        if not raw_answer and len(generated_ids) > 0:
+            # 尝试逐个token解码
+            for i, token_id in enumerate(generated_ids.tolist()):
+                try:
+                    token_text = tokenizer.decode([token_id], skip_special_tokens=True)
+                    if token_text and token_text.strip() and token_text.strip() in '123456789':
+                        raw_answer = token_text.strip()
+                        if random.random() < 0.05:
+                            print(f"🔍 DEBUG - Found digit in token {i}: '{raw_answer}'")
+                        break
+                except:
+                    continue
 
     # 清理答案 - 加强版清理逻辑
     if raw_answer:
