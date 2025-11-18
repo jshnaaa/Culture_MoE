@@ -138,16 +138,16 @@ case $DATA_ID in
         DATASET_TAG="cultureAtlas_icl"
         ;;
     81)
-        TRAIN_FILE="/autodl-fs/data/bbq_merge_gen.json"
-        DATASET_TAG="bbq"
+        TRAIN_FILE="/autodl-fs/data/socialBias_merge_gen.json"
+        DATASET_TAG="socialBias"
         ;;
     82)
-        TRAIN_FILE="/autodl-fs/data/bbq_merge_rp_gen.json"
-        DATASET_TAG="bbq_rp"
+        TRAIN_FILE="/autodl-fs/data/socialBias_merge_rp_gen.json"
+        DATASET_TAG="socialBias_rp"
         ;;
     83)
-        TRAIN_FILE="/autodl-fs/data/bbq_merge_gen_samples.json"
-        DATASET_TAG="bbq_icl"
+        TRAIN_FILE="/autodl-fs/data/socialBias_merge_gen_samples.json"
+        DATASET_TAG="socialBias_icl"
         ;;
     # 501)
     #     TRAIN_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
