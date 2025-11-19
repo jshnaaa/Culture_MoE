@@ -183,6 +183,22 @@ class SimpleMoEModel(nn.Module):
 
         logging.info(f"SimpleMoEModel initialized with {num_experts} experts, top-{top_k} routing")
 
+        # 确保数据类型一致性
+        self._ensure_dtype_consistency()
+
+    def _ensure_dtype_consistency(self):
+        """确保所有组件使用相同的数据类型"""
+        # 获取base模型的数据类型
+        base_dtype = next(self.llama_model.parameters()).dtype
+
+        # 将MoE组件转换为相同的数据类型
+        self.moe_layer = self.moe_layer.to(dtype=base_dtype)
+
+        # 确保参数也使用正确的数据类型
+        self.moe_fusion_weight.data = self.moe_fusion_weight.data.to(dtype=base_dtype)
+
+        logging.info(f"All Simple MoE components converted to dtype: {base_dtype}")
+
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         """
         前向传播

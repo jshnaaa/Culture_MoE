@@ -16,7 +16,7 @@
 #   6. 可配置专家数量：支持消融实验
 #
 # 使用方法：
-#   sh run_ft_enhanced_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <MOE_FUSION> <CULTURE_LOSS_WEIGHT>
+#   sh run_ft_enhanced_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <MOE_FUSION> <CULTURE_LOSS_WEIGHT> <MARGIN> <LAMBDA_DIFF> <USE_SHARED> <ROUTER_TEMP> <LOAD_BAL> <ENTROPY> <NUM_GPUS> <USE_MASK>
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
@@ -25,6 +25,7 @@
 #   NUM_EXPERTS: 专家数量 (默认 12，支持消融实验)
 #   MOE_FUSION: MoE 融合系数 (默认 0.4)
 #   CULTURE_LOSS_WEIGHT: 文化损失权重 (默认 0.5)
+#   USE_MASK: MASK机制开关 (默认 True，False为消融实验)
 #
 # 📦 批次大小自动配置：
 #   DATA_ID=2或3 (CulturalBench/NormAD): llama=3, qwen=8 (训练) / llama=2, qwen=4 (评估)
@@ -36,6 +37,7 @@
 #   LOAD_BAL: 负载均衡权重 (默认 0.001, 降低避免负损失)
 #   ENTROPY: 熵正则化权重 (默认 0.01, 降低避免负损失)
 #   NUM_GPUS: GPU数量 (默认 1，只有设置为2时才启用双GPU)
+#   USE_MASK: MASK机制开关 (默认 True，设为 False 进行消融实验)
 #
 # 示例：
 #   # 单GPU训练（默认）
@@ -49,6 +51,12 @@
 #
 #   # 消融实验：使用24个专家（双GPU）
 #   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 24 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 2
+#
+#   # MASK消融实验：关闭MASK机制（单GPU）
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 1 False
+#
+#   # MASK消融实验：关闭MASK机制（双GPU）
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 2 False
 # ============================================================
 
 # ✅ 配置参数
@@ -65,6 +73,7 @@ ROUTER_TEMP="${10:-2.0}"            # 默认 Router 温度参数 2.0
 LOAD_BAL="${11:-0.001}"             # 默认负载均衡权重 0.001 (降低)
 ENTROPY="${12:-0.01}"               # 默认熵正则化权重 0.01 (降低)
 NUM_GPUS="${13:-1}"                 # 默认使用 1 个 GPU
+USE_MASK="${14:-True}"              # 默认使用 MASK 机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -157,7 +166,14 @@ if [ "$USE_SHARED" = "True" ] || [ "$USE_SHARED" = "true" ]; then
 else
     SHARED_TAG="noshared"
 fi
-OUTPUT_DIR="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_$(date +%Y%m%d_%H%M)"
+
+if [ "$USE_MASK" = "True" ] || [ "$USE_MASK" = "true" ]; then
+    MASK_TAG="mask"
+else
+    MASK_TAG="nomask"
+fi
+
+OUTPUT_DIR="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_${MASK_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_$(date +%Y%m%d_%H%M)"
 
 # 设置 GPU - 明确的单卡/双卡逻辑
 export NUM_GPUS="$NUM_GPUS"  # 传递给Python脚本
@@ -231,6 +247,7 @@ echo "Use culture loss: $USE_CULTURE_LOSS"
 echo "Culture loss weight (lambda): $LAMBDA"
 echo "Num experts: $NUM_EXPERTS (configurable for ablation studies)"
 echo "Use shared expert: $USE_SHARED"
+echo "Use MASK mechanism: $USE_MASK (True=shared experts use instruction_mask, False=shared experts use instruction)"
 echo "MoE fusion coefficient: $MOE_FUSION"
 echo ""
 echo "📦 Batch Size Configuration:"
@@ -306,6 +323,7 @@ python ft_enhanced_culturemoe_gen.py \
     --load_balance_weight "$LOAD_BAL" \
     --entropy_weight "$ENTROPY" \
     --moe_fusion "$MOE_FUSION" \
+    --use_mask "$USE_MASK" \
     --freeze_base_model True \
     --num_epochs 12 \
     --num_experts "$NUM_EXPERTS" \

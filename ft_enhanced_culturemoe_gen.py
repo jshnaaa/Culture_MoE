@@ -46,10 +46,11 @@ from llamafactory.model.moe_args import ModelArgs
 class CultureDataset(Dataset):
     """文化对齐数据集"""
 
-    def __init__(self, data: List[Dict], tokenizer, max_length: int = 512):
+    def __init__(self, data: List[Dict], tokenizer, max_length: int = 512, use_mask: bool = True):
         self.data = data
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.use_mask = use_mask
 
         # 大洲映射 (基于实际数据集的label字段)
         self.continent_map = {
@@ -84,7 +85,11 @@ class CultureDataset(Dataset):
         full_text = input_text + output + "<|eot_id|>"
 
         # 构建mask版本的输入文本 (用于共享专家)
-        input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        # 如果使用MASK机制，共享专家使用instruction_mask；否则使用原始instruction
+        if self.use_mask:
+            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        else:
+            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         full_text_mask = input_text_mask + output + "<|eot_id|>"
 
         # 分词 - 原始版本
@@ -473,7 +478,14 @@ class EnhancedCultureMoETrainer:
         logging.info(f"Loaded {len(data)} samples")
 
         # 创建数据集
-        dataset = CultureDataset(data, self.tokenizer, self.args.max_length)
+        use_mask = self.args.use_mask.lower() == 'true'
+        logging.info(f"MASK mechanism: {'ENABLED' if use_mask else 'DISABLED (ABLATION STUDY)'}")
+        if use_mask:
+            logging.info("  - Shared experts will use instruction_mask field")
+            logging.info("  - Culture experts will use instruction field")
+        else:
+            logging.info("  - Both shared and culture experts will use instruction field")
+        dataset = CultureDataset(data, self.tokenizer, self.args.max_length, use_mask)
 
         # 划分训练和验证集
         val_size = int(len(dataset) * self.args.val_split)
@@ -1034,6 +1046,7 @@ def main():
     # MoE参数
     parser.add_argument('--moe_fusion', type=float, default=0.4, help='MoE融合系数')
     parser.add_argument('--use_shared_experts', type=str, default='True', help='是否使用共享专家')
+    parser.add_argument('--use_mask', type=str, default='True', help='是否使用MASK机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)')
     parser.add_argument('--router_temperature', type=float, default=2.0, help='路由器温度')
     parser.add_argument('--load_balance_weight', type=float, default=0.01, help='负载均衡权重')
     parser.add_argument('--entropy_weight', type=float, default=0.1, help='熵正则化权重')
