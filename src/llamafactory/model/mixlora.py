@@ -92,9 +92,9 @@ class MixLoRARouter(nn.Module):
         # 重塑为 [batch_size * seq_len, input_dim] 进行路由计算
         hidden_flat = hidden_states.view(-1, input_dim)
 
-        # 确保gate层在正确的设备上
-        if self.gate.weight.device != hidden_flat.device:
-            self.gate = self.gate.to(hidden_flat.device)
+        # 确保gate层在正确的设备和数据类型上
+        if self.gate.weight.device != hidden_flat.device or self.gate.weight.dtype != hidden_flat.dtype:
+            self.gate = self.gate.to(device=hidden_flat.device, dtype=hidden_flat.dtype)
 
         # 计算路由logits
         router_logits = self.gate(hidden_flat)  # [batch_size * seq_len, num_experts]
@@ -211,9 +211,11 @@ class MixLoRAExpert(nn.Module):
         in_features = base_layer.in_features
         out_features = base_layer.out_features
 
-        # 创建LoRA A和B矩阵
-        lora_A = nn.Linear(in_features, self.lora_config.r, bias=False)
-        lora_B = nn.Linear(self.lora_config.r, out_features, bias=False)
+        # 创建LoRA A和B矩阵，使用基础层的设备和数据类型
+        lora_A = nn.Linear(in_features, self.lora_config.r, bias=False,
+                          device=base_layer.weight.device, dtype=base_layer.weight.dtype)
+        lora_B = nn.Linear(self.lora_config.r, out_features, bias=False,
+                          device=base_layer.weight.device, dtype=base_layer.weight.dtype)
 
         # 初始化LoRA权重
         nn.init.kaiming_uniform_(lora_A.weight, a=math.sqrt(5))
@@ -252,10 +254,11 @@ class MixLoRAExpert(nn.Module):
         lora_A = lora_adapter['lora_A']
         lora_B = lora_adapter['lora_B']
 
-        # 确保LoRA层在正确的设备上
-        if lora_A.weight.device != input_tensor.device:
-            lora_A = lora_A.to(input_tensor.device)
-            lora_B = lora_B.to(input_tensor.device)
+        # 确保LoRA层在正确的设备和数据类型上
+        if (lora_A.weight.device != input_tensor.device or
+            lora_A.weight.dtype != input_tensor.dtype):
+            lora_A = lora_A.to(device=input_tensor.device, dtype=input_tensor.dtype)
+            lora_B = lora_B.to(device=input_tensor.device, dtype=input_tensor.dtype)
             # 更新适配器中的引用
             lora_adapter['lora_A'] = lora_A
             lora_adapter['lora_B'] = lora_B
