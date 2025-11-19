@@ -82,9 +82,19 @@ class MiLoRALinear(nn.Module):
         # Use float32 for SVD (good balance of speed and stability)
         W = original_weight.detach().clone().float().cpu()
 
+        # Check if matrix is too large for efficient SVD
+        matrix_size = W.numel()
+        if matrix_size > 10_000_000:  # 10M parameters (reduced threshold)
+            logging.warning(f"Large matrix detected ({matrix_size:,} elements), using fast approximation")
+            # Use a simpler initialization for very large matrices
+            self._initialize_simple_lora(original_weight, device, dtype)
+            return
+
         try:
             # Step 1: SVD decomposition with improved stability
+            logging.debug(f"Performing SVD on weight matrix of shape {W.shape}")
             U, S, Vt = torch.linalg.svd(W, full_matrices=False)
+            logging.debug(f"SVD completed successfully")
 
             # Check for numerical issues
             if torch.any(torch.isnan(U)) or torch.any(torch.isnan(S)) or torch.any(torch.isnan(Vt)):
@@ -218,6 +228,29 @@ class MiLoRALinear(nn.Module):
 
         return output
 
+    def _initialize_simple_lora(self, original_weight: torch.Tensor, device: Optional[torch.device], dtype: Optional[torch.dtype]):
+        """
+        Simple LoRA initialization for very large matrices (fallback when SVD is too slow)
+        """
+        logging.info("Using simple LoRA initialization (no SVD)")
+
+        # Create frozen principal matrix as the original weight
+        self.register_buffer('W_p', original_weight.to(device=device, dtype=dtype))
+
+        # Initialize LoRA matrices with standard method
+        in_features, out_features = original_weight.shape[1], original_weight.shape[0]
+
+        # A matrix: small random initialization
+        A_m_init = torch.randn(self.rank, in_features, device=device, dtype=dtype) * 0.01
+
+        # B matrix: zero initialization (so initial contribution is zero)
+        B_m_init = torch.zeros(out_features, self.rank, device=device, dtype=dtype)
+
+        self.A_m = nn.Parameter(A_m_init)
+        self.B_m = nn.Parameter(B_m_init)
+
+        logging.info(f"Simple LoRA initialized: A_m {self.A_m.shape}, B_m {self.B_m.shape}")
+
     def extra_repr(self) -> str:
         return f'in_features={self.in_features}, out_features={self.out_features}, rank={self.rank}, dropout={self.dropout_rate}'
 
@@ -289,10 +322,25 @@ def apply_milora_to_model(
                 failed_conversions.append(f"{parent_module.__class__.__name__}.{child_name}: {e}")
 
     # Traverse the model and replace target modules
+    total_target_modules = 0
+    processed_modules = 0
+
+    # First pass: count target modules
     for name, module in model.named_modules():
         for child_name, child_module in module.named_children():
             if any(target in child_name for target in target_modules):
+                total_target_modules += 1
+
+    logging.info(f"Found {total_target_modules} target modules to convert to MiLoRA")
+
+    # Second pass: replace modules with progress tracking
+    for name, module in model.named_modules():
+        for child_name, child_module in module.named_children():
+            if any(target in child_name for target in target_modules):
+                processed_modules += 1
+                logging.info(f"Converting module {processed_modules}/{total_target_modules}: {name}.{child_name}")
                 _replace_module(module, child_name, child_module)
+                logging.info(f"  ✅ Completed {child_name} conversion")
 
     logging.info(f"MiLoRA conversion completed: {len(converted_modules)} modules, {trainable_params:,} trainable parameters")
 

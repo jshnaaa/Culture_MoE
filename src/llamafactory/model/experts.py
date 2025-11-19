@@ -17,6 +17,18 @@ class MLPBase(nn.Module):
             nn.Linear(experts_hidden_dim, experts_output_dim)
         )
 
+        # 保守的权重初始化，避免数值不稳定
+        self._init_weights()
+
+    def _init_weights(self):
+        """保守的权重初始化"""
+        for module in self.network:
+            if isinstance(module, nn.Linear):
+                # 使用Xavier初始化，但使用小的gain
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.network(x)
 
@@ -29,14 +41,17 @@ class LoRA(nn.Module):
     def __init__(self, input_dim: int, output_dim: int, rank: int = 8):
         super().__init__()
         self.rank = rank
-        self.W = nn.Parameter(torch.randn(input_dim, output_dim))  # 原始权重矩阵
-        self.A = nn.Parameter(torch.randn(input_dim, rank))  # 低秩矩阵A
-        self.B = nn.Parameter(torch.randn(rank, output_dim))  # 低秩矩阵B
+
+        # 使用更保守的初始化，避免数值不稳定
+        self.W = nn.Parameter(torch.zeros(input_dim, output_dim))  # 原始权重矩阵初始化为0
+        self.A = nn.Parameter(torch.randn(input_dim, rank) * 0.01)  # 小的随机初始化
+        self.B = nn.Parameter(torch.zeros(rank, output_dim))  # B矩阵初始化为0，这样初始时LoRA贡献为0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         low_rank_weight = torch.matmul(self.A, self.B)  # 低秩近似
         weight_matrix = self.W + low_rank_weight  # 组合原始权重和低秩权重
-        return F.linear(x, weight_matrix)
+        # F.linear 期望权重矩阵是 [out_features, in_features]，所以需要转置
+        return F.linear(x, weight_matrix.T)
 
 
 class LoRAExpert(nn.Module):
@@ -60,17 +75,14 @@ class LoRAExpert(nn.Module):
         """
         ✅ 初始化专家网络权重 - 使用小的初始化防止梯度爆炸
         """
-        # 初始化 MLP 基础模型
-        for module in self.base_model.network:
-            if isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, mean=0, std=0.001)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+        # MLP 基础模型已经在 MLPBase 中初始化了，不需要重复初始化
+        # LoRA 层也已经在 LoRA 类中保守初始化了，不需要重复初始化
 
-        # 初始化 LoRA 层 - 使用极小的初始化
-        nn.init.normal_(self.lora_layer.W, mean=0, std=0.0001)
-        nn.init.normal_(self.lora_layer.A, mean=0, std=0.0001)
-        nn.init.normal_(self.lora_layer.B, mean=0, std=0.0001)
+        # 只初始化 LayerNorm（如果需要的话）
+        if hasattr(self.layer_norm, 'weight'):
+            nn.init.ones_(self.layer_norm.weight)
+        if hasattr(self.layer_norm, 'bias'):
+            nn.init.zeros_(self.layer_norm.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # ✅ 使用 LayerNorm + FFN + LoRA 的结构

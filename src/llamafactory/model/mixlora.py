@@ -322,6 +322,7 @@ class MixLoRALayer(nn.Module):
         first_layer = next(iter(base_ffn_layers.values()))
         if hasattr(first_layer, 'in_features'):
             router_input_dim = first_layer.in_features
+            self.hidden_dim = router_input_dim  # 保存隐藏维度
         else:
             raise ValueError(f"Cannot determine input dimension from base layer: {type(first_layer)}")
 
@@ -331,6 +332,27 @@ class MixLoRALayer(nn.Module):
             num_experts=num_experts,
             top_k=top_k
         )
+
+        # 添加输出投影层，确保专家输出能与输入进行残差连接
+        # 假设我们使用的主要模块是 gate_proj (4096 -> 14336)，我们需要投影回 4096
+        main_module = 'gate_proj' if 'gate_proj' in target_modules else target_modules[0]
+        if main_module in base_ffn_layers:
+            main_layer = base_ffn_layers[main_module]
+            if hasattr(main_layer, 'out_features'):
+                expert_output_dim = main_layer.out_features
+                # 确保投影层在正确的设备和数据类型上
+                device = main_layer.weight.device
+                dtype = main_layer.weight.dtype
+                self.output_projection = nn.Linear(expert_output_dim, router_input_dim, bias=False, device=device, dtype=dtype)
+                # 小的初始化
+                nn.init.xavier_uniform_(self.output_projection.weight, gain=0.1)
+                logger.info(f"Created output projection: {expert_output_dim} -> {router_input_dim}")
+            else:
+                self.output_projection = None
+                logger.warning(f"Main layer {main_module} does not have out_features attribute")
+        else:
+            self.output_projection = None
+            logger.warning(f"Main module {main_module} not found in base_ffn_layers")
 
         # 创建专家
         self.experts = nn.ModuleList([
@@ -372,19 +394,12 @@ class MixLoRALayer(nn.Module):
         # gate_proj/up_proj: 4096 -> 14336, down_proj: 14336 -> 4096
         # 直接在专家中计算各自的基础输出
 
-        # 3. 简化的专家计算 - 只处理主要的投影层
-        # 选择一个主要模块进行MixLoRA处理（通常是gate_proj）
-        main_module = 'gate_proj' if 'gate_proj' in self.target_modules else self.target_modules[0]
+        # 3. 简化的专家计算 - 确保维度匹配
+        # 我们需要确保输出维度与输入维度匹配，以便进行残差连接
+        # 因此我们不直接使用 FFN 层，而是让专家直接处理 hidden_states
 
-        if main_module not in self.base_ffn_layers:
-            # 如果没有找到目标模块，返回原始输入
-            return hidden_states, {'load_balancing_loss': torch.tensor(0.0, device=hidden_states.device)}
-
-        base_layer = self.base_ffn_layers[main_module]
-        base_output = base_layer(hidden_states)  # [batch_size, seq_len, output_dim]
-
-        # 初始化专家输出
-        expert_output = torch.zeros_like(base_output)
+        # 初始化最终输出，维度与输入相同
+        final_output = torch.zeros_like(hidden_states)  # [batch_size, seq_len, hidden_dim]
 
         # 为每个专家计算输出
         for expert_id in range(self.num_experts):
@@ -398,16 +413,33 @@ class MixLoRALayer(nn.Module):
             # 获取这个专家的权重
             expert_weights_for_id = torch.where(expert_mask, expert_weights, 0.0).sum(dim=-1)  # [batch_size, seq_len]
 
-            # 计算专家的LoRA调整
+            # 计算专家的直接输出（维度保持为 hidden_dim）
             expert = self.experts[expert_id]
-            expert_adjustment = expert(main_module, base_output, hidden_states)
 
-            # 应用权重
-            weight_expanded = expert_weights_for_id.unsqueeze(-1)  # [batch_size, seq_len, 1]
-            expert_output += weight_expanded * expert_adjustment
+            # 使用第一个目标模块进行计算
+            first_module = self.target_modules[0] if self.target_modules else 'gate_proj'
+            if first_module in self.base_ffn_layers:
+                base_layer = self.base_ffn_layers[first_module]
 
-        # 最终输出是基础输出 + 专家调整
-        final_output = expert_output
+                # 计算基础层输出
+                base_output = base_layer(hidden_states)  # [batch_size, seq_len, expert_output_dim]
+
+                # 专家处理
+                expert_output = expert(first_module, base_output, hidden_states)
+
+                # 如果有投影层，将专家输出投影回隐藏维度
+                if self.output_projection is not None:
+                    # 确保投影层在正确的设备和数据类型上
+                    if (self.output_projection.weight.device != expert_output.device or
+                        self.output_projection.weight.dtype != expert_output.dtype):
+                        self.output_projection = self.output_projection.to(
+                            device=expert_output.device, dtype=expert_output.dtype
+                        )
+                    expert_output = self.output_projection(expert_output)  # [batch_size, seq_len, hidden_dim]
+
+                # 应用权重
+                weight_expanded = expert_weights_for_id.unsqueeze(-1)  # [batch_size, seq_len, 1]
+                final_output += weight_expanded * expert_output
 
         # 4. 计算负载均衡损失
         load_balancing_loss = self.router.compute_load_balancing_loss(
