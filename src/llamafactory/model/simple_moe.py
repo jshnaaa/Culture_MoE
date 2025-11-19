@@ -244,6 +244,8 @@ class SimpleMoEModel(nn.Module):
 
         hidden_states = llama_outputs.last_hidden_state  # [B, L, H]
 
+        # hidden_states现在应该有梯度，因为最后一层是可训练的
+
         # MoE 处理
         moe_output, expert_weights = self.moe_layer(hidden_states)  # [B, L, H], [B, num_experts]
 
@@ -252,10 +254,12 @@ class SimpleMoEModel(nn.Module):
 
         # 检查数值稳定性
         if torch.isnan(moe_output).any() or torch.isinf(moe_output).any():
-            logging.warning("NaN or Inf detected in MoE output, using original hidden states")
-            enhanced_hidden = hidden_states
-        else:
-            enhanced_hidden = (1 - fusion_weight) * hidden_states + fusion_weight * moe_output
+            logging.warning("NaN or Inf detected in MoE output, using zero MoE contribution")
+            # 使用零张量替代MoE输出，保持梯度连接
+            moe_output = torch.zeros_like(moe_output)
+
+        # 融合隐藏状态
+        enhanced_hidden = (1 - fusion_weight) * hidden_states + fusion_weight * moe_output
 
         # 生成 logits
         logits = self.llama_model.lm_head(enhanced_hidden)  # [B, L, vocab_size]

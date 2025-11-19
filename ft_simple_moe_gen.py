@@ -284,9 +284,21 @@ class SimpleMoETrainer:
 
         # 5. 冻结 LLaMA 模型，只训练 MoE 组件
         logging.info("5. Freezing LLaMA model parameters...")
+
+        # 找到最后一层的索引
+        model_config = simple_moe_model.config
+        num_layers = getattr(model_config, 'num_hidden_layers', 32)
+        last_layer_idx = num_layers - 1
+
+        logging.info(f"   Model has {num_layers} layers, keeping layer {last_layer_idx} trainable")
+
         for name, param in simple_moe_model.named_parameters():
             if 'moe_layer' in name or 'moe_fusion_weight' in name:
                 param.requires_grad = True
+            elif f'model.layers.{last_layer_idx}' in name:
+                # 保持最后一层的梯度，确保hidden_states有梯度连接
+                param.requires_grad = True
+                logging.info(f"   Keeping last layer parameter trainable: {name}")
             else:
                 param.requires_grad = False
 
