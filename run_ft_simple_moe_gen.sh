@@ -200,7 +200,6 @@ python ft_simple_moe_gen.py \
     --max_length 512 \
     --num_workers 1 \
     --save_interval 2 \
-    --max_grad_norm 0.5 \
     --device cuda
 
 if [ $? -eq 0 ]; then
