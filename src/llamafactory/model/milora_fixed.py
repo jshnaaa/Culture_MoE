@@ -2,13 +2,13 @@
 """
 MiLoRA (Matrix-informed Low-Rank Adaptation) Implementation - Fixed Version
 
-修复了初始化验证阈值过于严格的问题，并改进了数值稳定性。
+修复了初始化验证阈值过于严格的问题，并优化了性能。
 
 主要修复：
 1. 调整验证阈值从1e-3到5e-3，更符合实际的数值精度
-2. 改进SVD分解的数值稳定性
+2. 优化SVD分解性能（使用float32而非double精度）
 3. 添加更详细的错误诊断信息
-4. 优化数据类型转换过程
+4. 改进数值稳定性和错误处理
 """
 
 import torch
@@ -75,12 +75,12 @@ class MiLoRALinear(nn.Module):
         3. Initialize A_m and B_m from W_m
         4. Freeze W_p
         """
-        # Ensure proper data type for SVD (use double precision for better accuracy)
+        # Keep original precision for better performance, but ensure it's float32 for stability
         original_dtype = original_weight.dtype
         original_device = original_weight.device
 
-        # Convert to double precision for SVD to improve numerical stability
-        W = original_weight.detach().clone().double().cpu()
+        # Use float32 for SVD (good balance of speed and stability)
+        W = original_weight.detach().clone().float().cpu()
 
         try:
             # Step 1: SVD decomposition with improved stability
