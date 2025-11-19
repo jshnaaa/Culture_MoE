@@ -187,7 +187,7 @@ python ft_simple_moe_gen.py \
     --expert_hidden_dim 4096 \
     --router_hidden_dim 512 \
     --dropout 0.1 \
-    --learning_rate 2e-4 \
+    --learning_rate 5e-5 \
     --weight_decay 0.01 \
     --num_epochs 12 \
     --batch_size $BATCH_SIZE \

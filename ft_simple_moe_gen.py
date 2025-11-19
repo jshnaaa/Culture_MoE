@@ -102,7 +102,21 @@ class SimpleMoEDataset(Dataset):
         }
 
         if self.mode == "train":
-            result['labels'] = input_ids.clone()  # 语言建模任务，labels = input_ids
+            # 创建正确的标签：将输入部分设为-100，只计算输出部分的损失
+            labels = input_ids.clone()
+
+            # 如果有明确的输出分割，只对输出部分计算损失
+            if output:
+                # 找到输出开始的位置
+                instruction_text = instruction + "\n" + input_text if input_text else instruction
+                instruction_encoding = self.tokenizer(instruction_text, add_special_tokens=False)
+                instruction_len = len(instruction_encoding['input_ids'])
+
+                # 将指令部分的标签设为-100（不计算损失）
+                if instruction_len < len(labels):
+                    labels[:instruction_len] = -100
+
+            result['labels'] = labels
 
         return result
 
@@ -635,9 +649,18 @@ class SimpleMoETrainer:
 
                 loss = outputs['loss']
 
+                # 检查损失是否为NaN或无穷大
+                if torch.isnan(loss) or torch.isinf(loss):
+                    logging.warning(f"Invalid loss detected: {loss.item()}, skipping batch")
+                    continue
+
                 # 反向传播
                 optimizer.zero_grad()
                 loss.backward()
+
+                # 梯度裁剪
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
                 optimizer.step()
 
                 # 记录损失
@@ -646,10 +669,23 @@ class SimpleMoETrainer:
                 global_step += 1
 
                 # 更新进度条
+                current_avg_loss = epoch_loss / epoch_steps
                 progress_bar.set_postfix({
                     'loss': f'{loss.item():.4f}',
-                    'avg_loss': f'{epoch_loss/epoch_steps:.4f}'
+                    'avg_loss': f'{current_avg_loss:.4f}'
                 })
+
+                # 检查平均损失是否异常
+                if epoch_steps > 10 and (torch.isnan(torch.tensor(current_avg_loss)) or current_avg_loss > 100):
+                    logging.warning(f"Abnormal average loss detected: {current_avg_loss}, at step {global_step}")
+                    # 记录梯度信息
+                    total_norm = 0
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+                    total_norm = total_norm ** (1. / 2)
+                    logging.info(f"Total gradient norm: {total_norm}")
 
                 # 定期清理内存
                 if global_step % 50 == 0:

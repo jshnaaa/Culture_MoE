@@ -38,7 +38,8 @@ class SimpleRouter(nn.Module):
         """初始化权重"""
         for module in self.router:
             if isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, mean=0, std=0.02)
+                # 使用更小的标准差进行初始化，避免梯度爆炸
+                nn.init.normal_(module.weight, mean=0, std=0.001)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
@@ -59,8 +60,9 @@ class SimpleRouter(nn.Module):
         # Top-K 选择
         top_k_logits, top_k_indices = torch.topk(router_logits, self.top_k, dim=-1)  # [B, top_k]
 
-        # 计算权重（softmax归一化）
-        top_k_weights = F.softmax(top_k_logits, dim=-1)  # [B, top_k]
+        # 计算权重（softmax归一化，添加温度参数提高稳定性）
+        temperature = 1.0
+        top_k_weights = F.softmax(top_k_logits / temperature, dim=-1)  # [B, top_k]
 
         # 构建完整的专家权重矩阵
         expert_weights = torch.zeros(hidden_states.shape[0], self.num_experts,
@@ -178,13 +180,16 @@ class SimpleMoEModel(nn.Module):
             dropout=dropout
         )
 
-        # MoE 融合权重（可学习）
-        self.moe_fusion_weight = nn.Parameter(torch.tensor(0.5))
+        # MoE 融合权重（可学习，初始化为较小值）
+        self.moe_fusion_weight = nn.Parameter(torch.tensor(0.1))
 
         logging.info(f"SimpleMoEModel initialized with {num_experts} experts, top-{top_k} routing")
 
         # 确保数据类型一致性
         self._ensure_dtype_consistency()
+
+        # 初始化模型权重
+        self._init_model_weights()
 
     def _ensure_dtype_consistency(self):
         """确保所有组件使用相同的数据类型"""
@@ -198,6 +203,22 @@ class SimpleMoEModel(nn.Module):
         self.moe_fusion_weight.data = self.moe_fusion_weight.data.to(dtype=base_dtype)
 
         logging.info(f"All Simple MoE components converted to dtype: {base_dtype}")
+
+    def _init_model_weights(self):
+        """初始化模型权重，确保数值稳定性"""
+        # 初始化MoE层的权重
+        for name, param in self.moe_layer.named_parameters():
+            if 'weight' in name and len(param.shape) >= 2:
+                # 使用Xavier初始化
+                nn.init.xavier_uniform_(param, gain=0.1)
+            elif 'bias' in name:
+                nn.init.zeros_(param)
+
+        # 确保融合权重在合理范围内
+        with torch.no_grad():
+            self.moe_fusion_weight.clamp_(-2.0, 2.0)
+
+        logging.info("MoE model weights initialized with Xavier uniform (gain=0.1)")
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         """
@@ -228,7 +249,13 @@ class SimpleMoEModel(nn.Module):
 
         # 融合原始隐藏状态和 MoE 输出
         fusion_weight = torch.sigmoid(self.moe_fusion_weight)
-        enhanced_hidden = (1 - fusion_weight) * hidden_states + fusion_weight * moe_output
+
+        # 检查数值稳定性
+        if torch.isnan(moe_output).any() or torch.isinf(moe_output).any():
+            logging.warning("NaN or Inf detected in MoE output, using original hidden states")
+            enhanced_hidden = hidden_states
+        else:
+            enhanced_hidden = (1 - fusion_weight) * hidden_states + fusion_weight * moe_output
 
         # 生成 logits
         logits = self.llama_model.lm_head(enhanced_hidden)  # [B, L, vocab_size]
