@@ -54,6 +54,10 @@ class SimpleRouter(nn.Module):
             expert_weights: [B, num_experts] 专家权重
             top_k_indices: [B, top_k] Top-K 专家索引
         """
+        # 确保路由器在正确的设备上
+        if next(self.router.parameters()).device != hidden_states.device:
+            self.router = self.router.to(hidden_states.device)
+
         # 计算路由logits
         router_logits = self.router(hidden_states)  # [B, num_experts]
 
@@ -135,6 +139,9 @@ class SimpleMoELayer(nn.Module):
         # 专家输出计算
         expert_outputs = []
         for expert in self.experts:
+            # 确保专家在正确的设备上
+            if next(expert.parameters()).device != hidden_states.device:
+                expert = expert.to(hidden_states.device)
             expert_output = expert(hidden_states)  # [B, L, H]
             expert_outputs.append(expert_output)
 
@@ -148,6 +155,10 @@ class SimpleMoELayer(nn.Module):
                 expert_idx = top_k_indices[b, k]
                 weight = expert_weights[b, expert_idx]
                 output[b] += weight.unsqueeze(0) * expert_outputs[expert_idx, b]
+
+        # 确保layer_norm在正确的设备上
+        if next(self.layer_norm.parameters()).device != hidden_states.device:
+            self.layer_norm = self.layer_norm.to(hidden_states.device)
 
         # 残差连接和层归一化
         output = self.layer_norm(hidden_states + output)
@@ -245,6 +256,10 @@ class SimpleMoEModel(nn.Module):
         hidden_states = llama_outputs.last_hidden_state  # [B, L, H]
 
         # hidden_states现在应该有梯度，因为最后一层是可训练的
+
+        # 确保MoE层在正确的设备上
+        if next(self.moe_layer.parameters()).device != hidden_states.device:
+            self.moe_layer = self.moe_layer.to(hidden_states.device)
 
         # MoE 处理
         moe_output, expert_weights = self.moe_layer(hidden_states)  # [B, L, H], [B, num_experts]

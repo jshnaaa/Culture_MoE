@@ -92,6 +92,10 @@ class MixLoRARouter(nn.Module):
         # 重塑为 [batch_size * seq_len, input_dim] 进行路由计算
         hidden_flat = hidden_states.view(-1, input_dim)
 
+        # 确保gate层在正确的设备上
+        if self.gate.weight.device != hidden_flat.device:
+            self.gate = self.gate.to(hidden_flat.device)
+
         # 计算路由logits
         router_logits = self.gate(hidden_flat)  # [batch_size * seq_len, num_experts]
 
@@ -247,6 +251,14 @@ class MixLoRAExpert(nn.Module):
         lora_adapter = self.lora_adapters[module_name]
         lora_A = lora_adapter['lora_A']
         lora_B = lora_adapter['lora_B']
+
+        # 确保LoRA层在正确的设备上
+        if lora_A.weight.device != input_tensor.device:
+            lora_A = lora_A.to(input_tensor.device)
+            lora_B = lora_B.to(input_tensor.device)
+            # 更新适配器中的引用
+            lora_adapter['lora_A'] = lora_A
+            lora_adapter['lora_B'] = lora_B
 
         # 计算LoRA输出: B * A * x
         lora_output = lora_B(lora_A(input_tensor))
