@@ -63,7 +63,7 @@ class MiLoRALinear(nn.Module):
         # Optional bias (usually False for most LLM layers)
         self.bias = nn.Parameter(torch.zeros(out_features, device=device, dtype=dtype)) if bias else None
 
-        logging.info(f"MiLoRA layer initialized: {in_features}x{out_features}, rank={rank}")
+        # logging.info(f"MiLoRA layer initialized: {in_features}x{out_features}, rank={rank}")
 
     def _initialize_milora(self, original_weight: torch.Tensor, device: Optional[torch.device], dtype: Optional[torch.dtype]):
         """
@@ -154,9 +154,9 @@ class MiLoRALinear(nn.Module):
         # Step 5: Verification with improved tolerance
         self._verify_initialization(original_weight)
 
-        logging.info(f"  Principal matrix W_p: {W_p.shape} (frozen)")
-        logging.info(f"  LoRA matrix A_m: {self.A_m.shape} (trainable)")
-        logging.info(f"  LoRA matrix B_m: {self.B_m.shape} (trainable)")
+        # logging.info(f"  Principal matrix W_p: {W_p.shape} (frozen)")
+        # logging.info(f"  LoRA matrix A_m: {self.A_m.shape} (trainable)")
+        # logging.info(f"  LoRA matrix B_m: {self.B_m.shape} (trainable)")
 
     def _verify_initialization(self, original_weight: torch.Tensor):
         """
@@ -191,9 +191,10 @@ class MiLoRALinear(nn.Module):
                     f"  This may indicate numerical instability in SVD decomposition."
                 )
             else:
-                logging.info(f"  ✅ Initialization verified. Reconstruction error: {rel_error:.8f}")
+                # logging.info(f"  ✅ Initialization verified. Reconstruction error: {rel_error:.8f}")
                 if not rel_ok:
-                    logging.info(f"    (Passed absolute error check: {abs_error:.8f})")
+                    pass
+                    # logging.info(f"    (Passed absolute error check: {abs_error:.8f})")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -280,8 +281,8 @@ def apply_milora_to_model(
 
                 converted_modules.append(f"{parent_module.__class__.__name__}.{child_name}")
 
-                logging.info(f"  Converted {child_name}: {child_module.weight.shape} -> MiLoRA(rank={rank})")
-                logging.info(f"    Parameters: {module_total:,} total, {module_trainable:,} trainable")
+                # logging.info(f"  Converted {child_name}: {child_module.weight.shape} -> MiLoRA(rank={rank})")
+                # logging.info(f"    Parameters: {module_total:,} total, {module_trainable:,} trainable")
 
             except Exception as e:
                 logging.error(f"Failed to convert {child_name}: {e}")
@@ -293,10 +294,7 @@ def apply_milora_to_model(
             if any(target in child_name for target in target_modules):
                 _replace_module(module, child_name, child_module)
 
-    logging.info(f"MiLoRA conversion completed:")
-    logging.info(f"  Converted modules: {len(converted_modules)}")
-    logging.info(f"  Total parameters: {total_params:,}")
-    logging.info(f"  Trainable parameters: {trainable_params:,}")
+    logging.info(f"MiLoRA conversion completed: {len(converted_modules)} modules, {trainable_params:,} trainable parameters")
 
     if failed_conversions:
         logging.warning(f"  Failed conversions: {len(failed_conversions)}")
