@@ -167,12 +167,10 @@ if [ "${NUM_GPUS:-1}" = "2" ]; then
     export CUDA_VISIBLE_DEVICES=0,1
     echo "🔧 GPU Configuration: Dual GPU training with DataParallel"
     echo ""
-    USE_MULTI_GPU="--use_multi_gpu"
 else
     export CUDA_VISIBLE_DEVICES=0
     echo "🔧 GPU Configuration: Single GPU training"
     echo ""
-    USE_MULTI_GPU=""
 fi
 
 echo "Starting Simple MoE training..."
@@ -196,8 +194,7 @@ python ft_simple_moe_gen.py \
     --max_length 512 \
     --num_workers 2 \
     --save_interval 3 \
-    --device cuda \
-    $USE_MULTI_GPU
+    --device cuda
 
 if [ $? -eq 0 ]; then
     echo ""

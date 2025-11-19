@@ -138,8 +138,8 @@ class EnhancedCultureMoEFixed(LlamaSharedRouterExpertsModel):
         self.cultural_gate = self.cultural_gate.to(dtype=base_dtype)
 
         # 确保参数也使用正确的数据类型
-        self.culture_loss_alpha_enhanced = self.culture_loss_alpha_enhanced.to(dtype=base_dtype)
-        self.culture_loss_beta_enhanced = self.culture_loss_beta_enhanced.to(dtype=base_dtype)
+        self.culture_loss_alpha_enhanced.data = self.culture_loss_alpha_enhanced.data.to(dtype=base_dtype)
+        self.culture_loss_beta_enhanced.data = self.culture_loss_beta_enhanced.data.to(dtype=base_dtype)
 
         logging.info(f"All components converted to dtype: {base_dtype}")
 

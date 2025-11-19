@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple
 import logging
 
-from .experts import ExpertLayer
+from .experts import ExpertLayer, LoRAExpert
 
 
 class SimpleRouter(nn.Module):
@@ -99,9 +99,11 @@ class SimpleMoELayer(nn.Module):
 
         # 专家网络
         self.experts = nn.ModuleList([
-            ExpertLayer(
-                hidden_dim=hidden_dim,
-                expert_hidden_dim=expert_hidden_dim,
+            LoRAExpert(
+                input_dim=hidden_dim,
+                hidden_dim=expert_hidden_dim,
+                output_dim=hidden_dim,
+                lora_rank=8,
                 dropout=dropout
             ) for _ in range(num_experts)
         ])
