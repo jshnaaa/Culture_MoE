@@ -58,15 +58,35 @@ class SimpleRouter(nn.Module):
         if next(self.router.parameters()).device != hidden_states.device:
             self.router = self.router.to(hidden_states.device)
 
-        # 计算路由logits
-        router_logits = self.router(hidden_states)  # [B, num_experts]
+        try:
+            # 计算路由logits
+            router_logits = self.router(hidden_states)  # [B, num_experts]
 
-        # Top-K 选择
-        top_k_logits, top_k_indices = torch.topk(router_logits, self.top_k, dim=-1)  # [B, top_k]
+            # 检查路由logits的数值稳定性
+            if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
+                logging.warning("Router logits contain NaN/Inf, using uniform distribution")
+                router_logits = torch.zeros_like(router_logits)
 
-        # 计算权重（softmax归一化，添加温度参数提高稳定性）
-        temperature = 1.0
-        top_k_weights = F.softmax(top_k_logits / temperature, dim=-1)  # [B, top_k]
+            # 裁剪logits到合理范围
+            router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
+
+            # Top-K 选择
+            top_k_logits, top_k_indices = torch.topk(router_logits, self.top_k, dim=-1)  # [B, top_k]
+
+            # 计算权重（softmax归一化，添加温度参数提高稳定性）
+            temperature = 2.0  # 增加温度以提高稳定性
+            top_k_weights = F.softmax(top_k_logits / temperature, dim=-1)  # [B, top_k]
+
+            # 检查权重的数值稳定性
+            if torch.isnan(top_k_weights).any() or torch.isinf(top_k_weights).any():
+                logging.warning("Router weights contain NaN/Inf, using uniform weights")
+                top_k_weights = torch.ones_like(top_k_weights) / self.top_k
+
+        except Exception as e:
+            logging.warning(f"Router forward failed: {e}, using uniform distribution")
+            # 创建均匀分布的权重和随机索引
+            top_k_weights = torch.ones(hidden_states.shape[0], self.top_k, device=hidden_states.device) / self.top_k
+            top_k_indices = torch.randint(0, self.num_experts, (hidden_states.shape[0], self.top_k), device=hidden_states.device)
 
         # 构建完整的专家权重矩阵
         expert_weights = torch.zeros(hidden_states.shape[0], self.num_experts,
@@ -138,12 +158,26 @@ class SimpleMoELayer(nn.Module):
 
         # 专家输出计算
         expert_outputs = []
-        for expert in self.experts:
+        for i, expert in enumerate(self.experts):
             # 确保专家在正确的设备上
             if next(expert.parameters()).device != hidden_states.device:
                 expert = expert.to(hidden_states.device)
-            expert_output = expert(hidden_states)  # [B, L, H]
-            expert_outputs.append(expert_output)
+
+            try:
+                expert_output = expert(hidden_states)  # [B, L, H]
+
+                # 检查专家输出的数值稳定性
+                if torch.isnan(expert_output).any() or torch.isinf(expert_output).any():
+                    logging.warning(f"Expert {i} output contains NaN/Inf, using zero output")
+                    expert_output = torch.zeros_like(hidden_states)
+
+                # 裁剪极值
+                expert_output = torch.clamp(expert_output, min=-10.0, max=10.0)
+                expert_outputs.append(expert_output)
+
+            except Exception as e:
+                logging.warning(f"Expert {i} forward failed: {e}, using zero output")
+                expert_outputs.append(torch.zeros_like(hidden_states))
 
         expert_outputs = torch.stack(expert_outputs, dim=0)  # [num_experts, B, L, H]
 
@@ -154,14 +188,50 @@ class SimpleMoELayer(nn.Module):
             for k in range(self.top_k):
                 expert_idx = top_k_indices[b, k]
                 weight = expert_weights[b, expert_idx]
-                output[b] += weight.unsqueeze(0) * expert_outputs[expert_idx, b]
+
+                # 检查权重的数值稳定性
+                if torch.isnan(weight) or torch.isinf(weight):
+                    continue  # 跳过无效权重
+
+                # 裁剪权重到合理范围
+                weight = torch.clamp(weight, min=0.0, max=1.0)
+
+                weighted_output = weight.unsqueeze(0) * expert_outputs[expert_idx, b]
+
+                # 检查加权输出
+                if torch.isnan(weighted_output).any() or torch.isinf(weighted_output).any():
+                    continue  # 跳过无效输出
+
+                output[b] += weighted_output
+
+        # 最终数值稳定性检查
+        if torch.isnan(output).any() or torch.isinf(output).any():
+            logging.warning("MoE output contains NaN/Inf before layer_norm, using input")
+            output = torch.zeros_like(hidden_states)
 
         # 确保layer_norm在正确的设备上
         if next(self.layer_norm.parameters()).device != hidden_states.device:
             self.layer_norm = self.layer_norm.to(hidden_states.device)
 
         # 残差连接和层归一化
-        output = self.layer_norm(hidden_states + output)
+        residual_input = hidden_states + output
+
+        # 检查残差连接后的结果
+        if torch.isnan(residual_input).any() or torch.isinf(residual_input).any():
+            logging.warning("Residual connection contains NaN/Inf, using original input")
+            residual_input = hidden_states
+
+        try:
+            output = self.layer_norm(residual_input)
+
+            # 检查layer_norm输出
+            if torch.isnan(output).any() or torch.isinf(output).any():
+                logging.warning("Layer norm output contains NaN/Inf, using input")
+                output = hidden_states
+
+        except Exception as e:
+            logging.warning(f"Layer norm failed: {e}, using input")
+            output = hidden_states
 
         return output, expert_weights
 

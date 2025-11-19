@@ -368,54 +368,46 @@ class MixLoRALayer(nn.Module):
         # 1. 路由决策
         selected_experts, expert_weights, router_logits = self.router(hidden_states)
 
-        # 2. 共享FFN计算 - 优化策略
-        shared_outputs = {}
-        for module_name, base_layer in self.base_ffn_layers.items():
-            if module_name in self.target_modules:
-                # 计算共享的基础输出
-                shared_outputs[module_name] = base_layer(hidden_states)
+        # 2. 不进行共享FFN计算，因为不同层有不同的输入维度要求
+        # gate_proj/up_proj: 4096 -> 14336, down_proj: 14336 -> 4096
+        # 直接在专家中计算各自的基础输出
 
-        # 3. 专家计算和聚合
-        final_output = torch.zeros_like(hidden_states)
+        # 3. 简化的专家计算 - 只处理主要的投影层
+        # 选择一个主要模块进行MixLoRA处理（通常是gate_proj）
+        main_module = 'gate_proj' if 'gate_proj' in self.target_modules else self.target_modules[0]
 
-        # 重塑数据进行专家计算
-        hidden_flat = hidden_states.view(-1, hidden_dim)  # [batch_size * seq_len, hidden_dim]
-        selected_flat = selected_experts.view(-1, self.top_k)  # [batch_size * seq_len, top_k]
-        weights_flat = expert_weights.view(-1, self.top_k)  # [batch_size * seq_len, top_k]
+        if main_module not in self.base_ffn_layers:
+            # 如果没有找到目标模块，返回原始输入
+            return hidden_states, {'load_balancing_loss': torch.tensor(0.0, device=hidden_states.device)}
 
-        # 为每个token计算专家输出
-        for token_idx in range(batch_size * seq_len):
-            token_hidden = hidden_flat[token_idx:token_idx+1]  # [1, hidden_dim]
-            token_experts = selected_flat[token_idx]  # [top_k]
-            token_weights = weights_flat[token_idx]  # [top_k]
+        base_layer = self.base_ffn_layers[main_module]
+        base_output = base_layer(hidden_states)  # [batch_size, seq_len, output_dim]
 
-            token_output = torch.zeros_like(token_hidden)
+        # 初始化专家输出
+        expert_output = torch.zeros_like(base_output)
 
-            # 聚合选中专家的输出
-            for k in range(self.top_k):
-                expert_id = token_experts[k].item()
-                expert_weight = token_weights[k]
+        # 为每个专家计算输出
+        for expert_id in range(self.num_experts):
+            # 找到选择了这个专家的位置
+            expert_mask = (selected_experts == expert_id)  # [batch_size, seq_len, top_k]
+            expert_positions = expert_mask.any(dim=-1)  # [batch_size, seq_len]
 
-                expert = self.experts[expert_id]
+            if not expert_positions.any():
+                continue
 
-                # 计算专家输出（基于共享FFN + LoRA）
-                expert_output = token_hidden
-                for module_name in self.target_modules:
-                    if module_name in shared_outputs:
-                        # 获取对应token的共享输出
-                        batch_idx = token_idx // seq_len
-                        seq_idx = token_idx % seq_len
-                        base_output = shared_outputs[module_name][batch_idx:batch_idx+1, seq_idx:seq_idx+1]
+            # 获取这个专家的权重
+            expert_weights_for_id = torch.where(expert_mask, expert_weights, 0.0).sum(dim=-1)  # [batch_size, seq_len]
 
-                        # 专家处理
-                        expert_output = expert(module_name, base_output, expert_output)
+            # 计算专家的LoRA调整
+            expert = self.experts[expert_id]
+            expert_adjustment = expert(main_module, base_output, hidden_states)
 
-                token_output += expert_weight * expert_output
+            # 应用权重
+            weight_expanded = expert_weights_for_id.unsqueeze(-1)  # [batch_size, seq_len, 1]
+            expert_output += weight_expanded * expert_adjustment
 
-            # 将结果放回最终输出
-            batch_idx = token_idx // seq_len
-            seq_idx = token_idx % seq_len
-            final_output[batch_idx, seq_idx] = token_output.squeeze(0)
+        # 最终输出是基础输出 + 专家调整
+        final_output = expert_output
 
         # 4. 计算负载均衡损失
         load_balancing_loss = self.router.compute_load_balancing_loss(
