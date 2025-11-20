@@ -147,7 +147,10 @@ class MixLoRARouter(nn.Module):
 
         expert_freqs = expert_counts / total_tokens
 
-        # 负载均衡损失
+        # 负载均衡损失 - 确保设备一致性
+        if expert_freqs.device != expert_probs.device:
+            expert_freqs = expert_freqs.to(expert_probs.device)
+
         load_balancing_loss = self.num_experts * torch.sum(expert_freqs * expert_probs)
 
         return load_balancing_loss
@@ -471,6 +474,10 @@ class MixLoRALayer(nn.Module):
             router_logits, selected_experts
         )
 
+        # 确保负载均衡损失在正确的设备上
+        if load_balancing_loss.device != hidden_states.device:
+            load_balancing_loss = load_balancing_loss.to(hidden_states.device)
+
         # 5. 准备辅助信息
         aux_info = {
             'load_balancing_loss': load_balancing_loss,
@@ -576,7 +583,11 @@ def compute_mixlora_total_loss(
 
     for aux_info in aux_info_list:
         if 'load_balancing_loss' in aux_info:
-            total_load_balancing_loss += aux_info['load_balancing_loss']
+            layer_loss = aux_info['load_balancing_loss']
+            # 确保负载均衡损失在正确的设备上
+            if layer_loss.device != total_load_balancing_loss.device:
+                layer_loss = layer_loss.to(total_load_balancing_loss.device)
+            total_load_balancing_loss += layer_loss
 
     # 总损失
     total_loss = main_loss + aux_loss_coef * total_load_balancing_loss

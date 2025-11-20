@@ -14,6 +14,7 @@ class ModelArgs:
 
     # Model architecture
     num_experts: int = 6
+    top_k: int = 2
     experts_hidden_dim: int = 256
     # experts_output_dim: int = 128
     router_hidden_dim: int = 256
