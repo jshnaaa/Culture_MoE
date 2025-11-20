@@ -134,9 +134,9 @@ case $DATA_ID in
         NUM_CLASSES=3
         ;;
     8)
-        TEST_FILE="/autodl-fs/data/socialBias_merge_gen.json"
-        DATASET_NAME="socialBias"
-        NUM_CLASSES=2
+        TEST_FILE="/autodl-fs/data/culemo_merge_gen.json"
+        DATASET_NAME="culemo"
+        NUM_CLASSES=6
         ;;
 esac
 

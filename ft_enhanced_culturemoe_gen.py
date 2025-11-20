@@ -635,14 +635,41 @@ class EnhancedCultureMoETrainer:
                 if self.use_amp and self.scaler:
                     # AMP优化器步骤
                     self.scaler.unscale_(self.optimizer.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+                    # 对路由器参数进行更严格的梯度裁剪
+                    router_params = []
+                    other_params = []
+                    for name, param in self.model.named_parameters():
+                        if 'router' in name.lower():
+                            router_params.append(param)
+                        else:
+                            other_params.append(param)
+
+                    if router_params:
+                        torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
+                    if other_params:
+                        torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)   # 其他参数正常
+
                     self.scaler.step(self.optimizer.optimizer)
                     self.scaler.update()
                     self.scheduler.step()
                     self.optimizer.zero_grad()
                 else:
                     # 标准优化器步骤
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    # 对路由器参数进行更严格的梯度裁剪
+                    router_params = []
+                    other_params = []
+                    for name, param in self.model.named_parameters():
+                        if 'router' in name.lower():
+                            router_params.append(param)
+                        else:
+                            other_params.append(param)
+
+                    if router_params:
+                        torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
+                    if other_params:
+                        torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)   # 其他参数正常
+
                     self.optimizer.step()
                     self.scheduler.step()
                     self.optimizer.zero_grad()
@@ -1049,7 +1076,7 @@ def main():
     parser.add_argument('--use_mask', type=str, default='True', help='是否使用MASK机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)')
     parser.add_argument('--router_temperature', type=float, default=2.0, help='路由器温度')
     parser.add_argument('--load_balance_weight', type=float, default=0.001, help='负载均衡权重')
-    parser.add_argument('--entropy_weight', type=float, default=0.01, help='熵正则化权重')
+    parser.add_argument('--entropy_weight', type=float, default=0.05, help='熵正则化权重')
 
     # 训练参数
     parser.add_argument('--freeze_base_model', type=str, default='True', help='是否冻结基础模型')
@@ -1058,7 +1085,7 @@ def main():
     parser.add_argument('--eval_batch_size', type=int, default=4, help='评估批次大小')
     parser.add_argument('--learning_rate', type=float, default=2e-4, help='学习率')
     parser.add_argument('--moe_lr_multiplier', type=float, default=1.0, help='MoE学习率倍数')
-    parser.add_argument('--router_lr_multiplier', type=float, default=1.0, help='路由器学习率倍数')
+    parser.add_argument('--router_lr_multiplier', type=float, default=0.05, help='路由器学习率倍数')
     parser.add_argument('--shared_lr_multiplier', type=float, default=1.0, help='共享层学习率倍数')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='权重衰减')
     parser.add_argument('--max_length', type=int, default=512, help='最大序列长度')
