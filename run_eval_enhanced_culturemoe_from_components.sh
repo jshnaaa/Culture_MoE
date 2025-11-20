@@ -97,7 +97,7 @@ case $DATA_ID in
             LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_llama_20251112_1141/best_lora"
             MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/t_enhanced_moe_gen_culturalBench_llama_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_0016"
         fi
-        NUM_CLASSES=2
+        NUM_CLASSES=4
         ;;
     3)
         TEST_FILE="/autodl-fs/data/normad_merge_gen_small.json"
@@ -115,7 +115,7 @@ case $DATA_ID in
         TEST_FILE="/autodl-fs/data/cultureLLM_merge_gen_small.json"
         DATASET_NAME="cultureLLM_small"
         if [ "$BACKBONE" = "qwen" ]; then
-            LORA_WEIGHTS_PATH="/root/autodl-fs/data/ft/ft_lora_only_gen_cultureLLM_qwen_20251114_1301/best_lora"
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_qwen_20251114_1301/best_lora"
             MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_cultureLLM_qwen_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251116_0957"
         else
             LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"

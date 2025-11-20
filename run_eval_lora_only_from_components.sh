@@ -54,6 +54,36 @@ case $DATA_ID in
     #     DATASET_NAME="WVS_Gen_OOD"
     #     OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_ood_${BACKBONE}_$(date +%Y%m%d_%H%M)"
     #     ;;
+    2)
+        TEST_FILE="/autodl-fs/data/culturalBench_merge_gen_small.json"
+        DATASET_NAME="culturalBench_small"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_qwen_20251112_1228/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_CulturalBench_llama_20251112_1141/best_lora"
+        fi
+        NUM_CLASSES=4
+        ;;
+    3)
+        TEST_FILE="/autodl-fs/data/normad_merge_gen_small.json"
+        DATASET_NAME="normad_small"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_qwen_20251111_1204/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_normad_llama_20251112_1335/best_lora"
+        fi
+        NUM_CLASSES=3
+        ;;
+    4)
+        TEST_FILE="/autodl-fs/data/cultureLLM_merge_gen_small.json"
+        DATASET_NAME="cultureLLM_small"
+        if [ "$BACKBONE" = "qwen" ]; then
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_qwen_20251114_1301/best_lora"
+        else
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_cultureLLM_llama_20251112_1551/best_lora"
+        fi
+        NUM_CLASSES=10
+        ;;
     6)
         TEST_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
         DATASET_NAME="moral_Gen"

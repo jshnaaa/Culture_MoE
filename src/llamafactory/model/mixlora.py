@@ -337,25 +337,46 @@ class MixLoRALayer(nn.Module):
         )
 
         # 添加输出投影层，确保专家输出能与输入进行残差连接
-        # 假设我们使用的主要模块是 gate_proj (4096 -> 14336)，我们需要投影回 4096
-        main_module = 'gate_proj' if 'gate_proj' in target_modules else target_modules[0]
-        if main_module in base_ffn_layers:
-            main_layer = base_ffn_layers[main_module]
-            if hasattr(main_layer, 'out_features'):
-                expert_output_dim = main_layer.out_features
+        # 检查FFN结构，通常是 gate_proj/up_proj (4096->14336) + down_proj (14336->4096)
+        # 我们需要模拟完整的FFN流程：gate_proj -> activation -> down_proj
+        self.output_projection = None
+
+        # 查找 down_proj 层，它应该将中间维度投影回隐藏维度
+        if 'down_proj' in base_ffn_layers:
+            down_proj_layer = base_ffn_layers['down_proj']
+            if hasattr(down_proj_layer, 'in_features') and hasattr(down_proj_layer, 'out_features'):
+                intermediate_dim = down_proj_layer.in_features  # 14336
+                output_dim = down_proj_layer.out_features       # 4096
+
                 # 确保投影层在正确的设备和数据类型上
-                device = main_layer.weight.device
-                dtype = main_layer.weight.dtype
-                self.output_projection = nn.Linear(expert_output_dim, router_input_dim, bias=False, device=device, dtype=dtype)
+                device = down_proj_layer.weight.device
+                dtype = down_proj_layer.weight.dtype
+
+                # 创建投影层：从中间维度到输出维度
+                self.output_projection = nn.Linear(intermediate_dim, output_dim, bias=False, device=device, dtype=dtype)
+
                 # 小的初始化
                 nn.init.xavier_uniform_(self.output_projection.weight, gain=0.1)
-                logger.info(f"Created output projection: {expert_output_dim} -> {router_input_dim}")
+                logger.info(f"Created output projection based on down_proj: {intermediate_dim} -> {output_dim}")
+
+        if self.output_projection is None:
+            # 回退方案：基于gate_proj创建投影层
+            main_module = 'gate_proj' if 'gate_proj' in target_modules else target_modules[0]
+            if main_module in base_ffn_layers:
+                main_layer = base_ffn_layers[main_module]
+                if hasattr(main_layer, 'out_features'):
+                    expert_output_dim = main_layer.out_features
+                    # 确保投影层在正确的设备和数据类型上
+                    device = main_layer.weight.device
+                    dtype = main_layer.weight.dtype
+                    self.output_projection = nn.Linear(expert_output_dim, router_input_dim, bias=False, device=device, dtype=dtype)
+                    # 小的初始化
+                    nn.init.xavier_uniform_(self.output_projection.weight, gain=0.1)
+                    logger.info(f"Created fallback output projection: {expert_output_dim} -> {router_input_dim}")
+                else:
+                    logger.warning(f"Main layer {main_module} does not have out_features attribute")
             else:
-                self.output_projection = None
-                logger.warning(f"Main layer {main_module} does not have out_features attribute")
-        else:
-            self.output_projection = None
-            logger.warning(f"Main module {main_module} not found in base_ffn_layers")
+                logger.warning(f"Main module {main_module} not found in base_ffn_layers")
 
         # 创建专家
         self.experts = nn.ModuleList([
@@ -393,13 +414,9 @@ class MixLoRALayer(nn.Module):
         # 1. 路由决策
         selected_experts, expert_weights, router_logits = self.router(hidden_states)
 
-        # 2. 不进行共享FFN计算，因为不同层有不同的输入维度要求
-        # gate_proj/up_proj: 4096 -> 14336, down_proj: 14336 -> 4096
-        # 直接在专家中计算各自的基础输出
-
-        # 3. 简化的专家计算 - 确保维度匹配
-        # 我们需要确保输出维度与输入维度匹配，以便进行残差连接
-        # 因此我们不直接使用 FFN 层，而是让专家直接处理 hidden_states
+        # 2. 计算完整的FFN流程，确保维度匹配
+        # FFN结构: gate_proj (4096->14336) -> activation -> down_proj (14336->4096)
+        # 我们需要模拟完整的FFN流程以保持正确的维度
 
         # 初始化最终输出，维度与输入相同，确保在正确的设备上
         final_output = torch.zeros_like(hidden_states)  # [batch_size, seq_len, hidden_dim]
@@ -423,7 +440,7 @@ class MixLoRALayer(nn.Module):
             # 获取这个专家的权重
             expert_weights_for_id = torch.where(expert_mask, expert_weights, 0.0).sum(dim=-1)  # [batch_size, seq_len]
 
-            # 计算专家的直接输出（维度保持为 hidden_dim）
+            # 计算专家输出
             expert = self.experts[expert_id]
 
             # 确保专家在正确的设备上
@@ -431,43 +448,20 @@ class MixLoRALayer(nn.Module):
                 expert = expert.to(target_device)
                 self.experts[expert_id] = expert
 
-            # 使用第一个目标模块进行计算
-            first_module = self.target_modules[0] if self.target_modules else 'gate_proj'
-            if first_module in self.base_ffn_layers:
-                base_layer = self.base_ffn_layers[first_module]
+            # 计算完整的FFN流程
+            expert_output = self._compute_ffn_with_expert(hidden_states, expert, target_device)
 
-                # 确保基础层在正确的设备上
-                if base_layer.weight.device != target_device:
-                    base_layer = base_layer.to(target_device)
-                    self.base_ffn_layers[first_module] = base_layer
+            # 应用权重，确保设备一致性
+            weight_expanded = expert_weights_for_id.unsqueeze(-1)  # [batch_size, seq_len, 1]
 
-                # 计算基础层输出
-                base_output = base_layer(hidden_states)  # [batch_size, seq_len, expert_output_dim]
+            # 确保所有张量在同一设备上
+            if weight_expanded.device != expert_output.device:
+                weight_expanded = weight_expanded.to(expert_output.device)
+            if final_output.device != expert_output.device:
+                final_output = final_output.to(expert_output.device)
 
-                # 专家处理
-                expert_output = expert(first_module, base_output, hidden_states)
-
-                # 如果有投影层，将专家输出投影回隐藏维度
-                if self.output_projection is not None:
-                    # 确保投影层在正确的设备和数据类型上
-                    if (self.output_projection.weight.device != expert_output.device or
-                        self.output_projection.weight.dtype != expert_output.dtype):
-                        self.output_projection = self.output_projection.to(
-                            device=expert_output.device, dtype=expert_output.dtype
-                        )
-                    expert_output = self.output_projection(expert_output)  # [batch_size, seq_len, hidden_dim]
-
-                # 应用权重，确保设备一致性
-                weight_expanded = expert_weights_for_id.unsqueeze(-1)  # [batch_size, seq_len, 1]
-
-                # 确保所有张量在同一设备上
-                if weight_expanded.device != expert_output.device:
-                    weight_expanded = weight_expanded.to(expert_output.device)
-                if final_output.device != expert_output.device:
-                    final_output = final_output.to(expert_output.device)
-
-                weighted_expert_output = weight_expanded * expert_output
-                final_output += weighted_expert_output
+            weighted_expert_output = weight_expanded * expert_output
+            final_output += weighted_expert_output
 
         # 4. 计算负载均衡损失
         load_balancing_loss = self.router.compute_load_balancing_loss(
@@ -488,6 +482,108 @@ class MixLoRALayer(nn.Module):
         }
 
         return final_output, aux_info
+
+    def _compute_ffn_with_expert(
+        self,
+        hidden_states: torch.Tensor,
+        expert: 'MixLoRAExpert',
+        target_device: torch.device
+    ) -> torch.Tensor:
+        """
+        计算包含专家的完整FFN流程
+
+        Args:
+            hidden_states: 输入隐藏状态 [batch_size, seq_len, hidden_dim]
+            expert: MixLoRA专家
+            target_device: 目标设备
+
+        Returns:
+            FFN输出 [batch_size, seq_len, hidden_dim]
+        """
+        # 检查FFN层的可用性
+        gate_proj = self.base_ffn_layers.get('gate_proj')
+        up_proj = self.base_ffn_layers.get('up_proj')
+        down_proj = self.base_ffn_layers.get('down_proj')
+
+        # 确保所有层都在正确的设备上
+        if gate_proj and gate_proj.weight.device != target_device:
+            gate_proj = gate_proj.to(target_device)
+            self.base_ffn_layers['gate_proj'] = gate_proj
+        if up_proj and up_proj.weight.device != target_device:
+            up_proj = up_proj.to(target_device)
+            self.base_ffn_layers['up_proj'] = up_proj
+        if down_proj and down_proj.weight.device != target_device:
+            down_proj = down_proj.to(target_device)
+            self.base_ffn_layers['down_proj'] = down_proj
+
+        # 计算FFN流程
+        if gate_proj and up_proj and down_proj:
+            # 标准的LLaMA FFN结构: SwiGLU
+            # gate = gate_proj(x), up = up_proj(x)
+            # intermediate = gate * silu(up)  或者 intermediate = silu(gate) * up
+            # output = down_proj(intermediate)
+
+            # 计算gate分支（带专家）
+            gate_base = gate_proj(hidden_states)
+            gate_output = expert('gate_proj', gate_base, hidden_states)
+
+            # 计算up分支（带专家）
+            up_base = up_proj(hidden_states)
+            up_output = expert('up_proj', up_base, hidden_states)
+
+            # 应用SwiGLU激活 (通常是 silu(gate) * up)
+            import torch.nn.functional as F
+            intermediate = F.silu(gate_output) * up_output
+
+            # 通过down_proj（带专家）
+            down_base = down_proj(intermediate)
+            final_output = expert('down_proj', down_base, intermediate)
+
+        elif gate_proj and down_proj:
+            # 简化的FFN结构: gate_proj -> activation -> down_proj
+            gate_base = gate_proj(hidden_states)
+            gate_output = expert('gate_proj', gate_base, hidden_states)
+
+            # 应用激活函数
+            import torch.nn.functional as F
+            activated = F.silu(gate_output)
+
+            # 通过down_proj
+            down_base = down_proj(activated)
+            final_output = expert('down_proj', down_base, activated)
+
+        else:
+            # 回退：直接使用第一个可用模块
+            available_modules = [name for name in self.target_modules if name in self.base_ffn_layers]
+            if available_modules:
+                module_name = available_modules[0]
+                base_layer = self.base_ffn_layers[module_name]
+
+                # 确保层在正确设备上
+                if base_layer.weight.device != target_device:
+                    base_layer = base_layer.to(target_device)
+                    self.base_ffn_layers[module_name] = base_layer
+
+                # 计算基础输出
+                base_output = base_layer(hidden_states)
+                expert_output = expert(module_name, base_output, hidden_states)
+
+                # 如果需要投影回原始维度
+                if self.output_projection is not None:
+                    if (self.output_projection.weight.device != expert_output.device or
+                        self.output_projection.weight.dtype != expert_output.dtype):
+                        self.output_projection = self.output_projection.to(
+                            device=expert_output.device, dtype=expert_output.dtype
+                        )
+                    final_output = self.output_projection(expert_output)
+                else:
+                    final_output = expert_output
+            else:
+                # 极端回退：返回原始输入
+                logger.warning("No available FFN modules, returning original hidden states")
+                final_output = hidden_states
+
+        return final_output
 
 
 class MixLoRAConfig:
