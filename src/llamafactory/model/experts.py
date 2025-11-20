@@ -42,9 +42,13 @@ class LoRA(nn.Module):
         super().__init__()
         self.rank = rank
 
-        # 使用更保守的初始化，避免数值不稳定
+        # 使用更稳定的初始化，避免数值不稳定
         self.W = nn.Parameter(torch.zeros(input_dim, output_dim))  # 原始权重矩阵初始化为0
-        self.A = nn.Parameter(torch.randn(input_dim, rank) * 0.01)  # 小的随机初始化
+
+        # 使用Xavier初始化替代随机初始化
+        self.A = nn.Parameter(torch.empty(input_dim, rank))
+        nn.init.xavier_uniform_(self.A, gain=0.01)  # 极小的gain确保数值稳定
+
         self.B = nn.Parameter(torch.zeros(rank, output_dim))  # B矩阵初始化为0，这样初始时LoRA贡献为0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -158,7 +162,12 @@ class LoRAExpert(nn.Module):
             lora_out = torch.clamp(lora_out, min=-10.0, max=10.0)
 
             # ✅ 残差连接：x + LoRA(LayerNorm(FFN(x)))
-            output = x + lora_out
+            # 确保维度匹配
+            if lora_out.shape != x.shape:
+                logging.warning(f"LoRA output shape {lora_out.shape} doesn't match input shape {x.shape}, using input")
+                output = x
+            else:
+                output = x + lora_out
 
             # 检查最终输出
             if torch.isnan(output).any() or torch.isinf(output).any():

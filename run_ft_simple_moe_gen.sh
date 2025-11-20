@@ -4,12 +4,14 @@
 # Simple MoE 模型训练脚本 - 支持多数据集和8:1:1数据划分（稳定版本）
 # 在 LoRA 微调后的完整模型基础上添加简单的 MoE 结构
 #
-# 稳定性修复：
+# 稳定性修复（增强版）：
 # 1. 修复设备不匹配问题（layer_norm、router、experts）
-# 2. 改进的权重初始化和数值稳定性检查
+# 2. 改进的权重初始化：Xavier替代随机初始化
 # 3. 更严格的梯度裁剪和错误处理
-# 4. 更保守的学习率和批大小设置
-# 5. 详细的错误统计和日志记录
+# 4. 超保守的学习率：1e-6（避免梯度爆炸）
+# 5. 维度匹配检查：防止残差连接维度错误
+# 6. 融合权重限制：最多20%MoE贡献
+# 7. 全面的NaN/INF检测和恢复机制
 #
 # 功能：
 # 1. 支持 CulturalBench、NormAD、CultureLLM、unified_all_datasets 数据集
@@ -193,7 +195,7 @@ python ft_simple_moe_gen.py \
     --expert_hidden_dim 2048 \
     --router_hidden_dim 256 \
     --dropout 0.05 \
-    --learning_rate 5e-6 \
+    --learning_rate 1e-6 \
     --weight_decay 0.01 \
     --num_epochs 8 \
     --batch_size $BATCH_SIZE \

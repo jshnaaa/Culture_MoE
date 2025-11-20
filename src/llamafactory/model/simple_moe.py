@@ -38,8 +38,8 @@ class SimpleRouter(nn.Module):
         """初始化权重"""
         for module in self.router:
             if isinstance(module, nn.Linear):
-                # 使用更小的标准差进行初始化，避免梯度爆炸
-                nn.init.normal_(module.weight, mean=0, std=0.001)
+                # 使用Xavier初始化，但使用适中的gain避免梯度消失
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
@@ -262,7 +262,8 @@ class SimpleMoEModel(nn.Module):
         )
 
         # MoE 融合权重（可学习，初始化为较小值）
-        self.moe_fusion_weight = nn.Parameter(torch.tensor(0.1))
+        # 使用更稳定的初始化，避免数值问题
+        self.moe_fusion_weight = nn.Parameter(torch.tensor(0.05, dtype=torch.float32))
 
         logging.info(f"SimpleMoEModel initialized with {num_experts} experts, top-{top_k} routing")
 
@@ -343,8 +344,21 @@ class SimpleMoEModel(nn.Module):
             # 使用零张量替代MoE输出，保持梯度连接
             moe_output = torch.zeros_like(moe_output)
 
+        # 裁剪融合权重到安全范围
+        fusion_weight = torch.clamp(fusion_weight, min=0.0, max=0.2)  # 限制MoE贡献最多20%
+
+        # 检查融合权重的数值稳定性
+        if torch.isnan(fusion_weight) or torch.isinf(fusion_weight):
+            logging.warning("NaN or Inf detected in fusion weight, using 0.05")
+            fusion_weight = torch.tensor(0.05, device=hidden_states.device, dtype=hidden_states.dtype)
+
         # 融合隐藏状态
         enhanced_hidden = (1 - fusion_weight) * hidden_states + fusion_weight * moe_output
+
+        # 最终数值稳定性检查
+        if torch.isnan(enhanced_hidden).any() or torch.isinf(enhanced_hidden).any():
+            logging.warning("NaN or Inf detected in enhanced hidden states, using original hidden states")
+            enhanced_hidden = hidden_states
 
         # 生成 logits
         logits = self.llama_model.lm_head(enhanced_hidden)  # [B, L, vocab_size]
