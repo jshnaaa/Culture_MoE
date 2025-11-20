@@ -164,12 +164,19 @@ mkdir -p "$OUTPUT_DIR"
 echo "🚀 Starting MiLoRA training..."
 echo ""
 
+# 调试信息：显示关键参数
+echo "Debug: LORA_RANK=$LORA_RANK"
+echo "Debug: LORA_ALPHA=$((LORA_RANK * 2))"
+echo "Debug: TOP_K=$TOP_K"
+echo "Debug: POOLING_TYPE=$POOLING_TYPE"
+echo ""
+
 python ft_milora_gen.py \
     --base_model_path "$BASE_MODEL_PATH" \
     --train_file "$TRAIN_FILE" \
     --output_dir "$OUTPUT_DIR" \
     --lora_rank "$LORA_RANK" \
-    --lora_alpha $(echo "$LORA_RANK * 2" | bc) \
+    --lora_alpha $((LORA_RANK * 2)) \
     --top_k "$TOP_K" \
     --pooling_type "$POOLING_TYPE" \
     --load_balance_weight 0.01 \
