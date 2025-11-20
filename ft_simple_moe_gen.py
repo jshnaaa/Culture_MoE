@@ -670,8 +670,8 @@ class SimpleMoETrainer:
                 optimizer.zero_grad()
                 loss.backward()
 
-                # 梯度裁剪
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                # 梯度裁剪 - 更严格的裁剪防止数值爆炸
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.3)
 
                 optimizer.step()
 

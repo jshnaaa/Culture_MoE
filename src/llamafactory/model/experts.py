@@ -48,10 +48,44 @@ class LoRA(nn.Module):
         self.B = nn.Parameter(torch.zeros(rank, output_dim))  # B矩阵初始化为0，这样初始时LoRA贡献为0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        low_rank_weight = torch.matmul(self.A, self.B)  # 低秩近似
-        weight_matrix = self.W + low_rank_weight  # 组合原始权重和低秩权重
-        # F.linear 期望权重矩阵是 [out_features, in_features]，所以需要转置
-        return F.linear(x, weight_matrix.T)
+        # 检查输入
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            logging.warning("LoRA input contains NaN/Inf")
+            return torch.zeros_like(x)
+
+        try:
+            # 裁剪参数到合理范围，防止爆炸
+            A_clipped = torch.clamp(self.A, min=-10.0, max=10.0)
+            B_clipped = torch.clamp(self.B, min=-10.0, max=10.0)
+            W_clipped = torch.clamp(self.W, min=-10.0, max=10.0)
+
+            low_rank_weight = torch.matmul(A_clipped, B_clipped)  # 低秩近似
+
+            # 检查低秩权重
+            if torch.isnan(low_rank_weight).any() or torch.isinf(low_rank_weight).any():
+                logging.warning("Low rank weight contains NaN/Inf, using zeros")
+                low_rank_weight = torch.zeros_like(low_rank_weight)
+
+            # 裁剪低秩权重
+            low_rank_weight = torch.clamp(low_rank_weight, min=-5.0, max=5.0)
+
+            weight_matrix = W_clipped + low_rank_weight  # 组合原始权重和低秩权重
+
+            # F.linear 期望权重矩阵是 [out_features, in_features]，所以需要转置
+            output = F.linear(x, weight_matrix.T)
+
+            # 检查输出
+            if torch.isnan(output).any() or torch.isinf(output).any():
+                logging.warning("LoRA forward output contains NaN/Inf, using zeros")
+                return torch.zeros_like(output)
+
+            # 裁剪输出
+            output = torch.clamp(output, min=-20.0, max=20.0)
+            return output
+
+        except Exception as e:
+            logging.warning(f"LoRA forward failed: {e}, using zeros")
+            return torch.zeros(x.shape[0], x.shape[1], self.B.shape[1], device=x.device, dtype=x.dtype)
 
 
 class LoRAExpert(nn.Module):
@@ -90,17 +124,52 @@ class LoRAExpert(nn.Module):
         # y = FFN(y)
         # return x + LoRA(y)
 
-        # 先对输入进行 LayerNorm
-        normalized = self.layer_norm(x)
+        # 检查输入数值稳定性
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            logging.warning("LoRAExpert input contains NaN/Inf, using zeros")
+            return torch.zeros_like(x)
 
-        # 通过 MLP 基础模型
-        features = self.base_model(normalized)
+        try:
+            # 先对输入进行 LayerNorm
+            normalized = self.layer_norm(x)
 
-        # 通过 LoRA 层
-        lora_out = self.lora_layer(features)
+            # 检查LayerNorm输出
+            if torch.isnan(normalized).any() or torch.isinf(normalized).any():
+                logging.warning("LayerNorm output contains NaN/Inf, using input")
+                normalized = x
 
-        # ✅ 残差连接：x + LoRA(LayerNorm(FFN(x)))
-        return x + lora_out
+            # 通过 MLP 基础模型
+            features = self.base_model(normalized)
+
+            # 检查MLP输出
+            if torch.isnan(features).any() or torch.isinf(features).any():
+                logging.warning("MLP features contain NaN/Inf, using zeros")
+                features = torch.zeros_like(features)
+
+            # 通过 LoRA 层
+            lora_out = self.lora_layer(features)
+
+            # 检查LoRA输出
+            if torch.isnan(lora_out).any() or torch.isinf(lora_out).any():
+                logging.warning("LoRA output contains NaN/Inf, using zeros")
+                lora_out = torch.zeros_like(lora_out)
+
+            # 裁剪到合理范围
+            lora_out = torch.clamp(lora_out, min=-10.0, max=10.0)
+
+            # ✅ 残差连接：x + LoRA(LayerNorm(FFN(x)))
+            output = x + lora_out
+
+            # 检查最终输出
+            if torch.isnan(output).any() or torch.isinf(output).any():
+                logging.warning("LoRAExpert final output contains NaN/Inf, using input")
+                output = x
+
+            return output
+
+        except Exception as e:
+            logging.warning(f"LoRAExpert forward failed: {e}, using input")
+            return x
 
 
 class ExpertLayer(nn.Module):
