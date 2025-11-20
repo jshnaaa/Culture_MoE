@@ -217,9 +217,11 @@ class MiLoRALinear(nn.Module):
         output = F.linear(x, self.W_p.T)  # W_p @ x
 
         # LoRA component (trainable)
-        lora_output = F.linear(x, self.A_m)  # A_m @ x
+        # A_m is [rank, in_features], B_m is [out_features, rank]
+        # We need: B_m @ A_m @ x
+        lora_output = F.linear(x, self.A_m.T)  # A_m.T @ x, A_m.T is [in_features, rank]
         lora_output = self.dropout(lora_output)  # Apply dropout
-        lora_output = F.linear(lora_output, self.B_m.T)  # B_m @ (A_m @ x)
+        lora_output = F.linear(lora_output, self.B_m.T)  # B_m.T @ (A_m.T @ x), B_m.T is [rank, out_features]
 
         output = output + lora_output
 

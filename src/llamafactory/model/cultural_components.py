@@ -173,24 +173,24 @@ class CulturalAwareRouter(nn.Module):
         # 文化嵌入
         nn.init.normal_(self.culture_embeddings.weight, mean=0, std=0.02)
 
-        # 内容路由器
+        # 内容路由器 - 使用小的初始化防止梯度爆炸
         for module in self.content_router:
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                nn.init.xavier_uniform_(module.weight, gain=0.01)  # 小的gain
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-        # 文化路由器
+        # 文化路由器 - 使用小的初始化
         for module in self.culture_router:
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                nn.init.xavier_uniform_(module.weight, gain=0.01)  # 小的gain
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-        # 融合网络
+        # 融合网络 - 使用小的初始化
         for module in self.fusion_network:
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                nn.init.xavier_uniform_(module.weight, gain=0.01)  # 小的gain
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
@@ -233,8 +233,21 @@ class CulturalAwareRouter(nn.Module):
             routing_weights[3] * fusion_logits         # 深度融合
         )
 
-        # 6. 应用温度和 softmax
-        expert_weights = F.softmax(final_logits / temperature, dim=-1)
+        # 6. 应用温度和 softmax (数值稳定性优化)
+        # 裁剪logits到合理范围，防止溢出
+        final_logits = torch.clamp(final_logits, min=-10.0, max=10.0)
+
+        # 使用float32进行softmax计算，避免fp16溢出
+        if final_logits.dtype == torch.float16:
+            logits_for_softmax = final_logits.float() / temperature
+            expert_weights = F.softmax(logits_for_softmax, dim=-1).half()
+        else:
+            expert_weights = F.softmax(final_logits / temperature, dim=-1)
+
+        # 检查并修复NaN/Inf
+        if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+            logging.warning("Router weights contain NaN/Inf, using uniform distribution")
+            expert_weights = torch.ones_like(expert_weights) / self.num_experts
 
         # 7. 收集路由信息
         routing_info = {
@@ -249,23 +262,45 @@ class CulturalAwareRouter(nn.Module):
         return expert_weights, routing_info
 
     def compute_load_balancing_loss(self, expert_weights: torch.Tensor) -> torch.Tensor:
-        """计算负载均衡损失"""
+        """计算负载均衡损失 - 添加数值稳定性检查"""
         expert_usage = expert_weights.mean(dim=0)  # [num_experts]
+
+        # 检查数值稳定性
+        if torch.isnan(expert_usage).any() or torch.isinf(expert_usage).any():
+            logging.warning("Expert usage contains NaN/Inf, returning zero loss")
+            return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype)
+
         uniform_distribution = torch.ones_like(expert_usage) / self.num_experts
         load_balancing_loss = F.mse_loss(expert_usage, uniform_distribution)
+
+        # 裁剪损失到合理范围
+        load_balancing_loss = torch.clamp(load_balancing_loss, min=0.0, max=1.0)
+
         return load_balancing_loss
 
     def entropy_regularization(self, expert_weights: torch.Tensor) -> torch.Tensor:
-        """计算熵正则化损失 - 鼓励均匀分布"""
+        """计算熵正则化损失 - 鼓励均匀分布 (数值稳定性优化)"""
+        # 检查输入数值稳定性
+        if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+            logging.warning("Expert weights contain NaN/Inf, returning zero entropy loss")
+            return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype)
+
+        # 确保权重为正且和为1
+        expert_weights = torch.clamp(expert_weights, min=1e-8, max=1.0)
+        expert_weights = expert_weights / expert_weights.sum(dim=-1, keepdim=True)
+
         # 计算熵：H = -sum(p * log(p))
-        entropy = -torch.sum(expert_weights * torch.log(expert_weights + 1e-8), dim=-1)
+        log_weights = torch.log(expert_weights + 1e-8)
+        entropy = -torch.sum(expert_weights * log_weights, dim=-1)
 
         # 最大熵（均匀分布）
         max_entropy = torch.log(torch.tensor(expert_weights.size(-1), dtype=entropy.dtype, device=entropy.device))
 
         # 熵正则化损失：鼓励高熵（均匀分布）
-        # 损失 = max_entropy - current_entropy，值越大表示分布越不均匀
         entropy_loss = (max_entropy - entropy).mean()
+
+        # 裁剪损失到合理范围
+        entropy_loss = torch.clamp(entropy_loss, min=0.0, max=max_entropy)
 
         return entropy_loss
 

@@ -398,8 +398,15 @@ class MixLoRALayer(nn.Module):
         # 我们需要确保输出维度与输入维度匹配，以便进行残差连接
         # 因此我们不直接使用 FFN 层，而是让专家直接处理 hidden_states
 
-        # 初始化最终输出，维度与输入相同
+        # 初始化最终输出，维度与输入相同，确保在正确的设备上
         final_output = torch.zeros_like(hidden_states)  # [batch_size, seq_len, hidden_dim]
+
+        # 确保所有MixLoRA组件在正确的设备上
+        target_device = hidden_states.device
+        if self.router.gate.weight.device != target_device:
+            self.router = self.router.to(target_device)
+        if self.output_projection is not None and self.output_projection.weight.device != target_device:
+            self.output_projection = self.output_projection.to(target_device)
 
         # 为每个专家计算输出
         for expert_id in range(self.num_experts):
@@ -416,10 +423,20 @@ class MixLoRALayer(nn.Module):
             # 计算专家的直接输出（维度保持为 hidden_dim）
             expert = self.experts[expert_id]
 
+            # 确保专家在正确的设备上
+            if next(expert.parameters()).device != target_device:
+                expert = expert.to(target_device)
+                self.experts[expert_id] = expert
+
             # 使用第一个目标模块进行计算
             first_module = self.target_modules[0] if self.target_modules else 'gate_proj'
             if first_module in self.base_ffn_layers:
                 base_layer = self.base_ffn_layers[first_module]
+
+                # 确保基础层在正确的设备上
+                if base_layer.weight.device != target_device:
+                    base_layer = base_layer.to(target_device)
+                    self.base_ffn_layers[first_module] = base_layer
 
                 # 计算基础层输出
                 base_output = base_layer(hidden_states)  # [batch_size, seq_len, expert_output_dim]
@@ -437,9 +454,17 @@ class MixLoRALayer(nn.Module):
                         )
                     expert_output = self.output_projection(expert_output)  # [batch_size, seq_len, hidden_dim]
 
-                # 应用权重
+                # 应用权重，确保设备一致性
                 weight_expanded = expert_weights_for_id.unsqueeze(-1)  # [batch_size, seq_len, 1]
-                final_output += weight_expanded * expert_output
+
+                # 确保所有张量在同一设备上
+                if weight_expanded.device != expert_output.device:
+                    weight_expanded = weight_expanded.to(expert_output.device)
+                if final_output.device != expert_output.device:
+                    final_output = final_output.to(expert_output.device)
+
+                weighted_expert_output = weight_expanded * expert_output
+                final_output += weighted_expert_output
 
         # 4. 计算负载均衡损失
         load_balancing_loss = self.router.compute_load_balancing_loss(

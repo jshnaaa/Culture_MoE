@@ -230,6 +230,9 @@ class MixLoRAModelAdapter:
                         hidden_states = attn_outputs
                         attn_weights = None
 
+                    # 确保设备一致性
+                    if residual.device != hidden_states.device:
+                        residual = residual.to(hidden_states.device)
                     hidden_states = residual + hidden_states
 
                     # FFN计算 - 使用MixLoRA
@@ -238,6 +241,13 @@ class MixLoRAModelAdapter:
 
                     # MixLoRA FFN计算
                     mixlora_output, aux_info = mixlora_layer(hidden_states)
+
+                    # 确保设备一致性
+                    if residual.device != mixlora_output.device:
+                        residual = residual.to(mixlora_output.device)
+                    elif mixlora_output.device != residual.device:
+                        mixlora_output = mixlora_output.to(residual.device)
+
                     hidden_states = residual + mixlora_output
 
                     # 缓存辅助信息
