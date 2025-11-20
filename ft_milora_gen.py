@@ -143,9 +143,13 @@ class MiLoRATrainer:
         self.base_model = AutoModelForCausalLM.from_pretrained(
             self.args.base_model_path,
             torch_dtype=torch.float16 if self.args.fp16 else torch.float32,
-            device_map='auto' if torch.cuda.is_available() else None,
-            trust_remote_code=True
+            device_map=None,  # 避免自动分布，手动控制设备
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
         )
+
+        # 手动将模型移动到指定设备
+        self.base_model = self.base_model.to(self.device)
 
         # 获取模型配置
         config = self.base_model.config

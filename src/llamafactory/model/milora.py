@@ -60,6 +60,14 @@ class RationalActivation(nn.Module):
         Returns:
             激活后的张量
         """
+        target_device = x.device
+
+        # 确保系数在正确的设备上
+        if self.numerator_coeffs.device != target_device:
+            self.numerator_coeffs = self.numerator_coeffs.to(target_device)
+        if self.denominator_coeffs.device != target_device:
+            self.denominator_coeffs = self.denominator_coeffs.to(target_device)
+
         # 计算分子：∑(j=0~m) a_j * x^j
         numerator = self.numerator_coeffs[0]  # 常数项
         x_power = x
@@ -136,9 +144,18 @@ class LoRAPooler(nn.Module):
 
         elif self.pooling_type == "self_attention":
             # 自注意力池化（默认）
+            target_device = hidden_states.device
+
+            # 确保attention_weights在正确的设备上
+            if self.attention_weights.weight.device != target_device:
+                self.attention_weights = self.attention_weights.to(target_device)
+
             attention_scores = self.attention_weights(hidden_states).squeeze(-1)  # [batch_size, seq_len]
 
             if attention_mask is not None:
+                # 确保attention_mask在正确的设备上
+                if attention_mask.device != target_device:
+                    attention_mask = attention_mask.to(target_device)
                 attention_scores = attention_scores.masked_fill(attention_mask == 0, float('-inf'))
 
             attention_weights = F.softmax(attention_scores, dim=1)  # [batch_size, seq_len]
@@ -202,6 +219,19 @@ class LoRARouter(nn.Module):
             load_balance_loss: 负载均衡损失
         """
         batch_size = hidden_states.size(0)
+        target_device = hidden_states.device
+
+        # 确保池化器在正确的设备上
+        if next(self.pooler.parameters()).device != target_device:
+            self.pooler = self.pooler.to(target_device)
+
+        # 确保激活函数在正确的设备上
+        if next(self.activation.parameters()).device != target_device:
+            self.activation = self.activation.to(target_device)
+
+        # 确保路由器权重在正确的设备上
+        if self.router_weights.weight.device != target_device:
+            self.router_weights = self.router_weights.to(target_device)
 
         # 1. 池化：将隐藏状态聚合为固定长度向量
         pooled_hidden = self.pooler(hidden_states, attention_mask)  # [batch_size, hidden_dim]
@@ -238,8 +268,17 @@ class LoRARouter(nn.Module):
 
             # 更新全局统计（用于监控）
             with torch.no_grad():
-                self.expert_counts += expert_mask.sum(dim=0)
-                self.expert_probs += expert_probs.sum(dim=0)
+                # 确保统计张量在正确的设备上
+                expert_mask_sum = expert_mask.sum(dim=0)
+                expert_probs_sum = expert_probs.sum(dim=0)
+
+                if self.expert_counts.device != expert_mask_sum.device:
+                    self.expert_counts = self.expert_counts.to(expert_mask_sum.device)
+                if self.expert_probs.device != expert_probs_sum.device:
+                    self.expert_probs = self.expert_probs.to(expert_probs_sum.device)
+
+                self.expert_counts += expert_mask_sum
+                self.expert_probs += expert_probs_sum
                 self.total_samples += batch_size
 
         return expert_weights, top_k_indices, load_balance_loss
@@ -292,6 +331,22 @@ class LoRAExpert(nn.Module):
         """
         前向传播：x' = x * W_m + x * W_m^A * W_m^B + b_m
         """
+        target_device = x.device
+
+        # 确保基础层在正确的设备上
+        if next(self.base_layer.parameters()).device != target_device:
+            self.base_layer = self.base_layer.to(target_device)
+
+        # 确保LoRA层在正确的设备上
+        if self.lora_A.weight.device != target_device:
+            self.lora_A = self.lora_A.to(target_device)
+            self.lora_B = self.lora_B.to(target_device)
+
+        # 确保dropout层在正确的设备上（如果有参数）
+        if hasattr(self.dropout, 'weight') and self.dropout.weight is not None:
+            if self.dropout.weight.device != target_device:
+                self.dropout = self.dropout.to(target_device)
+
         # 基础层输出
         base_output = self.base_layer(x)
 
@@ -381,13 +436,23 @@ class MiLoRALayer(nn.Module):
             load_balance_loss: 负载均衡损失
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
+        target_device = hidden_states.device
+
+        # 确保路由器在正确的设备上
+        if next(self.router.parameters()).device != target_device:
+            self.router = self.router.to(target_device)
+
+        # 确保所有专家在正确的设备上
+        for expert_name, expert in self.experts.items():
+            if next(expert.parameters()).device != target_device:
+                self.experts[expert_name] = expert.to(target_device)
 
         # 1. 路由决策（提示感知机制）
         if self.use_cached_routing and self.cached_expert_weights is not None:
-            # 使用缓存的路由结果
-            expert_weights = self.cached_expert_weights
-            expert_indices = self.cached_expert_indices
-            load_balance_loss = torch.tensor(0.0, device=hidden_states.device)
+            # 使用缓存的路由结果，确保在正确设备上
+            expert_weights = self.cached_expert_weights.to(target_device)
+            expert_indices = self.cached_expert_indices.to(target_device)
+            load_balance_loss = torch.tensor(0.0, device=target_device)
         else:
             # 计算新的路由结果
             expert_weights, expert_indices, load_balance_loss = self.router(
@@ -511,9 +576,9 @@ class MiLoRAModel(nn.Module):
         target_device = input_ids.device
 
         # 将所有MiLoRA层移动到目标设备
-        for layer in self.milora_layers:
+        for layer_idx, layer in enumerate(self.milora_layers):
             if next(layer.parameters()).device != target_device:
-                layer = layer.to(target_device)
+                self.milora_layers[layer_idx] = layer.to(target_device)
 
         # 基础模型前向传播（获取隐藏状态）
         base_outputs = self.base_model(
@@ -531,6 +596,14 @@ class MiLoRAModel(nn.Module):
         for layer_idx, milora_layer in enumerate(self.milora_layers):
             layer_hidden = hidden_states[layer_idx + 1]  # 跳过 embedding 层
 
+            # 确保层隐藏状态在正确的设备上
+            if layer_hidden.device != target_device:
+                layer_hidden = layer_hidden.to(target_device)
+
+            # 确保注意力掩码在正确的设备上
+            if attention_mask is not None and attention_mask.device != target_device:
+                attention_mask = attention_mask.to(target_device)
+
             # 为每个专家计算输出（这里简化为只使用 q_proj）
             expert_output, load_balance_loss = milora_layer(
                 layer_hidden,
@@ -540,6 +613,11 @@ class MiLoRAModel(nn.Module):
             )
 
             milora_outputs.append(expert_output)
+
+            # 确保负载均衡损失在正确的设备上
+            if load_balance_loss.device != total_load_balance_loss.device:
+                load_balance_loss = load_balance_loss.to(total_load_balance_loss.device)
+
             total_load_balance_loss += load_balance_loss
 
         return {
