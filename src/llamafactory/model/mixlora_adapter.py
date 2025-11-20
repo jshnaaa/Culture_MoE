@@ -314,7 +314,7 @@ class MixLoRAModelAdapter:
 
     def save_mixlora(self, save_directory: str):
         """
-        保存MixLoRA权重和配置
+        保存MixLoRA权重和配置 - 只保存可训练参数
 
         Args:
             save_directory: 保存目录
@@ -326,15 +326,45 @@ class MixLoRAModelAdapter:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(self.mixlora_config.to_dict(), f, indent=2, ensure_ascii=False)
 
-        # 保存MixLoRA权重
+        # 只保存可训练的MixLoRA权重（不包括冻结的基础层）
         mixlora_state_dict = {}
+        total_trainable_params = 0
+        total_saved_params = 0
+
         for layer_name, mixlora_layer in self.mixlora_layers.items():
-            mixlora_state_dict[layer_name] = mixlora_layer.state_dict()
+            layer_state_dict = {}
+
+            # 只保存可训练参数
+            for param_name, param in mixlora_layer.named_parameters():
+                if param.requires_grad:
+                    # 确保参数名称不包含冻结的基础层
+                    if not any(frozen_key in param_name for frozen_key in ['base_ffn_layers']):
+                        layer_state_dict[param_name] = param.cpu().clone().detach()
+                        total_trainable_params += param.numel()
+                        total_saved_params += param.numel()
+
+            # 只有当层有可训练参数时才保存
+            if layer_state_dict:
+                mixlora_state_dict[layer_name] = layer_state_dict
 
         weights_path = os.path.join(save_directory, 'mixlora_weights.pt')
         torch.save(mixlora_state_dict, weights_path)
 
+        # 计算文件大小
+        file_size_mb = os.path.getsize(weights_path) / (1024 * 1024)
+        param_size_mb = total_saved_params * 4 / (1024 * 1024)  # 假设float32
+
         logger.info(f"MixLoRA saved to: {save_directory}")
+        logger.info(f"  Trainable parameters saved: {total_saved_params:,}")
+        logger.info(f"  File size: {file_size_mb:.2f} MB")
+        logger.info(f"  Expected size: {param_size_mb:.2f} MB")
+
+        # 警告如果文件过大
+        if file_size_mb > 200:  # 如果超过200MB
+            logger.warning(f"⚠️  MixLoRA weights file is larger than expected: {file_size_mb:.2f} MB")
+            logger.warning("This may indicate that frozen base model weights are being saved")
+        else:
+            logger.info("✅ MixLoRA weights saved successfully (trainable parameters only)")
 
     @classmethod
     def load_mixlora(
@@ -366,11 +396,28 @@ class MixLoRAModelAdapter:
         weights_path = os.path.join(load_directory, 'mixlora_weights.pt')
         mixlora_state_dict = torch.load(weights_path, map_location='cpu')
 
+        total_loaded_params = 0
         for layer_name, state_dict in mixlora_state_dict.items():
             if layer_name in adapter.mixlora_layers:
-                adapter.mixlora_layers[layer_name].load_state_dict(state_dict)
+                # 使用strict=False，因为我们只加载可训练参数
+                # 冻结的基础层权重不在保存的状态字典中
+                missing_keys, unexpected_keys = adapter.mixlora_layers[layer_name].load_state_dict(
+                    state_dict, strict=False
+                )
+
+                # 统计加载的参数数量
+                for param in state_dict.values():
+                    total_loaded_params += param.numel()
+
+                # 记录缺失的键（这些应该是冻结的基础层，这是正常的）
+                if missing_keys:
+                    logger.debug(f"Layer {layer_name} - Missing keys (frozen base layers): {len(missing_keys)} keys")
+                if unexpected_keys:
+                    logger.warning(f"Layer {layer_name} - Unexpected keys: {unexpected_keys}")
 
         logger.info(f"MixLoRA loaded from: {load_directory}")
+        logger.info(f"  Loaded parameters: {total_loaded_params:,}")
+        logger.info("✅ MixLoRA weights loaded successfully (trainable parameters only)")
         return adapter
 
     def print_trainable_parameters(self):
