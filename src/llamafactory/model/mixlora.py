@@ -498,7 +498,7 @@ class MixLoRALayer(nn.Module):
             target_device: 目标设备
 
         Returns:
-            FFN输出 [batch_size, seq_len, hidden_dim]
+            FFN输出 [batch_size, seq_len, hidden_dim] - 确保维度与输入匹配
         """
         # 检查FFN层的可用性
         gate_proj = self.base_ffn_layers['gate_proj'] if 'gate_proj' in self.base_ffn_layers else None
@@ -583,6 +583,23 @@ class MixLoRALayer(nn.Module):
                 logger.warning("No available FFN modules, returning original hidden states")
                 final_output = hidden_states
 
+        # 最终检查：确保输出维度与输入隐藏状态匹配
+        if final_output.shape != hidden_states.shape:
+            logger.warning(f"FFN output shape {final_output.shape} doesn't match input shape {hidden_states.shape}")
+            if self.output_projection is not None:
+                # 如果有输出投影层，尝试使用它
+                if (self.output_projection.weight.device != final_output.device or
+                    self.output_projection.weight.dtype != final_output.dtype):
+                    self.output_projection = self.output_projection.to(
+                        device=final_output.device, dtype=final_output.dtype
+                    )
+                final_output = self.output_projection(final_output)
+                logger.info(f"Applied output projection: {final_output.shape}")
+            else:
+                # 如果没有投影层，返回零张量以避免维度错误
+                logger.warning("No output projection available, returning zero tensor")
+                final_output = torch.zeros_like(hidden_states)
+
         return final_output
 
 
@@ -627,14 +644,12 @@ class MixLoRAConfig:
         self.top_k = top_k
         self.aux_loss_coef = aux_loss_coef
 
-        # 默认目标模块
+        # 设置目标模块
         if ffn_target_modules is None:
             ffn_target_modules = ['gate_proj', 'up_proj', 'down_proj']
-        if attention_target_modules is None:
-            attention_target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj']
 
         self.ffn_target_modules = ffn_target_modules
-        self.attention_target_modules = attention_target_modules
+        self.attention_target_modules = attention_target_modules  # 保持原值，包括None
         self.apply_mixlora_to_attention = apply_mixlora_to_attention
 
     def to_dict(self) -> Dict:

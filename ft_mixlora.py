@@ -410,7 +410,7 @@ def main():
         top_k=args.top_k,
         aux_loss_coef=args.aux_loss_coef,
         ffn_target_modules=['gate_proj', 'up_proj', 'down_proj'],
-        attention_target_modules=['q_proj', 'v_proj'],
+        attention_target_modules=None,  # 暂时禁用注意力层LoRA避免维度问题
         apply_mixlora_to_attention=False
     )
 

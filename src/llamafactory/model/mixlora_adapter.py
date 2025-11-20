@@ -269,6 +269,11 @@ class MixLoRAModelAdapter:
 
     def _apply_attention_lora(self):
         """在注意力层应用普通LoRA"""
+        # 检查是否需要应用注意力LoRA
+        if self.mixlora_config.attention_target_modules is None or not self.mixlora_config.attention_target_modules:
+            logger.info("Skipping attention LoRA (no target modules specified)")
+            return
+
         # 创建注意力LoRA配置
         attention_lora_config = LoraConfig(
             r=self.mixlora_config.lora_rank,

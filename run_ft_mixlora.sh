@@ -128,6 +128,11 @@ mkdir -p "$OUTPUT_DIR"
 # 运行训练
 echo "Starting MixLoRA training..."
 echo ""
+echo "🔧 Dimension Fix Applied:"
+echo "  - Disabled attention layer LoRA to avoid RoPE dimension mismatch"
+echo "  - Only FFN layers use MixLoRA experts"
+echo "  - This prevents the 'tensor size (32) vs (128)' error"
+echo ""
 
 python ft_mixlora.py \
     --base_model_path "$BASE_MODEL_PATH" \
@@ -178,7 +183,7 @@ if [ $? -eq 0 ]; then
     echo "💡 Model architecture summary:"
     echo "   - Base model: $MODEL_NAME (frozen)"
     echo "   - FFN layers: 6 LoRA experts per layer (Top-2 routing)"
-    echo "   - Attention layers: Standard LoRA on q_proj, v_proj"
+    echo "   - Attention layers: No LoRA (避免维度问题)"
     echo "   - Parameter efficiency: Only LoRA weights are trainable"
     echo "   - Load balancing: Auxiliary loss ensures expert utilization balance"
     echo "============================================================"

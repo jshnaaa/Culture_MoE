@@ -507,6 +507,14 @@ class MiLoRAModel(nn.Module):
         """
         前向传播
         """
+        # 确保所有MiLoRA层在正确的设备上
+        target_device = input_ids.device
+
+        # 将所有MiLoRA层移动到目标设备
+        for layer in self.milora_layers:
+            if next(layer.parameters()).device != target_device:
+                layer = layer.to(target_device)
+
         # 基础模型前向传播（获取隐藏状态）
         base_outputs = self.base_model(
             input_ids=input_ids,
