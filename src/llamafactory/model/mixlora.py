@@ -501,9 +501,9 @@ class MixLoRALayer(nn.Module):
             FFN输出 [batch_size, seq_len, hidden_dim]
         """
         # 检查FFN层的可用性
-        gate_proj = self.base_ffn_layers.get('gate_proj')
-        up_proj = self.base_ffn_layers.get('up_proj')
-        down_proj = self.base_ffn_layers.get('down_proj')
+        gate_proj = self.base_ffn_layers['gate_proj'] if 'gate_proj' in self.base_ffn_layers else None
+        up_proj = self.base_ffn_layers['up_proj'] if 'up_proj' in self.base_ffn_layers else None
+        down_proj = self.base_ffn_layers['down_proj'] if 'down_proj' in self.base_ffn_layers else None
 
         # 确保所有层都在正确的设备上
         if gate_proj and gate_proj.weight.device != target_device:

@@ -33,8 +33,8 @@
 #   MARGIN: 文化损失margin (默认 0.5)
 #   LAMBDA_DIFF: 文化损失lambda_diff (默认 1.0)
 #   USE_SHARED: 是否使用共享专家 (默认 True)
-#   ROUTER_TEMP: 路由器温度 (默认 2.0)
-#   LOAD_BAL: 负载均衡权重 (默认 0.001, 降低避免负损失)
+#   ROUTER_TEMP: 路由器温度 (默认 1.0, 降低使路由决策更确定)
+#   LOAD_BAL: 负载均衡权重 (默认 0.0001, 进一步降低避免专家负载不均)
 #   ENTROPY: 熵正则化权重 (默认 0.01, 降低避免负损失)
 #   NUM_GPUS: GPU数量 (默认 1，只有设置为2时才启用双GPU)
 #   USE_MASK: MASK机制开关 (默认 True，设为 False 进行消融实验)
@@ -69,8 +69,8 @@ LAMBDA="${6:-0.5}"                  # 默认文化损失权重 0.5
 MARGIN="${7:-0.5}"                  # 默认 margin 0.5
 LAMBDA_DIFF="${8:-1.0}"             # 默认 lambda_diff 1.0
 USE_SHARED="${9:-True}"             # 默认使用共享专家
-ROUTER_TEMP="${10:-2.0}"            # 默认 Router 温度参数 2.0
-LOAD_BAL="${11:-0.001}"             # 默认负载均衡权重 0.001 (降低)
+ROUTER_TEMP="${10:-1.0}"            # 默认 Router 温度参数 1.0 (降低使决策更确定)
+LOAD_BAL="${11:-0.0001}"            # 默认负载均衡权重 0.0001 (进一步降低)
 ENTROPY="${12:-0.01}"               # 默认熵正则化权重 0.01 (降低)
 NUM_GPUS="${13:-1}"                 # 默认使用 1 个 GPU
 USE_MASK="${14:-True}"              # 默认使用 MASK 机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)
@@ -200,6 +200,12 @@ echo "============================================================"
 echo "Training Mode: FROZEN LoRA-FINETUNED MODEL + Enhanced MoE Training"
 echo "Strategy: Preserve LoRA accuracy + Add advanced cultural specialization"
 echo ""
+echo "🔧 Optimization Updates:"
+echo "  - Router temperature: $ROUTER_TEMP (降低使路由决策更确定)"
+echo "  - Load balance weight: $LOAD_BAL (降低避免专家负载不均)"
+echo "  - Expert usage monitoring: 每50步记录 + Epoch汇总"
+echo "  - Load balance health check: 自动检测专家使用均衡性"
+echo ""
 echo "📊 Evaluation Strategy:"
 echo "  - Evaluation interval: Every 3 epochs (Epoch 3, 6, 9, 12)"
 echo "  - Best model saving: Automatically saves model with highest eval accuracy"
@@ -261,10 +267,11 @@ echo "  Enhanced MoE components: 2e-4"
 echo "  Cultural components: 2e-4"
 echo "  All MoE multipliers: 1.0"
 echo ""
-echo "Anti-collapse mechanisms:"
-echo "  Router temperature: $ROUTER_TEMP"
-echo "  Load balance weight: $LOAD_BAL"
+echo "Anti-collapse mechanisms (优化后):"
+echo "  Router temperature: $ROUTER_TEMP (↓ 更确定的路由决策)"
+echo "  Load balance weight: $LOAD_BAL (↓ 减少专家负载不均)"
 echo "  Entropy weight: $ENTROPY"
+echo "  Expert monitoring: 每50步 + Epoch汇总"
 echo ""
 echo "GPUs: $GPU_INFO"
 echo ""

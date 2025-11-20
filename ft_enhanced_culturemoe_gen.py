@@ -701,9 +701,52 @@ class EnhancedCultureMoETrainer:
                 'ent': f"{outputs.get('entropy_loss', torch.tensor(0)).item():.4f}"
             })
 
+            # 专家使用情况监控（每50步记录一次）
+            if self.global_step % 50 == 0 and 'expert_weights' in outputs:
+                try:
+                    expert_weights = outputs['expert_weights']  # [batch_size, num_experts]
+                    if expert_weights is not None:
+                        # 计算每个专家的平均使用权重
+                        expert_usage = expert_weights.mean(dim=0).cpu().numpy()  # [num_experts]
+                        usage_str = ', '.join([f"E{i}:{usage:.3f}" for i, usage in enumerate(expert_usage)])
+                        logging.info(f"Step {self.global_step} - Expert Usage: {usage_str}")
+
+                        # 检查专家使用是否均衡
+                        usage_std = expert_usage.std()
+                        usage_max = expert_usage.max()
+                        usage_min = expert_usage.min()
+                        if usage_std > 0.3:  # 标准差过大表示不均衡
+                            logging.warning(f"Expert usage imbalance detected: std={usage_std:.3f}, max={usage_max:.3f}, min={usage_min:.3f}")
+                except Exception as e:
+                    logging.debug(f"Failed to monitor expert usage: {e}")
+
             # 清理内存（使用动态间隔）
             if self.global_step % self.memory_cleanup_interval == 0:
                 torch.cuda.empty_cache()
+
+        # Epoch结束时的专家使用情况汇总
+        logging.info(f"\n=== Epoch {epoch+1} Training Summary ===")
+        logging.info(f"Total Loss: {total_loss / num_batches:.6f}")
+        logging.info(f"  ├─ Generation Loss: {total_generation_loss / num_batches:.6f}")
+        logging.info(f"  ├─ Culture Loss: {total_culture_loss / num_batches:.6f}")
+        logging.info(f"  ├─ Load Balance Loss: {total_load_balance_loss / num_batches:.6f}")
+        logging.info(f"  ├─ Entropy Loss: {total_entropy_loss / num_batches:.6f}")
+        logging.info(f"  ├─ Specialization Loss: {total_specialization_loss / num_batches:.6f}")
+        logging.info(f"  └─ Diversity Loss: {total_diversity_loss / num_batches:.6f}")
+
+        # 负载均衡和熵损失的健康检查
+        avg_load_loss = total_load_balance_loss / num_batches
+        avg_entropy_loss = total_entropy_loss / num_batches
+
+        if avg_load_loss > 0.5:
+            logging.warning(f"⚠️  High load balance loss ({avg_load_loss:.4f}) - Expert usage may be imbalanced")
+        elif avg_load_loss < 0.001:
+            logging.info(f"✅ Good load balance loss ({avg_load_loss:.4f}) - Experts are well balanced")
+
+        if avg_entropy_loss > 0.3:
+            logging.warning(f"⚠️  High entropy loss ({avg_entropy_loss:.4f}) - Router decisions may be uncertain")
+        elif avg_entropy_loss < 0.1:
+            logging.info(f"✅ Good entropy loss ({avg_entropy_loss:.4f}) - Router decisions are confident")
 
         return {
             'train_loss': total_loss / num_batches,
