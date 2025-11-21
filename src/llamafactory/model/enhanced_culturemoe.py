@@ -552,3 +552,62 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 'param_count': sum(p.numel() for p in expert.parameters())
             })
         return info
+
+    def print_trainable_parameters(self):
+        """打印可训练参数信息"""
+        total_params = 0
+        trainable_params = 0
+        frozen_params = 0
+
+        # 统计所有参数
+        for name, param in self.named_parameters():
+            total_params += param.numel()
+            if param.requires_grad:
+                trainable_params += param.numel()
+            else:
+                frozen_params += param.numel()
+
+        # 统计各组件参数
+        cultural_expert_params = 0
+        router_params = 0
+        cultural_embedding_params = 0
+        cultural_context_params = 0
+        cultural_gate_params = 0
+        shared_params = 0
+        base_model_params = 0
+
+        for name, param in self.named_parameters():
+            if 'cultural_experts' in name:
+                cultural_expert_params += param.numel()
+            elif 'router' in name:
+                router_params += param.numel()
+            elif 'cultural_embedding' in name:
+                cultural_embedding_params += param.numel()
+            elif 'cultural_context' in name:
+                cultural_context_params += param.numel()
+            elif 'cultural_gate' in name:
+                cultural_gate_params += param.numel()
+            elif 'shared' in name:
+                shared_params += param.numel()
+            else:
+                base_model_params += param.numel()
+
+        trainable_percentage = 100 * trainable_params / total_params if total_params > 0 else 0
+
+        print("=" * 60)
+        print("📊 Enhanced CultureMoE Parameter Statistics")
+        print("=" * 60)
+        print(f"Total parameters: {total_params:,}")
+        print(f"Trainable parameters: {trainable_params:,}")
+        print(f"Frozen parameters: {frozen_params:,}")
+        print(f"Trainable percentage: {trainable_percentage:.4f}%")
+        print("")
+        print("Component breakdown:")
+        print(f"  Base model (LLaMA): {base_model_params:,}")
+        print(f"  Cultural experts: {cultural_expert_params:,}")
+        print(f"  Cultural router: {router_params:,}")
+        print(f"  Cultural embedding: {cultural_embedding_params:,}")
+        print(f"  Cultural context: {cultural_context_params:,}")
+        print(f"  Cultural gate: {cultural_gate_params:,}")
+        print(f"  Shared layers: {shared_params:,}")
+        print("=" * 60)
