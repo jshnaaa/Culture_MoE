@@ -391,7 +391,24 @@ class MiLoRATrainer:
         milora_weights_path = os.path.join(save_dir, 'milora_weights.pth')
         torch.save(milora_state_dict, milora_weights_path)
 
-        # 保存配置
+        # 保存配置 - 创建JSON安全的训练参数
+        training_args_safe = {}
+        for key, value in vars(self.args).items():
+            try:
+                # 尝试JSON序列化测试
+                json.dumps(value)
+                training_args_safe[key] = value
+            except (TypeError, ValueError):
+                # 处理不可序列化的对象
+                if hasattr(value, 'item'):  # PyTorch tensor标量
+                    training_args_safe[key] = float(value.item())
+                elif hasattr(value, 'tolist'):  # PyTorch tensor
+                    training_args_safe[key] = value.tolist()
+                elif hasattr(value, '__dict__'):  # 对象
+                    training_args_safe[key] = str(value)
+                else:
+                    training_args_safe[key] = str(value)
+
         config = {
             'model_config': {
                 'base_model_path': self.args.base_model_path,
@@ -402,7 +419,7 @@ class MiLoRATrainer:
                 'dropout': self.args.dropout,
                 'load_balance_weight': self.args.load_balance_weight
             },
-            'training_args': vars(self.args),
+            'training_args': training_args_safe,
             'model_statistics': self.model.get_model_statistics()
         }
 

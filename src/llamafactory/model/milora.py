@@ -205,14 +205,14 @@ class LoRARouter(nn.Module):
         self._init_router_weights()
 
     def _init_router_weights(self):
-        """初始化路由器权重 - 数值稳定版本"""
-        # 使用更小的初始化确保数值稳定性
-        nn.init.normal_(self.router_weights.weight, mean=0.0, std=0.001)
+        """初始化路由器权重 - 防止路由坍塌版本"""
+        # 使用更合理的初始化，避免路由坍塌
+        nn.init.normal_(self.router_weights.weight, mean=0.0, std=0.02)  # 增加初始化方差
         if self.router_weights.bias is not None:
             nn.init.zeros_(self.router_weights.bias)
-        # 限制初始权重范围
+        # 适度限制初始权重范围，保持多样性
         with torch.no_grad():
-            self.router_weights.weight.data.clamp_(-0.1, 0.1)
+            self.router_weights.weight.data.clamp_(-0.5, 0.5)  # 扩大初始权重范围
 
     def forward(
         self,
@@ -261,23 +261,23 @@ class LoRARouter(nn.Module):
         # 进一步限制激活输出范围
         activated_hidden = torch.clamp(activated_hidden, min=-3.0, max=3.0)
 
-        # 3. MoE 路由器：计算专家概率（数值稳定版本）
-        # 限制路由器权重范围，防止极端权重
+        # 3. MoE 路由器：计算专家概率（防路由坍塌版本）
+        # 适度限制路由器权重范围，保持专家多样性
         with torch.no_grad():
-            self.router_weights.weight.data.clamp_(-1.0, 1.0)
+            self.router_weights.weight.data.clamp_(-2.0, 2.0)  # 扩大权重范围
 
         router_logits = self.router_weights(activated_hidden)  # [batch_size, num_experts]
 
-        # 强制限制router_logits范围
-        router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)
+        # 适度限制router_logits范围，避免过度压制
+        router_logits = torch.clamp(router_logits, min=-8.0, max=8.0)  # 扩大logits范围
 
         # 强化的异常值检查和修复
         if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
-            # 使用均匀分布的logits作为fallback
-            router_logits = torch.zeros_like(router_logits)
+            # 使用小的随机扰动而非零值，避免完全均匀分布
+            router_logits = torch.randn_like(router_logits) * 0.1
 
-        # 使用更保守的温度缩放
-        temperature = 2.0  # 更高的温度使分布更平滑
+        # 使用适中的温度缩放，平衡确定性和多样性
+        temperature = 1.0  # 降低温度，增加路由确定性但保持多样性
         router_logits_scaled = router_logits / temperature
 
         # 数值稳定的softmax：减去最大值
@@ -342,20 +342,25 @@ class LoRARouter(nn.Module):
                     # 使用零损失
                     load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
                 else:
-                    # 负载均衡损失：L_lb = N_mod * ∑(f_i * p_i)（数值稳定版本）
-                    balance_product = expert_freq * expert_avg_prob
-                    balance_product = torch.clamp(balance_product, max=1.0)  # 限制最大值
+                    # 负载均衡损失：改进版本，更好地防止路由坍塌
+                    # 使用方差惩罚：鼓励专家使用的均匀分布
+                    expert_usage_variance = torch.var(expert_freq)
+                    prob_variance = torch.var(expert_avg_prob)
 
-                    # 检查乘积结果
-                    if torch.isnan(balance_product).any() or torch.isinf(balance_product).any():
+                    # 传统的负载均衡损失
+                    balance_product = expert_freq * expert_avg_prob
+                    balance_product = torch.clamp(balance_product, max=1.0)
+                    traditional_lb_loss = self.num_experts * torch.sum(balance_product)
+
+                    # 组合损失：传统损失 + 方差惩罚
+                    variance_penalty = expert_usage_variance + prob_variance
+                    load_balance_loss = traditional_lb_loss + 0.1 * variance_penalty
+
+                    # 检查结果
+                    if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
                         load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
                     else:
-                        load_balance_loss = self.num_experts * torch.sum(balance_product)
-                        load_balance_loss = torch.clamp(load_balance_loss, max=100.0)  # 限制损失最大值
-
-                        # 最终检查
-                        if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
-                            load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
+                        load_balance_loss = torch.clamp(load_balance_loss, max=50.0)  # 降低最大值限制
 
             except Exception as e:
                 # 如果任何计算失败，使用零损失
@@ -662,16 +667,16 @@ class MiLoRALayer(nn.Module):
 
         return expert_output, load_balance_loss
 
-    def get_expert_statistics(self) -> Dict[str, torch.Tensor]:
-        """获取专家使用统计"""
+    def get_expert_statistics(self) -> Dict[str, any]:
+        """获取专家使用统计 - JSON序列化安全版本"""
         if self.router.total_samples > 0:
             expert_usage_freq = self.router.expert_counts / self.router.total_samples
             expert_avg_prob = self.router.expert_probs / self.router.total_samples
 
             return {
-                'expert_usage_frequency': expert_usage_freq,
-                'expert_average_probability': expert_avg_prob,
-                'total_samples': self.router.total_samples,
+                'expert_usage_frequency': expert_usage_freq.detach().cpu().numpy().tolist(),
+                'expert_average_probability': expert_avg_prob.detach().cpu().numpy().tolist(),
+                'total_samples': float(self.router.total_samples.item()) if hasattr(self.router.total_samples, 'item') else float(self.router.total_samples),
                 'expert_names': self.expert_names
             }
         else:
