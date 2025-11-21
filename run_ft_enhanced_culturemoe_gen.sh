@@ -16,7 +16,7 @@
 #   6. 可配置专家数量：支持消融实验
 #
 # 使用方法：
-#   sh run_ft_enhanced_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <MOE_FUSION> <CULTURE_LOSS_WEIGHT> <MARGIN> <LAMBDA_DIFF> <USE_SHARED> <ROUTER_TEMP> <LOAD_BAL> <ENTROPY> <NUM_GPUS> <USE_MASK>
+#   sh run_ft_enhanced_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <MOE_FUSION> <CULTURE_LOSS_WEIGHT> <MARGIN> <LAMBDA_DIFF> <USE_SHARED> <ROUTER_TEMP> <LOAD_BAL> <ENTROPY> <NUM_GPUS> <USE_MASK> <USE_GATE>
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
@@ -26,6 +26,7 @@
 #   MOE_FUSION: MoE 融合系数 (默认 0.4)
 #   CULTURE_LOSS_WEIGHT: 文化损失权重 (默认 0.5)
 #   USE_MASK: MASK机制开关 (默认 True，False为消融实验)
+#   USE_GATE: GATE机制开关 (默认 True，False为消融实验)
 #
 # 📦 批次大小自动配置：
 #   DATA_ID=2或3 (CulturalBench/NormAD): llama=3, qwen=8 (训练) / llama=2, qwen=4 (评估)
@@ -53,10 +54,13 @@
 #   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 24 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 2
 #
 #   # MASK消融实验：关闭MASK机制（单GPU）
-#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 1 False
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 1 False True
 #
-#   # MASK消融实验：关闭MASK机制（双GPU）
-#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 2 False
+#   # GATE消融实验：关闭GATE机制（单GPU）
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 1 True False
+#
+#   # 双重消融实验：关闭MASK和GATE机制（单GPU）
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 1 False False
 # ============================================================
 
 # ✅ 配置参数
@@ -74,6 +78,7 @@ LOAD_BAL="${11:-0.0001}"            # 默认负载均衡权重 0.0001 (进一步
 ENTROPY="${12:-0.01}"               # 默认熵正则化权重 0.01 (降低)
 NUM_GPUS="${13:-1}"                 # 默认使用 1 个 GPU
 USE_MASK="${14:-True}"              # 默认使用 MASK 机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)
+USE_GATE="${15:-True}"              # 默认使用 GATE 机制 (True=使用文化感知门控, False=不使用门控)
 
 # 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -173,7 +178,13 @@ else
     MASK_TAG="nomask"
 fi
 
-OUTPUT_DIR="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_${MASK_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_$(date +%Y%m%d_%H%M)"
+if [ "$USE_GATE" = "True" ] || [ "$USE_GATE" = "true" ]; then
+    GATE_TAG="gate"
+else
+    GATE_TAG="nogate"
+fi
+
+OUTPUT_DIR="/root/autodl-fs/data/ft/ft_enhanced_moe_gen_${DATASET_TAG}_${BACKBONE}_experts${NUM_EXPERTS}_${SHARED_TAG}_${MASK_TAG}_${GATE_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_$(date +%Y%m%d_%H%M)"
 
 # 设置 GPU - 明确的单卡/双卡逻辑
 export NUM_GPUS="$NUM_GPUS"  # 传递给Python脚本
@@ -254,6 +265,7 @@ echo "Culture loss weight (lambda): $LAMBDA"
 echo "Num experts: $NUM_EXPERTS (configurable for ablation studies)"
 echo "Use shared expert: $USE_SHARED"
 echo "Use MASK mechanism: $USE_MASK (True=shared experts use instruction_mask, False=shared experts use instruction)"
+echo "Use GATE mechanism: $USE_GATE (True=use cultural gate, False=no gate)"
 echo "MoE fusion coefficient: $MOE_FUSION"
 echo ""
 echo "📦 Batch Size Configuration:"
@@ -331,6 +343,7 @@ python ft_enhanced_culturemoe_gen.py \
     --entropy_weight "$ENTROPY" \
     --moe_fusion "$MOE_FUSION" \
     --use_mask "$USE_MASK" \
+    --use_gate "$USE_GATE" \
     --freeze_base_model True \
     --num_epochs 12 \
     --num_experts "$NUM_EXPERTS" \

@@ -354,7 +354,8 @@ class EnhancedCultureMoETrainer:
             culture_loss_lambda=self.args.culture_loss_lambda,
             moe_fusion=self.args.moe_fusion,
             num_cultures=6,   # 支持6个大洲 (0-5: 亚洲、欧洲、北美、南美、非洲、大洋洲)
-            culture_dim=256   # 文化嵌入维度
+            culture_dim=256,  # 文化嵌入维度
+            use_gate=self.args.use_gate  # 是否使用门控机制
         )
 
         # 冻结基础模型参数
@@ -1117,6 +1118,7 @@ def main():
     parser.add_argument('--moe_fusion', type=float, default=0.4, help='MoE融合系数')
     parser.add_argument('--use_shared_experts', type=str, default='True', help='是否使用共享专家')
     parser.add_argument('--use_mask', type=str, default='True', help='是否使用MASK机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)')
+    parser.add_argument('--use_gate', type=str, default='True', help='是否使用GATE机制 (True=使用文化感知门控, False=不使用门控)')
     parser.add_argument('--router_temperature', type=float, default=2.0, help='路由器温度')
     parser.add_argument('--load_balance_weight', type=float, default=0.001, help='负载均衡权重')
     parser.add_argument('--entropy_weight', type=float, default=0.05, help='熵正则化权重')
@@ -1143,6 +1145,7 @@ def main():
     args.use_culture_loss = args.use_culture_loss.lower() == 'true'
     args.use_shared_experts = args.use_shared_experts.lower() == 'true'
     args.freeze_base_model = args.freeze_base_model.lower() == 'true'
+    args.use_gate = args.use_gate.lower() == 'true'
 
     # 创建训练器并开始训练
     trainer = EnhancedCultureMoETrainer(args)

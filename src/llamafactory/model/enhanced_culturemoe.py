@@ -33,15 +33,16 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
     """
 
     def __init__(self, llama_model, config, args: ModelArgs, culture_loss_lambda=-1,
-                 moe_fusion=0.4, num_cultures=6, culture_dim=256):
+                 moe_fusion=0.4, num_cultures=6, culture_dim=256, use_gate=True):
         # 调用父类初始化，但不使用其 router 和 experts_layer
         super().__init__(llama_model, config, args, culture_loss_lambda, moe_fusion)
 
         self.num_cultures = num_cultures
         self.culture_dim = culture_dim
+        self.use_gate = use_gate
         hidden_dim = self.config.hidden_size
 
-        logging.info(f"Initializing Enhanced CultureMoE with {args.num_experts} experts and {num_cultures} cultures")
+        logging.info(f"Initializing Enhanced CultureMoE with {args.num_experts} experts and {num_cultures} cultures, gate={use_gate}")
 
         # ✅ 1. 文化嵌入层
         self.cultural_embedding = CulturalEmbeddingLayer(
@@ -87,14 +88,19 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
             dropout=args.dropout
         )
 
-        # ✅ 6. 文化感知的门控机制（替换原有gate_linear）
-        self.cultural_gate = nn.Sequential(
-            nn.Linear(hidden_dim + culture_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(args.dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Sigmoid()
-        )
+        # ✅ 6. 文化感知的门控机制（可选，替换原有gate_linear）
+        if self.use_gate:
+            self.cultural_gate = nn.Sequential(
+                nn.Linear(hidden_dim + culture_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(args.dropout),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.Sigmoid()
+            )
+            logging.info("Cultural gate mechanism enabled")
+        else:
+            self.cultural_gate = None
+            logging.info("Cultural gate mechanism disabled for ablation study")
 
         # 移除原有的 gate_linear 和 gate_sigmoid
         delattr(self, 'gate_linear')
@@ -112,13 +118,14 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
     def _init_enhanced_components(self):
         """初始化增强组件"""
-        # 文化感知门控初始化
-        for module in self.cultural_gate:
-            if isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, mean=0, std=0.001)
-                if module.bias is not None:
-                    # 门控的bias初始化为负值，确保初期影响较小
-                    nn.init.constant_(module.bias, -1.0)
+        # 文化感知门控初始化（仅在启用时）
+        if self.use_gate and self.cultural_gate is not None:
+            for module in self.cultural_gate:
+                if isinstance(module, nn.Linear):
+                    nn.init.normal_(module.weight, mean=0, std=0.001)
+                    if module.bias is not None:
+                        # 门控的bias初始化为负值，确保初期影响较小
+                        nn.init.constant_(module.bias, -1.0)
 
     def _log_culture_assignments(self):
         """记录文化分配方案"""
@@ -251,19 +258,25 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
             shared_out = shared_out[:, :min_len, :]
             expert_sum = expert_sum[:, :min_len, :]
 
-        # ✅ Step 11: 文化感知门控机制
-        # 获取文化嵌入
-        culture_emb = self.cultural_embedding.culture_embeddings(culture_ids)  # [B, culture_dim]
-        culture_emb_expanded = culture_emb.unsqueeze(1).expand(-1, shared_out.size(1), -1)  # [B, L, culture_dim]
+        # ✅ Step 11: 文化感知门控机制（可选）
+        if self.use_gate and self.cultural_gate is not None:
+            # 获取文化嵌入
+            culture_emb = self.cultural_embedding.culture_embeddings(culture_ids)  # [B, culture_dim]
+            culture_emb_expanded = culture_emb.unsqueeze(1).expand(-1, shared_out.size(1), -1)  # [B, L, culture_dim]
 
-        # 拼接shared输出和文化嵌入
-        gate_input = torch.cat([shared_out, culture_emb_expanded], dim=-1)  # [B, L, H + culture_dim]
-        cultural_gate = self.cultural_gate(gate_input)  # [B, L, H]
+            # 拼接shared输出和文化嵌入
+            gate_input = torch.cat([shared_out, culture_emb_expanded], dim=-1)  # [B, L, H + culture_dim]
+            cultural_gate = self.cultural_gate(gate_input)  # [B, L, H]
 
-        # 应用文化感知门控
-        moe_fusion_alpha = self.moe_fusion_alpha.to(device=cultural_gate.device, dtype=cultural_gate.dtype)
-        moe_gated = cultural_gate * moe_fusion_alpha * expert_sum  # [B, L, H]
-        enhanced_hidden = shared_out + moe_warmup_weight * moe_gated  # [B, L, H]
+            # 应用文化感知门控
+            moe_fusion_alpha = self.moe_fusion_alpha.to(device=cultural_gate.device, dtype=cultural_gate.dtype)
+            moe_gated = cultural_gate * moe_fusion_alpha * expert_sum  # [B, L, H]
+            enhanced_hidden = shared_out + moe_warmup_weight * moe_gated  # [B, L, H]
+        else:
+            # 不使用门控机制：直接融合专家输出
+            moe_fusion_alpha = self.moe_fusion_alpha.to(device=expert_sum.device, dtype=expert_sum.dtype)
+            moe_direct = moe_fusion_alpha * expert_sum  # [B, L, H]
+            enhanced_hidden = shared_out + moe_warmup_weight * moe_direct  # [B, L, H]
 
         # ✅ Step 12: 生成logits
         lm_head_dtype = self.llama_model.lm_head.weight.dtype
