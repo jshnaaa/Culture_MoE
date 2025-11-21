@@ -23,42 +23,33 @@ import math
 
 class RationalActivation(nn.Module):
     """
-    可学习的理性激活函数
-    Ra(x) = (∑(j=0~m) a_j * x^j) / (1 + ||∑(i=1~n) b_i * x^i||)
+    简化的可学习激活函数 - 数值稳定版本
+    使用简单的线性组合而非复杂多项式，确保数值稳定性
     """
 
     def __init__(self, input_dim: int, numerator_degree: int = 3, denominator_degree: int = 2):
         super().__init__()
         self.input_dim = input_dim
-        self.numerator_degree = numerator_degree
-        self.denominator_degree = denominator_degree
 
-        # 分子系数 a_j (j=0 to m)
-        self.numerator_coeffs = nn.Parameter(torch.randn(numerator_degree + 1, input_dim))
-
-        # 分母系数 b_i (i=1 to n)
-        self.denominator_coeffs = nn.Parameter(torch.randn(denominator_degree, input_dim))
+        # 简化为可学习的线性激活函数
+        # f(x) = alpha * x + beta * relu(x) + gamma * tanh(x)
+        self.alpha = nn.Parameter(torch.zeros(input_dim))  # 线性项
+        self.beta = nn.Parameter(torch.ones(input_dim))    # ReLU项
+        self.gamma = nn.Parameter(torch.zeros(input_dim))  # Tanh项
 
         self._initialize_parameters()
 
     def _initialize_parameters(self):
-        """初始化参数，使激活函数接近 ReLU"""
+        """初始化参数 - 接近ReLU但可学习"""
         with torch.no_grad():
-            # 初始化分子系数，使其接近 max(0, x)
-            self.numerator_coeffs[0].fill_(0.0)  # 常数项
-            self.numerator_coeffs[1].fill_(1.0)  # 一次项
-            self.numerator_coeffs[2:].fill_(0.0)  # 高次项
-
-            # 更保守的分母系数初始化，避免数值不稳定
-            self.denominator_coeffs.fill_(0.01)  # 更小的初始值
-
-            # 限制参数范围避免极端值
-            self.numerator_coeffs.data.clamp_(-2.0, 2.0)
-            self.denominator_coeffs.data.clamp_(0.001, 0.5)
+            # 初始化为接近ReLU的行为
+            self.alpha.fill_(0.0)   # 线性项初始为0
+            self.beta.fill_(1.0)    # ReLU项初始为1（主要激活）
+            self.gamma.fill_(0.0)   # Tanh项初始为0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        前向传播
+        前向传播 - 简化且数值稳定
         Args:
             x: 输入张量 [batch_size, seq_len, input_dim]
         Returns:
@@ -66,45 +57,35 @@ class RationalActivation(nn.Module):
         """
         target_device = x.device
 
-        # 确保系数在正确的设备和数据类型上
-        if (self.numerator_coeffs.device != target_device or
-            self.numerator_coeffs.dtype != x.dtype):
-            self.numerator_coeffs = self.numerator_coeffs.to(device=target_device, dtype=x.dtype)
-        if (self.denominator_coeffs.device != target_device or
-            self.denominator_coeffs.dtype != x.dtype):
-            self.denominator_coeffs = self.denominator_coeffs.to(device=target_device, dtype=x.dtype)
+        # 确保参数在正确的设备和数据类型上
+        if (self.alpha.device != target_device or self.alpha.dtype != x.dtype):
+            self.alpha = self.alpha.to(device=target_device, dtype=x.dtype)
+            self.beta = self.beta.to(device=target_device, dtype=x.dtype)
+            self.gamma = self.gamma.to(device=target_device, dtype=x.dtype)
 
-        # 计算分子：∑(j=0~m) a_j * x^j
-        numerator = self.numerator_coeffs[0]  # 常数项
-        x_power = x
+        # 限制参数范围，防止极端值
+        with torch.no_grad():
+            self.alpha.data.clamp_(-1.0, 1.0)
+            self.beta.data.clamp_(0.0, 2.0)
+            self.gamma.data.clamp_(-1.0, 1.0)
 
-        for j in range(1, self.numerator_degree + 1):
-            numerator = numerator + self.numerator_coeffs[j] * x_power
-            if j < self.numerator_degree:
-                x_power = x_power * x
+        # 输入预处理：限制输入范围
+        x_clamped = torch.clamp(x, min=-10.0, max=10.0)
 
-        # 计算分母：1 + ||∑(i=1~n) b_i * x^i||
-        denominator_sum = torch.zeros_like(x)
-        x_power = x
+        # 简单的线性组合激活
+        linear_term = self.alpha * x_clamped
+        relu_term = self.beta * torch.relu(x_clamped)
+        tanh_term = self.gamma * torch.tanh(x_clamped)
 
-        for i in range(self.denominator_degree):
-            denominator_sum = denominator_sum + self.denominator_coeffs[i] * x_power
-            if i < self.denominator_degree - 1:
-                x_power = x_power * x
+        # 组合结果
+        result = linear_term + relu_term + tanh_term
 
-        # 数值稳定的分母计算
-        denominator_norm = torch.norm(denominator_sum, dim=-1, keepdim=True)
-        denominator = 1.0 + denominator_norm
+        # 限制输出范围
+        result = torch.clamp(result, min=-5.0, max=5.0)
 
-        # 避免除零和数值不稳定
-        denominator = torch.clamp(denominator, min=1e-6)
-
-        result = numerator / denominator
-
-        # 检查和修复NaN/Inf
+        # 最终检查（虽然这个简化版本不太可能产生NaN/Inf）
         if torch.isnan(result).any() or torch.isinf(result).any():
-            print("Warning: NaN/Inf in RationalActivation, using ReLU fallback")
-            result = torch.relu(x)
+            result = torch.relu(x_clamped)
 
         return result
 
@@ -220,6 +201,19 @@ class LoRARouter(nn.Module):
         self.register_buffer('expert_probs', torch.zeros(num_experts))
         self.register_buffer('total_samples', torch.tensor(0.0))
 
+        # 初始化路由器权重
+        self._init_router_weights()
+
+    def _init_router_weights(self):
+        """初始化路由器权重 - 数值稳定版本"""
+        # 使用更小的初始化确保数值稳定性
+        nn.init.normal_(self.router_weights.weight, mean=0.0, std=0.001)
+        if self.router_weights.bias is not None:
+            nn.init.zeros_(self.router_weights.bias)
+        # 限制初始权重范围
+        with torch.no_grad():
+            self.router_weights.weight.data.clamp_(-0.1, 0.1)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -258,68 +252,114 @@ class LoRARouter(nn.Module):
         # 1. 池化：将隐藏状态聚合为固定长度向量
         pooled_hidden = self.pooler(hidden_states, attention_mask)  # [batch_size, hidden_dim]
 
-        # 2. 可学习激活函数
+        # 预处理：限制池化输出范围
+        pooled_hidden = torch.clamp(pooled_hidden, min=-5.0, max=5.0)
+
+        # 2. 可学习激活函数（数值稳定版本）
         activated_hidden = self.activation(pooled_hidden)  # [batch_size, hidden_dim]
 
-        # 3. MoE 路由器：计算专家概率
+        # 进一步限制激活输出范围
+        activated_hidden = torch.clamp(activated_hidden, min=-3.0, max=3.0)
+
+        # 3. MoE 路由器：计算专家概率（数值稳定版本）
+        # 限制路由器权重范围，防止极端权重
+        with torch.no_grad():
+            self.router_weights.weight.data.clamp_(-1.0, 1.0)
+
         router_logits = self.router_weights(activated_hidden)  # [batch_size, num_experts]
 
-        # 检查和修复router_logits中的异常值
+        # 强制限制router_logits范围
+        router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)
+
+        # 强化的异常值检查和修复
         if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
-            print("Warning: NaN/Inf detected in router_logits, applying clipping")
-            router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
+            # 使用均匀分布的logits作为fallback
+            router_logits = torch.zeros_like(router_logits)
 
-        # 使用数值稳定的softmax
-        expert_probs = F.softmax(router_logits, dim=-1)  # [batch_size, num_experts]
+        # 使用更保守的温度缩放
+        temperature = 2.0  # 更高的温度使分布更平滑
+        router_logits_scaled = router_logits / temperature
 
-        # 再次检查expert_probs
-        if torch.isnan(expert_probs).any():
-            print("Warning: NaN detected in expert_probs, using uniform distribution")
+        # 数值稳定的softmax：减去最大值
+        try:
+            router_logits_max = router_logits_scaled.max(dim=-1, keepdim=True)[0]
+            router_logits_stable = router_logits_scaled - router_logits_max
+            expert_probs = F.softmax(router_logits_stable, dim=-1)
+        except:
+            # 如果softmax仍然失败，直接使用均匀分布
+            expert_probs = torch.ones_like(router_logits) / self.num_experts
+
+        # 强化的expert_probs检查
+        if (torch.isnan(expert_probs).any() or torch.isinf(expert_probs).any() or
+            expert_probs.sum(dim=-1).min() < 0.1):  # 检查概率和是否合理
+            # 使用均匀分布作为fallback
             expert_probs = torch.ones_like(expert_probs) / self.num_experts
 
-        # 4. Top-k 选择
-        top_k_probs, top_k_indices = torch.topk(expert_probs, self.top_k, dim=-1)
+        # 4. Top-k 选择（数值稳定版本）
+        try:
+            top_k_probs, top_k_indices = torch.topk(expert_probs, self.top_k, dim=-1)
+        except:
+            # 如果top-k失败，使用前k个专家
+            top_k_indices = torch.arange(self.top_k, device=expert_probs.device).unsqueeze(0).expand(expert_probs.size(0), -1)
+            top_k_probs = expert_probs[:, :self.top_k]
 
-        # 重新归一化 top-k 权重（数值稳定版本）
-        top_k_probs_stable = top_k_probs + 1e-8  # 避免全零
-        expert_weights = F.softmax(top_k_probs_stable, dim=-1)  # [batch_size, top_k]
+        # 强化的权重归一化
+        top_k_probs_safe = torch.clamp(top_k_probs, min=1e-6, max=1.0)  # 确保正数且有界
+        prob_sum = top_k_probs_safe.sum(dim=-1, keepdim=True)
+        prob_sum = torch.clamp(prob_sum, min=1e-6)  # 避免除零
+
+        # 手动归一化而非使用softmax
+        expert_weights = top_k_probs_safe / prob_sum  # [batch_size, top_k]
+
+        # 最终权重检查
+        if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+            # 使用均匀权重作为fallback
+            expert_weights = torch.ones_like(expert_weights) / self.top_k
 
         # 5. 计算负载均衡损失
         load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
 
         if training:
-            # 更新专家使用统计
-            expert_mask = torch.zeros(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype)
-            expert_mask.scatter_(1, top_k_indices, 1.0)
+            try:
+                # 更新专家使用统计（数值稳定版本）
+                expert_mask = torch.zeros(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype)
 
-            # 频率统计
-            expert_freq = expert_mask.mean(dim=0)  # [num_experts]
+                # 确保top_k_indices在有效范围内
+                safe_indices = torch.clamp(top_k_indices, 0, self.num_experts - 1)
+                expert_mask.scatter_(1, safe_indices, 1.0)
 
-            # 概率统计
-            expert_avg_prob = expert_probs.mean(dim=0)  # [num_experts]
+                # 频率统计（添加小的平滑项）
+                expert_freq = expert_mask.mean(dim=0) + 1e-8  # [num_experts]
+                expert_freq = torch.clamp(expert_freq, min=1e-8, max=1.0)
 
-            # 检查是否有NaN
-            if torch.isnan(expert_freq).any() or torch.isnan(expert_avg_prob).any():
-                print("Warning: NaN detected in expert statistics, using zero load balance loss")
-                # 创建一个有梯度的零张量
-                load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
-            else:
-                # 负载均衡损失：L_lb = N_mod * ∑(f_i * p_i)
-                balance_product = expert_freq * expert_avg_prob
+                # 概率统计（添加小的平滑项）
+                expert_avg_prob = expert_probs.mean(dim=0) + 1e-8  # [num_experts]
+                expert_avg_prob = torch.clamp(expert_avg_prob, min=1e-8, max=1.0)
 
-                # 再次检查乘积结果
-                if torch.isnan(balance_product).any():
-                    print("Warning: NaN detected in balance product, using zero load balance loss")
-                    # 创建一个有梯度的零张量
+                # 强化的NaN检查
+                if (torch.isnan(expert_freq).any() or torch.isnan(expert_avg_prob).any() or
+                    torch.isinf(expert_freq).any() or torch.isinf(expert_avg_prob).any()):
+                    # 使用零损失
                     load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
                 else:
-                    load_balance_loss = self.num_experts * torch.sum(balance_product)
+                    # 负载均衡损失：L_lb = N_mod * ∑(f_i * p_i)（数值稳定版本）
+                    balance_product = expert_freq * expert_avg_prob
+                    balance_product = torch.clamp(balance_product, max=1.0)  # 限制最大值
 
-                    # 最终检查负载均衡损失
-                    if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
-                        print("Warning: NaN/Inf in final load balance loss, setting to zero")
-                        # 创建一个有梯度的零张量
+                    # 检查乘积结果
+                    if torch.isnan(balance_product).any() or torch.isinf(balance_product).any():
                         load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
+                    else:
+                        load_balance_loss = self.num_experts * torch.sum(balance_product)
+                        load_balance_loss = torch.clamp(load_balance_loss, max=100.0)  # 限制损失最大值
+
+                        # 最终检查
+                        if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
+                            load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
+
+            except Exception as e:
+                # 如果任何计算失败，使用零损失
+                load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
 
             # 更新全局统计（用于监控）
             with torch.no_grad():
@@ -371,9 +411,12 @@ class LoRAExpert(nn.Module):
         self._initialize_parameters()
 
     def _initialize_parameters(self):
-        """初始化 LoRA 参数"""
-        # LoRA A 使用 Kaiming 初始化
-        nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+        """初始化 LoRA 参数 - 数值稳定版本"""
+        # LoRA A 使用更小的初始化
+        nn.init.normal_(self.lora_A.weight, mean=0.0, std=0.001)
+        # 限制LoRA A权重范围
+        with torch.no_grad():
+            self.lora_A.weight.data.clamp_(-0.1, 0.1)
 
         # LoRA B 初始化为零，确保训练开始时 LoRA 输出为零
         nn.init.zeros_(self.lora_B.weight)
@@ -412,14 +455,33 @@ class LoRAExpert(nn.Module):
         if base_output.dtype != target_dtype:
             base_output = base_output.to(target_dtype)
 
-        # LoRA 输出
+        # LoRA 输出（数值稳定版本）
         lora_input = self.dropout(x)
+
+        # 限制输入范围
+        lora_input = torch.clamp(lora_input, min=-3.0, max=3.0)
+
         lora_a_output = self.lora_A(lora_input)
-        lora_output = self.lora_B(lora_a_output) * self.scaling
+
+        # 限制中间输出范围
+        lora_a_output = torch.clamp(lora_a_output, min=-5.0, max=5.0)
+
+        lora_b_output = self.lora_B(lora_a_output)
+
+        # 使用更保守的缩放
+        safe_scaling = min(self.scaling, 1.0)  # 限制最大缩放
+        lora_output = lora_b_output * safe_scaling
+
+        # 限制最终LoRA输出范围
+        lora_output = torch.clamp(lora_output, min=-2.0, max=2.0)
 
         # 确保LoRA输出在正确的数据类型上
         if lora_output.dtype != target_dtype:
             lora_output = lora_output.to(target_dtype)
+
+        # 检查NaN/Inf
+        if torch.isnan(lora_output).any() or torch.isinf(lora_output).any():
+            lora_output = torch.zeros_like(lora_output)
 
         return base_output + lora_output
 

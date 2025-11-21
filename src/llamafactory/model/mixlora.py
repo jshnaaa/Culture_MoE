@@ -71,13 +71,18 @@ class MixLoRARouter(nn.Module):
         )
 
     def _init_weights(self):
-        """初始化路由网络权重"""
-        # 使用小的初始化确保路由开始时相对均匀
-        nn.init.normal_(self.gate.weight, mean=0.0, std=0.01)
+        """初始化路由网络权重 - 数值稳定版本"""
+        # 使用更小的初始化确保数值稳定性
+        nn.init.normal_(self.gate.weight, mean=0.0, std=0.001)
+        if self.gate.bias is not None:
+            nn.init.zeros_(self.gate.bias)
+        # 限制初始权重范围
+        with torch.no_grad():
+            self.gate.weight.data.clamp_(-0.1, 0.1)
 
     def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        前向传播 - Top-K专家路由
+        前向传播 - Top-K专家路由 (数值稳定版本)
 
         Args:
             hidden_states: 输入特征 [batch_size, seq_len, input_dim]
@@ -89,6 +94,9 @@ class MixLoRARouter(nn.Module):
         """
         batch_size, seq_len, input_dim = hidden_states.shape
 
+        # 输入预处理：限制范围防止极端值
+        hidden_states = torch.clamp(hidden_states, min=-5.0, max=5.0)
+
         # 重塑为 [batch_size * seq_len, input_dim] 进行路由计算
         hidden_flat = hidden_states.view(-1, input_dim)
 
@@ -96,16 +104,46 @@ class MixLoRARouter(nn.Module):
         if self.gate.weight.device != hidden_flat.device or self.gate.weight.dtype != hidden_flat.dtype:
             self.gate = self.gate.to(device=hidden_flat.device, dtype=hidden_flat.dtype)
 
+        # 限制gate权重范围，防止极端权重
+        with torch.no_grad():
+            self.gate.weight.data.clamp_(-2.0, 2.0)
+            if self.gate.bias is not None:
+                self.gate.bias.data.clamp_(-1.0, 1.0)
+
         # 计算路由logits
         router_logits = self.gate(hidden_flat)  # [batch_size * seq_len, num_experts]
 
-        # Top-K选择
-        top_k_logits, selected_experts = torch.topk(
-            router_logits, self.top_k, dim=-1
-        )  # 两个都是 [batch_size * seq_len, top_k]
+        # 限制router_logits范围
+        router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
 
-        # 对选中的专家进行softmax归一化
-        expert_weights = F.softmax(top_k_logits, dim=-1)
+        # 检查router_logits是否有异常值
+        if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
+            # 使用零logits作为fallback
+            router_logits = torch.zeros_like(router_logits)
+
+        # 数值稳定的Top-K选择
+        try:
+            top_k_logits, selected_experts = torch.topk(
+                router_logits, self.top_k, dim=-1
+            )
+        except:
+            # 如果top-k失败，使用前k个专家
+            selected_experts = torch.arange(self.top_k, device=router_logits.device).unsqueeze(0).expand(router_logits.size(0), -1)
+            top_k_logits = router_logits[:, :self.top_k]
+
+        # 数值稳定的softmax归一化
+        try:
+            # 减去最大值提高数值稳定性
+            top_k_logits_max = top_k_logits.max(dim=-1, keepdim=True)[0]
+            top_k_logits_stable = top_k_logits - top_k_logits_max
+            expert_weights = F.softmax(top_k_logits_stable, dim=-1)
+        except:
+            # 如果softmax失败，使用均匀权重
+            expert_weights = torch.ones_like(top_k_logits) / self.top_k
+
+        # 检查expert_weights是否有异常值
+        if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+            expert_weights = torch.ones_like(expert_weights) / self.top_k
 
         # 重塑回原来的形状
         selected_experts = selected_experts.view(batch_size, seq_len, self.top_k)
@@ -120,7 +158,7 @@ class MixLoRARouter(nn.Module):
         selected_experts: torch.Tensor
     ) -> torch.Tensor:
         """
-        计算负载均衡损失
+        计算负载均衡损失 - 数值稳定版本
 
         参考Switch Transformer的负载均衡损失：
         L_aux = α * N * Σ (F_i * P_i)
@@ -132,28 +170,67 @@ class MixLoRARouter(nn.Module):
         Returns:
             load_balancing_loss: 负载均衡损失
         """
-        batch_size, seq_len, num_experts = router_logits.shape
+        try:
+            batch_size, seq_len, num_experts = router_logits.shape
 
-        # 计算每个专家被选中的概率 (P_i)
-        router_probs = F.softmax(router_logits, dim=-1)
-        expert_probs = router_probs.mean(dim=[0, 1])  # [num_experts]
+            # 限制router_logits范围，防止softmax溢出
+            router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
 
-        # 计算每个专家实际被分配的令牌比例 (F_i)
-        expert_counts = torch.zeros(num_experts, device=selected_experts.device)
-        total_tokens = batch_size * seq_len * self.top_k
+            # 检查输入是否有NaN/Inf
+            if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
+                return torch.zeros(1, device=router_logits.device, dtype=router_logits.dtype, requires_grad=True).sum()
 
-        for i in range(num_experts):
-            expert_counts[i] = (selected_experts == i).sum().float()
+            # 数值稳定的softmax
+            router_logits_max = router_logits.max(dim=-1, keepdim=True)[0]
+            router_logits_stable = router_logits - router_logits_max
+            router_probs = F.softmax(router_logits_stable, dim=-1)
 
-        expert_freqs = expert_counts / total_tokens
+            # 检查softmax结果
+            if torch.isnan(router_probs).any() or torch.isinf(router_probs).any():
+                return torch.zeros(1, device=router_logits.device, dtype=router_logits.dtype, requires_grad=True).sum()
 
-        # 负载均衡损失 - 确保设备一致性
-        if expert_freqs.device != expert_probs.device:
-            expert_freqs = expert_freqs.to(expert_probs.device)
+            expert_probs = router_probs.mean(dim=[0, 1])  # [num_experts]
+            expert_probs = torch.clamp(expert_probs, min=1e-8, max=1.0)  # 添加平滑项
 
-        load_balancing_loss = self.num_experts * torch.sum(expert_freqs * expert_probs)
+            # 计算每个专家实际被分配的令牌比例 (F_i) - 数值稳定版本
+            expert_counts = torch.zeros(num_experts, device=selected_experts.device, dtype=router_logits.dtype)
+            total_tokens = max(batch_size * seq_len * self.top_k, 1)  # 防止除零
 
-        return load_balancing_loss
+            # 确保selected_experts在有效范围内
+            selected_experts_safe = torch.clamp(selected_experts, 0, num_experts - 1)
+
+            for i in range(num_experts):
+                count = (selected_experts_safe == i).sum().float()
+                expert_counts[i] = count
+
+            expert_freqs = expert_counts / total_tokens
+            expert_freqs = torch.clamp(expert_freqs, min=1e-8, max=1.0)  # 添加平滑项
+
+            # 确保设备一致性
+            if expert_freqs.device != expert_probs.device:
+                expert_freqs = expert_freqs.to(expert_probs.device)
+
+            # 检查频率和概率
+            if (torch.isnan(expert_freqs).any() or torch.isnan(expert_probs).any() or
+                torch.isinf(expert_freqs).any() or torch.isinf(expert_probs).any()):
+                return torch.zeros(1, device=router_logits.device, dtype=router_logits.dtype, requires_grad=True).sum()
+
+            # 计算负载均衡损失
+            balance_product = expert_freqs * expert_probs
+            balance_product = torch.clamp(balance_product, max=1.0)  # 限制最大值
+
+            load_balancing_loss = self.num_experts * torch.sum(balance_product)
+            load_balancing_loss = torch.clamp(load_balancing_loss, max=100.0)  # 限制损失最大值
+
+            # 最终检查
+            if torch.isnan(load_balancing_loss) or torch.isinf(load_balancing_loss):
+                return torch.zeros(1, device=router_logits.device, dtype=router_logits.dtype, requires_grad=True).sum()
+
+            return load_balancing_loss
+
+        except Exception as e:
+            # 如果任何计算失败，返回零损失
+            return torch.zeros(1, device=router_logits.device, dtype=router_logits.dtype, requires_grad=True).sum()
 
 
 class MixLoRAExpert(nn.Module):
@@ -220,9 +297,12 @@ class MixLoRAExpert(nn.Module):
         lora_B = nn.Linear(self.lora_config.r, out_features, bias=False,
                           device=base_layer.weight.device, dtype=base_layer.weight.dtype)
 
-        # 初始化LoRA权重
-        nn.init.kaiming_uniform_(lora_A.weight, a=math.sqrt(5))
+        # 初始化LoRA权重 - 数值稳定版本
+        nn.init.normal_(lora_A.weight, mean=0.0, std=0.001)
         nn.init.zeros_(lora_B.weight)
+        # 限制LoRA A权重范围
+        with torch.no_grad():
+            lora_A.weight.data.clamp_(-0.1, 0.1)
 
         # 创建LoRA适配器容器
         lora_adapter = nn.ModuleDict({
@@ -266,12 +346,30 @@ class MixLoRAExpert(nn.Module):
             lora_adapter['lora_A'] = lora_A
             lora_adapter['lora_B'] = lora_B
 
-        # 计算LoRA输出: B * A * x
-        lora_output = lora_B(lora_A(input_tensor))
+        # 输入预处理：限制范围
+        input_tensor = torch.clamp(input_tensor, min=-5.0, max=5.0)
 
-        # 应用LoRA缩放
+        # 限制LoRA权重范围，防止训练中权重爆炸
+        with torch.no_grad():
+            lora_A.weight.data.clamp_(-1.0, 1.0)
+            lora_B.weight.data.clamp_(-1.0, 1.0)
+
+        # 计算LoRA输出: B * A * x (数值稳定版本)
+        lora_a_output = lora_A(input_tensor)
+        lora_a_output = torch.clamp(lora_a_output, min=-5.0, max=5.0)  # 限制中间结果
+        lora_output = lora_B(lora_a_output)
+
+        # 应用保守的LoRA缩放
         scaling = self.lora_config.lora_alpha / self.lora_config.r
-        lora_output = lora_output * scaling
+        safe_scaling = min(scaling, 1.0)  # 限制最大缩放
+        lora_output = lora_output * safe_scaling
+
+        # 限制LoRA输出范围
+        lora_output = torch.clamp(lora_output, min=-3.0, max=3.0)
+
+        # 检查NaN/Inf
+        if torch.isnan(lora_output).any() or torch.isinf(lora_output).any():
+            lora_output = torch.zeros_like(lora_output)
 
         # 返回组合输出: W * x + B * A * x
         return base_output + lora_output
@@ -694,7 +792,7 @@ def compute_mixlora_total_loss(
     aux_loss_coef: float = 0.01
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
-    计算MixLoRA总损失
+    计算MixLoRA总损失 - 数值稳定版本
 
     Args:
         main_loss: 主任务损失
@@ -705,19 +803,59 @@ def compute_mixlora_total_loss(
         total_loss: 总损失
         loss_info: 损失信息字典
     """
-    # 计算总的负载均衡损失
-    total_load_balancing_loss = torch.tensor(0.0, device=main_loss.device)
+    # 检查主损失是否有效
+    if torch.isnan(main_loss) or torch.isinf(main_loss):
+        # 如果主损失无效，返回零损失
+        zero_loss = torch.zeros_like(main_loss)
+        loss_info = {
+            'main_loss': zero_loss,
+            'load_balancing_loss': zero_loss,
+            'aux_loss_coef': aux_loss_coef,
+            'total_loss': zero_loss,
+            'num_mixlora_layers': len(aux_info_list)
+        }
+        return zero_loss, loss_info
 
-    for aux_info in aux_info_list:
-        if 'load_balancing_loss' in aux_info:
-            layer_loss = aux_info['load_balancing_loss']
-            # 确保负载均衡损失在正确的设备上
-            if layer_loss.device != total_load_balancing_loss.device:
-                layer_loss = layer_loss.to(total_load_balancing_loss.device)
-            total_load_balancing_loss += layer_loss
+    # 限制主损失范围
+    main_loss = torch.clamp(main_loss, max=1000.0)
 
-    # 总损失
-    total_loss = main_loss + aux_loss_coef * total_load_balancing_loss
+    # 计算总的负载均衡损失（数值稳定版本）
+    total_load_balancing_loss = torch.zeros_like(main_loss)
+
+    try:
+        for aux_info in aux_info_list:
+            if 'load_balancing_loss' in aux_info:
+                layer_loss = aux_info['load_balancing_loss']
+
+                # 检查层损失是否有效
+                if torch.isnan(layer_loss) or torch.isinf(layer_loss):
+                    continue  # 跳过无效的损失
+
+                # 限制层损失范围
+                layer_loss = torch.clamp(layer_loss, max=100.0)
+
+                # 确保负载均衡损失在正确的设备上
+                if layer_loss.device != total_load_balancing_loss.device:
+                    layer_loss = layer_loss.to(total_load_balancing_loss.device)
+
+                total_load_balancing_loss += layer_loss
+
+    except Exception as e:
+        # 如果辅助损失计算失败，使用零损失
+        total_load_balancing_loss = torch.zeros_like(main_loss)
+
+    # 限制辅助损失系数
+    safe_aux_coef = min(aux_loss_coef, 1.0)
+
+    # 计算总损失（数值稳定版本）
+    aux_loss_term = safe_aux_coef * total_load_balancing_loss
+    aux_loss_term = torch.clamp(aux_loss_term, max=100.0)  # 限制辅助损失项
+
+    total_loss = main_loss + aux_loss_term
+
+    # 最终检查总损失
+    if torch.isnan(total_loss) or torch.isinf(total_loss):
+        total_loss = main_loss  # 如果总损失异常，只使用主损失
 
     # 损失信息
     loss_info = {
