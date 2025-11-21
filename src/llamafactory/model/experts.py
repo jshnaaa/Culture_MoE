@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple
+import logging
 
 class MLPBase(nn.Module):
     """
@@ -21,11 +22,11 @@ class MLPBase(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        """保守的权重初始化"""
+        """平衡的权重初始化"""
         for module in self.network:
             if isinstance(module, nn.Linear):
-                # 使用Xavier初始化，但使用小的gain
-                nn.init.xavier_uniform_(module.weight, gain=0.1)
+                # 使用Xavier初始化，使用合理的gain
+                nn.init.xavier_uniform_(module.weight, gain=0.5)  # 增加gain，保证有效信号传播
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
@@ -47,7 +48,7 @@ class LoRA(nn.Module):
 
         # 使用Xavier初始化替代随机初始化
         self.A = nn.Parameter(torch.empty(input_dim, rank))
-        nn.init.xavier_uniform_(self.A, gain=0.01)  # 极小的gain确保数值稳定
+        nn.init.xavier_uniform_(self.A, gain=0.1)  # 适中的gain，平衡稳定性和有效性
 
         self.B = nn.Parameter(torch.zeros(rank, output_dim))  # B矩阵初始化为0，这样初始时LoRA贡献为0
 

@@ -35,16 +35,16 @@ class SimpleRouter(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        """初始化权重 - 数值稳定版本"""
+        """初始化权重 - 平衡稳定性和有效性"""
         for module in self.router:
             if isinstance(module, nn.Linear):
-                # 使用更小的初始化确保数值稳定性
-                nn.init.normal_(module.weight, mean=0.0, std=0.001)
+                # 使用更合理的初始化，保证有足够的信号强度
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)  # 增加初始化方差
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
-                # 限制初始权重范围
+                # 适度限制初始权重范围，保持有效性
                 with torch.no_grad():
-                    module.weight.data.clamp_(-0.1, 0.1)
+                    module.weight.data.clamp_(-0.5, 0.5)  # 扩大权重范围
                     if module.bias is not None:
                         module.bias.data.clamp_(-0.1, 0.1)
 
@@ -324,9 +324,8 @@ class SimpleMoEModel(nn.Module):
             dropout=dropout
         )
 
-        # MoE 融合权重（可学习，初始化为更小值确保数值稳定）
-        # 使用更保守的初始化，避免数值问题
-        self.moe_fusion_weight = nn.Parameter(torch.tensor(0.01, dtype=torch.float32))
+        # MoE 融合权重（可学习，初始化为适中值平衡稳定性和有效性）
+        self.moe_fusion_weight = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))  # 适中的初始值
 
         logging.info(f"SimpleMoEModel initialized with {num_experts} experts, top-{top_k} routing")
 
@@ -350,27 +349,27 @@ class SimpleMoEModel(nn.Module):
         logging.info(f"All Simple MoE components converted to dtype: {base_dtype}")
 
     def _init_model_weights(self):
-        """初始化模型权重，确保数值稳定性 - 数值稳定版本"""
-        # 初始化MoE层的权重（使用更保守的初始化）
+        """初始化模型权重，平衡稳定性和有效性"""
+        # 初始化MoE层的权重（使用更合理的初始化）
         for name, param in self.moe_layer.named_parameters():
             if 'weight' in name and len(param.shape) >= 2:
-                # 使用更小的初始化确保数值稳定性
-                nn.init.normal_(param, mean=0.0, std=0.001)
-                # 限制初始权重范围
+                # 使用更合理的初始化，保证有效的信号传播
+                nn.init.normal_(param, mean=0.0, std=0.02)  # 增加初始化方差
+                # 适度限制初始权重范围
                 with torch.no_grad():
-                    param.data.clamp_(-0.1, 0.1)
+                    param.data.clamp_(-0.5, 0.5)  # 扩大权重范围
             elif 'bias' in name:
                 nn.init.zeros_(param)
                 # 限制偏置范围
                 with torch.no_grad():
                     param.data.clamp_(-0.1, 0.1)
 
-        # 确保融合权重在更保守的范围内
+        # 确保融合权重在合理的范围内
         with torch.no_grad():
-            self.moe_fusion_weight.data = torch.tensor(0.01, dtype=self.moe_fusion_weight.dtype)  # 更小的初始融合权重
-            self.moe_fusion_weight.clamp_(-1.0, 1.0)
+            self.moe_fusion_weight.data = torch.tensor(0.1, dtype=self.moe_fusion_weight.dtype)  # 适中的初始融合权重
+            self.moe_fusion_weight.clamp_(-2.0, 2.0)  # 扩大权重范围
 
-        logging.info("MoE model weights initialized with conservative normal initialization (std=0.001)")
+        logging.info("MoE model weights initialized with balanced initialization (std=0.02)")
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         """
@@ -414,7 +413,7 @@ class SimpleMoEModel(nn.Module):
             fusion_weight = torch.sigmoid(self.moe_fusion_weight)
         except:
             logging.warning("Sigmoid failed, using fixed fusion weight")
-            fusion_weight = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype)
+            fusion_weight = torch.tensor(0.1, device=hidden_states.device, dtype=hidden_states.dtype)
 
         # 检查数值稳定性
         if torch.isnan(moe_output).any() or torch.isinf(moe_output).any():
@@ -422,13 +421,13 @@ class SimpleMoEModel(nn.Module):
             # 使用零张量替代MoE输出，保持梯度连接
             moe_output = torch.zeros_like(moe_output)
 
-        # 裁剪融合权重到更安全的范围
-        fusion_weight = torch.clamp(fusion_weight, min=0.0, max=0.05)  # 限制MoE贡献最多5%
+        # 裁剪融合权重到合理的范围
+        fusion_weight = torch.clamp(fusion_weight, min=0.0, max=0.3)  # 允许MoE贡献最多30%
 
         # 检查融合权重的数值稳定性
         if torch.isnan(fusion_weight) or torch.isinf(fusion_weight):
-            logging.warning("NaN or Inf detected in fusion weight, using 0.01")
-            fusion_weight = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype)
+            logging.warning("NaN or Inf detected in fusion weight, using 0.1")
+            fusion_weight = torch.tensor(0.1, device=hidden_states.device, dtype=hidden_states.dtype)
 
         # 保守的融合策略
         try:
