@@ -64,6 +64,11 @@ def setup_distributed():
         # 设置当前进程的GPU
         torch.cuda.set_device(local_rank)
 
+        # 多GPU模式下的内存分配器设置
+        torch.cuda.empty_cache()
+        # 同步所有进程
+        dist.barrier()
+
         return rank, world_size, local_rank
     else:
         # 单GPU模式
@@ -146,9 +151,13 @@ def train_epoch_mixlora(model_adapter, train_loader, optimizer, device, num_accu
             optimizer.step()
             optimizer.zero_grad()
 
-        # 定期清理GPU缓存
-        if (batch_idx + 1) % (num_accumulation_steps * 10) == 0:
+        # 定期清理GPU缓存（多GPU模式下更频繁）
+        cache_clear_interval = (num_accumulation_steps * 5) if hasattr(model_adapter.base_model, 'module') else (num_accumulation_steps * 10)
+        if (batch_idx + 1) % cache_clear_interval == 0:
             torch.cuda.empty_cache()
+            # 多GPU模式下同步清理
+            if hasattr(model_adapter.base_model, 'module'):
+                torch.distributed.barrier()
 
         # 更新进度条
         postfix = {'loss': f"{loss.item() * num_accumulation_steps:.4f}"}
@@ -389,6 +398,14 @@ def main():
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
 
+        # 多GPU内存优化设置
+        if world_size > 1:
+            # 禁用可能导致内存分配器问题的功能
+            torch.cuda.empty_cache()
+            # 设置更保守的内存分配策略
+            if hasattr(torch.cuda, 'set_per_process_memory_fraction'):
+                torch.cuda.set_per_process_memory_fraction(0.8)  # 限制每个进程使用80%显存
+
     # 设置设备
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
@@ -466,16 +483,31 @@ def main():
         print("\nLoading base model...")
 
     # 使用更节省内存的方式加载模型
-    base_model = AutoModelForCausalLM.from_pretrained(
-        args.base_model_path,
-        torch_dtype=torch.float16,
-        device_map=None,  # 先不分配设备，后面手动分配
-        trust_remote_code=True,
-        low_cpu_mem_usage=True
-    )
+    # 在多GPU模式下使用更保守的加载策略
+    load_kwargs = {
+        'torch_dtype': torch.float16,
+        'device_map': None,  # 先不分配设备，后面手动分配
+        'trust_remote_code': True,
+        'low_cpu_mem_usage': True
+    }
+
+    # 多GPU模式下的额外内存优化
+    if world_size > 1:
+        load_kwargs.update({
+            'max_memory': {i: "6GiB" for i in range(world_size)},  # 限制每个GPU的最大内存使用
+            'offload_folder': None,  # 禁用磁盘offload避免内存分配器问题
+        })
+
+    base_model = AutoModelForCausalLM.from_pretrained(args.base_model_path, **load_kwargs)
+
+    # 在移动模型前清理内存
+    torch.cuda.empty_cache()
 
     # 将模型移动到对应的GPU
     base_model = base_model.to(device)
+
+    # 移动后再次清理
+    torch.cuda.empty_cache()
 
     # 启用梯度检查点以节省内存（仅在单GPU模式下）
     if hasattr(base_model, 'gradient_checkpointing_enable') and world_size == 1:

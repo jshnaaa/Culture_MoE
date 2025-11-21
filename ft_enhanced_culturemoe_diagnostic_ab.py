@@ -32,8 +32,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.llamafactory.model.enhanced_culturemoe_config import EnhancedCultureMoEConfig
-from src.llamafactory.model.enhanced_culturemoe_adapter import create_enhanced_culturemoe_model
+from src.llamafactory.model.enhanced_culturemoe import EnhancedCultureMoE
+from src.llamafactory.model.moe_args import ModelArgs
 
 # 复用现有的数据集类
 from ft_lora_only_gen import (
@@ -323,7 +323,7 @@ def create_visualizations(diagnostic_results, output_dir):
 
 def train_epoch_diagnostic(model_adapter, train_loader, optimizer, device, collector):
     """诊断模式的训练epoch"""
-    model_adapter.base_model.train()
+    model_adapter.train()
     total_loss = 0
     num_batches = 0
 
@@ -335,22 +335,27 @@ def train_epoch_diagnostic(model_adapter, train_loader, optimizer, device, colle
         labels = batch['labels'].to(device)
 
         # 前向传播
-        outputs = model_adapter.forward(
+        outputs = model_adapter(
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels
         )
 
-        loss = outputs.loss
+        loss = outputs['loss']
 
         # 收集诊断数据
-        if hasattr(outputs, 'router_info'):
-            router_info = outputs.router_info
+        if 'routing_info' in outputs and 'expert_weights' in outputs:
+            routing_info = outputs['routing_info']
+            expert_weights = outputs['expert_weights']  # [B, num_experts]
             cultural_labels = batch.get('cultural_labels', None)
 
+            # 使用expert_weights作为router_probs
+            router_probs = expert_weights
+            expert_outputs = None  # EnhancedCultureMoE doesn't expose individual expert outputs
+
             collector.collect_batch_data(
-                router_probs=router_info.get('router_probs'),
-                expert_outputs=router_info.get('expert_outputs'),
+                router_probs=router_probs,
+                expert_outputs=expert_outputs,
                 cultural_labels=cultural_labels
             )
 
@@ -464,28 +469,39 @@ def main():
 
     # 创建CultureMoE配置
     print("\nConfiguring Enhanced CultureMoE...")
-    culturemoe_config = EnhancedCultureMoEConfig(
+    model_args = ModelArgs(
+        llama_model_path=args.base_model_path,
+        num_experts=args.num_experts,
+        top_k=args.top_k,
         lora_rank=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        num_experts=args.num_experts,
-        top_k=args.top_k,
-        culture_loss_weight=args.culture_loss_weight,
-        load_balance_weight=args.load_balance_weight,
-        entropy_weight=args.entropy_weight,
-        specialization_weight=args.specialization_weight,
-        diversity_weight=args.diversity_weight,
-        diagnostic_mode=args.diagnostic_mode
+        # 设置诊断模式的相关参数
+        experts_hidden_dim=256,
+        router_hidden_dim=256,
+        shared_hidden_dim=512,
+        num_heads=8,
+        classification_hidden_dim=256,
+        num_classes=2
     )
 
     # 创建模型适配器
-    model_adapter = create_enhanced_culturemoe_model(base_model, culturemoe_config)
+    config = base_model.config  # 获取模型配置
+    model_adapter = EnhancedCultureMoE(
+        llama_model=base_model,
+        config=config,
+        args=model_args,
+        culture_loss_lambda=args.culture_loss_weight,
+        moe_fusion=0.4,
+        num_cultures=6,
+        culture_dim=256
+    )
     model_adapter.print_trainable_parameters()
     print("✅ Enhanced CultureMoE configured")
 
     # 优化器
     optimizer = torch.optim.AdamW(
-        model_adapter.base_model.parameters(),
+        model_adapter.parameters(),
         lr=args.learning_rate,
         weight_decay=args.weight_decay
     )

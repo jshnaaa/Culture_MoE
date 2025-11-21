@@ -128,8 +128,8 @@ echo "  - Maximum gradient accumulation (8 steps)"
 echo "  - Aggressive memory cleanup enabled"
 echo ""
 
-# 设置极限内存优化环境变量
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128
+# 设置极限内存优化环境变量（多GPU兼容配置）
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:64,garbage_collection_threshold:0.6
 export CUDA_LAUNCH_BLOCKING=0
 export CUDA_VISIBLE_DEVICES=0,1
 

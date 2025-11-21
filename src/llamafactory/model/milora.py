@@ -285,7 +285,7 @@ class LoRARouter(nn.Module):
         expert_weights = F.softmax(top_k_probs_stable, dim=-1)  # [batch_size, top_k]
 
         # 5. 计算负载均衡损失
-        load_balance_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+        load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
 
         if training:
             # 更新专家使用统计
@@ -301,7 +301,8 @@ class LoRARouter(nn.Module):
             # 检查是否有NaN
             if torch.isnan(expert_freq).any() or torch.isnan(expert_avg_prob).any():
                 print("Warning: NaN detected in expert statistics, using zero load balance loss")
-                load_balance_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+                # 创建一个有梯度的零张量
+                load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
             else:
                 # 负载均衡损失：L_lb = N_mod * ∑(f_i * p_i)
                 balance_product = expert_freq * expert_avg_prob
@@ -309,14 +310,16 @@ class LoRARouter(nn.Module):
                 # 再次检查乘积结果
                 if torch.isnan(balance_product).any():
                     print("Warning: NaN detected in balance product, using zero load balance loss")
-                    load_balance_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+                    # 创建一个有梯度的零张量
+                    load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
                 else:
                     load_balance_loss = self.num_experts * torch.sum(balance_product)
 
                     # 最终检查负载均衡损失
                     if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
                         print("Warning: NaN/Inf in final load balance loss, setting to zero")
-                        load_balance_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+                        # 创建一个有梯度的零张量
+                        load_balance_loss = torch.zeros(1, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True).sum()
 
             # 更新全局统计（用于监控）
             with torch.no_grad():
@@ -520,7 +523,7 @@ class MiLoRALayer(nn.Module):
             # 使用缓存的路由结果，确保在正确设备和数据类型上
             expert_weights = self.cached_expert_weights.to(device=target_device, dtype=target_dtype)
             expert_indices = self.cached_expert_indices.to(target_device)
-            load_balance_loss = torch.tensor(0.0, device=target_device, dtype=target_dtype)
+            load_balance_loss = torch.zeros(1, device=target_device, dtype=target_dtype, requires_grad=True).sum()
         else:
             # 计算新的路由结果
             expert_weights, expert_indices, load_balance_loss = self.router(
@@ -592,7 +595,8 @@ class MiLoRALayer(nn.Module):
 
         if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
             print("Warning: NaN/Inf in load_balance_loss, setting to zero")
-            load_balance_loss = torch.tensor(0.0, device=target_device, dtype=target_dtype)
+            # 创建一个有梯度的零张量
+            load_balance_loss = torch.zeros(1, device=target_device, dtype=target_dtype, requires_grad=True).sum()
 
         return expert_output, load_balance_loss
 
@@ -691,7 +695,7 @@ class MiLoRAModel(nn.Module):
         )
 
         hidden_states = base_outputs.hidden_states
-        total_load_balance_loss = torch.tensor(0.0, device=target_device, dtype=base_dtype)
+        total_load_balance_loss = torch.zeros(1, device=target_device, dtype=base_dtype, requires_grad=True).sum()
 
         # 通过每个 MiLoRA 层处理隐藏状态
         milora_outputs = []
