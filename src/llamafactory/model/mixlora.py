@@ -318,7 +318,13 @@ class MixLoRALayer(nn.Module):
         # 保存基础FFN层（冻结）
         self.base_ffn_layers = nn.ModuleDict()
         for name, layer in base_ffn_layers.items():
-            layer.requires_grad_(False)  # 冻结基础层
+            # 完全冻结基础层，包括所有参数和缓冲区
+            for param in layer.parameters():
+                param.requires_grad = False
+            for buffer in layer.buffers():
+                buffer.requires_grad = False
+            # 设置为eval模式避免DDP追踪
+            layer.eval()
             self.base_ffn_layers[name] = layer
 
         # 确定路由器输入维度
@@ -428,7 +434,7 @@ class MixLoRALayer(nn.Module):
         if self.output_projection is not None and self.output_projection.weight.device != target_device:
             self.output_projection = self.output_projection.to(target_device)
 
-        # 为每个专家计算输出（内存优化版本）
+        # 为每个专家计算输出（DDP兼容版本）
         for expert_id in range(self.num_experts):
             # 找到选择了这个专家的位置
             expert_mask = (selected_experts == expert_id)  # [batch_size, seq_len, top_k]
@@ -527,12 +533,14 @@ class MixLoRALayer(nn.Module):
             # intermediate = gate * silu(up)  或者 intermediate = silu(gate) * up
             # output = down_proj(intermediate)
 
-            # 计算gate分支（带专家）
-            gate_base = gate_proj(hidden_states)
+            # 计算gate分支（带专家），基础层使用no_grad避免DDP追踪
+            with torch.no_grad():
+                gate_base = gate_proj(hidden_states)
             gate_output = expert('gate_proj', gate_base, hidden_states)
 
             # 计算up分支（带专家）
-            up_base = up_proj(hidden_states)
+            with torch.no_grad():
+                up_base = up_proj(hidden_states)
             up_output = expert('up_proj', up_base, hidden_states)
 
             # 应用SwiGLU激活 (通常是 silu(gate) * up)
@@ -540,12 +548,14 @@ class MixLoRALayer(nn.Module):
             intermediate = F.silu(gate_output) * up_output
 
             # 通过down_proj（带专家）
-            down_base = down_proj(intermediate)
+            with torch.no_grad():
+                down_base = down_proj(intermediate)
             final_output = expert('down_proj', down_base, intermediate)
 
         elif gate_proj and down_proj:
             # 简化的FFN结构: gate_proj -> activation -> down_proj
-            gate_base = gate_proj(hidden_states)
+            with torch.no_grad():
+                gate_base = gate_proj(hidden_states)
             gate_output = expert('gate_proj', gate_base, hidden_states)
 
             # 应用激活函数
@@ -553,7 +563,8 @@ class MixLoRALayer(nn.Module):
             activated = F.silu(gate_output)
 
             # 通过down_proj
-            down_base = down_proj(activated)
+            with torch.no_grad():
+                down_base = down_proj(activated)
             final_output = expert('down_proj', down_base, activated)
 
         else:
@@ -568,8 +579,9 @@ class MixLoRALayer(nn.Module):
                     base_layer = base_layer.to(target_device)
                     self.base_ffn_layers[module_name] = base_layer
 
-                # 计算基础输出
-                base_output = base_layer(hidden_states)
+                # 计算基础输出（使用no_grad避免DDP追踪）
+                with torch.no_grad():
+                    base_output = base_layer(hidden_states)
                 expert_output = expert(module_name, base_output, hidden_states)
 
                 # 如果需要投影回原始维度

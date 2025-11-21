@@ -138,6 +138,11 @@ def train_epoch_mixlora(model_adapter, train_loader, optimizer, device, num_accu
 
         # 梯度更新
         if (batch_idx + 1) % num_accumulation_steps == 0:
+            # 在多GPU模式下确保梯度同步完成
+            if hasattr(model_adapter.base_model, 'module'):  # DDP wrapped
+                # 确保所有梯度都已同步
+                torch.distributed.barrier()
+
             optimizer.step()
             optimizer.zero_grad()
 
@@ -472,11 +477,14 @@ def main():
     # 将模型移动到对应的GPU
     base_model = base_model.to(device)
 
-    # 启用梯度检查点以节省内存
-    if hasattr(base_model, 'gradient_checkpointing_enable'):
+    # 启用梯度检查点以节省内存（仅在单GPU模式下）
+    if hasattr(base_model, 'gradient_checkpointing_enable') and world_size == 1:
         base_model.gradient_checkpointing_enable()
         if is_main_process(rank):
             print("✅ Gradient checkpointing enabled")
+    elif world_size > 1:
+        if is_main_process(rank):
+            print("🚫 Gradient checkpointing disabled for multi-GPU DDP compatibility")
 
     if is_main_process(rank):
         print("✅ Base model loaded")
@@ -510,8 +518,20 @@ def main():
             model_adapter.base_model,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=True  # MixLoRA可能有未使用的参数
+            find_unused_parameters=False,  # 设为False避免参数重复标记
+            broadcast_buffers=False,       # 禁用buffer广播
+            gradient_as_bucket_view=True   # 优化内存使用
         )
+
+        # 设置静态图以避免DDP参数重复标记问题
+        try:
+            model_adapter.base_model._set_static_graph()
+            if is_main_process(rank):
+                print("✅ DDP static graph enabled")
+        except Exception as e:
+            if is_main_process(rank):
+                print(f"⚠️  Warning: Could not set static graph: {e}")
+
         if is_main_process(rank):
             print("✅ Model wrapped with DDP")
 

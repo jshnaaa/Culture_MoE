@@ -49,8 +49,12 @@ class RationalActivation(nn.Module):
             self.numerator_coeffs[1].fill_(1.0)  # 一次项
             self.numerator_coeffs[2:].fill_(0.0)  # 高次项
 
-            # 初始化分母系数
-            self.denominator_coeffs.fill_(0.1)
+            # 更保守的分母系数初始化，避免数值不稳定
+            self.denominator_coeffs.fill_(0.01)  # 更小的初始值
+
+            # 限制参数范围避免极端值
+            self.numerator_coeffs.data.clamp_(-2.0, 2.0)
+            self.denominator_coeffs.data.clamp_(0.001, 0.5)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -88,9 +92,21 @@ class RationalActivation(nn.Module):
             if i < self.denominator_degree - 1:
                 x_power = x_power * x
 
-        denominator = 1.0 + torch.norm(denominator_sum, dim=-1, keepdim=True)
+        # 数值稳定的分母计算
+        denominator_norm = torch.norm(denominator_sum, dim=-1, keepdim=True)
+        denominator = 1.0 + denominator_norm
 
-        return numerator / denominator
+        # 避免除零和数值不稳定
+        denominator = torch.clamp(denominator, min=1e-6)
+
+        result = numerator / denominator
+
+        # 检查和修复NaN/Inf
+        if torch.isnan(result).any() or torch.isinf(result).any():
+            print("Warning: NaN/Inf in RationalActivation, using ReLU fallback")
+            result = torch.relu(x)
+
+        return result
 
 
 class LoRAPooler(nn.Module):
@@ -247,20 +263,33 @@ class LoRARouter(nn.Module):
 
         # 3. MoE 路由器：计算专家概率
         router_logits = self.router_weights(activated_hidden)  # [batch_size, num_experts]
+
+        # 检查和修复router_logits中的异常值
+        if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
+            print("Warning: NaN/Inf detected in router_logits, applying clipping")
+            router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
+
+        # 使用数值稳定的softmax
         expert_probs = F.softmax(router_logits, dim=-1)  # [batch_size, num_experts]
+
+        # 再次检查expert_probs
+        if torch.isnan(expert_probs).any():
+            print("Warning: NaN detected in expert_probs, using uniform distribution")
+            expert_probs = torch.ones_like(expert_probs) / self.num_experts
 
         # 4. Top-k 选择
         top_k_probs, top_k_indices = torch.topk(expert_probs, self.top_k, dim=-1)
 
-        # 重新归一化 top-k 权重
-        expert_weights = F.softmax(top_k_probs, dim=-1)  # [batch_size, top_k]
+        # 重新归一化 top-k 权重（数值稳定版本）
+        top_k_probs_stable = top_k_probs + 1e-8  # 避免全零
+        expert_weights = F.softmax(top_k_probs_stable, dim=-1)  # [batch_size, top_k]
 
         # 5. 计算负载均衡损失
-        load_balance_loss = torch.tensor(0.0, device=hidden_states.device)
+        load_balance_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
 
         if training:
             # 更新专家使用统计
-            expert_mask = torch.zeros(batch_size, self.num_experts, device=hidden_states.device)
+            expert_mask = torch.zeros(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype)
             expert_mask.scatter_(1, top_k_indices, 1.0)
 
             # 频率统计
@@ -269,8 +298,25 @@ class LoRARouter(nn.Module):
             # 概率统计
             expert_avg_prob = expert_probs.mean(dim=0)  # [num_experts]
 
-            # 负载均衡损失：L_lb = N_mod * ∑(f_i * p_i)
-            load_balance_loss = self.num_experts * torch.sum(expert_freq * expert_avg_prob)
+            # 检查是否有NaN
+            if torch.isnan(expert_freq).any() or torch.isnan(expert_avg_prob).any():
+                print("Warning: NaN detected in expert statistics, using zero load balance loss")
+                load_balance_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+            else:
+                # 负载均衡损失：L_lb = N_mod * ∑(f_i * p_i)
+                balance_product = expert_freq * expert_avg_prob
+
+                # 再次检查乘积结果
+                if torch.isnan(balance_product).any():
+                    print("Warning: NaN detected in balance product, using zero load balance loss")
+                    load_balance_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+                else:
+                    load_balance_loss = self.num_experts * torch.sum(balance_product)
+
+                    # 最终检查负载均衡损失
+                    if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
+                        print("Warning: NaN/Inf in final load balance loss, setting to zero")
+                        load_balance_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
 
             # 更新全局统计（用于监控）
             with torch.no_grad():
@@ -538,6 +584,15 @@ class MiLoRALayer(nn.Module):
             # 确保基础层输出在正确的设备和数据类型上
             if expert_output.device != target_device or expert_output.dtype != target_dtype:
                 expert_output = expert_output.to(device=target_device, dtype=target_dtype)
+
+        # 最终检查expert_output和load_balance_loss
+        if torch.isnan(expert_output).any() or torch.isinf(expert_output).any():
+            print("Warning: NaN/Inf in expert_output, using zero output")
+            expert_output = torch.zeros_like(hidden_states)
+
+        if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
+            print("Warning: NaN/Inf in load_balance_loss, setting to zero")
+            load_balance_loss = torch.tensor(0.0, device=target_device, dtype=target_dtype)
 
         return expert_output, load_balance_loss
 
