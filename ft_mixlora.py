@@ -141,6 +141,10 @@ def train_epoch_mixlora(model_adapter, train_loader, optimizer, device, num_accu
             optimizer.step()
             optimizer.zero_grad()
 
+        # 定期清理GPU缓存
+        if (batch_idx + 1) % (num_accumulation_steps * 10) == 0:
+            torch.cuda.empty_cache()
+
         # 更新进度条
         postfix = {'loss': f"{loss.item() * num_accumulation_steps:.4f}"}
         if hasattr(outputs, 'loss_info'):
@@ -367,8 +371,18 @@ def main():
 
     parser.add_argument("--device", type=str, default='cuda',
                         help="Device to use (cuda or cpu)")
+    parser.add_argument("--memory_efficient", action='store_true',
+                        help="Enable memory efficient training")
 
     args = parser.parse_args()
+
+    # 设置内存优化
+    if world_size > 1:  # 多GPU训练时自动启用内存优化
+        args.memory_efficient = True
+
+    if args.memory_efficient:
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
 
     # 设置设备
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
@@ -457,6 +471,12 @@ def main():
 
     # 将模型移动到对应的GPU
     base_model = base_model.to(device)
+
+    # 启用梯度检查点以节省内存
+    if hasattr(base_model, 'gradient_checkpointing_enable'):
+        base_model.gradient_checkpointing_enable()
+        if is_main_process(rank):
+            print("✅ Gradient checkpointing enabled")
 
     if is_main_process(rank):
         print("✅ Base model loaded")

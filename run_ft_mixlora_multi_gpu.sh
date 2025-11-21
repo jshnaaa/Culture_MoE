@@ -87,17 +87,19 @@ echo ""
 echo "Multi-GPU Configuration:"
 echo "  - Number of GPUs: 2"
 echo "  - Distributed backend: NCCL"
-echo "  - Batch size per GPU: 4"
-echo "  - Effective batch size: 8"
+echo "  - Batch size per GPU: 2"
+echo "  - Effective batch size: 4"
 echo ""
-echo "MixLoRA Configuration:"
-echo "  - Number of experts: 6"
+echo "MixLoRA Configuration (Memory Optimized):"
+echo "  - Number of experts: 4 (reduced for memory)"
 echo "  - Top-K routing: 2"
-echo "  - LoRA rank: 64"
+echo "  - LoRA rank: 32 (reduced for memory)"
 echo "  - LoRA alpha: 16"
+echo "  - Max sequence length: 384 (reduced for memory)"
 echo "  - FFN modules: gate_proj, up_proj, down_proj (MixLoRA)"
 echo "  - Attention modules: None (避免维度问题)"
 echo "  - Auxiliary loss coefficient: 0.01"
+echo "  - Memory optimizations: enabled"
 echo ""
 echo "Components:"
 echo "  Base model: $BASE_MODEL_PATH"
@@ -145,6 +147,10 @@ echo ""
 # 使用 torchrun (推荐) 或 python -m torch.distributed.launch
 export CUDA_VISIBLE_DEVICES=0,1
 
+# 设置内存优化环境变量
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUDA_LAUNCH_BLOCKING=0
+
 torchrun \
     --nproc_per_node=2 \
     --master_port=29500 \
@@ -153,21 +159,21 @@ torchrun \
     --train_file "$TRAIN_FILE" \
     --output_dir "$OUTPUT_DIR" \
     --num_epochs 12 \
-    --batch_size 4 \
-    --eval_batch_size 4 \
+    --batch_size 2 \
+    --eval_batch_size 2 \
     --learning_rate 2e-4 \
     --weight_decay 0.001 \
-    --max_length 512 \
+    --max_length 384 \
     --val_split 0.1 \
-    --num_workers 2 \
-    --lora_r 64 \
+    --num_workers 1 \
+    --lora_r 32 \
     --lora_alpha 16 \
     --lora_dropout 0.1 \
-    --num_experts 6 \
+    --num_experts 4 \
     --top_k 2 \
     --aux_loss_coef 0.01 \
     --eval_interval 3 \
-    --gradient_accumulation_steps 2
+    --gradient_accumulation_steps 4
 
 if [ $? -eq 0 ]; then
     echo ""

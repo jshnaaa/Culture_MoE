@@ -428,7 +428,7 @@ class MixLoRALayer(nn.Module):
         if self.output_projection is not None and self.output_projection.weight.device != target_device:
             self.output_projection = self.output_projection.to(target_device)
 
-        # 为每个专家计算输出
+        # 为每个专家计算输出（内存优化版本）
         for expert_id in range(self.num_experts):
             # 找到选择了这个专家的位置
             expert_mask = (selected_experts == expert_id)  # [batch_size, seq_len, top_k]
@@ -449,7 +449,8 @@ class MixLoRALayer(nn.Module):
                 self.experts[expert_id] = expert
 
             # 计算完整的FFN流程
-            expert_output = self._compute_ffn_with_expert(hidden_states, expert, target_device)
+            with torch.cuda.amp.autocast(enabled=True):  # 使用混合精度
+                expert_output = self._compute_ffn_with_expert(hidden_states, expert, target_device)
 
             # 应用权重，确保设备一致性
             weight_expanded = expert_weights_for_id.unsqueeze(-1)  # [batch_size, seq_len, 1]
@@ -462,6 +463,9 @@ class MixLoRALayer(nn.Module):
 
             weighted_expert_output = weight_expanded * expert_output
             final_output += weighted_expert_output
+
+            # 立即删除中间张量以释放内存
+            del expert_output, weighted_expert_output, weight_expanded
 
         # 4. 计算负载均衡损失
         load_balancing_loss = self.router.compute_load_balancing_loss(

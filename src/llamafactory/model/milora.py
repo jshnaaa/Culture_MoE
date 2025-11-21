@@ -62,11 +62,13 @@ class RationalActivation(nn.Module):
         """
         target_device = x.device
 
-        # 确保系数在正确的设备上
-        if self.numerator_coeffs.device != target_device:
-            self.numerator_coeffs = self.numerator_coeffs.to(target_device)
-        if self.denominator_coeffs.device != target_device:
-            self.denominator_coeffs = self.denominator_coeffs.to(target_device)
+        # 确保系数在正确的设备和数据类型上
+        if (self.numerator_coeffs.device != target_device or
+            self.numerator_coeffs.dtype != x.dtype):
+            self.numerator_coeffs = self.numerator_coeffs.to(device=target_device, dtype=x.dtype)
+        if (self.denominator_coeffs.device != target_device or
+            self.denominator_coeffs.dtype != x.dtype):
+            self.denominator_coeffs = self.denominator_coeffs.to(device=target_device, dtype=x.dtype)
 
         # 计算分子：∑(j=0~m) a_j * x^j
         numerator = self.numerator_coeffs[0]  # 常数项
@@ -146,9 +148,10 @@ class LoRAPooler(nn.Module):
             # 自注意力池化（默认）
             target_device = hidden_states.device
 
-            # 确保attention_weights在正确的设备上
-            if self.attention_weights.weight.device != target_device:
-                self.attention_weights = self.attention_weights.to(target_device)
+            # 确保attention_weights在正确的设备和数据类型上
+            if (self.attention_weights.weight.device != target_device or
+                self.attention_weights.weight.dtype != hidden_states.dtype):
+                self.attention_weights = self.attention_weights.to(device=target_device, dtype=hidden_states.dtype)
 
             attention_scores = self.attention_weights(hidden_states).squeeze(-1)  # [batch_size, seq_len]
 
@@ -221,17 +224,20 @@ class LoRARouter(nn.Module):
         batch_size = hidden_states.size(0)
         target_device = hidden_states.device
 
-        # 确保池化器在正确的设备上
-        if next(self.pooler.parameters()).device != target_device:
-            self.pooler = self.pooler.to(target_device)
+        # 确保池化器在正确的设备和数据类型上
+        if (next(self.pooler.parameters()).device != target_device or
+            next(self.pooler.parameters()).dtype != hidden_states.dtype):
+            self.pooler = self.pooler.to(device=target_device, dtype=hidden_states.dtype)
 
-        # 确保激活函数在正确的设备上
-        if next(self.activation.parameters()).device != target_device:
-            self.activation = self.activation.to(target_device)
+        # 确保激活函数在正确的设备和数据类型上
+        if (next(self.activation.parameters()).device != target_device or
+            next(self.activation.parameters()).dtype != hidden_states.dtype):
+            self.activation = self.activation.to(device=target_device, dtype=hidden_states.dtype)
 
-        # 确保路由器权重在正确的设备上
-        if self.router_weights.weight.device != target_device:
-            self.router_weights = self.router_weights.to(target_device)
+        # 确保路由器权重在正确的设备和数据类型上
+        if (self.router_weights.weight.device != target_device or
+            self.router_weights.weight.dtype != hidden_states.dtype):
+            self.router_weights = self.router_weights.to(device=target_device, dtype=hidden_states.dtype)
 
         # 1. 池化：将隐藏状态聚合为固定长度向量
         pooled_hidden = self.pooler(hidden_states, attention_mask)  # [batch_size, hidden_dim]
@@ -332,15 +338,18 @@ class LoRAExpert(nn.Module):
         前向传播：x' = x * W_m + x * W_m^A * W_m^B + b_m
         """
         target_device = x.device
+        target_dtype = x.dtype
 
-        # 确保基础层在正确的设备上
-        if next(self.base_layer.parameters()).device != target_device:
-            self.base_layer = self.base_layer.to(target_device)
+        # 确保基础层在正确的设备和数据类型上
+        if (next(self.base_layer.parameters()).device != target_device or
+            next(self.base_layer.parameters()).dtype != target_dtype):
+            self.base_layer = self.base_layer.to(device=target_device, dtype=target_dtype)
 
-        # 确保LoRA层在正确的设备上
-        if self.lora_A.weight.device != target_device:
-            self.lora_A = self.lora_A.to(target_device)
-            self.lora_B = self.lora_B.to(target_device)
+        # 确保LoRA层在正确的设备和数据类型上
+        if (self.lora_A.weight.device != target_device or
+            self.lora_A.weight.dtype != target_dtype):
+            self.lora_A = self.lora_A.to(device=target_device, dtype=target_dtype)
+            self.lora_B = self.lora_B.to(device=target_device, dtype=target_dtype)
 
         # 确保dropout层在正确的设备上（如果有参数）
         if hasattr(self.dropout, 'weight') and self.dropout.weight is not None:
@@ -350,8 +359,18 @@ class LoRAExpert(nn.Module):
         # 基础层输出
         base_output = self.base_layer(x)
 
+        # 确保基础层输出在正确的数据类型上
+        if base_output.dtype != target_dtype:
+            base_output = base_output.to(target_dtype)
+
         # LoRA 输出
-        lora_output = self.lora_B(self.lora_A(self.dropout(x))) * self.scaling
+        lora_input = self.dropout(x)
+        lora_a_output = self.lora_A(lora_input)
+        lora_output = self.lora_B(lora_a_output) * self.scaling
+
+        # 确保LoRA输出在正确的数据类型上
+        if lora_output.dtype != target_dtype:
+            lora_output = lora_output.to(target_dtype)
 
         return base_output + lora_output
 
@@ -437,27 +456,38 @@ class MiLoRALayer(nn.Module):
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
         target_device = hidden_states.device
+        target_dtype = hidden_states.dtype
 
-        # 确保路由器在正确的设备上
-        if next(self.router.parameters()).device != target_device:
-            self.router = self.router.to(target_device)
+        # 确保路由器在正确的设备和数据类型上
+        if (next(self.router.parameters()).device != target_device or
+            next(self.router.parameters()).dtype != target_dtype):
+            self.router = self.router.to(device=target_device, dtype=target_dtype)
 
-        # 确保所有专家在正确的设备上
-        for expert_name, expert in self.experts.items():
-            if next(expert.parameters()).device != target_device:
-                self.experts[expert_name] = expert.to(target_device)
+        # 确保所有专家在正确的设备和数据类型上
+        for expert_key, expert in self.experts.items():
+            if (next(expert.parameters()).device != target_device or
+                next(expert.parameters()).dtype != target_dtype):
+                self.experts[expert_key] = expert.to(device=target_device, dtype=target_dtype)
 
         # 1. 路由决策（提示感知机制）
         if self.use_cached_routing and self.cached_expert_weights is not None:
-            # 使用缓存的路由结果，确保在正确设备上
-            expert_weights = self.cached_expert_weights.to(target_device)
+            # 使用缓存的路由结果，确保在正确设备和数据类型上
+            expert_weights = self.cached_expert_weights.to(device=target_device, dtype=target_dtype)
             expert_indices = self.cached_expert_indices.to(target_device)
-            load_balance_loss = torch.tensor(0.0, device=target_device)
+            load_balance_loss = torch.tensor(0.0, device=target_device, dtype=target_dtype)
         else:
             # 计算新的路由结果
             expert_weights, expert_indices, load_balance_loss = self.router(
                 hidden_states, attention_mask, training
             )
+
+            # 确保路由结果在正确的设备和数据类型上
+            if expert_weights.device != target_device or expert_weights.dtype != target_dtype:
+                expert_weights = expert_weights.to(device=target_device, dtype=target_dtype)
+            if expert_indices.device != target_device:
+                expert_indices = expert_indices.to(target_device)
+            if load_balance_loss.device != target_device or load_balance_loss.dtype != target_dtype:
+                load_balance_loss = load_balance_loss.to(device=target_device, dtype=target_dtype)
 
             # 缓存路由结果（用于后续生成步骤）
             if self.use_cached_routing:
@@ -486,13 +516,28 @@ class MiLoRALayer(nn.Module):
                     if len(topk_positions) > 0:
                         weight = expert_weights[batch_idx, topk_positions[0]]
                         expert_out = self.experts[expert_name](hidden_states[batch_idx:batch_idx+1])
+
+                        # 确保专家输出在正确的设备和数据类型上
+                        if expert_out.device != target_device or expert_out.dtype != target_dtype:
+                            expert_out = expert_out.to(device=target_device, dtype=target_dtype)
+
                         expert_output[batch_idx] = expert_out.squeeze(0) * weight
                 else:
                     # 目标专家不在 top-k 中，使用基础层
-                    expert_output[batch_idx] = self.experts[expert_name].base_layer(hidden_states[batch_idx])
+                    base_out = self.experts[expert_name].base_layer(hidden_states[batch_idx])
+
+                    # 确保基础层输出在正确的设备和数据类型上
+                    if base_out.device != target_device or base_out.dtype != target_dtype:
+                        base_out = base_out.to(device=target_device, dtype=target_dtype)
+
+                    expert_output[batch_idx] = base_out
         else:
             # 所有样本的目标专家都不在 top-k 中，使用基础层
             expert_output = self.experts[expert_name].base_layer(hidden_states)
+
+            # 确保基础层输出在正确的设备和数据类型上
+            if expert_output.device != target_device or expert_output.dtype != target_dtype:
+                expert_output = expert_output.to(device=target_device, dtype=target_dtype)
 
         return expert_output, load_balance_loss
 
@@ -574,11 +619,13 @@ class MiLoRAModel(nn.Module):
         """
         # 确保所有MiLoRA层在正确的设备上
         target_device = input_ids.device
+        base_dtype = next(self.base_model.parameters()).dtype
 
-        # 将所有MiLoRA层移动到目标设备
+        # 将所有MiLoRA层移动到目标设备，并确保数据类型一致
         for layer_idx, layer in enumerate(self.milora_layers):
-            if next(layer.parameters()).device != target_device:
-                self.milora_layers[layer_idx] = layer.to(target_device)
+            if (next(layer.parameters()).device != target_device or
+                next(layer.parameters()).dtype != base_dtype):
+                self.milora_layers[layer_idx] = layer.to(device=target_device, dtype=base_dtype)
 
         # 基础模型前向传播（获取隐藏状态）
         base_outputs = self.base_model(
@@ -589,20 +636,23 @@ class MiLoRAModel(nn.Module):
         )
 
         hidden_states = base_outputs.hidden_states
-        total_load_balance_loss = torch.tensor(0.0, device=input_ids.device)
+        total_load_balance_loss = torch.tensor(0.0, device=target_device, dtype=base_dtype)
 
         # 通过每个 MiLoRA 层处理隐藏状态
         milora_outputs = []
         for layer_idx, milora_layer in enumerate(self.milora_layers):
             layer_hidden = hidden_states[layer_idx + 1]  # 跳过 embedding 层
 
-            # 确保层隐藏状态在正确的设备上
-            if layer_hidden.device != target_device:
-                layer_hidden = layer_hidden.to(target_device)
+            # 确保层隐藏状态在正确的设备和数据类型上
+            if (layer_hidden.device != target_device or
+                layer_hidden.dtype != base_dtype):
+                layer_hidden = layer_hidden.to(device=target_device, dtype=base_dtype)
 
-            # 确保注意力掩码在正确的设备上
-            if attention_mask is not None and attention_mask.device != target_device:
-                attention_mask = attention_mask.to(target_device)
+            # 确保注意力掩码在正确的设备和数据类型上
+            if attention_mask is not None:
+                if attention_mask.device != target_device:
+                    attention_mask = attention_mask.to(target_device)
+                # 注意力掩码通常是整数类型，不需要改变dtype
 
             # 为每个专家计算输出（这里简化为只使用 q_proj）
             expert_output, load_balance_loss = milora_layer(
@@ -612,11 +662,17 @@ class MiLoRAModel(nn.Module):
                 training=self.training
             )
 
+            # 确保专家输出在正确的设备和数据类型上
+            if (expert_output.device != target_device or
+                expert_output.dtype != base_dtype):
+                expert_output = expert_output.to(device=target_device, dtype=base_dtype)
+
             milora_outputs.append(expert_output)
 
-            # 确保负载均衡损失在正确的设备上
-            if load_balance_loss.device != total_load_balance_loss.device:
-                load_balance_loss = load_balance_loss.to(total_load_balance_loss.device)
+            # 确保负载均衡损失在正确的设备和数据类型上
+            if (load_balance_loss.device != target_device or
+                load_balance_loss.dtype != base_dtype):
+                load_balance_loss = load_balance_loss.to(device=target_device, dtype=base_dtype)
 
             total_load_balance_loss += load_balance_loss
 
