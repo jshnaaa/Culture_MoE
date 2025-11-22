@@ -114,7 +114,7 @@ case $DATA_ID in
         if [ "$BACKBONE" = "qwen" ]; then
             LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_qwen_20251111_1421/best_lora"
         else
-            LORA_WEIGHTS_PATH="/autodl-fs/data/data/ft/ft_lora_only_gen_unified_all_datasets_llama_20251117_1218/best_lora"
+            LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_llama_20251117_1218/best_lora"
         fi
         echo "Using unified_all_datasets dataset (enhanced format)"
         ;;
