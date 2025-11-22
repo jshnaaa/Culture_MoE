@@ -162,7 +162,7 @@ CultureMoE模型消融实验结果不明显：
 6. `ft_enhanced_culturemoe_diversity_ab.py` - 多样性增强代码
 
 ### 结果文件位置
-- **训练日志**：`/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ablation_results/`
+- **训练日志**：`/root/autodl-fs/data/ablation_results/`
 - **诊断报告**：`diagnostic_report.json`
 - **专家分析**：`expert_analysis.json`
 - **消融对比**：`ablation_comparison.json`
