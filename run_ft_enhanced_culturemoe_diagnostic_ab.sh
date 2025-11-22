@@ -113,6 +113,15 @@ echo "  - 按国家统计：分析文化特异性路由模式"
 echo "  - 可视化生成：专家利用率和相似度热图"
 echo ""
 
+# 设置单卡运行环境变量
+export CUDA_VISIBLE_DEVICES=0
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+
+echo "🔧 强制单卡运行设置:"
+echo "  - CUDA_VISIBLE_DEVICES=0 (只使用第一个GPU)"
+echo "  - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 (内存管理优化)"
+echo ""
+
 # 运行诊断实验
 python ft_enhanced_culturemoe_diagnostic_ab.py \
     --base_model_path "$BASE_MODEL_PATH" \

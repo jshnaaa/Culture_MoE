@@ -410,8 +410,25 @@ def main():
 
     args = parser.parse_args()
 
-    # 设置设备
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # 设置设备 (强制单卡运行)
+    if torch.cuda.is_available():
+        # 清理GPU内存
+        torch.cuda.empty_cache()
+
+        # 只使用第一个GPU，避免多卡问题
+        torch.cuda.set_device(0)
+        device = torch.device("cuda:0")
+
+        # 显示GPU信息
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+
+        print(f"🚀 强制使用单卡: {device}")
+        print(f"   GPU: {gpu_name}")
+        print(f"   总内存: {gpu_memory:.1f} GB")
+    else:
+        device = torch.device("cpu")
+        print("🖥️  使用CPU设备")
 
     print("\n" + "="*80)
     print("Enhanced CultureMoE 诊断实验")
@@ -455,17 +472,22 @@ def main():
         pin_memory=True
     )
 
-    # 加载基础模型
-    print("\nLoading base model...")
+    # 加载基础模型 (单卡配置)
+    print(f"\nLoading base model to {device}...")
     base_model = AutoModelForCausalLM.from_pretrained(
         args.base_model_path,
         torch_dtype=torch.float16,
-        device_map=None,
+        device_map=None,  # 禁用自动设备映射
         trust_remote_code=True,
         low_cpu_mem_usage=True
     )
+
+    # 确保基础模型在单一设备上
     base_model = base_model.to(device)
-    print("✅ Base model loaded")
+
+    # 验证模型设备
+    model_device = next(base_model.parameters()).device
+    print(f"✅ Base model loaded on {model_device}")
 
     # 创建CultureMoE配置
     print("\nConfiguring Enhanced CultureMoE...")
@@ -496,8 +518,23 @@ def main():
         num_cultures=6,
         culture_dim=256
     )
+
+    # 确保模型适配器在正确的设备上 (单卡运行)
+    model_adapter = model_adapter.to(device)
+
+    # 验证所有组件都在同一设备上
+    adapter_device = next(model_adapter.parameters()).device
+    llama_device = next(model_adapter.llama_model.parameters()).device
+
+    print(f"✅ Enhanced CultureMoE configured:")
+    print(f"  - Adapter device: {adapter_device}")
+    print(f"  - LLaMA device: {llama_device}")
+
+    if adapter_device != llama_device:
+        print(f"⚠️  Warning: Device mismatch detected! Moving all to {device}")
+        model_adapter = model_adapter.to(device)
+
     model_adapter.print_trainable_parameters()
-    print("✅ Enhanced CultureMoE configured")
 
     # 优化器
     optimizer = torch.optim.AdamW(
