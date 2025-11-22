@@ -274,19 +274,18 @@ class CulturalAwareRouter(nn.Module):
         return expert_weights, routing_info
 
     def compute_load_balancing_loss(self, expert_weights: torch.Tensor) -> torch.Tensor:
-        """计算负载均衡损失 - 添加数值稳定性检查"""
+        """计算负载均衡损失"""
         expert_usage = expert_weights.mean(dim=0)  # [num_experts]
 
         # 检查数值稳定性
         if torch.isnan(expert_usage).any() or torch.isinf(expert_usage).any():
-            logging.warning("Expert usage contains NaN/Inf, returning zero loss")
             return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype)
 
         uniform_distribution = torch.ones_like(expert_usage) / self.num_experts
         load_balancing_loss = F.mse_loss(expert_usage, uniform_distribution)
 
-        # 裁剪损失到合理范围
-        load_balancing_loss = torch.clamp(load_balancing_loss, min=0.0, max=1.0)
+        # 确保损失不为0（避免被优化器忽略）
+        load_balancing_loss = torch.clamp(load_balancing_loss, min=1e-8, max=1.0)
 
         return load_balancing_loss
 
@@ -297,13 +296,18 @@ class CulturalAwareRouter(nn.Module):
             logging.warning("Expert weights contain NaN/Inf, returning zero entropy loss")
             return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype)
 
+        # 检查expert_weights是否已经是概率分布
+        weight_sums = expert_weights.sum(dim=-1)
+        if not torch.allclose(weight_sums, torch.ones_like(weight_sums), atol=1e-3):
+            logging.warning(f"Expert weights do not sum to 1: {weight_sums[:5].tolist()}")
+
         # 确保权重为正且和为1
-        expert_weights = torch.clamp(expert_weights, min=1e-8, max=1.0)
-        expert_weights = expert_weights / expert_weights.sum(dim=-1, keepdim=True)
+        expert_weights_normalized = torch.clamp(expert_weights, min=1e-8, max=1.0)
+        expert_weights_normalized = expert_weights_normalized / expert_weights_normalized.sum(dim=-1, keepdim=True)
 
         # 计算熵：H = -sum(p * log(p))
-        log_weights = torch.log(expert_weights + 1e-8)
-        entropy = -torch.sum(expert_weights * log_weights, dim=-1)
+        log_weights = torch.log(expert_weights_normalized + 1e-8)
+        entropy = -torch.sum(expert_weights_normalized * log_weights, dim=-1)
 
         # 最大熵（均匀分布）
         max_entropy = torch.log(torch.tensor(expert_weights.size(-1), dtype=entropy.dtype, device=entropy.device))
@@ -311,8 +315,8 @@ class CulturalAwareRouter(nn.Module):
         # 熵正则化损失：鼓励高熵（均匀分布）
         entropy_loss = (max_entropy - entropy).mean()
 
-        # 裁剪损失到合理范围
-        entropy_loss = torch.clamp(entropy_loss, min=0.0, max=max_entropy)
+        # 裁剪损失到合理范围 - 但不要裁剪到0
+        entropy_loss = torch.clamp(entropy_loss, min=1e-8, max=max_entropy.item())
 
         return entropy_loss
 
