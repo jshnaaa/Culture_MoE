@@ -401,7 +401,7 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                     outputs['diversity_loss'] = div_loss
 
                 # 防塌陷损失
-                load_balance_loss = self.router.compute_load_balancing_loss(final_logits)
+                load_balance_loss = self.router.compute_load_balancing_loss(expert_weights)
                 entropy_loss = self.router.entropy_regularization(expert_weights)
 
                 if load_balance_loss is None:
@@ -451,7 +451,7 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 outputs['diversity_loss'] = torch.tensor(0.0, device=generation_loss.device)
 
                 # 防塌陷损失
-                load_balance_loss = self.router.compute_load_balancing_loss(final_logits)
+                load_balance_loss = self.router.compute_load_balancing_loss(expert_weights)
                 entropy_loss = self.router.entropy_regularization(expert_weights)
 
                 if load_balance_loss is None:

@@ -464,7 +464,7 @@ class CultureSpecificExpert(nn.Module):
         relevance_scores = []
         for culture_id in culture_ids:
             if len(self.primary_culture_ids) == 0:
-                # 通用专家对所有文化都有中等相关性
+                # 冲突处理专家对所有文化都有中等相关性（处理文化冲突）
                 relevance_scores.append(0.5)
             elif culture_id.item() in self.primary_culture_ids:
                 # 主要负责的文化有高相关性
@@ -480,7 +480,7 @@ class CultureSpecificExpert(nn.Module):
         prompts = []
         for culture_id in culture_ids:
             if len(self.primary_culture_ids) == 0:
-                # 通用专家使用平均提示
+                # 冲突处理专家使用平均提示（处理跨文化情况）
                 prompt = self.culture_prompt[0]
             elif culture_id.item() in self.primary_culture_ids:
                 # 使用对应的文化提示
