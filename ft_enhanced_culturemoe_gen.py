@@ -600,9 +600,61 @@ class EnhancedCultureMoETrainer:
         # DataParallel兼容性：访问实际模型
         actual_model = self.model.module if self.use_dataparallel else self.model
         expert_info = actual_model.get_culture_expert_info()
-        logging.info("Culture Expert Assignments:")
+
+        logging.info("=" * 60)
+        logging.info("📋 DETAILED CULTURE EXPERT ASSIGNMENTS")
+        logging.info("=" * 60)
+
+        # 统计各类专家数量
+        culture_specific_experts = 0
+        generalist_experts = 0
+        conflict_resolution_experts = 0
+
         for info in expert_info:
-            logging.info(f"  Expert {info['expert_id']}: {info['role']} ({info['param_count']:,} params)")
+            expert_id = info['expert_id']
+            role = info['role']
+            param_count = info['param_count']
+            primary_cultures = info.get('primary_cultures', [])
+
+            if len(primary_cultures) == 0:
+                conflict_resolution_experts += 1
+                logging.info(f"  🔧 Expert {expert_id}: {role} ({param_count:,} params)")
+                logging.info(f"      └─ Specializes in: Cultural conflict resolution")
+            elif len(primary_cultures) == 6:  # 假设总共6个文化
+                generalist_experts += 1
+                logging.info(f"  🌍 Expert {expert_id}: {role} ({param_count:,} params)")
+                logging.info(f"      └─ Covers: All cultures (cross-cultural specialist)")
+            else:
+                culture_specific_experts += 1
+                culture_names = [f"Culture-{c}" for c in primary_cultures]
+                logging.info(f"  🎯 Expert {expert_id}: {role} ({param_count:,} params)")
+                logging.info(f"      └─ Specialized cultures: {', '.join(culture_names)}")
+
+        logging.info("-" * 60)
+        logging.info(f"📊 Expert Distribution Summary:")
+        logging.info(f"  Culture-specific experts: {culture_specific_experts}")
+        logging.info(f"  Cross-cultural generalists: {generalist_experts}")
+        logging.info(f"  Conflict resolution specialists: {conflict_resolution_experts}")
+        logging.info(f"  Total experts: {len(expert_info)}")
+
+        # 检查文化覆盖情况
+        culture_coverage = {i: [] for i in range(6)}  # 假设6个文化
+        for info in expert_info:
+            primary_cultures = info.get('primary_cultures', [])
+            expert_id = info['expert_id']
+            for culture_id in primary_cultures:
+                if culture_id < 6:  # 确保文化ID有效
+                    culture_coverage[culture_id].append(expert_id)
+
+        logging.info("-" * 60)
+        logging.info(f"🎨 Culture Coverage Analysis:")
+        for culture_id, expert_ids in culture_coverage.items():
+            if expert_ids:
+                logging.info(f"  Culture-{culture_id}: Covered by experts {expert_ids} ({len(expert_ids)} experts)")
+            else:
+                logging.warning(f"  ⚠️  Culture-{culture_id}: NO DEDICATED EXPERTS!")
+
+        logging.info("=" * 60)
 
     def setup_data(self):
         """设置数据"""
@@ -1261,8 +1313,8 @@ def main():
     parser.add_argument('--use_mask', type=str, default='True', help='是否使用MASK机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)')
     parser.add_argument('--use_gate', type=str, default='True', help='是否使用GATE机制 (True=使用文化感知门控, False=不使用门控)')
     parser.add_argument('--router_temperature', type=float, default=2.0, help='路由器温度')
-    parser.add_argument('--load_balance_weight', type=float, default=0.001, help='负载均衡权重')
-    parser.add_argument('--entropy_weight', type=float, default=0.05, help='熵正则化权重')
+    parser.add_argument('--load_balance_weight', type=float, default=0.01, help='负载均衡权重')
+    parser.add_argument('--entropy_weight', type=float, default=0.1, help='熵正则化权重')
 
     # 训练参数
     parser.add_argument('--freeze_base_model', type=str, default='True', help='是否冻结基础模型')
@@ -1271,7 +1323,7 @@ def main():
     parser.add_argument('--eval_batch_size', type=int, default=4, help='评估批次大小')
     parser.add_argument('--learning_rate', type=float, default=2e-4, help='学习率')
     parser.add_argument('--moe_lr_multiplier', type=float, default=1.0, help='MoE学习率倍数')
-    parser.add_argument('--router_lr_multiplier', type=float, default=0.05, help='路由器学习率倍数')
+    parser.add_argument('--router_lr_multiplier', type=float, default=0.1, help='路由器学习率倍数')
     parser.add_argument('--shared_lr_multiplier', type=float, default=1.0, help='共享层学习率倍数')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='权重衰减')
     parser.add_argument('--max_length', type=int, default=512, help='最大序列长度')
