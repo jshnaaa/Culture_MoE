@@ -227,6 +227,9 @@ class CulturalAwareRouter(nn.Module):
         culture_logits = self.culture_router(culture_emb)  # [B, num_experts]
 
         # 3. 文化-专家亲和性
+        # 确保culture_expert_affinity在正确的设备上
+        if self.culture_expert_affinity.device != target_device:
+            self.culture_expert_affinity.data = self.culture_expert_affinity.data.to(target_device)
         affinity_logits = self.culture_expert_affinity[culture_ids]  # [B, num_experts]
 
         # 4. 多维度融合

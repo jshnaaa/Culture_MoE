@@ -169,7 +169,17 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
         # 如果没有提供culture_ids，使用culture_labels
         if culture_ids is None:
-            culture_ids = culture_labels if culture_labels is not None else torch.zeros(input_ids.shape[0], dtype=torch.long, device=device)
+            if culture_labels is not None:
+                # 确保culture_labels在正确的设备上
+                if culture_labels.device != device:
+                    culture_labels = culture_labels.to(device)
+                culture_ids = culture_labels
+            else:
+                culture_ids = torch.zeros(input_ids.shape[0], dtype=torch.long, device=device)
+
+        # 确保culture_ids在正确的设备上
+        if culture_ids is not None and culture_ids.device != device:
+            culture_ids = culture_ids.to(device)
 
         # ✅ Step 1: LLaMA forward for h_all (instruction + input)
         outputs_all = self.llama_model.model(
@@ -207,11 +217,17 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
             h_no = h_all.clone()
 
         # ✅ Step 3: 文化嵌入增强
+        # 确保文化嵌入组件在正确的设备上
+        if next(self.cultural_embedding.parameters()).device != device:
+            self.cultural_embedding = self.cultural_embedding.to(device)
         culturally_embedded_states, culture_attention = self.cultural_embedding(
             h_all, culture_ids
         )
 
         # ✅ Step 4: 文化上下文感知
+        # 确保文化上下文组件在正确的设备上
+        if next(self.cultural_context.parameters()).device != device:
+            self.cultural_context = self.cultural_context.to(device)
         context_aware_states, cultural_analysis = self.cultural_context(
             culturally_embedded_states, culture_ids
         )
@@ -229,6 +245,9 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
         else:
             pooled = context_aware_states.mean(dim=1)  # [B, H]
 
+        # 确保路由器在正确的设备上
+        if next(self.router.parameters()).device != device:
+            self.router = self.router.to(device)
         expert_weights, routing_info = self.router(pooled, culture_ids, router_temperature)
 
         # 为DataParallel兼容性提取final_logits
@@ -237,7 +256,10 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
         # ✅ Step 7: 文化特定专家处理
         expert_outputs = []
         culture_relevances = []
-        for expert in self.cultural_experts:
+        for i, expert in enumerate(self.cultural_experts):
+            # 确保每个专家在正确的设备上
+            if next(expert.parameters()).device != device:
+                self.cultural_experts[i] = expert.to(device)
             output, relevance = expert(context_aware_states, culture_ids)
             expert_outputs.append(output)
             culture_relevances.append(relevance)
@@ -260,6 +282,9 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
         # ✅ Step 11: 文化感知门控机制（可选）
         if self.use_gate and self.cultural_gate is not None:
+            # 确保文化门控在正确的设备上
+            if next(self.cultural_gate.parameters()).device != device:
+                self.cultural_gate = self.cultural_gate.to(device)
             # 获取文化嵌入
             culture_emb = self.cultural_embedding.culture_embeddings(culture_ids)  # [B, culture_dim]
             culture_emb_expanded = culture_emb.unsqueeze(1).expand(-1, shared_out.size(1), -1)  # [B, L, culture_dim]
@@ -338,6 +363,10 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
             # 文化损失
             if use_culture_loss and culture_labels is not None:
+                # 确保culture_labels在正确的设备上
+                if culture_labels.device != device:
+                    culture_labels = culture_labels.to(device)
+
                 if is_dataparallel:
                     # DataParallel模式下使用基础文化损失
                     culture_loss = self.compute_culture_loss(
