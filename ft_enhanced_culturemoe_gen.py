@@ -266,9 +266,14 @@ class EnhancedCultureMoETrainer:
         # 设置日志
         self.setup_logging()
 
-        # 创建专家权重和gate分布保存目录
-        self.batch_logs_dir = os.path.join(args.output_dir, "batch_logs")
-        os.makedirs(self.batch_logs_dir, exist_ok=True)
+        # 创建路由汇总保存目录
+        self.routing_logs_dir = os.path.join(args.output_dir, "routing_logs")
+        os.makedirs(self.routing_logs_dir, exist_ok=True)
+
+        # 用于收集epoch级别路由信息的变量
+        self.epoch_expert_weights = []
+        self.epoch_gate_values = []
+        self.epoch_culture_ids = []
 
         # 加载tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(args.base_model_path)
@@ -295,195 +300,123 @@ class EnhancedCultureMoETrainer:
         self.best_accuracy = 0.0
         self.epoch_results = []
 
-    def save_batch_routing_info(self, epoch: int, batch_idx: int, outputs: Dict, batch: Dict):
-        """保存每个batch的专家权重和gate分布"""
+    def collect_routing_info_for_summary(self, outputs: Dict, batch: Dict):
+        """收集路由信息用于epoch汇总"""
         try:
-            # 创建epoch目录
-            epoch_dir = os.path.join(self.batch_logs_dir, f"epoch_{epoch + 1}")
-            os.makedirs(epoch_dir, exist_ok=True)
+            # 收集专家权重
+            if 'expert_weights' in outputs:
+                expert_weights = outputs['expert_weights'].detach().cpu().numpy()
+                self.epoch_expert_weights.append(expert_weights)
 
-            # 提取专家权重
-            expert_weights = outputs.get('expert_weights', None)  # [B, num_experts]
-
-            # 提取gate分布（如果存在）
-            gate_values = None
+            # 收集gate值（如果存在）
             if hasattr(self.model, 'cultural_gate') and self.model.cultural_gate is not None:
-                # 尝试获取gate的输出值
                 if 'cultural_analysis' in outputs:
                     cultural_analysis = outputs['cultural_analysis']
-                    # 这里可能需要根据实际的gate输出结构调整
                     gate_values = cultural_analysis.get('gate_values', None)
+                    if gate_values is not None:
+                        self.epoch_gate_values.append(gate_values.detach().cpu().numpy())
 
-            # 构建保存数据
-            batch_data = {
-                'epoch': epoch + 1,
-                'batch_idx': batch_idx,
-                'global_step': self.global_step,
-                'batch_size': batch['input_ids'].shape[0],
-                'culture_ids': batch['culture_ids'].cpu().numpy().tolist() if 'culture_ids' in batch else None,
-            }
-
-            # 添加专家权重信息
-            if expert_weights is not None:
-                expert_weights_np = expert_weights.detach().cpu().numpy()  # [B, num_experts]
-                batch_data['expert_weights'] = {
-                    'values': expert_weights_np.tolist(),
-                    'shape': list(expert_weights_np.shape),
-                    'mean_usage': np.mean(expert_weights_np, axis=0).tolist(),  # 每个专家的平均使用率
-                    'std_usage': np.std(expert_weights_np, axis=0).tolist(),   # 每个专家的使用率标准差
-                    'max_expert_per_sample': np.argmax(expert_weights_np, axis=1).tolist(),  # 每个样本最大权重的专家
-                    'entropy_per_sample': []  # 每个样本的路由熵
-                }
-
-                # 计算每个样本的路由熵
-                for i in range(expert_weights_np.shape[0]):
-                    probs = expert_weights_np[i]
-                    probs_safe = np.clip(probs, 1e-8, 1.0)
-                    entropy = -np.sum(probs_safe * np.log(probs_safe))
-                    batch_data['expert_weights']['entropy_per_sample'].append(float(entropy))
-
-            # 添加gate分布信息
-            if gate_values is not None:
-                gate_values_np = gate_values.detach().cpu().numpy()
-                batch_data['gate_values'] = {
-                    'values': gate_values_np.tolist(),
-                    'shape': list(gate_values_np.shape),
-                    'mean': float(np.mean(gate_values_np)),
-                    'std': float(np.std(gate_values_np)),
-                    'min': float(np.min(gate_values_np)),
-                    'max': float(np.max(gate_values_np))
-                }
-
-            # 添加其他路由信息
-            if 'routing_info' in outputs:
-                routing_info = outputs['routing_info']
-                batch_data['routing_info'] = {}
-
-                for key, value in routing_info.items():
-                    if isinstance(value, torch.Tensor):
-                        value_np = value.detach().cpu().numpy()
-                        batch_data['routing_info'][key] = {
-                            'mean': float(np.mean(value_np)),
-                            'std': float(np.std(value_np)),
-                            'shape': list(value_np.shape)
-                        }
-
-            # 保存到文件
-            batch_file = os.path.join(epoch_dir, f"batch_{batch_idx:06d}.json")
-            with open(batch_file, 'w') as f:
-                json.dump(batch_data, f, indent=2)
+            # 收集文化ID
+            if 'culture_ids' in batch:
+                culture_ids = batch['culture_ids'].cpu().numpy()
+                self.epoch_culture_ids.extend(culture_ids.tolist())
 
         except Exception as e:
             # 静默处理错误，不影响训练
             pass
 
+
     def save_epoch_routing_summary(self, epoch: int):
         """保存每个epoch的路由汇总信息"""
         try:
-            epoch_dir = os.path.join(self.batch_logs_dir, f"epoch_{epoch + 1}")
-            if not os.path.exists(epoch_dir):
+            # 检查是否有收集到的数据
+            if not self.epoch_expert_weights:
+                logging.warning(f"Epoch {epoch + 1}: 没有收集到专家权重数据")
                 return
 
-            # 收集所有batch文件
-            batch_files = [f for f in os.listdir(epoch_dir) if f.startswith('batch_') and f.endswith('.json')]
-            batch_files.sort()
+            # 合并所有batch的数据
+            all_expert_weights = np.concatenate(self.epoch_expert_weights, axis=0)  # [total_samples, num_experts]
 
-            if not batch_files:
-                return
+            # 计算专家使用统计
+            expert_usage = np.mean(all_expert_weights, axis=0)  # [num_experts]
 
-            # 汇总统计
-            all_expert_usage = []
+            # 计算路由熵
             all_entropies = []
-            all_gate_means = []
+            for batch_weights in all_expert_weights:
+                probs_safe = np.clip(batch_weights, 1e-8, 1.0)
+                entropy = -np.sum(probs_safe * np.log(probs_safe))
+                all_entropies.append(entropy)
+
+            # 处理gate信息
+            gate_statistics = {}
+            if self.epoch_gate_values:
+                all_gate_values = np.concatenate(self.epoch_gate_values, axis=0)
+                gate_statistics = {
+                    'mean': float(np.mean(all_gate_values)),
+                    'std': float(np.std(all_gate_values)),
+                    'min': float(np.min(all_gate_values)),
+                    'max': float(np.max(all_gate_values))
+                }
+
+            # 按文化分组的专家使用率
             culture_expert_usage = {}
-
-            for batch_file in batch_files:
-                batch_path = os.path.join(epoch_dir, batch_file)
-                try:
-                    with open(batch_path, 'r') as f:
-                        batch_data = json.load(f)
-
-                    # 收集专家使用率
-                    if 'expert_weights' in batch_data:
-                        expert_weights = batch_data['expert_weights']
-                        all_expert_usage.append(expert_weights['mean_usage'])
-                        all_entropies.extend(expert_weights['entropy_per_sample'])
-
-                        # 按文化分组的专家使用率
-                        culture_ids = batch_data.get('culture_ids', [])
-                        if culture_ids and 'values' in expert_weights:
-                            expert_values = np.array(expert_weights['values'])
-                            for i, culture_id in enumerate(culture_ids):
-                                if culture_id not in culture_expert_usage:
-                                    culture_expert_usage[culture_id] = []
-                                if i < len(expert_values):
-                                    culture_expert_usage[culture_id].append(expert_values[i].tolist())
-
-                    # 收集gate信息
-                    if 'gate_values' in batch_data:
-                        all_gate_means.append(batch_data['gate_values']['mean'])
-
-                except:
-                    continue
+            if self.epoch_culture_ids:
+                unique_cultures = np.unique(self.epoch_culture_ids)
+                for culture in unique_cultures:
+                    culture_mask = np.array(self.epoch_culture_ids) == culture
+                    if np.any(culture_mask):
+                        culture_weights = all_expert_weights[culture_mask[:len(all_expert_weights)]]
+                        culture_mean_usage = np.mean(culture_weights, axis=0)
+                        culture_expert_usage[f'culture_{int(culture)}'] = {
+                            'mean_usage_per_expert': culture_mean_usage.tolist(),
+                            'sample_count': int(np.sum(culture_mask)),
+                            'dominant_experts': np.argsort(culture_mean_usage)[-3:].tolist()
+                        }
 
             # 计算汇总统计
             summary = {
                 'epoch': epoch + 1,
-                'total_batches': len(batch_files),
-                'expert_utilization': {},
-                'routing_entropy': {},
-                'gate_distribution': {},
-                'culture_specific_routing': {}
-            }
-
-            if all_expert_usage:
-                all_expert_usage_np = np.array(all_expert_usage)
-                mean_usage = np.mean(all_expert_usage_np, axis=0)
-
-                summary['expert_utilization'] = {
-                    'mean_usage_per_expert': mean_usage.tolist(),
-                    'usage_std_per_expert': np.std(all_expert_usage_np, axis=0).tolist(),
-                    'gini_coefficient': float(self.compute_gini_coefficient(mean_usage)),
-                    'max_usage': float(np.max(mean_usage)),
-                    'min_usage': float(np.min(mean_usage)),
-                    'usage_balance_ratio': float(np.min(mean_usage) / np.max(mean_usage)) if np.max(mean_usage) > 0 else 0.0
-                }
-
-            if all_entropies:
-                summary['routing_entropy'] = {
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'total_samples': len(all_expert_weights),
+                'expert_utilization': {
+                    'mean_usage_per_expert': expert_usage.tolist(),
+                    'usage_std_per_expert': np.std(all_expert_weights, axis=0).tolist(),
+                    'gini_coefficient': float(self.compute_gini_coefficient(expert_usage)),
+                    'max_usage': float(np.max(expert_usage)),
+                    'min_usage': float(np.min(expert_usage)),
+                    'usage_balance_ratio': float(np.min(expert_usage) / np.max(expert_usage)) if np.max(expert_usage) > 0 else 0.0
+                },
+                'routing_entropy': {
                     'mean': float(np.mean(all_entropies)),
                     'std': float(np.std(all_entropies)),
                     'min': float(np.min(all_entropies)),
                     'max': float(np.max(all_entropies))
-                }
+                },
+                'gate_distribution': gate_statistics,
+                'culture_specific_routing': culture_expert_usage
+            }
 
-            if all_gate_means:
-                summary['gate_distribution'] = {
-                    'mean': float(np.mean(all_gate_means)),
-                    'std': float(np.std(all_gate_means)),
-                    'min': float(np.min(all_gate_means)),
-                    'max': float(np.max(all_gate_means))
-                }
+            # 保存汇总到routing_logs目录
+            summary_file = os.path.join(self.routing_logs_dir, f'epoch_{epoch + 1}_summary.json')
+            with open(summary_file, 'w', encoding='utf-8') as f:
+                json.dump(summary, f, indent=2, ensure_ascii=False)
 
-            # 文化特定路由分析
-            for culture_id, expert_weights_list in culture_expert_usage.items():
-                if expert_weights_list:
-                    culture_weights = np.array(expert_weights_list)
-                    culture_mean_usage = np.mean(culture_weights, axis=0)
-                    summary['culture_specific_routing'][f'culture_{culture_id}'] = {
-                        'mean_usage_per_expert': culture_mean_usage.tolist(),
-                        'sample_count': len(expert_weights_list),
-                        'dominant_experts': np.argsort(culture_mean_usage)[-3:].tolist()  # 前3个最常用的专家
-                    }
+            logging.info(f"✅ Epoch {epoch + 1} 路由汇总已保存: {summary_file}")
+            logging.info(f"   - 样本总数: {len(all_expert_weights)}")
+            logging.info(f"   - Gini系数: {summary['expert_utilization']['gini_coefficient']:.4f}")
+            logging.info(f"   - 平均路由熵: {summary['routing_entropy']['mean']:.4f}")
 
-            # 保存汇总
-            summary_file = os.path.join(epoch_dir, 'epoch_summary.json')
-            with open(summary_file, 'w') as f:
-                json.dump(summary, f, indent=2)
+            # 清理当前epoch的数据，为下一个epoch准备
+            self.epoch_expert_weights = []
+            self.epoch_gate_values = []
+            self.epoch_culture_ids = []
 
         except Exception as e:
-            # 静默处理错误
-            pass
+            logging.warning(f"保存Epoch {epoch + 1}路由汇总失败: {e}")
+            # 即使失败也要清理数据
+            self.epoch_expert_weights = []
+            self.epoch_gate_values = []
+            self.epoch_culture_ids = []
 
     def compute_gini_coefficient(self, values):
         """计算基尼系数"""
@@ -895,8 +828,8 @@ class EnhancedCultureMoETrainer:
             num_batches += 1
             self.global_step += 1
 
-            # 保存每个batch的专家权重和gate分布
-            self.save_batch_routing_info(epoch, batch_idx, outputs, batch)
+            # 收集路由信息用于epoch汇总（不保存单个batch文件）
+            self.collect_routing_info_for_summary(outputs, batch)
 
             # 更新进度条 - 添加更多损失信息
             progress_bar.set_postfix({
