@@ -617,7 +617,13 @@ class CulturalContextAwareness(nn.Module):
 
 def create_culture_assignments(num_experts: int, num_cultures: int = 6) -> List[List[int]]:
     """
-    动态创建文化分配方案
+    动态创建文化分配方案 - 无通用专家版本
+
+    设计原则：
+    1. 共享专家已负责通用知识，路由专家应全部专门化
+    2. 每个文化都有专门的专家负责
+    3. 保留1个冲突处理专家
+    4. 剩余专家通过文化组合或多文化专门化来分配
 
     Args:
         num_experts: 专家数量
@@ -631,36 +637,86 @@ def create_culture_assignments(num_experts: int, num_cultures: int = 6) -> List[
 
     culture_assignments = []
 
-    if num_experts >= num_cultures:
-        # 专家数量 >= 文化数量：每个文化至少有一个专家
+    if num_experts >= num_cultures + 1:
+        # 专家数量充足：每个文化至少有一个专家 + 冲突专家
+
+        # 1. 为每个文化分配一个专门的专家
         for i in range(num_cultures):
             culture_assignments.append([i])
 
-        # 剩余专家作为通用专家
-        for i in range(num_cultures, num_experts - 1):
-            culture_assignments.append(list(range(num_cultures)))
+        # 2. 剩余专家采用文化组合策略，避免通用专家
+        remaining_experts = num_experts - num_cultures - 1  # 减去文化专家和冲突专家
 
-        # 最后一个专家作为文化冲突处理专家
+        if remaining_experts > 0:
+            # 创建文化组合专家：每个专家负责2-3个相关文化
+            culture_combinations = [
+                [0, 1],     # 亚洲-欧洲（相邻大陆）
+                [2, 3],     # 北美-南美（美洲）
+                [4, 5],     # 非洲-大洋洲（南半球偏向）
+                [0, 2],     # 亚洲-北美（太平洋圈）
+                [1, 4],     # 欧洲-非洲（历史联系）
+                [0, 3, 5],  # 亚洲-南美-大洋洲（多元文化）
+                [1, 2, 4],  # 欧洲-北美-非洲（跨大西洋）
+                [0, 4],     # 亚洲-非洲（发展中地区）
+                [1, 3],     # 欧洲-南美（拉丁文化）
+                [2, 5],     # 北美-大洋洲（英语文化圈）
+            ]
+
+            # 分配文化组合专家
+            for i in range(min(remaining_experts, len(culture_combinations))):
+                culture_assignments.append(culture_combinations[i])
+
+            # 如果还有剩余专家，创建三文化专家
+            if remaining_experts > len(culture_combinations):
+                extra_experts = remaining_experts - len(culture_combinations)
+                for i in range(extra_experts):
+                    # 创建三文化组合
+                    base_idx = i % num_cultures
+                    three_cultures = [
+                        base_idx,
+                        (base_idx + 2) % num_cultures,
+                        (base_idx + 4) % num_cultures
+                    ]
+                    culture_assignments.append(three_cultures)
+
+        # 3. 最后一个专家作为文化冲突处理专家
         culture_assignments.append([])
 
     else:
-        # 专家数量 < 文化数量：多个文化共享专家
-        cultures_per_expert = num_cultures // (num_experts - 2)  # 保留2个特殊专家
+        # 专家数量不足：多个文化共享专家，但避免全文化通用专家
+        available_experts = num_experts - 1  # 保留1个冲突专家
 
-        for i in range(num_experts - 2):
-            start_idx = i * cultures_per_expert
-            end_idx = min((i + 1) * cultures_per_expert, num_cultures)
-            culture_assignments.append(list(range(start_idx, end_idx)))
+        if available_experts >= num_cultures // 2:
+            # 每个专家负责2个文化
+            culture_pairs = [
+                [0, 1], [2, 3], [4, 5],  # 基础配对
+                [0, 2], [1, 4], [3, 5],  # 交叉配对
+            ]
 
-        # 处理剩余文化
-        remaining_cultures = list(range((num_experts - 2) * cultures_per_expert, num_cultures))
-        if remaining_cultures:
-            culture_assignments[-1].extend(remaining_cultures)
+            for i in range(min(available_experts, len(culture_pairs))):
+                culture_assignments.append(culture_pairs[i])
 
-        # 倒数第二个专家：通用跨文化专家
-        culture_assignments.append(list(range(num_cultures)))
+            # 处理剩余文化
+            assigned_cultures = set()
+            for assignment in culture_assignments:
+                assigned_cultures.update(assignment)
 
-        # 最后一个专家：文化冲突处理专家
+            remaining_cultures = [c for c in range(num_cultures) if c not in assigned_cultures]
+            if remaining_cultures:
+                # 将剩余文化分配给现有专家
+                for i, culture in enumerate(remaining_cultures):
+                    culture_assignments[i % len(culture_assignments)].append(culture)
+        else:
+            # 专家数量很少：每个专家负责3个文化
+            cultures_per_expert = (num_cultures + available_experts - 1) // available_experts
+
+            for i in range(available_experts):
+                start_idx = i * cultures_per_expert
+                end_idx = min((i + 1) * cultures_per_expert, num_cultures)
+                if start_idx < num_cultures:
+                    culture_assignments.append(list(range(start_idx, end_idx)))
+
+        # 文化冲突处理专家
         culture_assignments.append([])
 
     return culture_assignments

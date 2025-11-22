@@ -95,7 +95,7 @@ fi
 case $DATA_ID in
     0)
         # unified_all_datasets
-        DATASET_NAME="unified_all_datasets"
+        DATASET_NAME="unified_all_datasets_small"
         TRAIN_FILE="/root/autodl-fs/unified_all_datasets_small.json"
         DATASET_TAG="unified_all_datasets_small"
         if [ "$BACKBONE" = "qwen" ]; then
@@ -345,7 +345,7 @@ python ft_enhanced_culturemoe_gen.py \
     --use_mask "$USE_MASK" \
     --use_gate "$USE_GATE" \
     --freeze_base_model True \
-    --num_epochs 12 \
+    --num_epochs 10 \
     --num_experts "$NUM_EXPERTS" \
     --use_shared_experts "$USE_SHARED" \
     --shared_hidden_dim 4096 \

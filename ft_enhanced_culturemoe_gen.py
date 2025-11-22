@@ -275,6 +275,16 @@ class EnhancedCultureMoETrainer:
         self.epoch_gate_values = []
         self.epoch_culture_ids = []
 
+        # ✅ 路由恶化检测系统
+        self.routing_history = []  # 存储历史路由指标
+        self.routing_alert_thresholds = {
+            'gini_coefficient': 0.5,        # Gini系数超过0.5认为严重不均衡
+            'entropy_drop': 0.3,            # 熵下降超过0.3认为塌陷风险
+            'expert_collapse': 0.05,        # 专家使用率低于0.05认为塌陷
+            'consecutive_degradation': 2     # 连续2个epoch恶化触发警报
+        }
+        self.routing_alerts = []  # 存储警报历史
+
         # 加载tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(args.base_model_path)
         if self.tokenizer.pad_token is None:
@@ -406,6 +416,20 @@ class EnhancedCultureMoETrainer:
             logging.info(f"   - Gini系数: {summary['expert_utilization']['gini_coefficient']:.4f}")
             logging.info(f"   - 平均路由熵: {summary['routing_entropy']['mean']:.4f}")
 
+            # ✅ 路由恶化检测
+            routing_metrics = {
+                'gini_coefficient': summary['expert_utilization']['gini_coefficient'],
+                'mean_entropy': summary['routing_entropy']['mean'],
+                'min_expert_usage': summary['expert_utilization']['min_usage'],
+                'max_expert_usage': summary['expert_utilization']['max_usage']
+            }
+
+            alerts = self.detect_routing_degradation(epoch, routing_metrics)
+            if alerts:
+                self.log_routing_alerts(epoch, alerts)
+            else:
+                logging.info(f"✅ Epoch {epoch + 1} 路由健康状况良好，无警报")
+
             # 清理当前epoch的数据，为下一个epoch准备
             self.epoch_expert_weights = []
             self.epoch_gate_values = []
@@ -425,6 +449,253 @@ class EnhancedCultureMoETrainer:
         n = len(values)
         cumsum = np.cumsum(values)
         return (n + 1 - 2 * np.sum(cumsum) / cumsum[-1]) / n if cumsum[-1] > 0 else 0.0
+
+    def detect_routing_degradation(self, epoch: int, current_metrics: Dict) -> List[str]:
+        """
+        检测路由恶化情况
+
+        Args:
+            epoch: 当前epoch
+            current_metrics: 当前epoch的路由指标
+
+        Returns:
+            alerts: 检测到的警报列表
+        """
+        alerts = []
+
+        # 添加当前指标到历史记录
+        self.routing_history.append({
+            'epoch': epoch + 1,
+            'gini_coefficient': current_metrics.get('gini_coefficient', 0.0),
+            'mean_entropy': current_metrics.get('mean_entropy', 0.0),
+            'min_expert_usage': current_metrics.get('min_expert_usage', 0.0),
+            'max_expert_usage': current_metrics.get('max_expert_usage', 0.0)
+        })
+
+        # 1. 检查Gini系数是否过高（专家利用严重不均衡）
+        gini = current_metrics.get('gini_coefficient', 0.0)
+        if gini > self.routing_alert_thresholds['gini_coefficient']:
+            alerts.append(f"🚨 专家利用严重不均衡! Gini系数={gini:.4f} > {self.routing_alert_thresholds['gini_coefficient']}")
+
+        # 2. 检查是否有专家塌陷（使用率过低）
+        min_usage = current_metrics.get('min_expert_usage', 0.0)
+        if min_usage < self.routing_alert_thresholds['expert_collapse']:
+            alerts.append(f"🚨 专家塌陷风险! 最低使用率={min_usage:.4f} < {self.routing_alert_thresholds['expert_collapse']}")
+
+        # 3. 检查路由熵是否急剧下降（路由过于确定）
+        if len(self.routing_history) >= 2:
+            prev_entropy = self.routing_history[-2]['mean_entropy']
+            curr_entropy = current_metrics.get('mean_entropy', 0.0)
+            entropy_drop = prev_entropy - curr_entropy
+
+            if entropy_drop > self.routing_alert_thresholds['entropy_drop']:
+                alerts.append(f"⚠️  路由熵急剧下降! 下降幅度={entropy_drop:.4f} > {self.routing_alert_thresholds['entropy_drop']}")
+
+        # 4. 检查连续恶化趋势
+        if len(self.routing_history) >= self.routing_alert_thresholds['consecutive_degradation']:
+            recent_ginis = [h['gini_coefficient'] for h in self.routing_history[-self.routing_alert_thresholds['consecutive_degradation']:]]
+            if all(recent_ginis[i] < recent_ginis[i+1] for i in range(len(recent_ginis)-1)):
+                alerts.append(f"⚠️  连续{self.routing_alert_thresholds['consecutive_degradation']}个epoch Gini系数上升，可能存在持续恶化趋势")
+
+        # 5. 检查专家使用率极化（一个专家过于占优）
+        max_usage = current_metrics.get('max_expert_usage', 0.0)
+        if max_usage > 0.7:  # 单个专家使用率超过70%
+            alerts.append(f"⚠️  专家使用极化! 最高使用率={max_usage:.4f} > 0.7，单个专家过于占优")
+
+        return alerts
+
+    def log_routing_alerts(self, epoch: int, alerts: List[str]):
+        """记录路由警报"""
+        if not alerts:
+            return
+
+        # 记录到警报历史
+        alert_record = {
+            'epoch': epoch + 1,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'alerts': alerts
+        }
+        self.routing_alerts.append(alert_record)
+
+        # 输出警报日志
+        logging.warning("=" * 80)
+        logging.warning(f"🚨 EPOCH {epoch + 1} 路由健康检查警报")
+        logging.warning("=" * 80)
+        for alert in alerts:
+            logging.warning(f"   {alert}")
+        logging.warning("")
+
+        # 提供建议
+        gini = self.routing_history[-1]['gini_coefficient'] if self.routing_history else 0.0
+        entropy = self.routing_history[-1]['mean_entropy'] if self.routing_history else 0.0
+
+        logging.warning("💡 建议的解决方案:")
+        if gini > 0.5:
+            logging.warning("   - 增加负载均衡权重: --load_balance_weight 0.05")
+            logging.warning("   - 增加熵正则化权重: --entropy_weight 0.2")
+        if entropy < 0.5:
+            logging.warning("   - 增加路由器温度: --router_temperature 5.0")
+            logging.warning("   - 减少路由器学习率: --router_lr_multiplier 0.05")
+
+        logging.warning("   - 考虑调整专家分配策略")
+        logging.warning("   - 监控后续epoch是否持续恶化")
+        logging.warning("=" * 80)
+
+        # 保存警报到文件
+        alerts_file = os.path.join(self.args.output_dir, 'routing_alerts.json')
+        with open(alerts_file, 'w', encoding='utf-8') as f:
+            json.dump(self.routing_alerts, f, indent=2, ensure_ascii=False)
+
+    def generate_routing_health_summary(self):
+        """生成训练完成后的路由健康总结报告"""
+        if not self.routing_history:
+            logging.info("无路由历史数据，跳过健康总结")
+            return
+
+        logging.info("\n" + "=" * 80)
+        logging.info("🏥 路由健康总结报告")
+        logging.info("=" * 80)
+
+        # 基础统计
+        total_epochs = len(self.routing_history)
+        total_alerts = len(self.routing_alerts)
+
+        logging.info(f"📊 训练概况:")
+        logging.info(f"   - 训练轮数: {total_epochs}")
+        logging.info(f"   - 触发警报次数: {total_alerts}")
+
+        # 路由指标趋势分析
+        if total_epochs >= 2:
+            first_epoch = self.routing_history[0]
+            last_epoch = self.routing_history[-1]
+
+            gini_change = last_epoch['gini_coefficient'] - first_epoch['gini_coefficient']
+            entropy_change = last_epoch['mean_entropy'] - first_epoch['mean_entropy']
+
+            logging.info(f"\n📈 路由指标变化:")
+            logging.info(f"   - Gini系数: {first_epoch['gini_coefficient']:.4f} → {last_epoch['gini_coefficient']:.4f} ({gini_change:+.4f})")
+            logging.info(f"   - 平均熵: {first_epoch['mean_entropy']:.4f} → {last_epoch['mean_entropy']:.4f} ({entropy_change:+.4f})")
+
+            # 趋势判断
+            if gini_change > 0.1:
+                logging.warning(f"   ⚠️  Gini系数显著上升，专家利用不均衡加剧")
+            elif gini_change < -0.05:
+                logging.info(f"   ✅ Gini系数下降，专家利用更加均衡")
+            else:
+                logging.info(f"   ➡️  Gini系数变化平稳")
+
+            if entropy_change < -0.5:
+                logging.warning(f"   ⚠️  路由熵显著下降，可能存在专家塌陷风险")
+            elif entropy_change > 0.2:
+                logging.info(f"   ✅ 路由熵上升，路由多样性增加")
+            else:
+                logging.info(f"   ➡️  路由熵变化平稳")
+
+        # 警报分析
+        if total_alerts > 0:
+            logging.info(f"\n🚨 警报分析:")
+            alert_types = {}
+            for alert_record in self.routing_alerts:
+                for alert in alert_record['alerts']:
+                    if '专家利用严重不均衡' in alert:
+                        alert_types['gini_high'] = alert_types.get('gini_high', 0) + 1
+                    elif '专家塌陷风险' in alert:
+                        alert_types['expert_collapse'] = alert_types.get('expert_collapse', 0) + 1
+                    elif '路由熵急剧下降' in alert:
+                        alert_types['entropy_drop'] = alert_types.get('entropy_drop', 0) + 1
+                    elif '连续' in alert and 'epoch' in alert:
+                        alert_types['consecutive_degradation'] = alert_types.get('consecutive_degradation', 0) + 1
+                    elif '专家使用极化' in alert:
+                        alert_types['expert_polarization'] = alert_types.get('expert_polarization', 0) + 1
+
+            for alert_type, count in alert_types.items():
+                alert_name = {
+                    'gini_high': '专家利用不均衡',
+                    'expert_collapse': '专家塌陷风险',
+                    'entropy_drop': '路由熵下降',
+                    'consecutive_degradation': '连续恶化',
+                    'expert_polarization': '专家极化'
+                }.get(alert_type, alert_type)
+                logging.info(f"   - {alert_name}: {count}次")
+        else:
+            logging.info(f"\n✅ 整个训练过程无路由健康警报")
+
+        # 最终健康评级
+        final_gini = self.routing_history[-1]['gini_coefficient']
+        final_entropy = self.routing_history[-1]['mean_entropy']
+        final_min_usage = self.routing_history[-1]['min_expert_usage']
+
+        health_score = 0
+        health_issues = []
+
+        # 评分系统
+        if final_gini < 0.2:
+            health_score += 30
+        elif final_gini < 0.4:
+            health_score += 20
+        else:
+            health_issues.append(f"Gini系数过高({final_gini:.3f})")
+
+        if final_entropy > 1.0:
+            health_score += 30
+        elif final_entropy > 0.5:
+            health_score += 20
+        else:
+            health_issues.append(f"路由熵过低({final_entropy:.3f})")
+
+        if final_min_usage > 0.05:
+            health_score += 25
+        elif final_min_usage > 0.02:
+            health_score += 15
+        else:
+            health_issues.append(f"最低使用率过低({final_min_usage:.3f})")
+
+        if total_alerts == 0:
+            health_score += 15
+        elif total_alerts <= 2:
+            health_score += 10
+        else:
+            health_issues.append(f"警报次数过多({total_alerts}次)")
+
+        # 健康等级
+        if health_score >= 90:
+            health_grade = "优秀 ✅"
+        elif health_score >= 75:
+            health_grade = "良好 ✅"
+        elif health_score >= 60:
+            health_grade = "一般 ⚠️"
+        elif health_score >= 40:
+            health_grade = "较差 ⚠️"
+        else:
+            health_grade = "严重 🚨"
+
+        logging.info(f"\n🏆 最终路由健康评级: {health_grade} (评分: {health_score}/100)")
+
+        if health_issues:
+            logging.info(f"   主要问题:")
+            for issue in health_issues:
+                logging.info(f"   - {issue}")
+
+        # 保存完整的路由健康报告
+        health_report = {
+            'summary': {
+                'total_epochs': total_epochs,
+                'total_alerts': total_alerts,
+                'health_score': health_score,
+                'health_grade': health_grade,
+                'health_issues': health_issues
+            },
+            'final_metrics': self.routing_history[-1] if self.routing_history else {},
+            'routing_history': self.routing_history,
+            'alert_history': self.routing_alerts
+        }
+
+        health_report_file = os.path.join(self.args.output_dir, 'routing_health_report.json')
+        with open(health_report_file, 'w', encoding='utf-8') as f:
+            json.dump(health_report, f, indent=2, ensure_ascii=False)
+
+        logging.info(f"\n📄 完整路由健康报告已保存: {health_report_file}")
+        logging.info("=" * 80)
 
     def setup_logging(self):
         """设置日志"""
@@ -1273,6 +1544,9 @@ class EnhancedCultureMoETrainer:
                 logging.info(f"Accuracy progression: {[f'{acc:.4f}' for acc in eval_accuracies]}")
         else:
             logging.warning("No evaluation results recorded during training")
+
+        # ✅ 路由健康总结报告
+        self.generate_routing_health_summary()
 
         # 检查输出目录总大小
         total_size = 0
