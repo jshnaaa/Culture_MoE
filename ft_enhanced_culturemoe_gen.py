@@ -1312,7 +1312,7 @@ def main():
     parser.add_argument('--use_shared_experts', type=str, default='True', help='是否使用共享专家')
     parser.add_argument('--use_mask', type=str, default='True', help='是否使用MASK机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)')
     parser.add_argument('--use_gate', type=str, default='True', help='是否使用GATE机制 (True=使用文化感知门控, False=不使用门控)')
-    parser.add_argument('--router_temperature', type=float, default=2.0, help='路由器温度')
+    parser.add_argument('--router_temperature', type=float, default=3.0, help='路由器温度')
     parser.add_argument('--load_balance_weight', type=float, default=0.01, help='负载均衡权重')
     parser.add_argument('--entropy_weight', type=float, default=0.1, help='熵正则化权重')
 
