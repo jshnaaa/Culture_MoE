@@ -73,9 +73,9 @@ LAMBDA="${6:-0.5}"                  # 默认文化损失权重 0.5
 MARGIN="${7:-0.5}"                  # 默认 margin 0.5
 LAMBDA_DIFF="${8:-1.0}"             # 默认 lambda_diff 1.0
 USE_SHARED="${9:-True}"             # 默认使用共享专家
-ROUTER_TEMP="${10:-1.0}"            # 默认 Router 温度参数 1.0 (降低使决策更确定)
-LOAD_BAL="${11:-0.0001}"            # 默认负载均衡权重 0.0001 (进一步降低)
-ENTROPY="${12:-0.01}"               # 默认熵正则化权重 0.01 (降低)
+ROUTER_TEMP="${10:-3.0}"            # 默认 Router 温度参数 3.0 (提高增强路由多样性)
+LOAD_BAL="${11:-0.01}"             # 默认负载均衡权重 0.01 (增强专家均衡)
+ENTROPY="${12:-0.1}"               # 默认熵正则化权重 0.1 (增强路由多样性)
 NUM_GPUS="${13:-1}"                 # 默认使用 1 个 GPU
 USE_MASK="${14:-True}"              # 默认使用 MASK 机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)
 USE_GATE="${15:-True}"              # 默认使用 GATE 机制 (True=使用文化感知门控, False=不使用门控)
@@ -212,8 +212,8 @@ echo "Training Mode: FROZEN LoRA-FINETUNED MODEL + Enhanced MoE Training"
 echo "Strategy: Preserve LoRA accuracy + Add advanced cultural specialization"
 echo ""
 echo "🔧 Optimization Updates:"
-echo "  - Router temperature: $ROUTER_TEMP (降低使路由决策更确定)"
-echo "  - Load balance weight: $LOAD_BAL (降低避免专家负载不均)"
+echo "  - Router temperature: $ROUTER_TEMP (提高增强路由多样性)"
+echo "  - Load balance weight: $LOAD_BAL (增强避免专家负载不均)"
 echo "  - Expert usage monitoring: 每50步记录 + Epoch汇总"
 echo "  - Load balance health check: 自动检测专家使用均衡性"
 echo ""
@@ -280,8 +280,8 @@ echo "  Cultural components: 2e-4"
 echo "  All MoE multipliers: 1.0"
 echo ""
 echo "Anti-collapse mechanisms (优化后):"
-echo "  Router temperature: $ROUTER_TEMP (↓ 更确定的路由决策)"
-echo "  Load balance weight: $LOAD_BAL (↓ 减少专家负载不均)"
+echo "  Router temperature: $ROUTER_TEMP (↑ 增强路由多样性)"
+echo "  Load balance weight: $LOAD_BAL (↑ 增强专家负载均衡)"
 echo "  Entropy weight: $ENTROPY"
 echo "  Expert monitoring: 每50步 + Epoch汇总"
 echo ""
@@ -369,7 +369,7 @@ python ft_enhanced_culturemoe_gen.py \
     ) \
     --learning_rate 2e-4 \
     --moe_lr_multiplier 1.0 \
-    --router_lr_multiplier 1.0 \
+    --router_lr_multiplier 0.1 \
     --shared_lr_multiplier 1.0 \
     --weight_decay 0.01 \
     --max_length 512 \
