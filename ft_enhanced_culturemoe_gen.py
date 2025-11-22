@@ -1140,6 +1140,16 @@ class EnhancedCultureMoETrainer:
                         else:
                             other_params.append(param)
 
+                    # 检查梯度中的NaN/Inf (AMP版本)
+                    has_nan_grad = False
+                    for param in router_params + other_params:
+                        if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                            has_nan_grad = True
+                            param.grad = torch.zeros_like(param.grad)  # 清零异常梯度
+
+                    if has_nan_grad:
+                        logging.warning("⚠️  Detected NaN/Inf gradients, zeroed them out")
+
                     if router_params:
                         torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
                     if other_params:
@@ -1159,6 +1169,16 @@ class EnhancedCultureMoETrainer:
                             router_params.append(param)
                         else:
                             other_params.append(param)
+
+                    # 检查梯度中的NaN/Inf (标准版本)
+                    has_nan_grad = False
+                    for param in router_params + other_params:
+                        if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                            has_nan_grad = True
+                            param.grad = torch.zeros_like(param.grad)  # 清零异常梯度
+
+                    if has_nan_grad:
+                        logging.warning("⚠️  Detected NaN/Inf gradients, zeroed them out")
 
                     if router_params:
                         torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格

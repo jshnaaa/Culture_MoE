@@ -415,30 +415,59 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 # 使用模型的可学习culture_loss_lambda
                 lambda_value = self.culture_loss_lambda
 
-                # 总损失计算
-                total_loss = (
-                    generation_loss +
-                    lambda_value * culture_loss +
-                    load_balance_weight * load_balance_loss +
-                    entropy_weight * entropy_loss
-                )
+                # 损失数值稳定性检查（在计算总损失前）
+                # 检查各个组件损失是否有异常
+                if torch.isnan(generation_loss) or torch.isinf(generation_loss):
+                    logging.error(f"⚠️  Generation loss is NaN/Inf: {generation_loss}")
+                    generation_loss = torch.tensor(0.01, device=generation_loss.device, dtype=generation_loss.dtype)
 
-                # 损失检查和修正
+                if torch.isnan(culture_loss) or torch.isinf(culture_loss):
+                    logging.warning(f"⚠️  Culture loss is NaN/Inf: {culture_loss}")
+                    culture_loss = torch.tensor(0.0, device=culture_loss.device, dtype=culture_loss.dtype)
+
+                if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
+                    logging.warning(f"⚠️  Load balance loss is NaN/Inf: {load_balance_loss}")
+                    load_balance_loss = torch.tensor(0.0, device=load_balance_loss.device, dtype=load_balance_loss.dtype)
+
+                if torch.isnan(entropy_loss) or torch.isinf(entropy_loss):
+                    logging.warning(f"⚠️  Entropy loss is NaN/Inf: {entropy_loss}")
+                    entropy_loss = torch.tensor(0.0, device=entropy_loss.device, dtype=entropy_loss.dtype)
+
+                # 检查lambda_value是否异常
+                if torch.isnan(lambda_value) or torch.isinf(lambda_value):
+                    logging.warning(f"⚠️  Lambda value is NaN/Inf: {lambda_value}")
+                    lambda_value = torch.tensor(0.5, device=lambda_value.device, dtype=lambda_value.dtype)
+
+                # 安全的总损失计算（使用torch.clamp防止溢出）
+                culture_component = torch.clamp(lambda_value * culture_loss, min=-10.0, max=10.0)
+                load_component = torch.clamp(load_balance_weight * load_balance_loss, min=-1.0, max=1.0)
+                entropy_component = torch.clamp(entropy_weight * entropy_loss, min=-1.0, max=1.0)
+
+                total_loss = generation_loss + culture_component + load_component + entropy_component
+
+                # 最终损失检查和修正
                 if torch.isnan(total_loss) or torch.isinf(total_loss):
-                    logging.warning("⚠️  Total loss is NaN or Inf, using generation loss only")
+                    logging.warning("⚠️  Total loss is NaN or Inf after component check, using generation loss only")
                     total_loss = generation_loss
+
+                    # 记录详细信息用于调试
+                    logging.warning(f"   Generation loss: {generation_loss.item():.6f}")
+                    logging.warning(f"   Culture component: {culture_component.item():.6f}")
+                    logging.warning(f"   Load component: {load_component.item():.6f}")
+                    logging.warning(f"   Entropy component: {entropy_component.item():.6f}")
                 elif total_loss < 0:
                     logging.warning(f"⚠️  Total loss is negative ({total_loss:.6f}), adjusting weights")
                     # 如果总损失为负，减少正则化项的权重
                     total_loss = (
                         generation_loss +
-                        lambda_value * culture_loss +
-                        0.001 * load_balance_loss +  # 减少负载均衡权重
-                        0.01 * entropy_loss          # 减少熵权重
+                        0.5 * culture_component +    # 减少文化损失权重
+                        0.001 * load_component +     # 减少负载均衡权重
+                        0.01 * entropy_component     # 减少熵权重
                     )
                     if total_loss < 0:
-                        # 如果仍为负，只使用生成损失和文化损失
-                        total_loss = generation_loss + lambda_value * culture_loss
+                        # 如果仍为负，只使用生成损失
+                        logging.warning("⚠️  Total loss still negative, using generation loss only")
+                        total_loss = generation_loss
 
                 # DataParallel兼容性：标量值处理
                 if not is_dataparallel:
@@ -462,27 +491,45 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 outputs['load_balance_loss'] = load_balance_loss
                 outputs['entropy_loss'] = entropy_loss
 
-                # 总损失计算
-                total_loss = (
-                    generation_loss +
-                    load_balance_weight * load_balance_loss +
-                    entropy_weight * entropy_loss
-                )
+                # 损失数值稳定性检查（无文化损失情况）
+                if torch.isnan(generation_loss) or torch.isinf(generation_loss):
+                    logging.error(f"⚠️  Generation loss is NaN/Inf: {generation_loss}")
+                    generation_loss = torch.tensor(0.01, device=generation_loss.device, dtype=generation_loss.dtype)
 
-                # 损失检查和修正
+                if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
+                    logging.warning(f"⚠️  Load balance loss is NaN/Inf: {load_balance_loss}")
+                    load_balance_loss = torch.tensor(0.0, device=load_balance_loss.device, dtype=load_balance_loss.dtype)
+
+                if torch.isnan(entropy_loss) or torch.isinf(entropy_loss):
+                    logging.warning(f"⚠️  Entropy loss is NaN/Inf: {entropy_loss}")
+                    entropy_loss = torch.tensor(0.0, device=entropy_loss.device, dtype=entropy_loss.dtype)
+
+                # 安全的总损失计算
+                load_component = torch.clamp(load_balance_weight * load_balance_loss, min=-1.0, max=1.0)
+                entropy_component = torch.clamp(entropy_weight * entropy_loss, min=-1.0, max=1.0)
+
+                total_loss = generation_loss + load_component + entropy_component
+
+                # 最终损失检查和修正
                 if torch.isnan(total_loss) or torch.isinf(total_loss):
-                    logging.warning("⚠️  Total loss is NaN or Inf, using generation loss only")
+                    logging.warning("⚠️  Total loss is NaN or Inf after component check, using generation loss only")
                     total_loss = generation_loss
+
+                    # 记录详细信息用于调试
+                    logging.warning(f"   Generation loss: {generation_loss.item():.6f}")
+                    logging.warning(f"   Load component: {load_component.item():.6f}")
+                    logging.warning(f"   Entropy component: {entropy_component.item():.6f}")
                 elif total_loss < 0:
                     logging.warning(f"⚠️  Total loss is negative ({total_loss:.6f}), adjusting weights")
                     # 如果总损失为负，减少正则化项的权重
                     total_loss = (
                         generation_loss +
-                        0.001 * load_balance_loss +  # 减少负载均衡权重
-                        0.01 * entropy_loss          # 减少熵权重
+                        0.001 * load_component +     # 减少负载均衡权重
+                        0.01 * entropy_component     # 减少熵权重
                     )
                     if total_loss < 0:
                         # 如果仍为负，只使用生成损失
+                        logging.warning("⚠️  Total loss still negative, using generation loss only")
                         total_loss = generation_loss
 
             outputs['loss'] = total_loss
