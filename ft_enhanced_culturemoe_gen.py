@@ -946,12 +946,14 @@ class EnhancedCultureMoETrainer:
             logging.info("  - Both shared and culture experts will use instruction field")
         dataset = CultureDataset(data, self.tokenizer, self.args.max_length, use_mask)
 
-        # 划分训练和验证集
-        val_size = int(len(dataset) * self.args.val_split)
-        train_size = len(dataset) - val_size
+        # 划分训练、验证和测试集 (8:1:1)
+        total_size = len(dataset)
+        test_size = int(total_size * 0.1)  # 10% 测试集
+        val_size = int(total_size * 0.1)   # 10% 验证集
+        train_size = total_size - val_size - test_size  # 80% 训练集
 
-        self.train_dataset, self.val_dataset = random_split(
-            dataset, [train_size, val_size],
+        self.train_dataset, self.val_dataset, self.test_dataset = random_split(
+            dataset, [train_size, val_size, test_size],
             generator=torch.Generator().manual_seed(42)
         )
 
@@ -972,8 +974,19 @@ class EnhancedCultureMoETrainer:
             pin_memory=True
         )
 
+        # 创建测试集数据加载器
+        self.test_loader = DataLoader(
+            self.test_dataset,
+            batch_size=self.args.eval_batch_size,
+            shuffle=False,
+            num_workers=self.args.num_workers,
+            pin_memory=True
+        )
+
         logging.info(f"Train samples: {len(self.train_dataset)}")
         logging.info(f"Validation samples: {len(self.val_dataset)}")
+        logging.info(f"Test samples: {len(self.test_dataset)}")
+        logging.info(f"Data split ratio: {len(self.train_dataset)}:{len(self.val_dataset)}:{len(self.test_dataset)} = {len(self.train_dataset)/total_size:.1%}:{len(self.val_dataset)/total_size:.1%}:{len(self.test_dataset)/total_size:.1%}")
 
     def setup_optimizer(self):
         """设置优化器和调度器"""
@@ -1384,6 +1397,270 @@ class EnhancedCultureMoETrainer:
                 'eval_samples': len(self.val_dataset) if hasattr(self, 'val_dataset') else 0
             }
 
+    def test_model_on_test_set(self) -> Dict[str, float]:
+        """在测试集上评估最佳模型"""
+        try:
+            logging.info("=" * 60)
+            logging.info("🧪 TESTING BEST MODEL ON TEST SET")
+            logging.info("=" * 60)
+
+            # 清理当前训练模型释放GPU内存
+            if hasattr(self, 'model'):
+                del self.model
+            torch.cuda.empty_cache()
+            gc.collect()
+            logging.info("Cleared training model from GPU memory")
+
+            # 1. 重新加载基础模型
+            logging.info("Loading base model for testing...")
+            base_model = AutoModelForCausalLM.from_pretrained(
+                self.args.base_model_path,
+                torch_dtype=torch.float16,
+                device_map=None,
+                trust_remote_code=True
+            )
+
+            # 2. 加载LoRA权重（如果有）
+            if self.args.lora_weights_path:
+                logging.info(f"Loading LoRA weights from {self.args.lora_weights_path}")
+                from peft import PeftModel
+                base_model = PeftModel.from_pretrained(base_model, self.args.lora_weights_path)
+                base_model = base_model.merge_and_unload()
+                logging.info("LoRA weights merged successfully")
+
+            # 3. 创建MoE参数
+            moe_args = ModelArgs(
+                num_experts=self.args.num_experts,
+                shared_hidden_dim=self.args.shared_hidden_dim,
+                router_hidden_dim=self.args.router_hidden_dim,
+                experts_hidden_dim=self.args.experts_hidden_dim,
+                lora_rank=self.args.moe_lora_rank,
+                dropout=self.args.dropout
+            )
+
+            # 4. 创建新的增强CultureMoE模型
+            test_model = EnhancedCultureMoE(
+                llama_model=base_model,
+                config=base_model.config,
+                args=moe_args,
+                culture_loss_lambda=self.args.culture_loss_lambda,
+                moe_fusion=self.args.moe_fusion,
+                num_cultures=6,
+                culture_dim=256,
+                use_gate=self.args.use_gate
+            )
+
+            # 5. 加载最佳MoE权重
+            best_moe_path = os.path.join(self.args.output_dir, 'best_enhanced_moe', 'moe_weights.pth')
+            if not os.path.exists(best_moe_path):
+                logging.error(f"Best MoE weights not found at {best_moe_path}")
+                return {
+                    'test_loss': float('inf'),
+                    'test_generation_loss': float('inf'),
+                    'test_culture_loss': 0.0,
+                    'test_accuracy': 0.0,
+                    'test_samples': len(self.test_dataset),
+                    'error': 'Best MoE weights not found'
+                }
+
+            logging.info(f"Loading best MoE weights from {best_moe_path}")
+            moe_state_dict = torch.load(best_moe_path, map_location='cpu')
+
+            # 6. 加载MoE权重到模型
+            try:
+                # 使用 load_state_dict 方法加载权重（更安全）
+                missing_keys, unexpected_keys = test_model.load_state_dict(moe_state_dict, strict=False)
+
+                if missing_keys:
+                    logging.warning(f"Missing keys when loading MoE weights: {missing_keys}")
+                if unexpected_keys:
+                    logging.warning(f"Unexpected keys in MoE weights: {unexpected_keys}")
+
+                logging.info(f"Successfully loaded MoE weights. Missing: {len(missing_keys)}, Unexpected: {len(unexpected_keys)}")
+
+            except Exception as e:
+                logging.error(f"Failed to load MoE weights using load_state_dict: {e}")
+                # 回退到手动加载方法
+                missing_keys = []
+                unexpected_keys = []
+                for name, param in moe_state_dict.items():
+                    try:
+                        # 获取模型中对应的参数
+                        model_param = test_model
+                        for attr in name.split('.'):
+                            model_param = getattr(model_param, attr)
+
+                        # 加载权重 - 确保设备和数据类型匹配
+                        if model_param.device != self.device:
+                            model_param.data = param.to(self.device, dtype=model_param.dtype)
+                        else:
+                            model_param.data = param.to(model_param.device, dtype=model_param.dtype)
+                        logging.debug(f"Manually loaded parameter: {name}")
+                    except Exception as param_e:
+                        missing_keys.append(name)
+                        logging.warning(f"Failed to load parameter {name}: {param_e}")
+
+                if missing_keys:
+                    logging.warning(f"Missing keys in manual loading: {missing_keys}")
+                logging.info(f"Fallback manual loading completed. Missing: {len(missing_keys)}")
+
+            # 7. 移动模型到设备并设置为评估模式
+            test_model = test_model.to(self.device)
+
+            # 测试时不使用DataParallel，确保简单性和兼容性
+            if hasattr(test_model, 'module'):
+                test_model = test_model.module
+
+            test_model.eval()
+
+            logging.info("Successfully loaded best MoE weights for testing")
+
+            # 8. 在测试集上进行评估
+            logging.info(f"Testing on {len(self.test_dataset)} samples...")
+
+            total_loss = 0.0
+            total_generation_loss = 0.0
+            total_culture_loss = 0.0
+            correct_predictions = 0
+            total_predictions = 0
+
+            test_expert_weights = []  # 收集专家权重用于分析
+            test_culture_ids = []     # 收集文化ID
+
+            with torch.no_grad():
+                for batch_idx, batch in enumerate(tqdm(self.test_loader, desc="Testing")):
+                    try:
+                        # 移动数据到设备
+                        batch_device = {}
+                        for k, v in batch.items():
+                            if k == 'culture_ids_multi':
+                                batch_device[k] = v
+                            else:
+                                batch_device[k] = v.to(self.device)
+                        batch = batch_device
+
+                        # 前向传播
+                        outputs = test_model(
+                            input_ids=batch['input_ids'],
+                            attention_mask=batch['attention_mask'],
+                            input_ids_mask=batch['input_ids_mask'],
+                            attention_mask_mask=batch['attention_mask_mask'],
+                            labels=batch['labels'],
+                            culture_labels=batch['culture_ids'],
+                            culture_ids=batch['culture_ids'],
+                            culture_ids_multi=batch['culture_ids_multi'],
+                            use_culture_loss=self.args.use_culture_loss,
+                            culture_loss_lambda=self.args.culture_loss_lambda,
+                            culture_loss_alpha=self.args.culture_loss_alpha,
+                            culture_loss_beta=self.args.culture_loss_beta,
+                            use_shared_experts=self.args.use_shared_experts,
+                            router_temperature=self.args.router_temperature,
+                            load_balance_weight=self.args.load_balance_weight,
+                            entropy_weight=self.args.entropy_weight
+                        )
+
+                        loss = outputs['loss']
+                        logits = outputs['logits']
+
+                        # 统计损失
+                        total_loss += loss.item()
+                        if 'generation_loss' in outputs:
+                            total_generation_loss += outputs['generation_loss'].item()
+                        if 'culture_loss' in outputs:
+                            total_culture_loss += outputs['culture_loss'].item()
+
+                        # 计算准确率
+                        labels = batch['labels']
+                        predictions = torch.argmax(logits, dim=-1)
+
+                        # 只计算非-100位置的准确率
+                        mask = (labels != -100)
+                        correct = (predictions == labels) & mask
+                        correct_predictions += correct.sum().item()
+                        total_predictions += mask.sum().item()
+
+                        # 收集专家权重和文化ID用于分析
+                        if 'expert_weights' in outputs:
+                            test_expert_weights.append(outputs['expert_weights'].cpu().numpy())
+                        test_culture_ids.extend(batch['culture_ids'].cpu().numpy().tolist())
+
+                    except Exception as e:
+                        logging.error(f"Error processing test batch {batch_idx}: {e}")
+                        continue
+
+            # 9. 计算最终指标
+            test_accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0.0
+
+            test_results = {
+                'test_loss': total_loss / len(self.test_loader) if len(self.test_loader) > 0 else 0.0,
+                'test_generation_loss': total_generation_loss / len(self.test_loader) if len(self.test_loader) > 0 else 0.0,
+                'test_culture_loss': total_culture_loss / len(self.test_loader) if len(self.test_loader) > 0 else 0.0,
+                'test_accuracy': test_accuracy,
+                'test_samples': len(self.test_dataset)
+            }
+
+            # 10. 分析测试集上的专家使用情况
+            if test_expert_weights:
+                all_test_expert_weights = np.concatenate(test_expert_weights, axis=0)
+                test_expert_usage = np.mean(all_test_expert_weights, axis=0)
+
+                test_routing_analysis = {
+                    'expert_usage_on_test': test_expert_usage.tolist(),
+                    'gini_coefficient_test': float(self.compute_gini_coefficient(test_expert_usage)),
+                    'usage_balance_ratio_test': float(np.min(test_expert_usage) / np.max(test_expert_usage)) if np.max(test_expert_usage) > 0 else 0.0,
+                    'culture_distribution_test': {f'culture_{c}': test_culture_ids.count(c) for c in set(test_culture_ids)}
+                }
+
+                # 保存测试集路由分析
+                test_routing_file = os.path.join(self.args.output_dir, 'test_set_routing_analysis.json')
+                with open(test_routing_file, 'w', encoding='utf-8') as f:
+                    json.dump(test_routing_analysis, f, indent=2, ensure_ascii=False)
+
+                logging.info(f"Test set routing analysis saved to {test_routing_file}")
+                logging.info(f"Test set expert usage: {[f'E{i}:{usage:.3f}' for i, usage in enumerate(test_expert_usage)]}")
+                logging.info(f"Test set Gini coefficient: {test_routing_analysis['gini_coefficient_test']:.4f}")
+
+            logging.info("=" * 60)
+            logging.info("🎯 TEST RESULTS")
+            logging.info("=" * 60)
+            logging.info(f"Test Loss: {test_results['test_loss']:.6f}")
+            logging.info(f"Test Generation Loss: {test_results['test_generation_loss']:.6f}")
+            logging.info(f"Test Culture Loss: {test_results['test_culture_loss']:.6f}")
+            logging.info(f"Test Accuracy: {test_results['test_accuracy']:.4f}")
+            logging.info(f"Test Samples: {test_results['test_samples']}")
+            logging.info("=" * 60)
+
+            # 清理测试模型内存
+            del test_model
+            torch.cuda.empty_cache()
+            gc.collect()
+            logging.info("Cleared test model from GPU memory")
+
+            return test_results
+
+        except Exception as e:
+            logging.error(f"Critical error during testing: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # 错误情况下也要清理内存
+            try:
+                if 'test_model' in locals():
+                    del test_model
+                torch.cuda.empty_cache()
+                gc.collect()
+            except:
+                pass
+
+            return {
+                'test_loss': float('inf'),
+                'test_generation_loss': float('inf'),
+                'test_culture_loss': 0.0,
+                'test_accuracy': 0.0,
+                'test_samples': len(self.test_dataset) if hasattr(self, 'test_dataset') else 0,
+                'error': str(e)
+            }
+
     def save_model(self, epoch: int, is_best: bool = False):
         """保存模型"""
         if is_best:
@@ -1516,13 +1793,9 @@ class EnhancedCultureMoETrainer:
             with open(results_file, 'w', encoding='utf-8') as f:
                 json.dump(self.epoch_results, f, indent=2, ensure_ascii=False)
 
-            # 保存最后一个epoch的模型（作为备份）
+            # 不再保存最后一个epoch的模型，只保留最佳模型
             if epoch == self.args.num_epochs - 1:  # 最后一个epoch
-                try:
-                    self.save_model(epoch, is_best=False)
-                    logging.info(f"Final epoch model saved as backup")
-                except Exception as e:
-                    logging.error(f"Failed to save final epoch model: {e}")
+                logging.info(f"Training completed. Best model already saved during training.")
 
             # 内存清理
             torch.cuda.empty_cache()
@@ -1547,6 +1820,55 @@ class EnhancedCultureMoETrainer:
 
         # ✅ 路由健康总结报告
         self.generate_routing_health_summary()
+
+        # 🧪 在测试集上评估最佳模型
+        logging.info("\n" + "="*80)
+        logging.info("🧪 FINAL TESTING PHASE")
+        logging.info("="*80)
+
+        test_results = self.test_model_on_test_set()
+
+        # 保存完整的结果（包含验证集和测试集结果）
+        final_results = {
+            'training_summary': {
+                'num_epochs': self.args.num_epochs,
+                'best_validation_accuracy': self.best_accuracy,
+                'final_epoch_results': self.epoch_results[-1] if self.epoch_results else {},
+                'total_training_samples': len(self.train_dataset),
+                'total_validation_samples': len(self.val_dataset),
+                'total_test_samples': len(self.test_dataset)
+            },
+            'validation_results': self.epoch_results,
+            'test_results': test_results
+        }
+
+        # 保存最终结果
+        final_results_file = os.path.join(self.args.output_dir, 'final_results.json')
+        with open(final_results_file, 'w', encoding='utf-8') as f:
+            json.dump(final_results, f, indent=2, ensure_ascii=False)
+
+        logging.info(f"📄 Final results saved to {final_results_file}")
+
+        # 对比验证集和测试集性能
+        if self.epoch_results and 'test_accuracy' in test_results:
+            best_val_acc = max([r.get('eval_accuracy', 0) for r in self.epoch_results])
+            test_acc = test_results.get('test_accuracy', 0)
+
+            logging.info("\n" + "="*60)
+            logging.info("📊 PERFORMANCE COMPARISON")
+            logging.info("="*60)
+            logging.info(f"Best Validation Accuracy: {best_val_acc:.4f}")
+            logging.info(f"Test Set Accuracy: {test_acc:.4f}")
+            logging.info(f"Generalization Gap: {best_val_acc - test_acc:+.4f}")
+
+            if abs(best_val_acc - test_acc) < 0.01:
+                logging.info("✅ Excellent generalization! Very small gap between validation and test.")
+            elif abs(best_val_acc - test_acc) < 0.05:
+                logging.info("✅ Good generalization. Reasonable gap between validation and test.")
+            else:
+                logging.warning("⚠️  Large generalization gap. Model may be overfitting to validation set.")
+
+            logging.info("="*60)
 
         # 检查输出目录总大小
         total_size = 0
@@ -1615,7 +1937,7 @@ def main():
 
     # 训练参数
     parser.add_argument('--freeze_base_model', type=str, default='True', help='是否冻结基础模型')
-    parser.add_argument('--num_epochs', type=int, default=20, help='训练轮数')
+    parser.add_argument('--num_epochs', type=int, default=6, help='训练轮数')
     parser.add_argument('--batch_size', type=int, default=4, help='批次大小')
     parser.add_argument('--eval_batch_size', type=int, default=4, help='评估批次大小')
     parser.add_argument('--learning_rate', type=float, default=2e-4, help='学习率')
@@ -1624,9 +1946,8 @@ def main():
     parser.add_argument('--shared_lr_multiplier', type=float, default=1.0, help='共享层学习率倍数')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='权重衰减')
     parser.add_argument('--max_length', type=int, default=512, help='最大序列长度')
-    parser.add_argument('--val_split', type=float, default=0.1, help='验证集比例')
     parser.add_argument('--num_workers', type=int, default=2, help='数据加载线程数')
-    parser.add_argument('--eval_interval', type=int, default=3, help='评估间隔')
+    parser.add_argument('--eval_interval', type=int, default=2, help='评估间隔')
     parser.add_argument('--device', type=str, default='cuda', help='设备')
 
     args = parser.parse_args()

@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-# 🚀 ENHANCED CULTUREMOE TRAINING SCRIPT
+# 🚀 ENHANCED CULTUREMOE TRAINING SCRIPT (v2.0)
 # 使用增强的文化感知组件训练 CultureMoE 模型
-# 支持可配置的专家数量，便于消融实验
+# 支持8:1:1数据划分、6轮训练、测试集评估
 # ============================================================
-# 增强的 CultureMoE 训练脚本
+# 增强的 CultureMoE 训练脚本 v2.0
 #
 # ✅ 新增功能：
 #   1. 文化嵌入层：显式文化表示和上下文融合
@@ -13,7 +13,8 @@
 #   3. 文化特定专家：文化条件处理和适应机制
 #   4. 文化上下文感知：文化线索检测、冲突检测、敏感性分析
 #   5. 增强的文化损失：多组件文化信息综合
-#   6. 可配置专家数量：支持消融实验
+#   6. 8:1:1数据划分：训练集80%、验证集10%、测试集10%
+#   7. 6轮训练+测试集评估：每2轮验证，最后在测试集上评估最佳模型
 #
 # 使用方法：
 #   sh run_ft_enhanced_culturemoe_gen.sh <BACKBONE> <DATA_ID> <USE_CULTURE_LOSS> <NUM_EXPERTS> <MOE_FUSION> <CULTURE_LOSS_WEIGHT> <MARGIN> <LAMBDA_DIFF> <USE_SHARED> <ROUTER_TEMP> <LOAD_BAL> <ENTROPY> <NUM_GPUS> <USE_MASK> <USE_GATE>
@@ -41,14 +42,14 @@
 #   USE_MASK: MASK机制开关 (默认 True，设为 False 进行消融实验)
 #
 # 示例：
-#   # 单GPU训练（默认）
-#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 1
+#   # 单GPU训练（默认，6轮）
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 3.0 0.01 0.1 1
 #
-#   # 双GPU训练
-#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 2
+#   # 双GPU训练（6轮）
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 12 0.4 0.5 0.5 1.0 True 3.0 0.01 0.1 2
 #
-#   # 消融实验：使用6个专家（单GPU）
-#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 6 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 1
+#   # 消融实验：使用6个专家（单GPU，6轮）
+#   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 6 0.4 0.5 0.5 1.0 True 3.0 0.01 0.1 1
 #
 #   # 消融实验：使用24个专家（双GPU）
 #   sh run_ft_enhanced_culturemoe_gen.sh llama 4 True 24 0.4 0.5 0.5 1.0 True 2.0 0.001 0.01 2
@@ -345,7 +346,7 @@ python ft_enhanced_culturemoe_gen.py \
     --use_mask "$USE_MASK" \
     --use_gate "$USE_GATE" \
     --freeze_base_model True \
-    --num_epochs 10 \
+    --num_epochs 1 \
     --num_experts "$NUM_EXPERTS" \
     --use_shared_experts "$USE_SHARED" \
     --shared_hidden_dim 4096 \
@@ -373,7 +374,6 @@ python ft_enhanced_culturemoe_gen.py \
     --shared_lr_multiplier 1.0 \
     --weight_decay 0.01 \
     --max_length 512 \
-    --val_split 0.1 \
     --num_workers 2 \
     --eval_interval 1 \
     --device cuda
