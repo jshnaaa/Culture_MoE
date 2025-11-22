@@ -800,14 +800,37 @@ class EnhancedCultureMoETrainer:
 
             loss = outputs['loss']
 
-            # 调试：检查文化损失计算（仅前3步）
-            if self.global_step <= 2:
+            # 调试：检查损失计算（仅前5步）
+            if self.global_step <= 4:
                 unique_cultures = torch.unique(batch['culture_ids'])
-                culture_loss_val = outputs.get('culture_loss', torch.tensor(0)).item() if 'culture_loss' in outputs else 0.0
-                logging.info(f"Step {self.global_step}: cultures={unique_cultures.tolist()}, culture_loss={culture_loss_val:.6f}")
+
+                # 详细损失分析
+                gen_loss = outputs.get('generation_loss', torch.tensor(0)).item()
+                culture_loss_val = outputs.get('culture_loss', torch.tensor(0)).item()
+                load_loss = outputs.get('load_balance_loss', torch.tensor(0)).item()
+                entropy_loss_val = outputs.get('entropy_loss', torch.tensor(0)).item()
+
+                logging.info(f"🔍 Step {self.global_step} 详细损失分析:")
+                logging.info(f"   Generation Loss: {gen_loss:.6f}")
+                logging.info(f"   Culture Loss: {culture_loss_val:.6f}")
+                logging.info(f"   Load Balance Loss: {load_loss:.6f}")
+                logging.info(f"   Entropy Loss: {entropy_loss_val:.6f}")
+                logging.info(f"   Total Loss: {loss.item():.6f}")
+                logging.info(f"   Cultures: {unique_cultures.tolist()}")
+
+                # 检查expert_weights
+                if 'expert_weights' in outputs:
+                    expert_weights = outputs['expert_weights']
+                    logging.info(f"   Expert weights shape: {expert_weights.shape}")
+                    logging.info(f"   Expert weights sum: {expert_weights.sum(dim=1).mean().item():.6f}")
+                    logging.info(f"   Expert weights mean: {expert_weights.mean(dim=0).tolist()}")
 
                 if self.global_step == 0:
-                    logging.info(f"use_culture_loss: {self.args.use_culture_loss}")
+                    logging.info(f"   📋 参数确认:")
+                    logging.info(f"      use_culture_loss: {self.args.use_culture_loss}")
+                    logging.info(f"      router_temperature: {router_temperature}")
+                    logging.info(f"      load_balance_weight: {load_balance_weight}")
+                    logging.info(f"      entropy_weight: {entropy_weight}")
 
             # 梯度累积反向传播
             loss = loss / self.gradient_accumulation_steps
