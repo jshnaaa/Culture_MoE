@@ -375,7 +375,7 @@ python ft_enhanced_culturemoe_gen.py \
     --max_length 512 \
     --val_split 0.1 \
     --num_workers 2 \
-    --eval_interval 3 \
+    --eval_interval 1 \
     --device cuda
 
 if [ $? -eq 0 ]; then
