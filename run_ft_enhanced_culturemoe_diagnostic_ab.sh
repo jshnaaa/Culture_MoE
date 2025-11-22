@@ -113,13 +113,27 @@ echo "  - 按国家统计：分析文化特异性路由模式"
 echo "  - 可视化生成：专家利用率和相似度热图"
 echo ""
 
-# 设置单卡运行环境变量
+# 设置单卡运行和内存优化环境变量
 export CUDA_VISIBLE_DEVICES=0
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256,expandable_segments:True
+export PYTORCH_NO_CUDA_MEMORY_CACHING=1
 
-echo "🔧 强制单卡运行设置:"
+echo "🔧 强制单卡运行和内存优化设置:"
 echo "  - CUDA_VISIBLE_DEVICES=0 (只使用第一个GPU)"
-echo "  - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 (内存管理优化)"
+echo "  - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256,expandable_segments:True (内存碎片优化)"
+echo "  - PYTORCH_NO_CUDA_MEMORY_CACHING=1 (禁用内存缓存)"
+echo ""
+echo "🏭 完整生产架构配置:"
+echo "  - 专家数量=12, LoRA rank=32 (与生产一致)"
+echo "  - 专家隐藏维度=4096, 路由器隐藏维度=2048 (与生产一致)"
+echo "  - 文化数量=6, 文化维度=256 (与生产一致)"
+echo "  - 门控机制=启用 (与生产一致)"
+echo ""
+echo "⚡ 内存优化技术:"
+echo "  - 混合精度训练 (FP16) - 减少50%内存"
+echo "  - 梯度累积 (8步) - 模拟batch_size=8"
+echo "  - 实时内存清理 - 防止内存泄漏"
+echo "  - batch_size=1, max_length=512 (与生产一致的序列长度)"
 echo ""
 
 # 运行诊断实验
@@ -128,8 +142,9 @@ python ft_enhanced_culturemoe_diagnostic_ab.py \
     --train_file "$TRAIN_FILE" \
     --output_dir "$OUTPUT_DIR" \
     --num_epochs 3 \
-    --batch_size 4 \
-    --eval_batch_size 4 \
+    --batch_size 1 \
+    --eval_batch_size 1 \
+    --gradient_accumulation_steps 8 \
     --learning_rate 2e-4 \
     --weight_decay 0.001 \
     --max_length 512 \

@@ -321,27 +321,44 @@ def create_visualizations(diagnostic_results, output_dir):
     print(f"✅ 可视化图表已保存到: {viz_dir}")
 
 
-def train_epoch_diagnostic(model_adapter, train_loader, optimizer, device, collector):
-    """诊断模式的训练epoch"""
+def train_epoch_diagnostic(model_adapter, train_loader, optimizer, device, collector, scaler=None, gradient_accumulation_steps=8):
+    """诊断模式的训练epoch - 完整架构 + 梯度累积 + 混合精度"""
     model_adapter.train()
     total_loss = 0
     num_batches = 0
+    accumulation_loss = 0
 
-    pbar = tqdm(train_loader, desc="Diagnostic Training")
+    pbar = tqdm(train_loader, desc="Diagnostic Training (Full Architecture + Grad Accumulation)")
 
     for batch_idx, batch in enumerate(pbar):
-        input_ids = batch['input_ids'].to(device)
-        attention_mask = batch['attention_mask'].to(device)
-        labels = batch['labels'].to(device)
+        # 每隔10个batch清理一次内存
+        if batch_idx % 10 == 0 and device.type == 'cuda':
+            torch.cuda.empty_cache()
 
-        # 前向传播
-        outputs = model_adapter(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels
-        )
+        input_ids = batch['input_ids'].to(device, non_blocking=True)
+        attention_mask = batch['attention_mask'].to(device, non_blocking=True)
+        labels = batch['labels'].to(device, non_blocking=True)
 
-        loss = outputs['loss']
+        # 前向传播 (混合精度)
+        if scaler is not None:
+            with torch.cuda.amp.autocast():
+                outputs = model_adapter(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels
+                )
+                loss = outputs['loss']
+        else:
+            outputs = model_adapter(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels
+            )
+            loss = outputs['loss']
+
+        # 梯度累积：除以累积步数
+        loss = loss / gradient_accumulation_steps
+        accumulation_loss += loss.item()
 
         # 收集诊断数据
         if 'routing_info' in outputs and 'expert_weights' in outputs:
@@ -359,15 +376,55 @@ def train_epoch_diagnostic(model_adapter, train_loader, optimizer, device, colle
                 cultural_labels=cultural_labels
             )
 
-        # 反向传播
-        loss.backward()
-        optimizer.step()
+        # 反向传播 (混合精度 + 梯度累积)
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
+        # 梯度累积：每accumulation_steps步更新一次
+        if (batch_idx + 1) % gradient_accumulation_steps == 0:
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            optimizer.zero_grad()
+
+            # 记录累积损失
+            total_loss += accumulation_loss
+            num_batches += 1
+            accumulation_loss = 0
+
+        # 立即清理中间变量
+        del input_ids, attention_mask, labels, outputs
+
+        # 每个batch后清理内存
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+        # 更新进度条信息 (包含内存使用和累积信息)
+        postfix_info = {
+            'loss': f"{loss.item() * gradient_accumulation_steps:.4f}",  # 显示真实损失
+            'acc_loss': f"{accumulation_loss:.4f}",  # 显示累积损失
+            'step': f"{(batch_idx + 1) % gradient_accumulation_steps}/{gradient_accumulation_steps}"
+        }
+        if device.type == 'cuda':
+            memory_allocated = torch.cuda.memory_allocated(device) / 1024**3
+            postfix_info['mem_gb'] = f"{memory_allocated:.1f}"
+
+        pbar.set_postfix(postfix_info)
+
+    # 处理剩余的梯度累积步骤
+    if accumulation_loss > 0:
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         optimizer.zero_grad()
-
-        total_loss += loss.item()
+        total_loss += accumulation_loss
         num_batches += 1
-
-        pbar.set_postfix({'loss': f"{loss.item():.4f}"})
 
     return {'loss': total_loss / num_batches if num_batches > 0 else 0}
 
@@ -388,6 +445,7 @@ def main():
     parser.add_argument("--max_length", type=int, default=512)
     parser.add_argument("--val_split", type=float, default=0.1)
     parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="梯度累积步数")
 
     # CultureMoE参数
     parser.add_argument("--lora_r", type=int, default=64)
@@ -468,55 +526,83 @@ def main():
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True
+        num_workers=0,  # 减少内存使用: 2 -> 0
+        pin_memory=False,  # 禁用pin_memory以节省内存
+        drop_last=True  # 丢弃最后不完整的batch
     )
 
-    # 加载基础模型 (单卡配置)
-    print(f"\nLoading base model to {device}...")
+    # 加载基础模型 (内存优化配置)
+    print(f"\nLoading base model to {device} with memory optimization...")
+
+    # 内存优化配置
     base_model = AutoModelForCausalLM.from_pretrained(
         args.base_model_path,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float16,  # 使用半精度
         device_map=None,  # 禁用自动设备映射
         trust_remote_code=True,
-        low_cpu_mem_usage=True
+        low_cpu_mem_usage=True,
+        attn_implementation="flash_attention_2" if hasattr(torch.nn, 'scaled_dot_product_attention') else None
     )
 
     # 确保基础模型在单一设备上
     base_model = base_model.to(device)
 
+    # 冻结基础模型参数以节省内存
+    for param in base_model.parameters():
+        param.requires_grad = False
+
+    # 启用梯度检查点以节省内存
+    base_model.gradient_checkpointing_enable()
+
     # 验证模型设备
     model_device = next(base_model.parameters()).device
-    print(f"✅ Base model loaded on {model_device}")
 
-    # 创建CultureMoE配置
-    print("\nConfiguring Enhanced CultureMoE...")
+    # 检查内存使用
+    if device.type == 'cuda':
+        memory_allocated = torch.cuda.memory_allocated(device) / 1024**3
+        memory_reserved = torch.cuda.memory_reserved(device) / 1024**3
+        print(f"✅ Base model loaded on {model_device}")
+        print(f"   Memory allocated: {memory_allocated:.2f} GB")
+        print(f"   Memory reserved: {memory_reserved:.2f} GB")
+    else:
+        print(f"✅ Base model loaded on {model_device}")
+
+    # 创建CultureMoE配置 (完整架构 - 与生产脚本一致)
+    print("\nConfiguring Enhanced CultureMoE with FULL architecture...")
     model_args = ModelArgs(
         llama_model_path=args.base_model_path,
-        num_experts=args.num_experts,
-        top_k=args.top_k,
-        lora_rank=args.lora_r,
-        lora_alpha=args.lora_alpha,
+        num_experts=12,  # 恢复完整专家数量 (与生产一致)
+        top_k=2,  # 保持top_k=2
+        lora_rank=32,  # 恢复完整LoRA rank (与生产一致)
+        lora_alpha=16,  # 恢复完整alpha (与生产一致)
         lora_dropout=args.lora_dropout,
-        # 设置诊断模式的相关参数
-        experts_hidden_dim=256,
-        router_hidden_dim=256,
-        shared_hidden_dim=512,
-        num_heads=8,
-        classification_hidden_dim=256,
+        # 恢复完整架构参数 (与生产脚本一致)
+        experts_hidden_dim=4096,  # 恢复完整维度 (与生产一致)
+        router_hidden_dim=2048,   # 恢复完整维度 (与生产一致)
+        shared_hidden_dim=4096,   # 恢复完整维度 (与生产一致)
+        num_heads=8,              # 恢复完整头数 (与生产一致)
+        classification_hidden_dim=256,  # 保持合理大小
         num_classes=2
     )
 
-    # 创建模型适配器
+    print("🏭 完整生产架构配置:")
+    print(f"  - 专家数量: {model_args.num_experts} (与生产一致)")
+    print(f"  - LoRA rank: {model_args.lora_rank} (与生产一致)")
+    print(f"  - 专家隐藏维度: {model_args.experts_hidden_dim} (与生产一致)")
+    print(f"  - 路由器隐藏维度: {model_args.router_hidden_dim} (与生产一致)")
+    print(f"  - 共享隐藏维度: {model_args.shared_hidden_dim} (与生产一致)")
+
+    # 创建模型适配器 (完整架构 - 与生产一致)
     config = base_model.config  # 获取模型配置
     model_adapter = EnhancedCultureMoE(
         llama_model=base_model,
         config=config,
         args=model_args,
         culture_loss_lambda=args.culture_loss_weight,
-        moe_fusion=0.4,
-        num_cultures=6,
-        culture_dim=256
+        moe_fusion=0.4,  # 恢复生产融合权重 (与生产一致)
+        num_cultures=6,  # 恢复完整文化数量 (与生产一致)
+        culture_dim=256,  # 恢复完整文化维度 (与生产一致)
+        use_gate=True    # 恢复门控机制 (与生产一致)
     )
 
     # 确保模型适配器在正确的设备上 (单卡运行)
@@ -543,6 +629,10 @@ def main():
         weight_decay=args.weight_decay
     )
 
+    # 混合精度训练 - 关键的内存优化
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
+    print(f"✅ Mixed precision training: {'Enabled' if scaler else 'Disabled'}")
+
     # 创建诊断收集器
     collector = DiagnosticCollector()
 
@@ -554,9 +644,10 @@ def main():
     for epoch in range(args.num_epochs):
         print(f"Epoch {epoch + 1}/{args.num_epochs}")
 
-        # 训练
+        # 训练 (完整架构 + 梯度累积 + 混合精度)
         train_metrics = train_epoch_diagnostic(
-            model_adapter, train_loader, optimizer, device, collector
+            model_adapter, train_loader, optimizer, device, collector,
+            scaler=scaler, gradient_accumulation_steps=args.gradient_accumulation_steps
         )
 
         print(f"  Train Loss: {train_metrics['loss']:.4f}")
