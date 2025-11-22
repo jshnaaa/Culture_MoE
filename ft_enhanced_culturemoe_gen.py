@@ -1099,9 +1099,9 @@ class EnhancedCultureMoETrainer:
                 if self.global_step == 0:
                     logging.info(f"   📋 参数确认:")
                     logging.info(f"      use_culture_loss: {self.args.use_culture_loss}")
-                    logging.info(f"      router_temperature: {router_temperature}")
-                    logging.info(f"      load_balance_weight: {load_balance_weight}")
-                    logging.info(f"      entropy_weight: {entropy_weight}")
+                    logging.info(f"      router_temperature: {self.args.router_temperature}")
+                    logging.info(f"      load_balance_weight: {self.args.load_balance_weight}")
+                    logging.info(f"      entropy_weight: {self.args.entropy_weight}")
 
             # 梯度累积反向传播
             loss = loss / self.gradient_accumulation_steps
