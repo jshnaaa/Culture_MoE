@@ -59,7 +59,7 @@ case $DATA_ID in
 esac
 
 # 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ablation_results/diagnostic_${DATASET_TAG}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-fs/data/ablation_results/diagnostic_${DATASET_TAG}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
 echo "Enhanced CultureMoE 诊断实验"
