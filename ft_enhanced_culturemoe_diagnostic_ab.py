@@ -321,6 +321,131 @@ def create_visualizations(diagnostic_results, output_dir):
     print(f"✅ 可视化图表已保存到: {viz_dir}")
 
 
+def save_epoch_diagnostic_results(collector, output_dir, epoch):
+    """保存单个epoch的诊断结果"""
+    try:
+        # 分析当前收集的数据
+        if not collector.router_probs_list:
+            print(f"⚠️  Epoch {epoch}: 没有收集到路由数据")
+            return
+
+        # 计算基础统计
+        all_router_probs = np.concatenate(collector.router_probs_list, axis=0)  # [N, num_experts]
+        expert_usage = np.mean(all_router_probs, axis=0)  # [num_experts]
+
+        # 路由熵分析
+        router_entropies = []
+        for probs in all_router_probs:
+            # 避免log(0)
+            probs_safe = np.clip(probs, 1e-8, 1.0)
+            entropy = -np.sum(probs_safe * np.log(probs_safe))
+            router_entropies.append(entropy)
+
+        # 专家相似度分析（如果有专家输出）
+        expert_similarity = None
+        if collector.expert_outputs_list:
+            try:
+                all_expert_outputs = np.concatenate(collector.expert_outputs_list, axis=0)
+                expert_similarity = cosine_similarity(all_expert_outputs.T).tolist()
+            except:
+                expert_similarity = None
+
+        # 文化路由分析
+        cultural_routing = {}
+        if collector.cultural_labels_list:
+            try:
+                all_cultural_labels = np.concatenate(collector.cultural_labels_list, axis=0)
+                unique_cultures = np.unique(all_cultural_labels)
+
+                for culture in unique_cultures:
+                    culture_mask = all_cultural_labels == culture
+                    culture_router_probs = all_router_probs[culture_mask]
+                    cultural_routing[f'culture_{int(culture)}'] = {
+                        'expert_usage': np.mean(culture_router_probs, axis=0).tolist(),
+                        'sample_count': int(np.sum(culture_mask))
+                    }
+            except:
+                cultural_routing = {}
+
+        # 构建epoch诊断报告
+        epoch_diagnostic = {
+            'epoch': epoch,
+            'timestamp': pd.Timestamp.now().isoformat(),
+            'expert_utilization': {
+                'expert_usage': expert_usage.tolist(),
+                'gini_coefficient': float(compute_gini_coefficient(expert_usage)),
+                'max_usage': float(np.max(expert_usage)),
+                'min_usage': float(np.min(expert_usage)),
+                'usage_std': float(np.std(expert_usage))
+            },
+            'router_entropy': {
+                'mean': float(np.mean(router_entropies)),
+                'std': float(np.std(router_entropies)),
+                'min': float(np.min(router_entropies)),
+                'max': float(np.max(router_entropies))
+            },
+            'expert_similarity': expert_similarity,
+            'cultural_routing': cultural_routing,
+            'total_samples': len(all_router_probs)
+        }
+
+        # 保存epoch结果
+        epoch_file = os.path.join(output_dir, f'diagnostic_epoch_{epoch}.json')
+        with open(epoch_file, 'w', encoding='utf-8') as f:
+            json.dump(epoch_diagnostic, f, indent=2, ensure_ascii=False)
+
+        # 保存简化的可读报告
+        summary_file = os.path.join(output_dir, f'diagnostic_summary_epoch_{epoch}.txt')
+        with open(summary_file, 'w', encoding='utf-8') as f:
+            f.write(f"=== Epoch {epoch} 诊断报告 ===\n\n")
+            f.write(f"📊 专家利用率分析:\n")
+            f.write(f"  - Gini系数: {epoch_diagnostic['expert_utilization']['gini_coefficient']:.4f}\n")
+            f.write(f"  - 最大使用率: {epoch_diagnostic['expert_utilization']['max_usage']:.4f}\n")
+            f.write(f"  - 最小使用率: {epoch_diagnostic['expert_utilization']['min_usage']:.4f}\n")
+            f.write(f"  - 使用率标准差: {epoch_diagnostic['expert_utilization']['usage_std']:.4f}\n\n")
+
+            f.write(f"🎯 路由熵分析:\n")
+            f.write(f"  - 平均熵: {epoch_diagnostic['router_entropy']['mean']:.4f}\n")
+            f.write(f"  - 熵标准差: {epoch_diagnostic['router_entropy']['std']:.4f}\n\n")
+
+            f.write(f"🌍 文化路由分析:\n")
+            for culture, data in cultural_routing.items():
+                f.write(f"  - {culture}: {data['sample_count']} samples\n")
+
+            f.write(f"\n📈 诊断建议:\n")
+            gini = epoch_diagnostic['expert_utilization']['gini_coefficient']
+            avg_entropy = epoch_diagnostic['router_entropy']['mean']
+
+            if gini > 0.5:
+                f.write(f"  ⚠️  专家利用不均衡 (Gini={gini:.3f} > 0.5)\n")
+            if avg_entropy < 0.5:
+                f.write(f"  ⚠️  路由过于确定，可能存在塌陷 (熵={avg_entropy:.3f} < 0.5)\n")
+            if gini <= 0.3 and avg_entropy >= 1.0:
+                f.write(f"  ✅ 专家利用均衡且路由多样性良好\n")
+
+        print(f"✅ Epoch {epoch} 诊断结果已保存:")
+        print(f"   - 详细数据: {epoch_file}")
+        print(f"   - 可读报告: {summary_file}")
+
+        # 打印关键指标
+        print(f"📊 Epoch {epoch} 关键指标:")
+        print(f"   - Gini系数: {epoch_diagnostic['expert_utilization']['gini_coefficient']:.4f}")
+        print(f"   - 平均路由熵: {epoch_diagnostic['router_entropy']['mean']:.4f}")
+        print(f"   - 样本数量: {epoch_diagnostic['total_samples']}")
+
+    except Exception as e:
+        print(f"❌ Epoch {epoch} 诊断保存失败: {e}")
+
+
+def compute_gini_coefficient(values):
+    """计算基尼系数"""
+    values = np.array(values)
+    values = np.sort(values)
+    n = len(values)
+    cumsum = np.cumsum(values)
+    return (n + 1 - 2 * np.sum(cumsum) / cumsum[-1]) / n
+
+
 def train_epoch_diagnostic(model_adapter, train_loader, optimizer, device, collector, scaler=None, gradient_accumulation_steps=8):
     """诊断模式的训练epoch - 完整架构 + 梯度累积 + 混合精度"""
     model_adapter.train()
@@ -410,8 +535,12 @@ def train_epoch_diagnostic(model_adapter, train_loader, optimizer, device, colle
             'step': f"{(batch_idx + 1) % gradient_accumulation_steps}/{gradient_accumulation_steps}"
         }
         if device.type == 'cuda':
-            memory_allocated = torch.cuda.memory_allocated(device) / 1024**3
-            postfix_info['mem_gb'] = f"{memory_allocated:.1f}"
+            try:
+                memory_allocated = torch.cuda.memory_allocated(device) / 1024**3
+                memory_reserved = torch.cuda.memory_reserved(device) / 1024**3
+                postfix_info['mem_gb'] = f"{memory_allocated:.1f}/{memory_reserved:.1f}"
+            except:
+                postfix_info['mem_gb'] = "N/A"
 
         pbar.set_postfix(postfix_info)
 
@@ -651,6 +780,10 @@ def main():
         )
 
         print(f"  Train Loss: {train_metrics['loss']:.4f}")
+
+        # 每个epoch后保存中间诊断结果
+        print(f"\n📊 保存 Epoch {epoch + 1} 诊断结果...")
+        save_epoch_diagnostic_results(collector, args.output_dir, epoch + 1)
 
     # 分析收集的诊断数据
     print("\n" + "="*80)
