@@ -346,7 +346,7 @@ python ft_enhanced_culturemoe_gen.py \
     --use_mask "$USE_MASK" \
     --use_gate "$USE_GATE" \
     --freeze_base_model True \
-    --num_epochs 1 \
+    --num_epochs 4 \
     --num_experts "$NUM_EXPERTS" \
     --use_shared_experts "$USE_SHARED" \
     --shared_hidden_dim 4096 \
@@ -375,7 +375,7 @@ python ft_enhanced_culturemoe_gen.py \
     --weight_decay 0.01 \
     --max_length 512 \
     --num_workers 2 \
-    --eval_interval 1 \
+    --eval_interval 2 \
     --device cuda
 
 if [ $? -eq 0 ]; then
