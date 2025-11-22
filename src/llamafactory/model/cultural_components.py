@@ -85,6 +85,10 @@ class CulturalEmbeddingLayer(nn.Module):
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
         # 1. 获取文化嵌入
+        # 确保culture_ids在正确的设备上
+        target_device = hidden_states.device
+        if culture_ids.device != target_device:
+            culture_ids = culture_ids.to(target_device)
         culture_emb = self.culture_embeddings(culture_ids)  # [B, culture_dim]
         culture_features = self.culture_projection(culture_emb)  # [B, H]
 
@@ -209,6 +213,11 @@ class CulturalAwareRouter(nn.Module):
             routing_info: dict 路由信息
         """
         batch_size = hidden_states.shape[0]
+        target_device = hidden_states.device
+
+        # 确保culture_ids在正确的设备上
+        if culture_ids.device != target_device:
+            culture_ids = culture_ids.to(target_device)
 
         # 1. 内容驱动的路由
         content_logits = self.content_router(hidden_states)  # [B, num_experts]
@@ -408,6 +417,11 @@ class CultureSpecificExpert(nn.Module):
             culture_relevance: [B] 文化相关性得分
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
+        target_device = hidden_states.device
+
+        # 确保culture_ids在正确的设备上
+        if culture_ids.device != target_device:
+            culture_ids = culture_ids.to(target_device)
 
         # 1. 计算文化相关性
         culture_relevance = self._compute_culture_relevance(culture_ids)
@@ -459,18 +473,25 @@ class CultureSpecificExpert(nn.Module):
 
     def _get_culture_prompt(self, culture_ids: torch.Tensor) -> torch.Tensor:
         """获取文化提示向量"""
+        target_device = culture_ids.device
         prompts = []
         for culture_id in culture_ids:
             if len(self.primary_culture_ids) == 0:
                 # 通用专家使用平均提示
-                prompts.append(self.culture_prompt[0])
+                prompt = self.culture_prompt[0]
             elif culture_id.item() in self.primary_culture_ids:
                 # 使用对应的文化提示
                 idx = self.primary_culture_ids.index(culture_id.item())
-                prompts.append(self.culture_prompt[idx])
+                prompt = self.culture_prompt[idx]
             else:
                 # 使用平均提示
-                prompts.append(self.culture_prompt.mean(dim=0))
+                prompt = self.culture_prompt.mean(dim=0)
+
+            # 确保prompt在正确的设备上
+            if prompt.device != target_device:
+                prompt = prompt.to(target_device)
+            prompts.append(prompt)
+
         return torch.stack(prompts)
 
 
@@ -549,6 +570,12 @@ class CulturalContextAwareness(nn.Module):
             context_aware_states: [B, L, H] 文化上下文感知的状态
             cultural_analysis: dict 文化分析结果
         """
+        target_device = hidden_states.device
+
+        # 确保culture_ids在正确的设备上
+        if culture_ids.device != target_device:
+            culture_ids = culture_ids.to(target_device)
+
         # 1. 池化获取全局表示
         pooled_states = hidden_states.mean(dim=1)  # [B, H]
 
