@@ -187,20 +187,39 @@ class CultureDataset(Dataset):
 
         # ✅ 验证token ID范围，防止超大token ID导致NaN
         vocab_size = getattr(self.tokenizer, 'vocab_size', 128000)
-        max_valid_id = vocab_size - 1
+
+        # 获取安全的替换token ID
+        def get_safe_replacement_token_id():
+            # 尝试获取UNK token
+            unk_id = getattr(self.tokenizer, 'unk_token_id', None)
+            if unk_id is not None and 0 <= unk_id < vocab_size:
+                return unk_id
+
+            # 尝试获取PAD token
+            pad_id = getattr(self.tokenizer, 'pad_token_id', None)
+            if pad_id is not None and 0 <= pad_id < vocab_size:
+                return pad_id
+
+            # 尝试获取EOS token
+            eos_id = getattr(self.tokenizer, 'eos_token_id', None)
+            if eos_id is not None and 0 <= eos_id < vocab_size:
+                return eos_id
+
+            # 最后使用0（通常是安全的）
+            return 0
+
+        safe_token_id = get_safe_replacement_token_id()
 
         # 检查并修复超出范围的token ID
         invalid_mask = input_ids >= vocab_size
         if invalid_mask.any():
-            logging.warning(f"Found {invalid_mask.sum().item()} invalid token IDs >= {vocab_size}, replacing with UNK token")
-            unk_token_id = getattr(self.tokenizer, 'unk_token_id', 0)
-            input_ids = torch.where(invalid_mask, unk_token_id, input_ids)
+            logging.warning(f"Found {invalid_mask.sum().item()} invalid token IDs >= {vocab_size}, replacing with token {safe_token_id}")
+            input_ids = torch.where(invalid_mask, safe_token_id, input_ids)
 
         invalid_mask_mask = input_ids_mask >= vocab_size
         if invalid_mask_mask.any():
-            logging.warning(f"Found {invalid_mask_mask.sum().item()} invalid token IDs in mask >= {vocab_size}, replacing with UNK token")
-            unk_token_id = getattr(self.tokenizer, 'unk_token_id', 0)
-            input_ids_mask = torch.where(invalid_mask_mask, unk_token_id, input_ids_mask)
+            logging.warning(f"Found {invalid_mask_mask.sum().item()} invalid token IDs in mask >= {vocab_size}, replacing with token {safe_token_id}")
+            input_ids_mask = torch.where(invalid_mask_mask, safe_token_id, input_ids_mask)
 
         # 创建标签
         labels = input_ids.clone()
@@ -385,6 +404,14 @@ class EnhancedCultureMoETrainer:
         self.tokenizer = AutoTokenizer.from_pretrained(args.base_model_path)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # 🔍 调试tokenizer信息
+        logging.info(f"Tokenizer info:")
+        logging.info(f"  vocab_size: {getattr(self.tokenizer, 'vocab_size', 'Unknown')}")
+        logging.info(f"  unk_token_id: {getattr(self.tokenizer, 'unk_token_id', 'None')}")
+        logging.info(f"  pad_token_id: {getattr(self.tokenizer, 'pad_token_id', 'None')}")
+        logging.info(f"  eos_token_id: {getattr(self.tokenizer, 'eos_token_id', 'None')}")
+        logging.info(f"  bos_token_id: {getattr(self.tokenizer, 'bos_token_id', 'None')}")
 
         # 创建输出目录
         os.makedirs(args.output_dir, exist_ok=True)
