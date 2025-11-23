@@ -96,19 +96,19 @@ class LearnableCultureClustering(nn.Module):
         self.num_cultures = num_cultures
 
         # 可学习的文化聚类中心 - 每个专家对应一个聚类中心
-        # 🔧 修复1: 使用更小的初始化，避免梯度爆炸
+        # 🔧 修复33: 使用更保守的初始化，进一步避免梯度爆炸
         self.culture_cluster_centers = nn.Parameter(
-            torch.randn(num_experts, culture_dim) * 0.01  # 从0.1减小到0.01
+            torch.randn(num_experts, culture_dim) * 0.001  # 从0.01进一步减小到0.001
         )
 
         # 聚类温度参数（可学习）
-        # 🔧 修复2: 初始温度设为更大值，提高数值稳定性
-        self.clustering_temperature = nn.Parameter(torch.tensor(2.0))  # 从1.0增加到2.0
+        # 🔧 修复34: 固定温度参数，避免训练过程中变化导致不稳定
+        self.register_buffer('clustering_temperature', torch.tensor(1.5))  # 固定为1.5，不再可学习
 
         # 专家置信度权重（可学习）
-        # 🔧 修复3: 初始置信度设为更保守值
+        # 🔧 修复35: 使用更保守的初始化
         self.expert_confidence_weights = nn.Parameter(
-            torch.ones(num_experts) * 0.1  # 从0.5减小到0.1
+            torch.ones(num_experts) * 0.01  # 从0.1进一步减小到0.01
         )
 
         # 固定文化分配（作为fallback和初始化）
@@ -127,10 +127,10 @@ class LearnableCultureClustering(nn.Module):
             logging.warning("Cluster centers contain NaN/Inf, reinitializing...")
             self.culture_cluster_centers.data = torch.randn_like(self.culture_cluster_centers) * 0.01
 
-        # 检查温度参数
+        # 检查温度参数（现在是buffer）
         if torch.isnan(self.clustering_temperature) or torch.isinf(self.clustering_temperature):
             logging.warning("Clustering temperature contains NaN/Inf, reinitializing...")
-            self.clustering_temperature.data = torch.tensor(2.0)
+            self.clustering_temperature.data = torch.tensor(1.5)
 
         # 检查置信度权重
         if torch.isnan(self.expert_confidence_weights).any() or torch.isinf(self.expert_confidence_weights).any():
@@ -223,7 +223,8 @@ class LearnableCultureClustering(nn.Module):
         similarities = torch.clamp(similarities, min=-0.9, max=0.9)
 
         # 应用温度和专家置信度
-        temperature = torch.clamp(self.clustering_temperature, min=0.5, max=3.0)  # 缩小温度范围
+        # 🔧 修复36: 使用固定温度，不再需要clamp
+        temperature = self.clustering_temperature  # 现在是固定的buffer
         confidence_weights = torch.sigmoid(self.expert_confidence_weights)
 
         # 确保设备一致性
@@ -565,9 +566,11 @@ class DynamicCulturalAwareRouter(nn.Module):
         target_dtype = content_logits.dtype
         target_device = content_logits.device
 
-        # 🔧 修复7: 更安全的log计算，避免数值不稳定
-        culture_logits = torch.log(torch.clamp(culture_affinities, min=1e-6, max=1.0)).to(dtype=target_dtype, device=target_device)
-        culture_logits = torch.clamp(culture_logits, min=-20.0, max=5.0)  # 限制log范围
+        # 🔧 修复32: 更保守的log计算，避免极值
+        # 先确保culture_affinities数值稳定
+        culture_affinities_safe = torch.clamp(culture_affinities, min=1e-4, max=0.999)  # 更保守的范围
+        culture_logits = torch.log(culture_affinities_safe + 1e-8).to(dtype=target_dtype, device=target_device)
+        culture_logits = torch.clamp(culture_logits, min=-10.0, max=2.0)  # 更严格的范围限制
 
         fusion_logits = fusion_logits.to(dtype=target_dtype, device=target_device)
         fusion_logits = torch.clamp(fusion_logits, min=-10.0, max=10.0)  # 限制融合logits范围

@@ -196,7 +196,7 @@ class LayeredOptimizer:
                  moe_lr_multiplier: float = 1.0,
                  router_lr_multiplier: float = 1.0,
                  shared_lr_multiplier: float = 1.0,
-                 dynamic_clustering_lr_multiplier: float = 0.1,  # 🔧 修复13: 动态聚类组件使用更低学习率
+                 dynamic_clustering_lr_multiplier: float = 0.01,  # 🔧 修复37: 进一步降低动态聚类学习率
                  weight_decay: float = 0.01):
 
         self.base_lr = base_lr
@@ -432,6 +432,295 @@ class EnhancedCultureMoETrainer:
             # 静默处理错误，不影响训练
             pass
 
+
+    def diagnose_and_save_nan_batch(self, batch: Dict, outputs: Dict, nan_grad_info: Dict, optimizer_type: str):
+        """
+        详细诊断NaN/Inf梯度问题，保存原始数据、token分析和embedding向量
+
+        Args:
+            batch: 当前batch数据
+            outputs: 模型输出
+            nan_grad_info: NaN/Inf梯度信息
+            optimizer_type: 优化器类型 ("AMP" 或 "Standard")
+        """
+        try:
+            # 创建诊断目录
+            diagnosis_dir = os.path.join(self.args.output_dir, "nan_diagnosis")
+            os.makedirs(diagnosis_dir, exist_ok=True)
+
+            # 文件名包含step和时间戳
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            diagnosis_file = os.path.join(diagnosis_dir, f'nan_diagnosis_step_{self.global_step}_{timestamp}.json')
+
+            # 🔧 修复43: 详细的batch数据分析
+            batch_analysis = {}
+
+            # 1. 基础batch信息
+            input_ids = batch['input_ids'].cpu().numpy()
+            attention_mask = batch['attention_mask'].cpu().numpy()
+            labels = batch['labels'].cpu().numpy()
+            culture_ids = batch['culture_ids'].cpu().numpy()
+
+            batch_analysis['basic_info'] = {
+                'step': self.global_step,
+                'optimizer_type': optimizer_type,
+                'batch_size': input_ids.shape[0],
+                'sequence_length': input_ids.shape[1],
+                'culture_ids': culture_ids.tolist(),
+                'unique_cultures': np.unique(culture_ids).tolist()
+            }
+
+            # 2. Token分析：检查是否有无效token ID
+            token_analysis = {}
+            vocab_size = getattr(self.tokenizer, 'vocab_size', 50000)  # 默认词汇表大小
+
+            for sample_idx in range(input_ids.shape[0]):
+                sample_input_ids = input_ids[sample_idx]
+                sample_attention_mask = attention_mask[sample_idx]
+                sample_labels = labels[sample_idx]
+
+                # 有效token（attention_mask=1的部分）
+                valid_length = sample_attention_mask.sum()
+                valid_input_ids = sample_input_ids[:valid_length]
+
+                # 检查无效token ID
+                invalid_tokens = valid_input_ids[valid_input_ids >= vocab_size]
+                negative_tokens = valid_input_ids[valid_input_ids < 0]
+
+                # 统计特殊token
+                special_token_counts = {}
+                if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
+                    special_token_counts['pad_token'] = (valid_input_ids == self.tokenizer.pad_token_id).sum().item()
+                if hasattr(self.tokenizer, 'unk_token_id') and self.tokenizer.unk_token_id is not None:
+                    special_token_counts['unk_token'] = (valid_input_ids == self.tokenizer.unk_token_id).sum().item()
+                if hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id is not None:
+                    special_token_counts['eos_token'] = (valid_input_ids == self.tokenizer.eos_token_id).sum().item()
+
+                # 解码文本
+                try:
+                    decoded_text = self.tokenizer.decode(valid_input_ids, skip_special_tokens=False)
+                except Exception as e:
+                    decoded_text = f"DECODE_ERROR: {str(e)}"
+
+                # 解码labels
+                valid_label_mask = sample_labels != -100
+                try:
+                    if valid_label_mask.any():
+                        valid_labels = sample_labels[valid_label_mask]
+                        decoded_labels = self.tokenizer.decode(valid_labels, skip_special_tokens=False)
+                    else:
+                        decoded_labels = "NO_VALID_LABELS"
+                except Exception as e:
+                    decoded_labels = f"DECODE_ERROR: {str(e)}"
+
+                token_analysis[f'sample_{sample_idx}'] = {
+                    'valid_length': int(valid_length),
+                    'invalid_tokens_count': len(invalid_tokens),
+                    'invalid_tokens': invalid_tokens.tolist() if len(invalid_tokens) > 0 else [],
+                    'negative_tokens_count': len(negative_tokens),
+                    'negative_tokens': negative_tokens.tolist() if len(negative_tokens) > 0 else [],
+                    'special_token_counts': special_token_counts,
+                    'token_id_range': [int(valid_input_ids.min()), int(valid_input_ids.max())],
+                    'culture_id': int(culture_ids[sample_idx]),
+                    'decoded_text_preview': decoded_text[:500] + "..." if len(decoded_text) > 500 else decoded_text,
+                    'decoded_labels_preview': decoded_labels[:300] + "..." if len(decoded_labels) > 300 else decoded_labels,
+                    'raw_input_ids': valid_input_ids.tolist(),
+                    'raw_labels': sample_labels[valid_label_mask].tolist() if valid_label_mask.any() else []
+                }
+
+            batch_analysis['token_analysis'] = token_analysis
+
+            # 3. Embedding向量分析
+            embedding_analysis = {}
+            try:
+                # 获取embedding层
+                if hasattr(self.model, 'module'):
+                    # DataParallel情况
+                    embed_tokens = self.model.module.llama_model.model.embed_tokens
+                else:
+                    embed_tokens = self.model.llama_model.model.embed_tokens
+
+                with torch.no_grad():
+                    embeddings = embed_tokens(batch['input_ids'])  # [B, L, H]
+
+                    embedding_analysis['embedding_shape'] = list(embeddings.shape)
+                    embedding_analysis['embedding_dtype'] = str(embeddings.dtype)
+                    embedding_analysis['embedding_device'] = str(embeddings.device)
+
+                    # 检查embedding中的NaN/Inf
+                    nan_count = torch.isnan(embeddings).sum().item()
+                    inf_count = torch.isinf(embeddings).sum().item()
+
+                    embedding_analysis['nan_count'] = nan_count
+                    embedding_analysis['inf_count'] = inf_count
+
+                    if nan_count > 0 or inf_count > 0:
+                        embedding_analysis['has_invalid_embeddings'] = True
+                        # 找到有问题的位置
+                        nan_positions = torch.isnan(embeddings).nonzero(as_tuple=False)
+                        inf_positions = torch.isinf(embeddings).nonzero(as_tuple=False)
+
+                        embedding_analysis['nan_positions'] = nan_positions[:10].cpu().tolist() if nan_count > 0 else []
+                        embedding_analysis['inf_positions'] = inf_positions[:10].cpu().tolist() if inf_count > 0 else []
+                    else:
+                        embedding_analysis['has_invalid_embeddings'] = False
+
+                    # 统计信息
+                    embeddings_flat = embeddings.view(-1)
+                    embedding_analysis['statistics'] = {
+                        'mean': embeddings_flat.mean().item(),
+                        'std': embeddings_flat.std().item(),
+                        'min': embeddings_flat.min().item(),
+                        'max': embeddings_flat.max().item(),
+                        'norm': torch.norm(embeddings_flat).item()
+                    }
+
+                    # 按样本统计embedding
+                    per_sample_stats = {}
+                    for sample_idx in range(embeddings.shape[0]):
+                        sample_emb = embeddings[sample_idx]  # [L, H]
+                        sample_emb_flat = sample_emb.view(-1)
+
+                        per_sample_stats[f'sample_{sample_idx}'] = {
+                            'mean': sample_emb_flat.mean().item(),
+                            'std': sample_emb_flat.std().item(),
+                            'norm': torch.norm(sample_emb_flat).item(),
+                            'nan_count': torch.isnan(sample_emb).sum().item(),
+                            'inf_count': torch.isinf(sample_emb).sum().item()
+                        }
+
+                    embedding_analysis['per_sample_stats'] = per_sample_stats
+
+            except Exception as e:
+                embedding_analysis['error'] = f"Failed to analyze embeddings: {str(e)}"
+
+            batch_analysis['embedding_analysis'] = embedding_analysis
+
+            # 4. 模型输出分析
+            output_analysis = {}
+            try:
+                if 'logits' in outputs:
+                    logits = outputs['logits']
+                    output_analysis['logits'] = {
+                        'shape': list(logits.shape),
+                        'dtype': str(logits.dtype),
+                        'nan_count': torch.isnan(logits).sum().item(),
+                        'inf_count': torch.isinf(logits).sum().item(),
+                        'mean': logits.mean().item() if not torch.isnan(logits).any() else float('nan'),
+                        'std': logits.std().item() if not torch.isnan(logits).any() else float('nan'),
+                        'min': logits.min().item() if not torch.isinf(logits).any() else float('-inf'),
+                        'max': logits.max().item() if not torch.isinf(logits).any() else float('inf')
+                    }
+
+                if 'expert_weights' in outputs:
+                    expert_weights = outputs['expert_weights']
+                    output_analysis['expert_weights'] = {
+                        'shape': list(expert_weights.shape),
+                        'dtype': str(expert_weights.dtype),
+                        'nan_count': torch.isnan(expert_weights).sum().item(),
+                        'inf_count': torch.isinf(expert_weights).sum().item(),
+                        'mean': expert_weights.mean().item() if not torch.isnan(expert_weights).any() else float('nan'),
+                        'sum_per_sample': expert_weights.sum(dim=1).cpu().tolist() if not torch.isnan(expert_weights).any() else []
+                    }
+
+                # 检查routing_info
+                if 'routing_info' in outputs:
+                    routing_info = outputs['routing_info']
+                    output_analysis['routing_info'] = {}
+
+                    for key, value in routing_info.items():
+                        if isinstance(value, torch.Tensor):
+                            output_analysis['routing_info'][key] = {
+                                'shape': list(value.shape),
+                                'dtype': str(value.dtype),
+                                'nan_count': torch.isnan(value).sum().item(),
+                                'inf_count': torch.isinf(value).sum().item()
+                            }
+                        elif isinstance(value, dict):
+                            output_analysis['routing_info'][key] = str(value)[:200] + "..." if len(str(value)) > 200 else str(value)
+                        else:
+                            output_analysis['routing_info'][key] = str(value)
+
+            except Exception as e:
+                output_analysis['error'] = f"Failed to analyze outputs: {str(e)}"
+
+            batch_analysis['output_analysis'] = output_analysis
+
+            # 5. 梯度分析
+            batch_analysis['gradient_analysis'] = nan_grad_info
+
+            # 6. 模型状态检查
+            model_state_analysis = {}
+            try:
+                # DataParallel兼容性
+                actual_model = self.model.module if hasattr(self.model, 'module') else self.model
+
+                # 检查关键参数的状态
+                if hasattr(actual_model, 'router') and hasattr(actual_model.router, 'culture_clustering'):
+                    clustering = actual_model.router.culture_clustering
+
+                    cluster_centers = clustering.culture_cluster_centers
+                    model_state_analysis['cluster_centers'] = {
+                        'shape': list(cluster_centers.shape),
+                        'nan_count': torch.isnan(cluster_centers).sum().item(),
+                        'inf_count': torch.isinf(cluster_centers).sum().item(),
+                        'norm': torch.norm(cluster_centers).item() if not (torch.isnan(cluster_centers).any() or torch.isinf(cluster_centers).any()) else float('inf')
+                    }
+
+                    if hasattr(clustering, 'expert_confidence_weights'):
+                        confidence_weights = clustering.expert_confidence_weights
+                        model_state_analysis['confidence_weights'] = {
+                            'shape': list(confidence_weights.shape),
+                            'nan_count': torch.isnan(confidence_weights).sum().item(),
+                            'inf_count': torch.isinf(confidence_weights).sum().item(),
+                            'values': confidence_weights.cpu().tolist()
+                        }
+
+                    if hasattr(clustering, 'clustering_temperature'):
+                        temperature = clustering.clustering_temperature
+                        model_state_analysis['clustering_temperature'] = {
+                            'value': temperature.item() if isinstance(temperature, torch.Tensor) else temperature,
+                            'is_nan': torch.isnan(temperature).any().item() if isinstance(temperature, torch.Tensor) else False,
+                            'is_inf': torch.isinf(temperature).any().item() if isinstance(temperature, torch.Tensor) else False
+                        }
+
+            except Exception as e:
+                model_state_analysis['error'] = f"Failed to analyze model state: {str(e)}"
+
+            batch_analysis['model_state_analysis'] = model_state_analysis
+
+            # 7. 环境信息
+            batch_analysis['environment_info'] = {
+                'epoch': getattr(self, 'current_epoch', 'unknown'),
+                'device': str(self.device),
+                'use_amp': self.use_amp,
+                'use_dataparallel': getattr(self, 'use_dataparallel', False),
+                'vocab_size': vocab_size,
+                'tokenizer_type': type(self.tokenizer).__name__
+            }
+
+            # 保存诊断文件
+            with open(diagnosis_file, 'w', encoding='utf-8') as f:
+                json.dump(batch_analysis, f, indent=2, ensure_ascii=False)
+
+            logging.error(f"🔍 NaN/Inf gradient diagnosis saved to: {diagnosis_file}")
+            logging.error(f"📊 Quick summary: {nan_count + inf_count} invalid embeddings, {len(token_analysis)} samples analyzed")
+
+            # 如果发现无效token，特别提醒
+            total_invalid_tokens = sum(sample['invalid_tokens_count'] for sample in token_analysis.values())
+            total_negative_tokens = sum(sample['negative_tokens_count'] for sample in token_analysis.values())
+
+            if total_invalid_tokens > 0:
+                logging.error(f"⚠️  FOUND {total_invalid_tokens} INVALID TOKEN IDs (>= vocab_size)")
+            if total_negative_tokens > 0:
+                logging.error(f"⚠️  FOUND {total_negative_tokens} NEGATIVE TOKEN IDs")
+            if nan_count > 0 or inf_count > 0:
+                logging.error(f"⚠️  FOUND {nan_count} NaN + {inf_count} Inf VALUES IN EMBEDDINGS")
+
+        except Exception as e:
+            logging.error(f"❌ Failed to diagnose NaN batch: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def analyze_nan_patterns(self, epoch: int):
         """分析NaN出现的模式"""
@@ -1237,6 +1526,7 @@ class EnhancedCultureMoETrainer:
             moe_lr_multiplier=self.args.moe_lr_multiplier,
             router_lr_multiplier=self.args.router_lr_multiplier,
             shared_lr_multiplier=self.args.shared_lr_multiplier,
+            dynamic_clustering_lr_multiplier=0.01,  # 🔧 修复38: 使用极低的动态聚类学习率
             weight_decay=self.args.weight_decay
         )
 
@@ -1622,13 +1912,30 @@ class EnhancedCultureMoETrainer:
 
                     # ✅ 检查梯度中的NaN/Inf (AMP版本) - 跳过策略
                     has_nan_grad = False
-                    for param in router_params + dynamic_clustering_params + other_params:
-                        if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
-                            has_nan_grad = True
-                            break  # 发现异常梯度就停止检查
+                    nan_grad_info = {}  # 收集NaN/Inf梯度的详细信息
+
+                    for param_type, params in [("dynamic_clustering", dynamic_clustering_params),
+                                             ("router", router_params),
+                                             ("other", other_params)]:
+                        for i, param in enumerate(params):
+                            if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                                has_nan_grad = True
+                                nan_count = torch.isnan(param.grad).sum().item()
+                                inf_count = torch.isinf(param.grad).sum().item()
+                                grad_norm = torch.norm(param.grad).item() if not (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()) else float('inf')
+
+                                nan_grad_info[f"{param_type}_param_{i}"] = {
+                                    'nan_count': nan_count,
+                                    'inf_count': inf_count,
+                                    'grad_norm': grad_norm,
+                                    'param_shape': list(param.shape),
+                                    'param_norm': torch.norm(param).item() if not (torch.isnan(param).any() or torch.isinf(param).any()) else float('inf')
+                                }
 
                     if has_nan_grad:
                         logging.warning(f"⚠️  Step {self.global_step}: Detected NaN/Inf gradients, skipping optimizer step")
+                        # 🔧 修复41: 详细诊断NaN/Inf梯度，保存原始数据和embedding
+                        self.diagnose_and_save_nan_batch(batch, outputs, nan_grad_info, "AMP")
                         skipped_batches += 1
                         # 🔧 关键修复：重置scaler状态，避免"unscale_() has already been called"错误
                         self.scaler.update()
@@ -1637,13 +1944,13 @@ class EnhancedCultureMoETrainer:
                         # 标记需要跳过当前batch
                         should_skip_batch = True
                     else:
-                        # 🔧 修复10: 更严格的梯度裁剪设置 (AMP版本)
+                        # 🔧 修复39: 极其严格的梯度裁剪设置 (AMP版本)
                         if dynamic_clustering_params:
-                            torch.nn.utils.clip_grad_norm_(dynamic_clustering_params, max_norm=0.1)  # 动态聚类最严格
+                            torch.nn.utils.clip_grad_norm_(dynamic_clustering_params, max_norm=0.01)  # 动态聚类极其严格
                         if router_params:
-                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.3)  # 路由器严格
+                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.1)  # 路由器更严格
                         if other_params:
-                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=0.8)   # 其他参数也更严格
+                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=0.5)   # 其他参数也更严格
 
                         self.scaler.step(self.optimizer.optimizer)
                         self.scaler.update()
@@ -1668,26 +1975,43 @@ class EnhancedCultureMoETrainer:
 
                     # ✅ 检查梯度中的NaN/Inf (标准版本) - 跳过策略
                     has_nan_grad = False
-                    for param in router_params + dynamic_clustering_params + other_params:
-                        if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
-                            has_nan_grad = True
-                            break  # 发现异常梯度就停止检查
+                    nan_grad_info = {}  # 收集NaN/Inf梯度的详细信息
+
+                    for param_type, params in [("dynamic_clustering", dynamic_clustering_params),
+                                             ("router", router_params),
+                                             ("other", other_params)]:
+                        for i, param in enumerate(params):
+                            if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                                has_nan_grad = True
+                                nan_count = torch.isnan(param.grad).sum().item()
+                                inf_count = torch.isinf(param.grad).sum().item()
+                                grad_norm = torch.norm(param.grad).item() if not (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()) else float('inf')
+
+                                nan_grad_info[f"{param_type}_param_{i}"] = {
+                                    'nan_count': nan_count,
+                                    'inf_count': inf_count,
+                                    'grad_norm': grad_norm,
+                                    'param_shape': list(param.shape),
+                                    'param_norm': torch.norm(param).item() if not (torch.isnan(param).any() or torch.isinf(param).any()) else float('inf')
+                                }
 
                     if has_nan_grad:
                         logging.warning(f"⚠️  Step {self.global_step}: Detected NaN/Inf gradients, skipping optimizer step")
+                        # 🔧 修复42: 详细诊断NaN/Inf梯度，保存原始数据和embedding (非AMP版本)
+                        self.diagnose_and_save_nan_batch(batch, outputs, nan_grad_info, "Standard")
                         skipped_batches += 1
                         # 清零梯度但跳过优化器步骤（非AMP版本无需重置scaler）
                         self.optimizer.zero_grad()
                         # 标记需要跳过当前batch
                         should_skip_batch = True
                     else:
-                        # 🔧 修复12: 更严格的梯度裁剪设置 (非AMP版本)
+                        # 🔧 修复40: 极其严格的梯度裁剪设置 (非AMP版本)
                         if dynamic_clustering_params:
-                            torch.nn.utils.clip_grad_norm_(dynamic_clustering_params, max_norm=0.1)  # 动态聚类最严格
+                            torch.nn.utils.clip_grad_norm_(dynamic_clustering_params, max_norm=0.01)  # 动态聚类极其严格
                         if router_params:
-                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.3)  # 路由器严格
+                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.1)  # 路由器更严格
                         if other_params:
-                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=0.8)   # 其他参数也更严格
+                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=0.5)   # 其他参数也更严格
 
                         self.optimizer.step()
                         self.scheduler.step()
