@@ -48,7 +48,7 @@ class SimpleRouter(nn.Module):
                     if module.bias is not None:
                         module.bias.data.clamp_(-0.1, 0.1)
 
-    def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         前向传播
 
@@ -58,6 +58,7 @@ class SimpleRouter(nn.Module):
         Returns:
             expert_weights: [B, num_experts] 专家权重
             top_k_indices: [B, top_k] Top-K 专家索引
+            load_balance_loss: 负载均衡损失
         """
         # 确保路由器在正确的设备上
         if next(self.router.parameters()).device != hidden_states.device:
@@ -125,7 +126,66 @@ class SimpleRouter(nn.Module):
         for b in range(hidden_states.shape[0]):
             expert_weights[b, top_k_indices[b]] = top_k_weights[b]
 
-        return expert_weights, top_k_indices
+        # 计算负载均衡损失
+        load_balance_loss = self._compute_load_balance_loss(router_logits, expert_weights)
+
+        return expert_weights, top_k_indices, load_balance_loss
+
+    def _compute_load_balance_loss(self, router_logits: torch.Tensor, expert_weights: torch.Tensor) -> torch.Tensor:
+        """
+        计算专家负载均衡损失
+
+        Args:
+            router_logits: [B, num_experts] 路由器原始logits
+            expert_weights: [B, num_experts] 专家权重矩阵
+
+        Returns:
+            load_balance_loss: 负载均衡损失
+        """
+        try:
+            batch_size = router_logits.size(0)
+
+            # 计算每个专家的使用频率 (fraction of tokens routed to each expert)
+            expert_usage_freq = expert_weights.sum(dim=0) / batch_size  # [num_experts]
+            expert_usage_freq = torch.clamp(expert_usage_freq, min=1e-8, max=1.0)
+
+            # 计算每个专家的平均概率 (average probability assigned to each expert)
+            router_probs = F.softmax(router_logits, dim=-1)  # [B, num_experts]
+            expert_avg_prob = router_probs.mean(dim=0)  # [num_experts]
+            expert_avg_prob = torch.clamp(expert_avg_prob, min=1e-8, max=1.0)
+
+            # 检查数值稳定性
+            if (torch.isnan(expert_usage_freq).any() or torch.isinf(expert_usage_freq).any() or
+                torch.isnan(expert_avg_prob).any() or torch.isinf(expert_avg_prob).any()):
+                # 如果有NaN/Inf，返回零损失
+                return torch.zeros(1, device=router_logits.device, dtype=router_logits.dtype, requires_grad=True).sum()
+
+            # 负载均衡损失：鼓励专家使用的均匀分布
+            # Loss = num_experts * sum(usage_freq * avg_prob)
+            # 当专家使用均匀时，usage_freq ≈ avg_prob ≈ 1/num_experts，损失最小
+            balance_product = expert_usage_freq * expert_avg_prob
+            balance_product = torch.clamp(balance_product, max=1.0)
+            load_balance_loss = self.num_experts * torch.sum(balance_product)
+
+            # 添加方差惩罚，进一步鼓励均匀分布
+            usage_variance = torch.var(expert_usage_freq)
+            prob_variance = torch.var(expert_avg_prob)
+            variance_penalty = usage_variance + prob_variance
+
+            # 组合损失
+            total_loss = load_balance_loss + 0.1 * variance_penalty
+
+            # 最终检查和限制
+            if torch.isnan(total_loss) or torch.isinf(total_loss):
+                return torch.zeros(1, device=router_logits.device, dtype=router_logits.dtype, requires_grad=True).sum()
+
+            total_loss = torch.clamp(total_loss, min=0.0, max=50.0)
+
+            return total_loss
+
+        except Exception as e:
+            logging.warning(f"Load balance loss computation failed: {e}, using zero loss")
+            return torch.zeros(1, device=router_logits.device, dtype=router_logits.dtype, requires_grad=True).sum()
 
 
 class SimpleMoELayer(nn.Module):
@@ -166,7 +226,7 @@ class SimpleMoELayer(nn.Module):
         # 层归一化
         self.layer_norm = nn.LayerNorm(hidden_dim)
 
-    def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         前向传播 - 数值稳定版本
 
@@ -176,6 +236,7 @@ class SimpleMoELayer(nn.Module):
         Returns:
             output: [B, L, H] MoE 输出
             expert_weights: [B, num_experts] 专家权重
+            load_balance_loss: 负载均衡损失
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
@@ -187,7 +248,7 @@ class SimpleMoELayer(nn.Module):
         pooled_states = torch.clamp(pooled_states, min=-3.0, max=3.0)
 
         # 路由决策
-        expert_weights, top_k_indices = self.router(pooled_states)  # [B, num_experts], [B, top_k]
+        expert_weights, top_k_indices, load_balance_loss = self.router(pooled_states)  # [B, num_experts], [B, top_k], scalar
 
         # 专家输出计算（使用更严格的数值稳定性控制）
         expert_outputs = []
@@ -296,7 +357,7 @@ class SimpleMoELayer(nn.Module):
             logging.warning(f"Layer norm failed: {e}, using input")
             output = hidden_states
 
-        return output, expert_weights
+        return output, expert_weights, load_balance_loss
 
 
 class SimpleMoEModel(nn.Module):
@@ -304,13 +365,14 @@ class SimpleMoEModel(nn.Module):
 
     def __init__(self, llama_model, config, num_experts: int = 12, top_k: int = 2,
                  expert_hidden_dim: int = None, router_hidden_dim: int = 512,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1, load_balance_weight: float = 0.01):
         super().__init__()
 
         self.llama_model = llama_model
         self.config = config
         self.num_experts = num_experts
         self.top_k = top_k
+        self.load_balance_weight = load_balance_weight
 
         hidden_dim = config.hidden_size
 
@@ -406,7 +468,7 @@ class SimpleMoEModel(nn.Module):
             self.moe_fusion_weight.data.clamp_(-1.0, 1.0)
 
         # MoE 处理
-        moe_output, expert_weights = self.moe_layer(hidden_states)  # [B, L, H], [B, num_experts]
+        moe_output, expert_weights, moe_load_balance_loss = self.moe_layer(hidden_states)  # [B, L, H], [B, num_experts], scalar
 
         # 融合原始隐藏状态和 MoE 输出（使用更保守的融合策略）
         try:
@@ -455,7 +517,8 @@ class SimpleMoEModel(nn.Module):
         outputs = {
             'logits': logits,
             'expert_weights': expert_weights,
-            'hidden_states': enhanced_hidden
+            'hidden_states': enhanced_hidden,
+            'load_balance_loss': moe_load_balance_loss
         }
 
         # 计算损失
@@ -470,8 +533,13 @@ class SimpleMoEModel(nn.Module):
                 shift_labels.view(-1)
             )
 
-            outputs['loss'] = lm_loss
+            # 总损失 = 语言建模损失 + 负载均衡损失
+            total_loss = lm_loss + self.load_balance_weight * moe_load_balance_loss
+
+            outputs['loss'] = total_loss
             outputs['lm_loss'] = lm_loss
+            outputs['load_balance_loss'] = moe_load_balance_loss
+            outputs['weighted_load_balance_loss'] = self.load_balance_weight * moe_load_balance_loss
 
         return outputs
 
@@ -489,13 +557,20 @@ class SimpleMoEModel(nn.Module):
         ideal_usage = 1.0 / self.num_experts
         load_balance_loss = F.mse_loss(expert_usage, torch.full_like(expert_usage, ideal_usage))
 
+        # 计算负载均衡质量指标
+        usage_balance_score = 1.0 - (usage_std.item() / ideal_usage)  # 越接近1表示越均衡
+        usage_efficiency = (expert_usage > 0.01).sum().item() / self.num_experts  # 有效专家比例
+
         return {
             'expert_usage': expert_usage.detach().cpu().numpy().tolist(),
             'usage_std': usage_std.item(),
             'usage_max': usage_max.item(),
             'usage_min': usage_min.item(),
             'load_balance_loss': load_balance_loss.item(),
-            'ideal_usage': ideal_usage
+            'ideal_usage': ideal_usage,
+            'usage_balance_score': usage_balance_score,
+            'usage_efficiency': usage_efficiency,
+            'load_balance_weight': self.load_balance_weight
         }
 
     def generate(self, *args, **kwargs):

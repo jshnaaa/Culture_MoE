@@ -310,6 +310,9 @@ class EnhancedCultureMoETrainer:
         self.best_accuracy = 0.0
         self.epoch_results = []
 
+        # 🔍 NaN问题诊断
+        self.nan_batch_positions = []  # 记录出现NaN的batch位置
+
     def collect_routing_info_for_summary(self, outputs: Dict, batch: Dict):
         """收集路由信息用于epoch汇总"""
         try:
@@ -335,6 +338,73 @@ class EnhancedCultureMoETrainer:
             # 静默处理错误，不影响训练
             pass
 
+
+    def analyze_nan_patterns(self, epoch: int):
+        """分析NaN出现的模式"""
+        if not self.nan_batch_positions:
+            return
+
+        logging.error("\n" + "=" * 80)
+        logging.error("🔍 NaN PATTERN ANALYSIS")
+        logging.error("=" * 80)
+
+        # 当前epoch的NaN位置
+        current_epoch_nans = [pos for pos in self.nan_batch_positions if pos['epoch'] == epoch + 1]
+
+        if current_epoch_nans:
+            logging.error(f"Epoch {epoch + 1} NaN positions:")
+            for pos in current_epoch_nans:
+                logging.error(f"  Batch {pos['batch_idx']} ({pos['progress_percent']:.1f}%)")
+
+        # 检查是否有重复的batch位置
+        all_batch_indices = [pos['batch_idx'] for pos in self.nan_batch_positions]
+        unique_indices = set(all_batch_indices)
+        repeated_positions = {}
+
+        if len(unique_indices) < len(all_batch_indices):
+            logging.error("⚠️  REPEATED NaN POSITIONS DETECTED!")
+
+            # 统计每个位置出现的次数
+            from collections import Counter
+            position_counts = Counter(all_batch_indices)
+            repeated_positions = {idx: count for idx, count in position_counts.items() if count > 1}
+
+            if repeated_positions:
+                logging.error("Repeated problematic batch positions:")
+                for batch_idx, count in repeated_positions.items():
+                    progress = (batch_idx + 1) / len(self.train_loader) * 100
+                    logging.error(f"  Batch {batch_idx} ({progress:.1f}%): appeared {count} times")
+
+                logging.error("")
+                logging.error("💡 DIAGNOSIS: Specific data samples are causing NaN!")
+                logging.error("RECOMMENDED ACTIONS:")
+                logging.error("1. Examine the problematic batch data files saved in output directory")
+                logging.error("2. Check for extremely long sequences, unusual characters, or corrupted data")
+                logging.error("3. Consider filtering or fixing these specific data samples")
+                logging.error("4. Alternatively, add data validation in the dataset preprocessing")
+
+        # 保存完整的NaN分析报告
+        nan_analysis_file = os.path.join(self.args.output_dir, f'nan_analysis_epoch_{epoch + 1}.json')
+        analysis_data = {
+            'epoch': epoch + 1,
+            'total_nan_occurrences': len(self.nan_batch_positions),
+            'current_epoch_nans': current_epoch_nans,
+            'all_nan_positions': self.nan_batch_positions,
+            'repeated_positions': repeated_positions,
+            'dataset_size': len(self.train_loader),
+            'recommendations': [
+                "Check problematic batch files in output directory",
+                "Validate data quality and preprocessing",
+                "Consider filtering problematic samples",
+                "Monitor if pattern persists across epochs"
+            ]
+        }
+
+        with open(nan_analysis_file, 'w', encoding='utf-8') as f:
+            json.dump(analysis_data, f, indent=2, ensure_ascii=False)
+
+        logging.error(f"Detailed NaN analysis saved to: {nan_analysis_file}")
+        logging.error("=" * 80)
 
     def save_epoch_routing_summary(self, epoch: int):
         """保存每个epoch的路由汇总信息"""
@@ -1091,7 +1161,216 @@ class EnhancedCultureMoETrainer:
                     loss_val = loss.item()
                 except:
                     loss_val = "NaN/Inf"
-                logging.warning(f"⚠️  Step {self.global_step}: Loss is NaN/Inf ({loss_val}), skipping batch")
+
+                # 🔍 详细诊断有问题的batch
+                # 记录NaN出现的位置
+                batch_position_info = {
+                    'epoch': epoch + 1,
+                    'batch_idx': batch_idx,
+                    'global_step': self.global_step,
+                    'progress_percent': (batch_idx+1)/len(self.train_loader)*100,
+                    'total_batches': len(self.train_loader)
+                }
+                self.nan_batch_positions.append(batch_position_info)
+
+                logging.error("=" * 80)
+                logging.error(f"🚨 PROBLEMATIC BATCH DETECTED - Step {self.global_step}, Batch {batch_idx}")
+                logging.error("=" * 80)
+                logging.error(f"Loss value: {loss_val}")
+                logging.error(f"Batch progress: {batch_idx+1}/{len(self.train_loader)} ({(batch_idx+1)/len(self.train_loader)*100:.1f}%)")
+
+                # 检查是否是重复位置
+                if len(self.nan_batch_positions) > 1:
+                    prev_positions = [pos['batch_idx'] for pos in self.nan_batch_positions[:-1]]
+                    if batch_idx in prev_positions:
+                        logging.error(f"⚠️  WARNING: This batch position has caused NaN before!")
+                        logging.error(f"Previous NaN positions: {prev_positions}")
+                        logging.error(f"This suggests a problematic data sample in the dataset!")
+
+                # 分析batch内容
+                try:
+                    culture_ids = batch['culture_ids'].cpu().numpy()
+                    input_ids_shape = batch['input_ids'].shape
+                    labels_shape = batch['labels'].shape
+
+                    logging.error(f"Batch size: {input_ids_shape[0]}")
+                    logging.error(f"Sequence length: {input_ids_shape[1]}")
+                    logging.error(f"Culture IDs in batch: {culture_ids.tolist()}")
+                    logging.error(f"Unique cultures: {np.unique(culture_ids).tolist()}")
+
+                    # 检查输入是否有异常值
+                    input_ids = batch['input_ids']
+                    labels = batch['labels']
+
+                    logging.error(f"Input IDs range: [{input_ids.min().item()}, {input_ids.max().item()}]")
+                    logging.error(f"Labels range: [{labels.min().item()}, {labels.max().item()}]")
+                    logging.error(f"Labels unique values: {torch.unique(labels).cpu().numpy()[:10].tolist()}...")  # 只显示前10个
+
+                    # 检查attention mask
+                    attention_mask = batch['attention_mask']
+                    logging.error(f"Attention mask sum per sample: {attention_mask.sum(dim=1).cpu().numpy().tolist()}")
+
+                    # 🔍 打印batch内的具体数据内容
+                    logging.error("\n" + "-" * 60)
+                    logging.error("📋 DETAILED BATCH CONTENT:")
+                    logging.error("-" * 60)
+
+                    for sample_idx in range(input_ids_shape[0]):
+                        logging.error(f"\n🔸 Sample {sample_idx + 1}/{input_ids_shape[0]}:")
+
+                        # 获取当前样本的数据
+                        sample_input_ids = input_ids[sample_idx].cpu().numpy()
+                        sample_labels = labels[sample_idx].cpu().numpy()
+                        sample_attention_mask = attention_mask[sample_idx].cpu().numpy()
+                        sample_culture_id = culture_ids[sample_idx].item()
+
+                        # 解码输入文本
+                        try:
+                            # 只取有效的token（attention_mask=1的部分）
+                            valid_length = sample_attention_mask.sum()
+                            valid_input_ids = sample_input_ids[:valid_length]
+                            decoded_input = self.tokenizer.decode(valid_input_ids, skip_special_tokens=False)
+
+                            logging.error(f"Culture ID: {sample_culture_id}")
+                            logging.error(f"Valid sequence length: {valid_length}")
+                            logging.error(f"Input text (first 500 chars):")
+                            logging.error(f"'{decoded_input[:500]}{'...' if len(decoded_input) > 500 else ''}'")
+
+                            # 检查labels中的有效部分（非-100的部分）
+                            valid_label_mask = sample_labels != -100
+                            if valid_label_mask.any():
+                                valid_labels = sample_labels[valid_label_mask]
+                                try:
+                                    decoded_labels = self.tokenizer.decode(valid_labels, skip_special_tokens=False)
+                                    logging.error(f"Target text (first 300 chars):")
+                                    logging.error(f"'{decoded_labels[:300]}{'...' if len(decoded_labels) > 300 else ''}'")
+                                except Exception as e:
+                                    logging.error(f"Failed to decode labels: {e}")
+                                    logging.error(f"Raw label tokens: {valid_labels[:20].tolist()}...")
+                            else:
+                                logging.error("No valid labels found (all -100)")
+
+                            # 检查是否有异常的token
+                            max_vocab_size = self.tokenizer.vocab_size if hasattr(self.tokenizer, 'vocab_size') else 50000
+                            invalid_tokens = valid_input_ids[valid_input_ids >= max_vocab_size]
+                            if len(invalid_tokens) > 0:
+                                logging.error(f"⚠️  Found {len(invalid_tokens)} invalid tokens >= {max_vocab_size}")
+                                logging.error(f"Invalid tokens: {invalid_tokens[:10].tolist()}")
+
+                        except Exception as e:
+                            logging.error(f"Failed to decode sample {sample_idx}: {e}")
+                            logging.error(f"Raw input IDs (first 20): {sample_input_ids[:20].tolist()}")
+                            logging.error(f"Raw labels (first 20): {sample_labels[:20].tolist()}")
+
+                    logging.error("-" * 60)
+
+                    # 🔍 数据质量检查摘要
+                    logging.error("\n📊 DATA QUALITY SUMMARY:")
+                    total_samples = input_ids_shape[0]
+                    unique_culture_count = len(np.unique(culture_ids))
+                    avg_seq_length = attention_mask.sum(dim=1).float().mean().item()
+                    min_seq_length = attention_mask.sum(dim=1).min().item()
+                    max_seq_length = attention_mask.sum(dim=1).max().item()
+
+                    logging.error(f"Total samples in batch: {total_samples}")
+                    logging.error(f"Unique cultures: {unique_culture_count}")
+                    logging.error(f"Sequence lengths - Avg: {avg_seq_length:.1f}, Min: {min_seq_length}, Max: {max_seq_length}")
+
+                    # 检查是否有极端长度的序列
+                    if max_seq_length > 400:
+                        logging.error(f"⚠️  Very long sequence detected: {max_seq_length} tokens")
+                    if min_seq_length < 50:
+                        logging.error(f"⚠️  Very short sequence detected: {min_seq_length} tokens")
+
+                    # 检查token范围
+                    input_min, input_max = input_ids.min().item(), input_ids.max().item()
+                    if input_max > 200000:  # 对于大多数tokenizer来说这是异常大的
+                        logging.error(f"⚠️  Unusually large token ID detected: {input_max}")
+
+                    logging.error("-" * 60)
+
+                    # 保存有问题的batch数据用于分析，包含具体文本内容
+                    problematic_batch_file = os.path.join(self.args.output_dir, f'problematic_batch_step_{self.global_step}.json')
+
+                    # 收集每个样本的详细信息
+                    samples_data = []
+                    for sample_idx in range(input_ids_shape[0]):
+                        sample_input_ids = input_ids[sample_idx].cpu().numpy()
+                        sample_labels = labels[sample_idx].cpu().numpy()
+                        sample_attention_mask = attention_mask[sample_idx].cpu().numpy()
+                        sample_culture_id = culture_ids[sample_idx].item()
+
+                        sample_info = {
+                            'sample_index': sample_idx,
+                            'culture_id': sample_culture_id,
+                            'valid_length': int(sample_attention_mask.sum()),
+                            'input_ids': sample_input_ids.tolist(),
+                            'labels': sample_labels.tolist(),
+                            'attention_mask': sample_attention_mask.tolist()
+                        }
+
+                        # 尝试解码文本
+                        try:
+                            valid_length = sample_attention_mask.sum()
+                            valid_input_ids = sample_input_ids[:valid_length]
+                            decoded_input = self.tokenizer.decode(valid_input_ids, skip_special_tokens=False)
+                            sample_info['decoded_input'] = decoded_input
+
+                            # 解码labels
+                            valid_label_mask = sample_labels != -100
+                            if valid_label_mask.any():
+                                valid_labels = sample_labels[valid_label_mask]
+                                try:
+                                    decoded_labels = self.tokenizer.decode(valid_labels, skip_special_tokens=False)
+                                    sample_info['decoded_labels'] = decoded_labels
+                                except:
+                                    sample_info['decoded_labels'] = "DECODE_ERROR"
+                            else:
+                                sample_info['decoded_labels'] = "NO_VALID_LABELS"
+
+                            # 检查异常token
+                            max_vocab_size = self.tokenizer.vocab_size if hasattr(self.tokenizer, 'vocab_size') else 50000
+                            invalid_tokens = valid_input_ids[valid_input_ids >= max_vocab_size]
+                            sample_info['invalid_tokens'] = invalid_tokens.tolist() if len(invalid_tokens) > 0 else []
+
+                        except Exception as e:
+                            sample_info['decode_error'] = str(e)
+                            sample_info['decoded_input'] = "DECODE_ERROR"
+                            sample_info['decoded_labels'] = "DECODE_ERROR"
+
+                        samples_data.append(sample_info)
+
+                    batch_info = {
+                        'step': self.global_step,
+                        'batch_idx': batch_idx,
+                        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                        'batch_summary': {
+                            'culture_ids': culture_ids.tolist(),
+                            'input_ids_shape': list(input_ids_shape),
+                            'labels_shape': list(labels_shape),
+                            'input_ids_range': [input_ids.min().item(), input_ids.max().item()],
+                            'labels_range': [labels.min().item(), labels.max().item()],
+                            'attention_mask_sums': attention_mask.sum(dim=1).cpu().numpy().tolist(),
+                        },
+                        'loss_components': {
+                            'generation_loss': outputs.get('generation_loss', torch.tensor(0)).item() if 'generation_loss' in outputs else "N/A",
+                            'culture_loss': outputs.get('culture_loss', torch.tensor(0)).item() if 'culture_loss' in outputs else "N/A",
+                            'load_balance_loss': outputs.get('load_balance_loss', torch.tensor(0)).item() if 'load_balance_loss' in outputs else "N/A",
+                            'entropy_loss': outputs.get('entropy_loss', torch.tensor(0)).item() if 'entropy_loss' in outputs else "N/A"
+                        },
+                        'samples': samples_data
+                    }
+
+                    with open(problematic_batch_file, 'w', encoding='utf-8') as f:
+                        json.dump(batch_info, f, indent=2, ensure_ascii=False)
+
+                    logging.error(f"Problematic batch info saved to: {problematic_batch_file}")
+
+                except Exception as e:
+                    logging.error(f"Failed to analyze problematic batch: {e}")
+
+                logging.error("=" * 80)
+
                 skipped_batches += 1
                 # 清零梯度以防止累积异常值
                 self.optimizer.zero_grad()
@@ -1315,6 +1594,10 @@ class EnhancedCultureMoETrainer:
 
         # 保存epoch路由汇总信息
         self.save_epoch_routing_summary(epoch)
+
+        # 🔍 NaN位置分析报告
+        if skipped_batches > 0:
+            self.analyze_nan_patterns(epoch)
 
         # 安全的平均值计算
         safe_avg = lambda x: x / num_batches if num_batches > 0 else 0.0

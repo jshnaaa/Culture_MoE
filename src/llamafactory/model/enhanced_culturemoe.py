@@ -442,26 +442,34 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
                 # 损失数值稳定性检查（在计算总损失前）
                 # 检查各个组件损失是否有异常
+                has_nan_loss = False
                 if torch.isnan(generation_loss) or torch.isinf(generation_loss):
                     logging.error(f"⚠️  Generation loss is NaN/Inf: {generation_loss}")
-                    generation_loss = torch.tensor(0.01, device=generation_loss.device, dtype=generation_loss.dtype)
+                    has_nan_loss = True
 
                 if torch.isnan(culture_loss) or torch.isinf(culture_loss):
                     logging.warning(f"⚠️  Culture loss is NaN/Inf: {culture_loss}")
-                    culture_loss = torch.tensor(0.0, device=culture_loss.device, dtype=culture_loss.dtype)
+                    has_nan_loss = True
 
                 if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
                     logging.warning(f"⚠️  Load balance loss is NaN/Inf: {load_balance_loss}")
-                    load_balance_loss = torch.tensor(0.0, device=load_balance_loss.device, dtype=load_balance_loss.dtype)
+                    has_nan_loss = True
 
                 if torch.isnan(entropy_loss) or torch.isinf(entropy_loss):
                     logging.warning(f"⚠️  Entropy loss is NaN/Inf: {entropy_loss}")
-                    entropy_loss = torch.tensor(0.0, device=entropy_loss.device, dtype=entropy_loss.dtype)
+                    has_nan_loss = True
 
                 # 检查lambda_value是否异常
                 if torch.isnan(lambda_value) or torch.isinf(lambda_value):
                     logging.warning(f"⚠️  Lambda value is NaN/Inf: {lambda_value}")
-                    lambda_value = torch.tensor(0.5, device=lambda_value.device, dtype=lambda_value.dtype)
+                    has_nan_loss = True
+
+                # 如果检测到任何NaN/Inf，返回NaN损失让训练循环跳过这个batch
+                if has_nan_loss:
+                    logging.warning("⚠️  Detected NaN/Inf in loss components, returning NaN loss for batch skipping")
+                    total_loss = torch.tensor(float('nan'), device=generation_loss.device, dtype=generation_loss.dtype)
+                    outputs['loss'] = total_loss
+                    return outputs
 
                 # 安全的总损失计算（使用torch.clamp防止溢出）
                 culture_component = torch.clamp(lambda_value * culture_loss, min=-10.0, max=10.0)
@@ -472,14 +480,10 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
                 # 最终损失检查和修正
                 if torch.isnan(total_loss) or torch.isinf(total_loss):
-                    logging.warning("⚠️  Total loss is NaN or Inf after component check, using generation loss only")
-                    total_loss = generation_loss
-
-                    # 记录详细信息用于调试
-                    logging.warning(f"   Generation loss: {generation_loss.item():.6f}")
-                    logging.warning(f"   Culture component: {culture_component.item():.6f}")
-                    logging.warning(f"   Load component: {load_component.item():.6f}")
-                    logging.warning(f"   Entropy component: {entropy_component.item():.6f}")
+                    logging.warning("⚠️  Total loss is NaN or Inf after component combination, returning NaN for batch skipping")
+                    total_loss = torch.tensor(float('nan'), device=generation_loss.device, dtype=generation_loss.dtype)
+                    outputs['loss'] = total_loss
+                    return outputs
                 elif total_loss < 0:
                     logging.warning(f"⚠️  Total loss is negative ({total_loss:.6f}), adjusting weights")
                     # 如果总损失为负，减少正则化项的权重
@@ -517,17 +521,25 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 outputs['entropy_loss'] = entropy_loss
 
                 # 损失数值稳定性检查（无文化损失情况）
+                has_nan_loss_no_culture = False
                 if torch.isnan(generation_loss) or torch.isinf(generation_loss):
                     logging.error(f"⚠️  Generation loss is NaN/Inf: {generation_loss}")
-                    generation_loss = torch.tensor(0.01, device=generation_loss.device, dtype=generation_loss.dtype)
+                    has_nan_loss_no_culture = True
 
                 if torch.isnan(load_balance_loss) or torch.isinf(load_balance_loss):
                     logging.warning(f"⚠️  Load balance loss is NaN/Inf: {load_balance_loss}")
-                    load_balance_loss = torch.tensor(0.0, device=load_balance_loss.device, dtype=load_balance_loss.dtype)
+                    has_nan_loss_no_culture = True
 
                 if torch.isnan(entropy_loss) or torch.isinf(entropy_loss):
                     logging.warning(f"⚠️  Entropy loss is NaN/Inf: {entropy_loss}")
-                    entropy_loss = torch.tensor(0.0, device=entropy_loss.device, dtype=entropy_loss.dtype)
+                    has_nan_loss_no_culture = True
+
+                # 如果检测到任何NaN/Inf，返回NaN损失让训练循环跳过这个batch
+                if has_nan_loss_no_culture:
+                    logging.warning("⚠️  Detected NaN/Inf in loss components (no culture), returning NaN loss for batch skipping")
+                    total_loss = torch.tensor(float('nan'), device=generation_loss.device, dtype=generation_loss.dtype)
+                    outputs['loss'] = total_loss
+                    return outputs
 
                 # 安全的总损失计算
                 load_component = torch.clamp(load_balance_weight * load_balance_loss, min=-1.0, max=1.0)
@@ -537,13 +549,10 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
                 # 最终损失检查和修正
                 if torch.isnan(total_loss) or torch.isinf(total_loss):
-                    logging.warning("⚠️  Total loss is NaN or Inf after component check, using generation loss only")
-                    total_loss = generation_loss
-
-                    # 记录详细信息用于调试
-                    logging.warning(f"   Generation loss: {generation_loss.item():.6f}")
-                    logging.warning(f"   Load component: {load_component.item():.6f}")
-                    logging.warning(f"   Entropy component: {entropy_component.item():.6f}")
+                    logging.warning("⚠️  Total loss is NaN or Inf after component combination (no culture), returning NaN for batch skipping")
+                    total_loss = torch.tensor(float('nan'), device=generation_loss.device, dtype=generation_loss.dtype)
+                    outputs['loss'] = total_loss
+                    return outputs
                 elif total_loss < 0:
                     logging.warning(f"⚠️  Total loss is negative ({total_loss:.6f}), adjusting weights")
                     # 如果总损失为负，减少正则化项的权重
