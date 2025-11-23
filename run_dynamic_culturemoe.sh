@@ -60,8 +60,8 @@ MARGIN="${7:-0.5}"                  # 默认 margin 0.5
 LAMBDA_DIFF="${8:-1.0}"             # 默认 lambda_diff 1.0
 USE_SHARED="${9:-True}"             # 默认使用共享专家
 ROUTER_TEMP="${10:-3.0}"            # 默认 Router 温度参数 3.0 (提高增强路由多样性)
-LOAD_BAL="${11:-0.01}"             # 默认负载均衡权重 0.01 (增强专家均衡)
-ENTROPY="${12:-0.1}"               # 默认熵正则化权重 0.1 (增强路由多样性)
+LOAD_BAL="${11:-0.1}"             # 默认负载均衡权重 0.1 (增强专家均衡)
+ENTROPY="${12:-0.2}"               # 默认熵正则化权重 0.2 (增强路由多样性)
 NUM_GPUS="${13:-1}"                 # 默认使用 1 个 GPU
 USE_MASK="${14:-True}"              # 默认使用 MASK 机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)
 USE_GATE="${15:-True}"              # 默认使用 GATE 机制 (True=使用文化感知门控, False=不使用门控)
