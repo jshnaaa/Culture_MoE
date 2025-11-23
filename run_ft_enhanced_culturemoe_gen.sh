@@ -95,7 +95,7 @@ fi
 # 根据 DATA_ID 选择数据集
 case $DATA_ID in
     0)
-        # unified_all_datasets
+        # unified_all_datasets small
         DATASET_NAME="unified_all_datasets_small"
         TRAIN_FILE="/root/autodl-fs/unified_all_datasets_small.json"
         DATASET_TAG="unified_all_datasets_small"
