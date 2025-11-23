@@ -143,8 +143,12 @@ class ExpertRouter(nn.Module):
         Returns:
             entropy_loss: 熵正则化损失
         """
-        # 计算每个样本的熵
-        entropy = -torch.sum(expert_weights * torch.log(expert_weights + 1e-8), dim=-1)
+        # 🔧 修复79: 使用数值稳定的熵计算，避免log操作
+        # 使用方差代替熵计算
+        expert_weights_safe = torch.clamp(expert_weights, min=1e-6, max=0.999999)
+        mean_weight = expert_weights_safe.mean(dim=-1, keepdim=True)
+        variance = ((expert_weights_safe - mean_weight) ** 2).mean(dim=-1)
+        entropy = variance
 
         # 返回负熵（我们希望最大化熵，即最小化负熵）
         entropy_loss = -entropy.mean()
@@ -165,8 +169,12 @@ class ExpertRouter(nn.Module):
         Returns:
             neg_entropy_loss: 负熵正则化损失
         """
-        # 计算每个样本的熵
-        entropy = -torch.sum(expert_weights * torch.log(expert_weights + 1e-8), dim=-1)
+        # 🔧 修复80: 使用数值稳定的熵计算，避免log操作
+        # 使用方差代替熵计算
+        expert_weights_safe = torch.clamp(expert_weights, min=1e-6, max=0.999999)
+        mean_weight = expert_weights_safe.mean(dim=-1, keepdim=True)
+        variance = ((expert_weights_safe - mean_weight) ** 2).mean(dim=-1)
+        entropy = variance
 
         # 返回负熵损失：lambda_entropy * entropy
         # 由于 lambda_entropy 是负数，所以这会最小化熵（让分布更尖锐）

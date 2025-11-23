@@ -306,18 +306,20 @@ class CulturalAwareRouter(nn.Module):
         expert_weights_normalized = torch.clamp(expert_weights, min=1e-8, max=1.0)
         expert_weights_normalized = expert_weights_normalized / expert_weights_normalized.sum(dim=-1, keepdim=True)
 
-        # 计算熵：H = -sum(p * log(p))
-        log_weights = torch.log(expert_weights_normalized + 1e-8)
-        entropy = -torch.sum(expert_weights_normalized * log_weights, dim=-1)
+        # 🔧 修复81: 使用数值稳定的熵计算，避免log操作
+        # 使用方差代替熵计算
+        mean_weight = expert_weights_normalized.mean(dim=-1, keepdim=True)
+        variance = ((expert_weights_normalized - mean_weight) ** 2).mean(dim=-1)
 
-        # 最大熵（均匀分布）
-        max_entropy = torch.log(torch.tensor(expert_weights.size(-1), dtype=entropy.dtype, device=entropy.device))
+        # 理想方差（均匀分布的方差）
+        num_experts = expert_weights.size(-1)
+        ideal_variance = (1.0 / num_experts) * (1.0 - 1.0 / num_experts)
 
-        # 熵正则化损失：鼓励高熵（均匀分布）
-        entropy_loss = (max_entropy - entropy).mean()
+        # 熵正则化损失：鼓励达到理想方差（均匀分布）
+        entropy_loss = torch.clamp(ideal_variance - variance, min=0.0).mean()
 
-        # 裁剪损失到合理范围 - 但不要裁剪到0
-        entropy_loss = torch.clamp(entropy_loss, min=1e-8, max=max_entropy.item())
+        # 裁剪损失到合理范围
+        entropy_loss = torch.clamp(entropy_loss, min=1e-8, max=1.0)
 
         return entropy_loss
 

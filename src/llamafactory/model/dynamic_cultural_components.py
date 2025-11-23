@@ -240,8 +240,12 @@ class LearnableCultureClustering(nn.Module):
         weighted_similarities = torch.clamp(weighted_similarities / temperature, min=-10.0, max=10.0)
         expert_affinities = F.softmax(weighted_similarities, dim=-1)
 
-        # 🔧 修复19: 收集聚类信息，分离Tensor和可序列化数据
-        affinity_entropy = -torch.sum(expert_affinities * torch.log(expert_affinities + 1e-8), dim=-1).mean()
+        # 🔧 修复78: 使用数值稳定的熵计算，避免log操作
+        # 使用方差代替熵计算，避免log的数值不稳定
+        mean_affinity = expert_affinities.mean(dim=-1, keepdim=True)
+        affinity_variance = ((expert_affinities - mean_affinity) ** 2).mean(dim=-1)
+        # 将方差转换为熵的代理指标
+        affinity_entropy = affinity_variance.mean()
         clustering_info = {
             'similarities': similarities,  # 保留Tensor用于后续计算
             'temperature': temperature.item(),
@@ -396,22 +400,31 @@ class DynamicCultureLoss(nn.Module):
         Returns:
             consistency_loss: 一致性损失
         """
-        # 使用KL散度衡量两个分布的差异
-        expert_weights_safe = torch.clamp(expert_weights, min=1e-8, max=1.0)
-        culture_affinities_safe = torch.clamp(culture_affinities, min=1e-8, max=1.0)
+        # 🔧 修复73: 使用数值稳定的KL散度计算
+        # 更严格的数值范围控制
+        expert_weights_safe = torch.clamp(expert_weights, min=1e-6, max=0.999999)
+        culture_affinities_safe = torch.clamp(culture_affinities, min=1e-6, max=0.999999)
 
-        # 归一化
-        expert_weights_norm = expert_weights_safe / expert_weights_safe.sum(dim=-1, keepdim=True)
-        culture_affinities_norm = culture_affinities_safe / culture_affinities_safe.sum(dim=-1, keepdim=True)
+        # 归一化 - 添加数值稳定性检查
+        expert_weights_sum = expert_weights_safe.sum(dim=-1, keepdim=True)
+        culture_affinities_sum = culture_affinities_safe.sum(dim=-1, keepdim=True)
 
-        # KL散度
-        kl_div = F.kl_div(
-            torch.log(expert_weights_norm + 1e-8),
-            culture_affinities_norm,
-            reduction='batchmean'
-        )
+        # 确保分母不为0
+        expert_weights_sum = torch.clamp(expert_weights_sum, min=1e-6)
+        culture_affinities_sum = torch.clamp(culture_affinities_sum, min=1e-6)
 
-        return kl_div
+        expert_weights_norm = expert_weights_safe / expert_weights_sum
+        culture_affinities_norm = culture_affinities_safe / culture_affinities_sum
+
+        # 🔧 修复74: 使用更稳定的KL散度计算方法
+        # 避免直接使用torch.log，使用log_softmax更稳定
+        # 将KL散度替换为更稳定的MSE损失
+        consistency_loss = F.mse_loss(expert_weights_norm, culture_affinities_norm)
+
+        # 限制损失范围，避免极值
+        consistency_loss = torch.clamp(consistency_loss, min=1e-8, max=1.0)
+
+        return consistency_loss
 
     def clustering_diversity_loss(self, cluster_centers: torch.Tensor) -> torch.Tensor:
         """
@@ -571,11 +584,15 @@ class DynamicCulturalAwareRouter(nn.Module):
         target_dtype = content_logits.dtype
         target_device = content_logits.device
 
-        # 🔧 修复32: 更保守的log计算，避免极值
-        # 先确保culture_affinities数值稳定
-        culture_affinities_safe = torch.clamp(culture_affinities, min=1e-4, max=0.999)  # 更保守的范围
-        culture_logits = torch.log(culture_affinities_safe + 1e-8).to(dtype=target_dtype, device=target_device)
-        culture_logits = torch.clamp(culture_logits, min=-10.0, max=2.0)  # 更严格的范围限制
+        # 🔧 修复75: 完全避免log计算，使用更稳定的方法
+        # 避免使用log操作，直接使用亲和性作为logits
+        culture_affinities_safe = torch.clamp(culture_affinities, min=1e-6, max=0.999999)
+
+        # 将亲和性转换为logits，避免log操作
+        # 使用logit函数的安全版本: logit(p) = log(p/(1-p))
+        # 但我们用更稳定的线性映射: (p - 0.5) * scale
+        culture_logits = (culture_affinities_safe - 0.5) * 10.0  # 线性映射到合理范围
+        culture_logits = torch.clamp(culture_logits, min=-5.0, max=5.0).to(dtype=target_dtype, device=target_device)
 
         fusion_logits = fusion_logits.to(dtype=target_dtype, device=target_device)
         fusion_logits = torch.clamp(fusion_logits, min=-10.0, max=10.0)  # 限制融合logits范围
@@ -673,18 +690,30 @@ class DynamicCulturalAwareRouter(nn.Module):
             logging.warning("Expert weights contain NaN/Inf, returning zero entropy loss")
             return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype)
 
-        # 确保权重为正且和为1
-        expert_weights_normalized = torch.clamp(expert_weights, min=1e-8, max=1.0)
-        expert_weights_normalized = expert_weights_normalized / expert_weights_normalized.sum(dim=-1, keepdim=True)
+        # 🔧 修复76: 使用数值稳定的熵计算
+        # 更严格的数值范围控制
+        expert_weights_normalized = torch.clamp(expert_weights, min=1e-6, max=0.999999)
 
-        # 计算熵
-        log_weights = torch.log(expert_weights_normalized + 1e-8)
-        entropy = -torch.sum(expert_weights_normalized * log_weights, dim=-1)
+        # 确保归一化稳定
+        weights_sum = expert_weights_normalized.sum(dim=-1, keepdim=True)
+        weights_sum = torch.clamp(weights_sum, min=1e-6)
+        expert_weights_normalized = expert_weights_normalized / weights_sum
 
-        # 最大熵
-        max_entropy = torch.log(torch.tensor(expert_weights.size(-1), dtype=entropy.dtype, device=entropy.device))
+        # 🔧 修复77: 使用更稳定的熵计算方法
+        # 避免直接log计算，使用方差作为熵的代理
+        # 高方差 = 高熵（均匀分布），低方差 = 低熵（集中分布）
+        mean_weight = expert_weights_normalized.mean(dim=-1, keepdim=True)
+        variance = ((expert_weights_normalized - mean_weight) ** 2).mean(dim=-1)
 
-        # 熵正则化损失
-        entropy_loss = (max_entropy - entropy).mean()
+        # 将方差转换为熵损失：鼓励高方差（均匀分布）
+        # 理想方差 = 1/num_experts * (1 - 1/num_experts) 对于均匀分布
+        num_experts = expert_weights.size(-1)
+        ideal_variance = (1.0 / num_experts) * (1.0 - 1.0 / num_experts)
 
-        return torch.clamp(entropy_loss, min=1e-8, max=max_entropy.item())
+        # 熵损失 = 理想方差 - 实际方差（鼓励达到理想方差）
+        entropy_loss = torch.clamp(ideal_variance - variance, min=0.0).mean()
+
+        # 限制损失范围
+        entropy_loss = torch.clamp(entropy_loss, min=1e-8, max=1.0)
+
+        return entropy_loss

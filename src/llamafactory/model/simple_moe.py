@@ -245,17 +245,10 @@ class SimpleRouter(nn.Module):
             # 改进的负载均衡损失：使用更稳定的KL散度
             ideal_prob = torch.ones_like(expert_usage_freq) / self.num_experts
 
-            # KL散度损失：D_KL(uniform || usage_freq) + D_KL(uniform || avg_prob)
-            usage_kl = F.kl_div(
-                torch.log(expert_usage_freq + 1e-8),
-                ideal_prob,
-                reduction='sum'
-            )
-            prob_kl = F.kl_div(
-                torch.log(expert_avg_prob + 1e-8),
-                ideal_prob,
-                reduction='sum'
-            )
+            # 🔧 修复82: 使用数值稳定的损失计算，避免KL散度中的log操作
+            # 使用MSE损失替代KL散度，更稳定
+            usage_kl = F.mse_loss(expert_usage_freq, ideal_prob) * self.num_experts
+            prob_kl = F.mse_loss(expert_avg_prob, ideal_prob) * self.num_experts
 
             # 传统的乘积损失作为辅助
             balance_product = expert_usage_freq * expert_avg_prob

@@ -233,7 +233,7 @@ class LayeredOptimizer:
                  moe_lr_multiplier: float = 1.0,
                  router_lr_multiplier: float = 1.0,
                  shared_lr_multiplier: float = 1.0,
-                 dynamic_clustering_lr_multiplier: float = 0.01,  # 🔧 修复37: 进一步降低动态聚类学习率
+                 dynamic_clustering_lr_multiplier: float = 0.5,  # 🔧 修复71: 使用合理的动态聚类学习率
                  weight_decay: float = 0.01):
 
         self.base_lr = base_lr
@@ -1671,7 +1671,7 @@ class EnhancedCultureMoETrainer:
             moe_lr_multiplier=self.args.moe_lr_multiplier,
             router_lr_multiplier=self.args.router_lr_multiplier,
             shared_lr_multiplier=self.args.shared_lr_multiplier,
-            dynamic_clustering_lr_multiplier=0.01,  # 🔧 修复38: 使用极低的动态聚类学习率
+            dynamic_clustering_lr_multiplier=0.5,  # 🔧 修复72: 使用合理的动态聚类学习率
             weight_decay=self.args.weight_decay
         )
 
@@ -2093,13 +2093,13 @@ class EnhancedCultureMoETrainer:
                         # 标记需要跳过当前batch
                         should_skip_batch = True
                     else:
-                        # 🔧 修复39: 极其严格的梯度裁剪设置 (AMP版本)
+                        # 🔧 修复69: 使用合理的梯度裁剪设置，避免过度裁剪 (AMP版本)
                         if dynamic_clustering_params:
-                            torch.nn.utils.clip_grad_norm_(dynamic_clustering_params, max_norm=0.01)  # 动态聚类极其严格
+                            torch.nn.utils.clip_grad_norm_(dynamic_clustering_params, max_norm=0.5)  # 动态聚类使用合理值
                         if router_params:
-                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.1)  # 路由器更严格
+                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=1.0)  # 路由器使用标准值
                         if other_params:
-                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=0.5)   # 其他参数也更严格
+                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)   # 其他参数使用标准值
 
                         self.scaler.step(self.optimizer.optimizer)
                         self.scaler.update()
@@ -2154,13 +2154,13 @@ class EnhancedCultureMoETrainer:
                         # 标记需要跳过当前batch
                         should_skip_batch = True
                     else:
-                        # 🔧 修复40: 极其严格的梯度裁剪设置 (非AMP版本)
+                        # 🔧 修复70: 使用合理的梯度裁剪设置，避免过度裁剪 (非AMP版本)
                         if dynamic_clustering_params:
-                            torch.nn.utils.clip_grad_norm_(dynamic_clustering_params, max_norm=0.01)  # 动态聚类极其严格
+                            torch.nn.utils.clip_grad_norm_(dynamic_clustering_params, max_norm=0.5)  # 动态聚类使用合理值
                         if router_params:
-                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.1)  # 路由器更严格
+                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=1.0)  # 路由器使用标准值
                         if other_params:
-                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=0.5)   # 其他参数也更严格
+                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)   # 其他参数使用标准值
 
                         self.optimizer.step()
                         self.scheduler.step()
