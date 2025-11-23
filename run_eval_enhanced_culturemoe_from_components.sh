@@ -58,7 +58,7 @@ else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
     LORA_WEIGHTS_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_lora_only_gen_unified_all_datasets_llama_20251117_1218/best_lora"
-    MOE_WEIGHTS_BASE="/root/autodl-fs/data/ft/t_enhanced_moe_gen_unified_all_datasets_llama_experts${NUM_EXPERTS}_${SHARED_TAG}_fusion${MOE_FUSION}_lambda${LAMBDA}_20251118_"
+    MOE_WEIGHTS_BASE="/autodl-fs/data/data/ft/ft_enhanced_moe_gen_unified_all_datasets_llama_experts${NUM_EXPERTS}_${SHARED_TAG}_mask_gate_fusion${MOE_FUSION}_lambda${LAMBDA}_20251123_1141"
 fi
 
 if [ -z "$MOE_WEIGHTS_BASE" ] || [ ! -d "$MOE_WEIGHTS_BASE" ]; then
