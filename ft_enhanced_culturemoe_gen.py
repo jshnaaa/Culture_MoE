@@ -1467,6 +1467,8 @@ class EnhancedCultureMoETrainer:
                     if has_nan_grad:
                         logging.warning(f"⚠️  Step {self.global_step}: Detected NaN/Inf gradients, skipping optimizer step")
                         skipped_batches += 1
+                        # 🔧 关键修复：重置scaler状态，避免"unscale_() has already been called"错误
+                        self.scaler.update()
                         # 清零梯度但跳过优化器步骤
                         self.optimizer.zero_grad()
                         # 标记需要跳过当前batch
@@ -1503,7 +1505,7 @@ class EnhancedCultureMoETrainer:
                     if has_nan_grad:
                         logging.warning(f"⚠️  Step {self.global_step}: Detected NaN/Inf gradients, skipping optimizer step")
                         skipped_batches += 1
-                        # 清零梯度但跳过优化器步骤
+                        # 清零梯度但跳过优化器步骤（非AMP版本无需重置scaler）
                         self.optimizer.zero_grad()
                         # 标记需要跳过当前batch
                         should_skip_batch = True
