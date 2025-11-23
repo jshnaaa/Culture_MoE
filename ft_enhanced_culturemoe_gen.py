@@ -81,15 +81,24 @@ class CultureDataset(Dataset):
         label = item.get('label', '0')  # 大洲标签
 
         # 构建输入文本 (使用原始instruction，不是mask版本)
-        input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        # 清理instruction中可能重复的special tokens
+        clean_instruction = instruction
+        if instruction.startswith('<|begin_of_text|>'):
+            clean_instruction = instruction.replace('<|begin_of_text|>', '').strip()
+
+        input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         full_text = input_text + output + "<|eot_id|>"
 
         # 构建mask版本的输入文本 (用于共享专家)
         # 如果使用MASK机制，共享专家使用instruction_mask；否则使用原始instruction
         if self.use_mask:
-            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            # 清理instruction_mask中可能重复的special tokens
+            clean_instruction_mask = instruction_mask
+            if instruction_mask.startswith('<|begin_of_text|>'):
+                clean_instruction_mask = instruction_mask.replace('<|begin_of_text|>', '').strip()
+            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         else:
-            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         full_text_mask = input_text_mask + output + "<|eot_id|>"
 
         # 分词 - 原始版本
@@ -115,6 +124,23 @@ class CultureDataset(Dataset):
         input_ids_mask = encoding_mask['input_ids'].squeeze(0)
         attention_mask_mask = encoding_mask['attention_mask'].squeeze(0)
 
+        # ✅ 验证token ID范围，防止超大token ID导致NaN
+        vocab_size = getattr(self.tokenizer, 'vocab_size', 128000)
+        max_valid_id = vocab_size - 1
+
+        # 检查并修复超出范围的token ID
+        invalid_mask = input_ids >= vocab_size
+        if invalid_mask.any():
+            logging.warning(f"Found {invalid_mask.sum().item()} invalid token IDs >= {vocab_size}, replacing with UNK token")
+            unk_token_id = getattr(self.tokenizer, 'unk_token_id', 0)
+            input_ids = torch.where(invalid_mask, unk_token_id, input_ids)
+
+        invalid_mask_mask = input_ids_mask >= vocab_size
+        if invalid_mask_mask.any():
+            logging.warning(f"Found {invalid_mask_mask.sum().item()} invalid token IDs in mask >= {vocab_size}, replacing with UNK token")
+            unk_token_id = getattr(self.tokenizer, 'unk_token_id', 0)
+            input_ids_mask = torch.where(invalid_mask_mask, unk_token_id, input_ids_mask)
+
         # 创建标签
         labels = input_ids.clone()
 
@@ -125,6 +151,15 @@ class CultureDataset(Dataset):
 
         # 掩盖instruction部分
         labels[:assistant_start_idx] = -100
+
+        # ✅ 验证标签有效性，防止全部被掩码导致损失异常
+        valid_labels = (labels != -100).sum()
+        if valid_labels == 0:
+            logging.warning("All labels are masked (-100), this may cause training instability")
+            # 至少保留最后一个token作为有效标签
+            if len(labels) > 0:
+                labels[-1] = input_ids[-1]
+                logging.warning("Added last token as valid label to prevent empty target")
 
         # 解析大洲标签
         continent_id, continent_ids_multi = self._parse_continent_label(label)
