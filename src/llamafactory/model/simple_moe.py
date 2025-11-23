@@ -32,21 +32,68 @@ class SimpleRouter(nn.Module):
             nn.Linear(router_hidden_dim, num_experts)
         )
 
+        # 梯度监控统计
+        self.register_buffer('grad_norm_history', torch.zeros(100))  # 存储最近100次梯度范数
+        self.register_buffer('grad_norm_idx', torch.tensor(0))
+        self.register_buffer('dead_expert_count', torch.zeros(num_experts))
+
         self._init_weights()
 
     def _init_weights(self):
-        """初始化权重 - 平衡稳定性和有效性"""
-        for module in self.router:
+        """初始化权重 - 改进的Xavier初始化"""
+        for i, module in enumerate(self.router):
             if isinstance(module, nn.Linear):
-                # 使用更合理的初始化，保证有足够的信号强度
-                nn.init.normal_(module.weight, mean=0.0, std=0.02)  # 增加初始化方差
+                # 使用Xavier uniform初始化，更稳定
+                nn.init.xavier_uniform_(module.weight, gain=0.5)  # 减小gain防止梯度爆炸
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
-                # 适度限制初始权重范围，保持有效性
+
+                # 最后一层使用更小的初始化，防止路由坍塌
+                if i == len(self.router) - 1:  # 最后一层
+                    with torch.no_grad():
+                        module.weight.data *= 0.1  # 进一步缩小最后一层权重
+                        if module.bias is not None:
+                            # 添加小的随机偏置，促进专家多样性
+                            module.bias.data.uniform_(-0.01, 0.01)
+
+    def _apply_gentle_weight_constraints(self):
+        """温和的权重约束，避免破坏梯度流"""
+        for module in self.router:
+            if isinstance(module, nn.Linear):
                 with torch.no_grad():
-                    module.weight.data.clamp_(-0.5, 0.5)  # 扩大权重范围
+                    # 使用软约束而非硬裁剪
+                    weight_norm = torch.norm(module.weight, dim=1, keepdim=True)
+                    # 只对过大的权重进行缩放
+                    scale_factor = torch.clamp(2.0 / (weight_norm + 1e-8), max=1.0)
+                    module.weight.data *= scale_factor
+
                     if module.bias is not None:
-                        module.bias.data.clamp_(-0.1, 0.1)
+                        # 偏置使用温和的tanh约束
+                        module.bias.data = torch.tanh(module.bias.data) * 0.5
+
+    def _monitor_gradients(self):
+        """监控梯度统计信息"""
+        if self.training:
+            total_grad_norm = 0.0
+            param_count = 0
+
+            for param in self.parameters():
+                if param.grad is not None:
+                    param_norm = param.grad.data.norm(2)
+                    total_grad_norm += param_norm.item() ** 2
+                    param_count += 1
+
+            if param_count > 0:
+                total_grad_norm = total_grad_norm ** 0.5
+
+                # 更新梯度历史
+                idx = self.grad_norm_idx.item() % 100
+                self.grad_norm_history[idx] = total_grad_norm
+                self.grad_norm_idx += 1
+
+                # 检查梯度爆炸
+                if total_grad_norm > 10.0:
+                    logging.warning(f"Router gradient norm too large: {total_grad_norm:.4f}")
 
     def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -67,13 +114,8 @@ class SimpleRouter(nn.Module):
         # 输入预处理：限制范围防止极端值
         hidden_states = torch.clamp(hidden_states, min=-5.0, max=5.0)
 
-        # 确保路由器权重在合理范围内
-        for module in self.router:
-            if isinstance(module, nn.Linear):
-                with torch.no_grad():
-                    module.weight.data.clamp_(-1.0, 1.0)
-                    if module.bias is not None:
-                        module.bias.data.clamp_(-1.0, 1.0)
+        # 温和的权重约束（渐进式限制）
+        self._apply_gentle_weight_constraints()
 
         try:
             # 计算路由logits
@@ -126,10 +168,50 @@ class SimpleRouter(nn.Module):
         for b in range(hidden_states.shape[0]):
             expert_weights[b, top_k_indices[b]] = top_k_weights[b]
 
+        # 监控专家死亡情况
+        self._monitor_expert_usage(expert_weights)
+
+        # 监控梯度（在训练模式下）
+        if self.training:
+            self._monitor_gradients()
+
         # 计算负载均衡损失
         load_balance_loss = self._compute_load_balance_loss(router_logits, expert_weights)
 
         return expert_weights, top_k_indices, load_balance_loss
+
+    def _monitor_expert_usage(self, expert_weights: torch.Tensor):
+        """监控专家使用情况，检测死亡专家"""
+        if self.training:
+            with torch.no_grad():
+                # 计算每个专家的使用频率
+                expert_usage = expert_weights.sum(dim=0)  # [num_experts]
+
+                # 更新死亡专家计数
+                dead_threshold = 1e-6
+                is_dead = expert_usage < dead_threshold
+                self.dead_expert_count += is_dead.float()
+
+                # 警告死亡专家
+                if self.grad_norm_idx.item() % 100 == 0:  # 每100步检查一次
+                    dead_experts = (self.dead_expert_count > 50).nonzero().squeeze(-1)
+                    if len(dead_experts) > 0:
+                        logging.warning(f"Dead experts detected: {dead_experts.tolist()}")
+
+    def get_gradient_stats(self) -> Dict:
+        """获取梯度统计信息"""
+        if self.grad_norm_idx.item() == 0:
+            return {}
+
+        valid_history = self.grad_norm_history[:min(self.grad_norm_idx.item(), 100)]
+        return {
+            'avg_grad_norm': valid_history.mean().item(),
+            'max_grad_norm': valid_history.max().item(),
+            'min_grad_norm': valid_history.min().item(),
+            'grad_norm_std': valid_history.std().item(),
+            'dead_expert_count': self.dead_expert_count.sum().item(),
+            'total_updates': self.grad_norm_idx.item()
+        }
 
     def _compute_load_balance_loss(self, router_logits: torch.Tensor, expert_weights: torch.Tensor) -> torch.Tensor:
         """
@@ -160,20 +242,36 @@ class SimpleRouter(nn.Module):
                 # 如果有NaN/Inf，返回零损失
                 return torch.zeros(1, device=router_logits.device, dtype=router_logits.dtype, requires_grad=True).sum()
 
-            # 负载均衡损失：鼓励专家使用的均匀分布
-            # Loss = num_experts * sum(usage_freq * avg_prob)
-            # 当专家使用均匀时，usage_freq ≈ avg_prob ≈ 1/num_experts，损失最小
+            # 改进的负载均衡损失：使用更稳定的KL散度
+            ideal_prob = torch.ones_like(expert_usage_freq) / self.num_experts
+
+            # KL散度损失：D_KL(uniform || usage_freq) + D_KL(uniform || avg_prob)
+            usage_kl = F.kl_div(
+                torch.log(expert_usage_freq + 1e-8),
+                ideal_prob,
+                reduction='sum'
+            )
+            prob_kl = F.kl_div(
+                torch.log(expert_avg_prob + 1e-8),
+                ideal_prob,
+                reduction='sum'
+            )
+
+            # 传统的乘积损失作为辅助
             balance_product = expert_usage_freq * expert_avg_prob
             balance_product = torch.clamp(balance_product, max=1.0)
-            load_balance_loss = self.num_experts * torch.sum(balance_product)
+            product_loss = self.num_experts * torch.sum(balance_product)
 
-            # 添加方差惩罚，进一步鼓励均匀分布
+            # 方差惩罚（更温和）
             usage_variance = torch.var(expert_usage_freq)
             prob_variance = torch.var(expert_avg_prob)
-            variance_penalty = usage_variance + prob_variance
 
-            # 组合损失
-            total_loss = load_balance_loss + 0.1 * variance_penalty
+            # 组合损失（权重调整）
+            total_loss = (
+                0.5 * product_loss +  # 传统损失
+                0.3 * (usage_kl + prob_kl) +  # KL散度损失
+                0.2 * (usage_variance + prob_variance)  # 方差惩罚
+            )
 
             # 最终检查和限制
             if torch.isnan(total_loss) or torch.isinf(total_loss):
@@ -226,6 +324,32 @@ class SimpleMoELayer(nn.Module):
         # 层归一化
         self.layer_norm = nn.LayerNorm(hidden_dim)
 
+        # 专家激活监控
+        self.register_buffer('expert_activation_history', torch.zeros(num_experts, 100))
+        self.register_buffer('activation_idx', torch.tensor(0))
+
+    def _apply_expert_weight_constraints(self, expert):
+        """对专家应用温和的权重约束"""
+        for param in expert.parameters():
+            if param.requires_grad:
+                with torch.no_grad():
+                    # 使用L2范数约束而非硬裁剪
+                    param_norm = torch.norm(param.data)
+                    if param_norm > 3.0:  # 只对过大的参数进行缩放
+                        param.data *= (3.0 / param_norm)
+
+    def _monitor_expert_activations(self, expert_weights: torch.Tensor):
+        """监控专家激活模式"""
+        if self.training:
+            with torch.no_grad():
+                # 计算每个专家的平均激活
+                expert_activation = expert_weights.mean(dim=0)  # [num_experts]
+
+                # 更新激活历史
+                idx = self.activation_idx.item() % 100
+                self.expert_activation_history[:, idx] = expert_activation
+                self.activation_idx += 1
+
     def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         前向传播 - 数值稳定版本
@@ -250,6 +374,9 @@ class SimpleMoELayer(nn.Module):
         # 路由决策
         expert_weights, top_k_indices, load_balance_loss = self.router(pooled_states)  # [B, num_experts], [B, top_k], scalar
 
+        # 监控专家激活模式
+        self._monitor_expert_activations(expert_weights)
+
         # 专家输出计算（使用更严格的数值稳定性控制）
         expert_outputs = []
         for i, expert in enumerate(self.experts):
@@ -260,11 +387,8 @@ class SimpleMoELayer(nn.Module):
                 expert = expert.to(hidden_states.dtype)
 
             try:
-                # 限制专家权重范围，防止权重爆炸
-                for param in expert.parameters():
-                    if param.requires_grad:
-                        with torch.no_grad():
-                            param.data.clamp_(-2.0, 2.0)
+                # 温和的专家权重约束（避免破坏梯度）
+                self._apply_expert_weight_constraints(expert)
 
                 expert_output = expert(hidden_states)  # [B, L, H]
 
@@ -396,6 +520,11 @@ class SimpleMoEModel(nn.Module):
 
         # 初始化模型权重
         self._init_model_weights()
+
+        # 梯度监控和自适应裁剪
+        self.register_buffer('model_grad_history', torch.zeros(50))
+        self.register_buffer('model_grad_idx', torch.tensor(0))
+        self.adaptive_grad_clip = True
 
     def _ensure_dtype_consistency(self):
         """确保所有组件使用相同的数据类型"""
@@ -542,6 +671,88 @@ class SimpleMoEModel(nn.Module):
             outputs['weighted_load_balance_loss'] = self.load_balance_weight * moe_load_balance_loss
 
         return outputs
+
+    def apply_adaptive_gradient_clipping(self, max_norm: float = 1.0):
+        """自适应梯度裁剪"""
+        if not self.adaptive_grad_clip or not self.training:
+            return
+
+        # 计算当前梯度范数
+        total_norm = 0.0
+        for param in self.parameters():
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+
+        # 更新梯度历史
+        idx = self.model_grad_idx.item() % 50
+        self.model_grad_history[idx] = total_norm
+        self.model_grad_idx += 1
+
+        # 自适应调整裁剪阈值
+        if self.model_grad_idx.item() > 10:
+            valid_history = self.model_grad_history[:min(self.model_grad_idx.item(), 50)]
+            mean_grad_norm = valid_history.mean().item()
+            std_grad_norm = valid_history.std().item()
+
+            # 动态调整阈值：平均值 + 2倍标准差
+            adaptive_max_norm = min(max_norm, mean_grad_norm + 2 * std_grad_norm)
+            adaptive_max_norm = max(adaptive_max_norm, 0.1)  # 最小阈值
+        else:
+            adaptive_max_norm = max_norm
+
+        # 执行梯度裁剪
+        if total_norm > adaptive_max_norm:
+            clip_coef = adaptive_max_norm / (total_norm + 1e-6)
+            for param in self.parameters():
+                if param.grad is not None:
+                    param.grad.data.mul_(clip_coef)
+
+            logging.info(f"Gradient clipped: {total_norm:.4f} -> {adaptive_max_norm:.4f}")
+
+    def get_comprehensive_stats(self) -> Dict:
+        """获取全面的模型统计信息"""
+        stats = {}
+
+        # 基础专家统计
+        if hasattr(self, 'moe_layer') and hasattr(self.moe_layer, 'expert_activation_history'):
+            if self.moe_layer.activation_idx.item() > 0:
+                valid_activations = self.moe_layer.expert_activation_history[:, :min(self.moe_layer.activation_idx.item(), 100)]
+                expert_mean_activation = valid_activations.mean(dim=1)
+                expert_std_activation = valid_activations.std(dim=1)
+
+                stats['expert_activation_stats'] = {
+                    'mean_activations': expert_mean_activation.tolist(),
+                    'std_activations': expert_std_activation.tolist(),
+                    'activation_balance_score': 1.0 - expert_std_activation.mean().item(),
+                    'most_active_expert': expert_mean_activation.argmax().item(),
+                    'least_active_expert': expert_mean_activation.argmin().item()
+                }
+
+        # 路由器梯度统计
+        if hasattr(self.moe_layer, 'router'):
+            router_stats = self.moe_layer.router.get_gradient_stats()
+            if router_stats:
+                stats['router_gradient_stats'] = router_stats
+
+        # 模型级别梯度统计
+        if self.model_grad_idx.item() > 0:
+            valid_grads = self.model_grad_history[:min(self.model_grad_idx.item(), 50)]
+            stats['model_gradient_stats'] = {
+                'avg_grad_norm': valid_grads.mean().item(),
+                'max_grad_norm': valid_grads.max().item(),
+                'grad_norm_std': valid_grads.std().item(),
+                'gradient_stability_score': 1.0 / (1.0 + valid_grads.std().item())
+            }
+
+        # 融合权重统计
+        stats['fusion_weight'] = {
+            'current_value': torch.sigmoid(self.moe_fusion_weight).item(),
+            'raw_value': self.moe_fusion_weight.item()
+        }
+
+        return stats
 
     def get_expert_usage_stats(self, expert_weights: torch.Tensor) -> Dict:
         """获取专家使用统计信息"""
