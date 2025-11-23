@@ -243,7 +243,8 @@ class LearnableCultureClustering(nn.Module):
             'temperature': temperature.item(),
             'confidence_weights': confidence_weights,  # 保留Tensor用于后续计算
             'cluster_centers': cluster_centers,  # 保留Tensor用于后续计算
-            'affinity_entropy': affinity_entropy.item() if isinstance(affinity_entropy, torch.Tensor) else float(affinity_entropy),
+            'affinity_entropy': affinity_entropy,  # 🔧 修复28: 保留Tensor用于损失计算
+            'affinity_entropy_item': affinity_entropy.item() if isinstance(affinity_entropy, torch.Tensor) else float(affinity_entropy),  # JSON序列化版本
             # 添加JSON可序列化版本
             'similarities_serializable': similarities.detach().cpu().numpy().tolist(),
             'confidence_weights_serializable': confidence_weights.detach().cpu().numpy().tolist(),

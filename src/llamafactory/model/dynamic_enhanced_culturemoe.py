@@ -607,9 +607,14 @@ class DynamicEnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
         if 'affinity_entropy' in clustering_info:
             # 鼓励适中的亲和性熵（既不过于确定，也不过于随机）
-            affinity_entropy = clustering_info['affinity_entropy']
+            affinity_entropy = clustering_info['affinity_entropy']  # 现在是Tensor
             target_entropy = math.log(expert_weights.shape[1]) * 0.7  # 70%的最大熵
-            entropy_deviation = torch.abs(affinity_entropy - target_entropy)
+
+            # 🔧 修复29: 确保target_entropy也是Tensor，并在正确设备上
+            target_entropy_tensor = torch.tensor(target_entropy,
+                                               device=affinity_entropy.device,
+                                               dtype=affinity_entropy.dtype)
+            entropy_deviation = torch.abs(affinity_entropy - target_entropy_tensor)
             cluster_quality_loss = entropy_deviation
 
         # 6. 动态权重调节

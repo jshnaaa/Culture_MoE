@@ -393,8 +393,10 @@ class EnhancedCultureMoETrainer:
                     # 提取聚类中心的统计信息
                     cluster_centers = clustering_info.get('cluster_centers', None)
                     if cluster_centers is not None:
-                        # 🔧 修复18: 确保所有值都是JSON可序列化的
-                        affinity_entropy = clustering_info.get('affinity_entropy', 0.0)
+                        # 🔧 修复18&31: 确保所有值都是JSON可序列化的
+                        # 优先使用序列化版本，回退到Tensor版本
+                        affinity_entropy = clustering_info.get('affinity_entropy_item',
+                                                             clustering_info.get('affinity_entropy', 0.0))
                         if isinstance(affinity_entropy, torch.Tensor):
                             affinity_entropy = affinity_entropy.item()
 
@@ -568,7 +570,8 @@ class EnhancedCultureMoETrainer:
 
                 # 温度和熵的演变
                 temperatures = [info['temperature'] for info in self.epoch_clustering_info]
-                entropies = [info['affinity_entropy'] for info in self.epoch_clustering_info]
+                # 🔧 修复30: 使用序列化版本的affinity_entropy
+                entropies = [info.get('affinity_entropy_item', info.get('affinity_entropy', 0.0)) for info in self.epoch_clustering_info]
                 if temperatures:
                     dynamic_clustering_stats['clustering_parameters'] = {
                         'final_temperature': float(temperatures[-1]),
