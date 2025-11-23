@@ -393,10 +393,29 @@ class EnhancedCultureMoETrainer:
                     # 提取聚类中心的统计信息
                     cluster_centers = clustering_info.get('cluster_centers', None)
                     if cluster_centers is not None:
+                        # 🔧 修复18: 确保所有值都是JSON可序列化的
+                        affinity_entropy = clustering_info.get('affinity_entropy', 0.0)
+                        if isinstance(affinity_entropy, torch.Tensor):
+                            affinity_entropy = affinity_entropy.item()
+
+                        temperature = clustering_info.get('temperature', 1.0)
+                        if isinstance(temperature, torch.Tensor):
+                            temperature = temperature.item()
+
+                        # 🔧 修复20: 使用可序列化版本的聚类中心
+                        cluster_centers_serializable = clustering_info.get('cluster_centers_serializable', None)
+                        if cluster_centers_serializable is not None:
+                            # 从可序列化数据计算范数
+                            import numpy as np
+                            center_norms = [float(np.linalg.norm(center)) for center in cluster_centers_serializable]
+                        else:
+                            # 回退到Tensor版本
+                            center_norms = torch.norm(cluster_centers, dim=1).detach().cpu().numpy().tolist()
+
                         cluster_stats = {
-                            'center_norms': torch.norm(cluster_centers, dim=1).detach().cpu().numpy().tolist(),
-                            'temperature': clustering_info.get('temperature', 1.0),
-                            'affinity_entropy': clustering_info.get('affinity_entropy', 0.0)
+                            'center_norms': center_norms,
+                            'temperature': float(temperature),
+                            'affinity_entropy': float(affinity_entropy)
                         }
                         self.epoch_clustering_info.append(cluster_stats)
 
@@ -1887,14 +1906,64 @@ class EnhancedCultureMoETrainer:
                         correct_predictions += correct.sum().item()
                         total_predictions += mask.sum().item()
 
-                        # 生成答案示例（前5个batch，但每批减少样本数）
-                        if len(generated_answers) < 5 and batch_idx < 5:
+                        # 🔧 修复21: 改进生成答案格式，包括问题/正确答案/预测答案/是否正确
+                        if len(generated_answers) < 10 and batch_idx < 10:  # 增加样本数量
                             try:
-                                for i in range(min(1, batch['input_ids'].size(0))):  # 每批只取1个样本
-                                    input_text = self.tokenizer.decode(
+                                for i in range(min(2, batch['input_ids'].size(0))):  # 每批取2个样本
+                                    # 解码完整输入（包含问题和答案）
+                                    full_text = self.tokenizer.decode(
                                         batch['input_ids'][i],
                                         skip_special_tokens=True
                                     )
+
+                                    # 解码标签（正确答案）
+                                    labels_i = batch['labels'][i]
+                                    valid_label_mask = (labels_i != -100)
+                                    if valid_label_mask.any():
+                                        valid_labels = labels_i[valid_label_mask]
+                                        try:
+                                            correct_answer = self.tokenizer.decode(valid_labels, skip_special_tokens=True)
+                                        except:
+                                            correct_answer = "DECODE_ERROR"
+                                    else:
+                                        correct_answer = "NO_VALID_LABELS"
+
+                                    # 生成预测答案
+                                    try:
+                                        # 获取预测的token
+                                        predicted_tokens = torch.argmax(logits[i], dim=-1)
+                                        # 只取有效位置的预测
+                                        predicted_valid = predicted_tokens[valid_label_mask]
+                                        predicted_answer = self.tokenizer.decode(predicted_valid, skip_special_tokens=True)
+                                    except:
+                                        predicted_answer = "PREDICTION_ERROR"
+
+                                    # 提取问题部分（从完整文本中分离）
+                                    try:
+                                        # 查找assistant标记之前的部分作为问题
+                                        if "assistant" in full_text:
+                                            question = full_text.split("assistant")[0].replace("user", "").strip()
+                                        else:
+                                            question = full_text[:200] + "..." if len(full_text) > 200 else full_text
+                                    except:
+                                        question = "QUESTION_EXTRACT_ERROR"
+
+                                    # 计算是否正确（简单的字符串匹配）
+                                    try:
+                                        # 计算token级别的准确率
+                                        if valid_label_mask.any():
+                                            predictions_valid = torch.argmax(logits[i], dim=-1)[valid_label_mask]
+                                            labels_valid = labels_i[valid_label_mask]
+                                            correct_tokens = (predictions_valid == labels_valid).sum().item()
+                                            total_tokens = labels_valid.numel()
+                                            token_accuracy = correct_tokens / total_tokens if total_tokens > 0 else 0.0
+                                            is_correct = token_accuracy > 0.8  # 80%以上token正确认为正确
+                                        else:
+                                            is_correct = False
+                                            token_accuracy = 0.0
+                                    except:
+                                        is_correct = False
+                                        token_accuracy = 0.0
 
                                     # 安全获取expert_weights
                                     if 'expert_weights' in outputs:
@@ -1903,9 +1972,15 @@ class EnhancedCultureMoETrainer:
                                         expert_weights = []
 
                                     generated_answers.append({
-                                        'input': input_text,
+                                        'question': question,
+                                        'correct_answer': correct_answer,
+                                        'predicted_answer': predicted_answer,
+                                        'is_correct': is_correct,
+                                        'token_accuracy': token_accuracy,
                                         'culture_id': batch['culture_ids'][i].item(),
-                                        'expert_weights': expert_weights
+                                        'expert_weights': expert_weights,
+                                        'batch_idx': batch_idx,
+                                        'sample_idx': i
                                     })
                             except Exception as e:
                                 logging.warning(f"Failed to collect sample for batch {batch_idx}: {e}")
@@ -2259,18 +2334,122 @@ class EnhancedCultureMoETrainer:
         moe_state_dict = {}
         moe_param_count = 0
 
+        # 🔧 修复25: 先收集所有可训练参数，然后分析哪些应该保存
+        all_trainable_params = []
         for name, param in actual_model.named_parameters():
-            if param.requires_grad:  # 只保存可训练参数
-                # 确保只保存MoE相关参数
-                if any(keyword in name for keyword in [
-                    'cultural_experts', 'router', 'shared', 'cultural_gate',
-                    'cultural_embedding', 'cultural_context', 'culture_loss'
-                ]):
-                    # 保存为float16节省空间
-                    moe_state_dict[name] = param.half().cpu()
-                    moe_param_count += param.numel()
-                else:
-                    logging.warning(f"⚠️  Unexpected trainable parameter: {name}")
+            if param.requires_grad:
+                all_trainable_params.append((name, param))
+
+        logging.info(f"🔍 Analyzing {len(all_trainable_params)} trainable parameters...")
+
+        # 定义明确要排除的base model参数模式
+        base_model_patterns = [
+            'llama_model.',     # LLaMA base model
+            'model.embed_tokens', 'model.layers.', 'model.norm',  # LLaMA内部层
+            'lm_head.',         # Language model head
+            'embed_tokens.',    # Embedding层
+            'norm.',           # Normalization层
+        ]
+
+        # 定义明确要包含的MoE参数模式
+        moe_include_patterns = [
+            'cultural_experts.',     # 文化专家
+            'router.',              # 路由器（包括动态路由器的所有子组件）
+            'cultural_embedding.',   # 文化嵌入
+            'cultural_context.',     # 文化上下文
+            'cultural_gate.',        # 文化门控
+            'shared.',              # 共享层
+            'gate_linear.',         # 门控线性层
+            'gate_sigmoid.',        # 门控sigmoid层
+            'moe_fusion_alpha',     # MoE融合参数
+            'culture_loss_lambda',  # 文化损失权重
+            'culture_loss_alpha_enhanced',  # 增强文化损失参数
+            'culture_loss_beta_enhanced',   # 增强文化损失参数
+            'dynamic_loss_weights', # 动态损失权重
+        ]
+
+        for name, param in all_trainable_params:
+            # 首先检查是否为明确的base model参数
+            is_base_model = any(pattern in name for pattern in base_model_patterns)
+
+            if is_base_model:
+                logging.debug(f"❌ Excluding base model parameter: {name} ({param.numel():,} params)")
+                continue
+
+            # 然后检查是否为MoE相关参数
+            is_moe_param = any(pattern in name for pattern in moe_include_patterns)
+
+            if is_moe_param:
+                # 保存为float16节省空间
+                moe_state_dict[name] = param.half().cpu()
+                moe_param_count += param.numel()
+                logging.debug(f"✅ Saving MoE parameter: {name} ({param.numel():,} params)")
+            else:
+                # 对于不确定的参数，记录并询问
+                logging.warning(f"🤔 Uncertain parameter (will INCLUDE for safety): {name} ({param.numel():,} params)")
+                # 🔧 修复26: 为了安全起见，包含不确定的可训练参数
+                moe_state_dict[name] = param.half().cpu()
+                moe_param_count += param.numel()
+
+        # 🔧 修复27: 生成详细的参数保存报告
+        logging.info(f"📋 Parameter saving summary:")
+        logging.info(f"  Total trainable parameters found: {len(all_trainable_params)}")
+        logging.info(f"  Parameters saved to MoE file: {len(moe_state_dict)}")
+
+        # 按类别统计保存的参数
+        saved_by_category = {}
+        uncertain_params = []
+
+        for name in moe_state_dict.keys():
+            categorized = False
+            for pattern in moe_include_patterns:
+                if pattern in name:
+                    category = pattern.replace('.', '').replace('_', ' ')
+                    saved_by_category[category] = saved_by_category.get(category, 0) + 1
+                    categorized = True
+                    break
+
+            if not categorized:
+                uncertain_params.append(name)
+
+        logging.info(f"📊 Saved parameters by category:")
+        for category, count in saved_by_category.items():
+            logging.info(f"  {category}: {count} parameters")
+
+        if uncertain_params:
+            logging.warning(f"⚠️  {len(uncertain_params)} uncertain parameters included for safety:")
+            for param_name in uncertain_params[:5]:  # 只显示前5个
+                logging.warning(f"    {param_name}")
+            if len(uncertain_params) > 5:
+                logging.warning(f"    ... and {len(uncertain_params) - 5} more")
+
+        # 🔧 修复23: 添加详细的参数统计和验证
+        total_trainable = sum(p.numel() for p in actual_model.parameters() if p.requires_grad)
+
+        logging.info(f"📊 Model Parameter Analysis:")
+        logging.info(f"  Total trainable parameters: {total_trainable:,}")
+        logging.info(f"  MoE parameters to save: {moe_param_count:,}")
+        logging.info(f"  MoE percentage: {moe_param_count/total_trainable*100:.1f}%")
+
+        # 按组件统计参数
+        component_stats = {}
+        for name, param in moe_state_dict.items():
+            if 'cultural_experts' in name:
+                component_stats['cultural_experts'] = component_stats.get('cultural_experts', 0) + param.numel()
+            elif 'router' in name:
+                component_stats['router'] = component_stats.get('router', 0) + param.numel()
+            elif 'cultural_embedding' in name:
+                component_stats['cultural_embedding'] = component_stats.get('cultural_embedding', 0) + param.numel()
+            elif 'cultural_context' in name:
+                component_stats['cultural_context'] = component_stats.get('cultural_context', 0) + param.numel()
+            elif 'shared' in name:
+                component_stats['shared'] = component_stats.get('shared', 0) + param.numel()
+            else:
+                component_stats['other'] = component_stats.get('other', 0) + param.numel()
+
+        logging.info(f"📋 Component breakdown:")
+        for component, count in component_stats.items():
+            logging.info(f"  {component}: {count:,} parameters")
 
         # 保存MoE权重
         moe_weights_path = os.path.join(save_dir, 'moe_weights.pth')
@@ -2280,13 +2459,28 @@ class EnhancedCultureMoETrainer:
         file_size_mb = os.path.getsize(moe_weights_path) / (1024 * 1024)
         param_size_mb = moe_param_count * 2 / (1024 * 1024)  # float16 = 2 bytes per param
 
-        logging.info(f"MoE weights saved to {save_dir}")
+        logging.info(f"💾 MoE weights saved to {save_dir}")
         logging.info(f"  Parameters: {moe_param_count:,}")
         logging.info(f"  File size: {file_size_mb:.1f} MB")
         logging.info(f"  Expected size: {param_size_mb:.1f} MB")
 
-        if file_size_mb > 500:  # 如果超过500MB，发出警告
-            logging.warning(f"⚠️  MoE weights file is unexpectedly large: {file_size_mb:.1f} MB")
+        # 🔧 修复24: 更严格的文件大小检查
+        if file_size_mb > 300:  # 降低阈值从500MB到300MB
+            logging.warning(f"⚠️  MoE weights file is too large: {file_size_mb:.1f} MB")
+            logging.warning(f"Expected size should be 100-200MB for MoE components only")
+
+            # 列出最大的参数
+            param_sizes = [(name, param.numel()) for name, param in moe_state_dict.items()]
+            param_sizes.sort(key=lambda x: x[1], reverse=True)
+
+            logging.warning("🔍 Largest parameters in saved model:")
+            for name, size in param_sizes[:10]:  # 显示前10个最大的参数
+                logging.warning(f"  {name}: {size:,} parameters ({size*2/1024/1024:.1f} MB)")
+        elif file_size_mb < 50:
+            logging.warning(f"⚠️  MoE weights file might be too small: {file_size_mb:.1f} MB")
+            logging.warning("This might indicate missing components")
+        else:
+            logging.info(f"✅ MoE file size is reasonable: {file_size_mb:.1f} MB")
 
         # 只在最佳模型时保存训练状态（可选）
         if is_best and hasattr(self.args, 'save_optimizer_state') and self.args.save_optimizer_state:

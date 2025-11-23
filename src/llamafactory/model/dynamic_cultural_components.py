@@ -236,13 +236,18 @@ class LearnableCultureClustering(nn.Module):
         weighted_similarities = torch.clamp(weighted_similarities / temperature, min=-10.0, max=10.0)
         expert_affinities = F.softmax(weighted_similarities, dim=-1)
 
-        # 收集聚类信息
+        # 🔧 修复19: 收集聚类信息，分离Tensor和可序列化数据
+        affinity_entropy = -torch.sum(expert_affinities * torch.log(expert_affinities + 1e-8), dim=-1).mean()
         clustering_info = {
-            'similarities': similarities,
+            'similarities': similarities,  # 保留Tensor用于后续计算
             'temperature': temperature.item(),
-            'confidence_weights': confidence_weights,
-            'cluster_centers': cluster_centers,  # 使用已经同步设备的聚类中心
-            'affinity_entropy': -torch.sum(expert_affinities * torch.log(expert_affinities + 1e-8), dim=-1).mean()
+            'confidence_weights': confidence_weights,  # 保留Tensor用于后续计算
+            'cluster_centers': cluster_centers,  # 保留Tensor用于后续计算
+            'affinity_entropy': affinity_entropy.item() if isinstance(affinity_entropy, torch.Tensor) else float(affinity_entropy),
+            # 添加JSON可序列化版本
+            'similarities_serializable': similarities.detach().cpu().numpy().tolist(),
+            'confidence_weights_serializable': confidence_weights.detach().cpu().numpy().tolist(),
+            'cluster_centers_serializable': cluster_centers.detach().cpu().numpy().tolist()
         }
 
         return expert_affinities, clustering_info

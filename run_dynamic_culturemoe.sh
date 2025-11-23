@@ -269,7 +269,7 @@ python ft_enhanced_culturemoe_gen.py \
     --eval_batch_size 4 \
     --learning_rate 2e-4 \
     --weight_decay 0.01 \
-    --max_length 512 \
+    --max_length 1024 \
     --eval_interval 1 \
     --num_workers 4 \
     --freeze_base_model True \
