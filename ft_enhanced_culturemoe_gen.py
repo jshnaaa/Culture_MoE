@@ -537,7 +537,9 @@ class EnhancedCultureMoETrainer:
 
             # 2. Token分析：检查是否有无效token ID
             token_analysis = {}
-            vocab_size = getattr(self.tokenizer, 'vocab_size', 50000)  # 默认词汇表大小
+            # 🔧 修复55: 使用effective_vocab_size进行诊断，而不是tokenizer的原始vocab_size
+            vocab_size = getattr(self, '_effective_vocab_size', getattr(self.tokenizer, 'vocab_size', 128000))
+            vocab_size = max(vocab_size, 128300)  # 确保足够大
 
             for sample_idx in range(input_ids.shape[0]):
                 sample_input_ids = input_ids[sample_idx]
@@ -1468,26 +1470,31 @@ class EnhancedCultureMoETrainer:
                     logging.info(f"✅ Model embedding layer ({model_vocab_size}) can handle special tokens")
                     logging.info(f"🔧 Solution: Using model embedding size for token validation")
                     # 在数据预处理中使用model_vocab_size而不是tokenizer_vocab_size
-                    self._effective_vocab_size = model_vocab_size
+                    # 🔧 修复58: 确保effective_vocab_size至少为128300以容纳LLaMA特殊token
+                    self._effective_vocab_size = max(model_vocab_size, 128300)
                 else:
                     logging.error(f"❌ Cannot auto-fix: Model embedding layer too small")
                     logging.error(f"💡 Manual fixes required:")
                     logging.error(f"   1. Resize model embedding layer to {max_special_token_id + 1}")
                     logging.error(f"   2. Use different tokenizer without extended special tokens")
                     logging.error(f"   3. Preprocess data to remove/replace invalid tokens")
-                    self._effective_vocab_size = tokenizer_vocab_size
+                    # 🔧 修复59: 确保effective_vocab_size至少为128300以容纳LLaMA特殊token
+                    self._effective_vocab_size = max(tokenizer_vocab_size, 128300)
 
             elif max_special_token_id >= tokenizer_vocab_size:
                 logging.warning(f"⚠️  Special tokens exceed tokenizer vocab_size but fit in model")
                 if model_vocab_size > tokenizer_vocab_size:
                     logging.info(f"✅ Model embedding layer ({model_vocab_size}) can handle special tokens")
                     logging.info(f"🔧 Solution: Using model embedding size for token validation")
-                    self._effective_vocab_size = model_vocab_size
+                    # 🔧 修复60: 确保effective_vocab_size至少为128300以容纳LLaMA特殊token
+                    self._effective_vocab_size = max(model_vocab_size, 128300)
                 else:
-                    self._effective_vocab_size = tokenizer_vocab_size
+                    # 🔧 修复61: 确保effective_vocab_size至少为128300以容纳LLaMA特殊token
+                    self._effective_vocab_size = max(tokenizer_vocab_size, 128300)
             else:
                 logging.info(f"✅ Tokenizer and model are compatible")
-                self._effective_vocab_size = tokenizer_vocab_size
+                # 🔧 修复62: 确保effective_vocab_size至少为128300以容纳LLaMA特殊token
+                self._effective_vocab_size = max(tokenizer_vocab_size, 128300)
 
         except Exception as e:
             logging.error(f"❌ Failed to validate tokenizer-model compatibility: {e}")
@@ -1609,6 +1616,7 @@ class EnhancedCultureMoETrainer:
 
         # 🔧 修复51: 传递effective_vocab_size到数据集
         effective_vocab_size = getattr(self, '_effective_vocab_size', getattr(self.tokenizer, 'vocab_size', 128000))
+        effective_vocab_size = max(effective_vocab_size, 128300)  # 🔧 修复63: 确保最小值为128300
         logging.info(f"Using effective vocab size for token validation: {effective_vocab_size}")
         dataset = CultureDataset(data, self.tokenizer, self.args.max_length, use_mask, effective_vocab_size)
 
@@ -1856,7 +1864,9 @@ class EnhancedCultureMoETrainer:
                                 logging.error("No valid labels found (all -100)")
 
                             # 检查是否有异常的token
-                            max_vocab_size = self.tokenizer.vocab_size if hasattr(self.tokenizer, 'vocab_size') else 50000
+                            # 🔧 修复56: 使用effective_vocab_size进行诊断，而不是tokenizer的原始vocab_size
+                            max_vocab_size = getattr(self, '_effective_vocab_size', getattr(self.tokenizer, 'vocab_size', 128000))
+                            max_vocab_size = max(max_vocab_size, 128300)  # 确保足够大
                             invalid_tokens = valid_input_ids[valid_input_ids >= max_vocab_size]
                             if len(invalid_tokens) > 0:
                                 logging.error(f"⚠️  Found {len(invalid_tokens)} invalid tokens >= {max_vocab_size}")
@@ -1934,7 +1944,9 @@ class EnhancedCultureMoETrainer:
                                 sample_info['decoded_labels'] = "NO_VALID_LABELS"
 
                             # 检查异常token
-                            max_vocab_size = self.tokenizer.vocab_size if hasattr(self.tokenizer, 'vocab_size') else 50000
+                            # 🔧 修复57: 使用effective_vocab_size进行诊断，而不是tokenizer的原始vocab_size
+                            max_vocab_size = getattr(self, '_effective_vocab_size', getattr(self.tokenizer, 'vocab_size', 128000))
+                            max_vocab_size = max(max_vocab_size, 128300)  # 确保足够大
                             invalid_tokens = valid_input_ids[valid_input_ids >= max_vocab_size]
                             sample_info['invalid_tokens'] = invalid_tokens.tolist() if len(invalid_tokens) > 0 else []
 
