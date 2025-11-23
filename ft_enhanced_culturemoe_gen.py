@@ -80,74 +80,24 @@ class CultureDataset(Dataset):
         output = item.get('output', '')
         label = item.get('label', '0')  # 大洲标签
 
-        # 构建输入文本 (使用原始instruction，不是mask版本)
-        # 检查instruction是否包含special tokens
-        if '<|begin_of_text|>' in instruction:
-            logging.warning(f"Found <|begin_of_text|> in instruction - possible double-wrapping")
-        if '<|start_header_id|>' in instruction:
-            logging.warning(f"Found <|start_header_id|> in instruction - double-wrapping detected")
-
-        # 🔧 智能清理：处理截断导致的重复包装问题
+        # 简单清理：移除可能的special tokens
         clean_instruction = instruction
-
-        # 检测是否是被截断的对话格式
-        is_truncated_chat = False
-        if '<|begin_of_text|>' in instruction and '<|start_header_id|>' in instruction:
-            is_truncated_chat = True
-
-            # 尝试提取用户内容部分
-            try:
-                # 找到用户内容的开始和结束
-                user_start = instruction.find('<|start_header_id|>user<|end_header_id|>')
-                if user_start != -1:
-                    content_start = user_start + len('<|start_header_id|>user<|end_header_id|>')
-
-                    # 查找内容结束位置
-                    eot_pos = instruction.find('<|eot_id|>', content_start)
-                    assistant_pos = instruction.find('<|start_header_id|>assistant', content_start)
-
-                    if eot_pos != -1:
-                        clean_instruction = instruction[content_start:eot_pos].strip()
-                    elif assistant_pos != -1:
-                        clean_instruction = instruction[content_start:assistant_pos].strip()
-                    else:
-                        # 截断在用户内容中间，取剩余部分
-                        clean_instruction = instruction[content_start:].strip()
-
-            except Exception as e:
-                logging.warning(f"Failed to extract user content: {e}")
-                is_truncated_chat = False
-
-        if not is_truncated_chat:
-            # 简单的token清理（原来的方法）
-            special_tokens_to_remove = [
-                '<|begin_of_text|>',
-                '<|start_header_id|>',
-                '<|end_header_id|>',
-                '<|eot_id|>'
-            ]
-            for token in special_tokens_to_remove:
-                clean_instruction = clean_instruction.replace(token, '')
-            clean_instruction = clean_instruction.strip()
-
-        # 最终验证：确保没有残留的special tokens
-        if any(token in clean_instruction for token in ['<|begin_of_text|>', '<|start_header_id|>', '<|end_header_id|>', '<|eot_id|>']):
-            logging.warning("Still found special tokens after cleaning, applying aggressive cleaning")
-            for token in ['<|begin_of_text|>', '<|start_header_id|>', '<|end_header_id|>', '<|eot_id|>']:
-                clean_instruction = clean_instruction.replace(token, '')
-            clean_instruction = clean_instruction.strip()
+        special_tokens_to_remove = [
+            '<|begin_of_text|>',
+            '<|start_header_id|>',
+            '<|end_header_id|>',
+            '<|eot_id|>'
+        ]
+        for token in special_tokens_to_remove:
+            clean_instruction = clean_instruction.replace(token, '')
+        clean_instruction = clean_instruction.strip()
 
         input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         full_text = input_text + output + "<|eot_id|>"
 
         # 构建mask版本的输入文本 (用于共享专家)
-        # 如果使用MASK机制，共享专家使用instruction_mask；否则使用原始instruction
         if self.use_mask:
-            # 检查instruction_mask是否包含special tokens
-            if '<|begin_of_text|>' in instruction_mask:
-                logging.warning(f"Found <|begin_of_text|> in instruction_mask - possible double-wrapping")
-
-            # 清理instruction_mask中可能重复的special tokens
+            # 清理instruction_mask中可能的special tokens
             clean_instruction_mask = instruction_mask
             for token in special_tokens_to_remove:
                 clean_instruction_mask = clean_instruction_mask.replace(token, '')
@@ -180,43 +130,6 @@ class CultureDataset(Dataset):
         input_ids_mask = encoding_mask['input_ids'].squeeze(0)
         attention_mask_mask = encoding_mask['attention_mask'].squeeze(0)
 
-        # ✅ 验证token ID范围，防止超大token ID导致NaN
-        vocab_size = getattr(self.tokenizer, 'vocab_size', 128256)  # LLaMA默认是128256
-
-
-        # 获取安全的替换token ID
-        def get_safe_replacement_token_id():
-            # 尝试获取UNK token
-            unk_id = getattr(self.tokenizer, 'unk_token_id', None)
-            if unk_id is not None and 0 <= unk_id < vocab_size:
-                return unk_id
-
-            # 尝试获取PAD token
-            pad_id = getattr(self.tokenizer, 'pad_token_id', None)
-            if pad_id is not None and 0 <= pad_id < vocab_size:
-                return pad_id
-
-            # 尝试获取EOS token
-            eos_id = getattr(self.tokenizer, 'eos_token_id', None)
-            if eos_id is not None and 0 <= eos_id < vocab_size:
-                return eos_id
-
-            # 最后使用0（通常是安全的）
-            return 0
-
-        safe_token_id = get_safe_replacement_token_id()
-
-        # 检查并修复超出范围的token ID
-        invalid_mask = input_ids >= vocab_size
-        if invalid_mask.any():
-            logging.warning(f"Found {invalid_mask.sum().item()} invalid token IDs >= {vocab_size}, replacing with token {safe_token_id}")
-            input_ids = torch.where(invalid_mask, safe_token_id, input_ids)
-
-        invalid_mask_mask = input_ids_mask >= vocab_size
-        if invalid_mask_mask.any():
-            logging.warning(f"Found {invalid_mask_mask.sum().item()} invalid token IDs in mask >= {vocab_size}, replacing with token {safe_token_id}")
-            input_ids_mask = torch.where(invalid_mask_mask, safe_token_id, input_ids_mask)
-
         # 创建标签
         labels = input_ids.clone()
 
@@ -228,14 +141,10 @@ class CultureDataset(Dataset):
         # 掩盖instruction部分
         labels[:assistant_start_idx] = -100
 
-        # ✅ 验证标签有效性，防止全部被掩码导致损失异常
+        # 基本标签验证：确保有有效标签
         valid_labels = (labels != -100).sum()
-        if valid_labels == 0:
-            logging.warning("All labels are masked (-100), this may cause training instability")
-            # 至少保留最后一个token作为有效标签
-            if len(labels) > 0:
-                labels[-1] = input_ids[-1]
-                logging.warning("Added last token as valid label to prevent empty target")
+        if valid_labels == 0 and len(labels) > 0:
+            labels[-1] = input_ids[-1]  # 至少保留最后一个token
 
         # 解析大洲标签
         continent_id, continent_ids_multi = self._parse_continent_label(label)
