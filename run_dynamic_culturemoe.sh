@@ -264,7 +264,7 @@ python ft_enhanced_culturemoe_gen.py \
     --router_temperature "$ROUTER_TEMP" \
     --load_balance_weight "$LOAD_BAL" \
     --entropy_weight "$ENTROPY" \
-    --num_epochs 4 \
+    --num_epochs 3 \
     --batch_size 4 \
     --eval_batch_size 4 \
     --learning_rate 2e-4 \
