@@ -1357,8 +1357,8 @@ class EnhancedCultureMoETrainer:
             dropout=self.args.dropout
         )
 
-        # 创建动态增强的CultureMoE模型
-        self.model = DynamicEnhancedCultureMoE(
+        # 创建静态增强的CultureMoE模型
+        self.model = EnhancedCultureMoE(
             llama_model=base_model,
             config=base_model.config,
             args=moe_args,
@@ -2563,8 +2563,8 @@ class EnhancedCultureMoETrainer:
                 dropout=self.args.dropout
             )
 
-            # 4. 创建新的动态增强CultureMoE模型
-            test_model = DynamicEnhancedCultureMoE(
+            # 4. 创建新的静态增强CultureMoE模型
+            test_model = EnhancedCultureMoE(
                 llama_model=base_model,
                 config=base_model.config,
                 args=moe_args,

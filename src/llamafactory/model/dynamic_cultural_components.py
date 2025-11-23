@@ -234,10 +234,12 @@ class LearnableCultureClustering(nn.Module):
         temperature = temperature.to(device=similarities.device, dtype=similarities.dtype)
         confidence_weights = confidence_weights.to(device=similarities.device, dtype=similarities.dtype)
 
-        # 🔧 修复6: 更稳定的软分配计算
+        # 🔧 修复85: 更稳定的软分配计算，避免除法数值不稳定
         weighted_similarities = similarities * confidence_weights.unsqueeze(0)
+        # 🔧 修复86: 确保温度不为零，避免除零错误
+        temperature_safe = torch.clamp(temperature, min=1e-3)
         # 限制logits范围，避免softmax溢出
-        weighted_similarities = torch.clamp(weighted_similarities / temperature, min=-10.0, max=10.0)
+        weighted_similarities = torch.clamp(weighted_similarities / temperature_safe, min=-10.0, max=10.0)
         expert_affinities = F.softmax(weighted_similarities, dim=-1)
 
         # 🔧 修复78: 使用数值稳定的熵计算，避免log操作
@@ -413,8 +415,9 @@ class DynamicCultureLoss(nn.Module):
         expert_weights_sum = torch.clamp(expert_weights_sum, min=1e-6)
         culture_affinities_sum = torch.clamp(culture_affinities_sum, min=1e-6)
 
-        expert_weights_norm = expert_weights_safe / expert_weights_sum
-        culture_affinities_norm = culture_affinities_safe / culture_affinities_sum
+        # 🔧 修复88: 安全的归一化，避免除零
+        expert_weights_norm = expert_weights_safe / torch.clamp(expert_weights_sum, min=1e-6)
+        culture_affinities_norm = culture_affinities_safe / torch.clamp(culture_affinities_sum, min=1e-6)
 
         # 🔧 修复74: 使用更稳定的KL散度计算方法
         # 避免直接使用torch.log，使用log_softmax更稳定
@@ -610,14 +613,15 @@ class DynamicCulturalAwareRouter(nn.Module):
 
         # 6. 应用温度和softmax
         final_logits = torch.clamp(final_logits, min=-10.0, max=10.0)
-        # 确保温度参数类型匹配
+        # 🔧 修复87: 确保温度参数类型匹配且不为零
         temperature = torch.tensor(temperature, dtype=final_logits.dtype, device=final_logits.device)
+        temperature_safe = torch.clamp(temperature, min=1e-3)
 
         if final_logits.dtype == torch.float16:
-            logits_for_softmax = final_logits.float() / temperature.float()
+            logits_for_softmax = final_logits.float() / temperature_safe.float()
             expert_weights = F.softmax(logits_for_softmax, dim=-1).half()
         else:
-            expert_weights = F.softmax(final_logits / temperature, dim=-1)
+            expert_weights = F.softmax(final_logits / temperature_safe, dim=-1)
 
         # 检查并修复NaN/Inf
         if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
@@ -694,10 +698,10 @@ class DynamicCulturalAwareRouter(nn.Module):
         # 更严格的数值范围控制
         expert_weights_normalized = torch.clamp(expert_weights, min=1e-6, max=0.999999)
 
-        # 确保归一化稳定
+        # 🔧 修复89: 确保归一化稳定，避免除零
         weights_sum = expert_weights_normalized.sum(dim=-1, keepdim=True)
-        weights_sum = torch.clamp(weights_sum, min=1e-6)
-        expert_weights_normalized = expert_weights_normalized / weights_sum
+        weights_sum_safe = torch.clamp(weights_sum, min=1e-6)
+        expert_weights_normalized = expert_weights_normalized / weights_sum_safe
 
         # 🔧 修复77: 使用更稳定的熵计算方法
         # 避免直接log计算，使用方差作为熵的代理

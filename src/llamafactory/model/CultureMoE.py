@@ -540,8 +540,12 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         Returns:
             entropy_loss: 标量（负熵，最小化负熵 = 最大化熵）
         """
-        # 计算每个样本的熵
-        entropy = -torch.sum(expert_weights * torch.log(expert_weights + 1e-8), dim=-1)
+        # 🔧 修复83: 使用数值稳定的熵计算，避免log操作
+        # 使用方差代替熵计算
+        expert_weights_safe = torch.clamp(expert_weights, min=1e-6, max=0.999999)
+        mean_weight = expert_weights_safe.mean(dim=-1, keepdim=True)
+        variance = ((expert_weights_safe - mean_weight) ** 2).mean(dim=-1)
+        entropy = variance
 
         # 返回负熵（我们希望最大化熵，即最小化负熵）
         entropy_loss = -entropy.mean()
@@ -716,19 +720,28 @@ class LlamaSharedRouterExpertsModel(nn.Module):
         for k in unique_cultures:
             k_idx = k.item()
             if nu[k_idx] >= min_samples:
-                p_k[k_idx, :] = S[k_idx, :] / (nu[k_idx] + eps)
-                p_k[k_idx, :] = (p_k[k_idx, :] + eps) / (p_k[k_idx, :].sum() + num_experts * eps)
+                # 🔧 修复90: 安全的除法操作，避免除零
+                denominator1 = torch.clamp(nu[k_idx] + eps, min=1e-6)
+                p_k[k_idx, :] = S[k_idx, :] / denominator1
+
+                denominator2 = torch.clamp(p_k[k_idx, :].sum() + num_experts * eps, min=1e-6)
+                p_k[k_idx, :] = (p_k[k_idx, :] + eps) / denominator2
                 valid_cultures.append(k_idx)
 
         if len(valid_cultures) == 0:
             return torch.tensor(0.0, device=device, dtype=dtype), torch.tensor(0.0, device=device, dtype=dtype)
 
-        # Specialization Loss
+        # 🔧 修复84: Specialization Loss - 使用数值稳定的熵计算
         specialization_loss = 0.0
         for k_idx in valid_cultures:
-            H_k = -torch.sum(p_k[k_idx, :] * torch.log(p_k[k_idx, :] + eps))
+            # 使用方差代替熵计算
+            p_k_safe = torch.clamp(p_k[k_idx, :], min=1e-6, max=0.999999)
+            mean_p = p_k_safe.mean()
+            variance = ((p_k_safe - mean_p) ** 2).mean()
+            H_k = variance
             specialization_loss += H_k
-        specialization_loss = specialization_loss / len(valid_cultures)
+        # 🔧 修复91: 安全的除法操作
+        specialization_loss = specialization_loss / max(len(valid_cultures), 1)
 
         # Diversity Loss
         v = torch.zeros(num_experts, len(valid_cultures), device=device, dtype=dtype)
