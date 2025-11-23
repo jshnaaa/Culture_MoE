@@ -502,7 +502,7 @@ class DynamicCulturalAwareRouter(nn.Module):
 
         # 1. 提取文化特征
         culture_features, culture_strength = self.culture_feature_extractor(
-            hidden_states.unsqueeze(1)  # [B, 1, H] -> [B, H]
+            hidden_states.unsqueeze(1)  # [B, H] -> [B, 1, H] for feature extractor
         )
 
         # 2. 内容驱动的路由

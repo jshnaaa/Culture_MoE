@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple
 import logging
+import math
 
 from .CultureMoE import LlamaSharedRouterExpertsModel
 from .cultural_components import (
@@ -73,8 +74,9 @@ class DynamicEnhancedCultureMoE(LlamaSharedRouterExpertsModel):
             ) for i in range(args.num_experts)
         ])
 
-        # 移除原有的 experts_layer
-        delattr(self, 'experts_layer')
+        # 移除原有的 experts_layer（如果存在）
+        if hasattr(self, 'experts_layer'):
+            delattr(self, 'experts_layer')
 
         # ✅ 4. 文化上下文感知（保持原有）
         self.cultural_context = CulturalContextAwareness(
@@ -98,9 +100,11 @@ class DynamicEnhancedCultureMoE(LlamaSharedRouterExpertsModel):
             self.cultural_gate = None
             logging.info("Cultural gate mechanism disabled")
 
-        # 移除原有的 gate_linear 和 gate_sigmoid
-        delattr(self, 'gate_linear')
-        delattr(self, 'gate_sigmoid')
+        # 移除原有的 gate_linear 和 gate_sigmoid（如果存在）
+        if hasattr(self, 'gate_linear'):
+            delattr(self, 'gate_linear')
+        if hasattr(self, 'gate_sigmoid'):
+            delattr(self, 'gate_sigmoid')
 
         # ✅ 6. 动态文化损失增强
         self.culture_loss_alpha_enhanced = nn.Parameter(torch.tensor(2.0))
