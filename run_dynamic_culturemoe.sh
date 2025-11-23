@@ -51,7 +51,7 @@
 
 # ✅ 配置参数 (与现有脚本完全一致)
 BACKBONE="${1:-llama}"              # 默认使用 llama
-DATA_ID="${2:-2}"                   # 默认 CultureLLM (4)
+DATA_ID="${2:-2}"                   # 默认 CulturalBench (2)
 USE_CULTURE_LOSS="${3:-True}"       # 默认使用文化损失
 NUM_EXPERTS="${4:-8}"              # 默认 8 个专家（支持消融实验）
 MOE_FUSION="${5:-0.4}"              # 默认 MoE 融合系数 0.4
@@ -269,14 +269,9 @@ python ft_enhanced_culturemoe_gen.py \
     --eval_batch_size 4 \
     --learning_rate 2e-4 \
     --weight_decay 0.01 \
-    --warmup_ratio 0.1 \
     --max_length 512 \
     --eval_interval 1 \
-    --save_interval 1 \
-    --logging_steps 10 \
-    --use_amp True \
     --num_workers 4 \
-    --seed 42 \
     --freeze_base_model True \
     --experts_hidden_dim 2048 \
     --router_hidden_dim 2048 \
