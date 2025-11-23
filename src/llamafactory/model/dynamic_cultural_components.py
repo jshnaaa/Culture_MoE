@@ -50,13 +50,15 @@ class CultureFeatureExtractor(nn.Module):
         """初始化权重"""
         for module in self.culture_extractor:
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight, gain=0.01)
+                # 🔧 修复67: 使用合理的gain值，避免过小导致数值不稳定
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
         for module in self.culture_strength_estimator:
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight, gain=0.01)
+                # 🔧 修复67: 使用合理的gain值，避免过小导致数值不稳定
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
@@ -96,9 +98,9 @@ class LearnableCultureClustering(nn.Module):
         self.num_cultures = num_cultures
 
         # 可学习的文化聚类中心 - 每个专家对应一个聚类中心
-        # 🔧 修复33: 使用更保守的初始化，进一步避免梯度爆炸
+        # 🔧 修复64: 使用合理的初始化，避免过小导致数值不稳定
         self.culture_cluster_centers = nn.Parameter(
-            torch.randn(num_experts, culture_dim) * 0.001  # 从0.01进一步减小到0.001
+            torch.randn(num_experts, culture_dim) * 0.1  # 恢复到0.1，避免过小初始化
         )
 
         # 聚类温度参数（可学习）
@@ -106,9 +108,9 @@ class LearnableCultureClustering(nn.Module):
         self.register_buffer('clustering_temperature', torch.tensor(1.5))  # 固定为1.5，不再可学习
 
         # 专家置信度权重（可学习）
-        # 🔧 修复35: 使用更保守的初始化
+        # 🔧 修复65: 使用合理的初始化，避免过小导致数值不稳定
         self.expert_confidence_weights = nn.Parameter(
-            torch.ones(num_experts) * 0.01  # 从0.1进一步减小到0.01
+            torch.ones(num_experts) * 0.1  # 恢复到0.1，避免过小初始化
         )
 
         # 固定文化分配（作为fallback和初始化）
@@ -155,7 +157,8 @@ class LearnableCultureClustering(nn.Module):
                     self.culture_cluster_centers[i] = center
                 else:
                     # 冲突处理专家：使用中性初始化
-                    self.culture_cluster_centers[i] = torch.randn(self.culture_dim) * 0.05
+                    # 🔧 修复66: 使用合理的初始化，避免过小导致数值不稳定
+                    self.culture_cluster_centers[i] = torch.randn(self.culture_dim) * 0.1
 
     def _create_fixed_assignments(self) -> List[List[int]]:
         """创建固定的文化分配作为fallback"""
@@ -508,14 +511,16 @@ class DynamicCulturalAwareRouter(nn.Module):
         # 内容路由器
         for module in self.content_router:
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight, gain=0.01)
+                # 🔧 修复68: 使用合理的gain值，避免过小导致数值不稳定
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
         # 融合网络
         for module in self.fusion_network:
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight, gain=0.01)
+                # 🔧 修复68: 使用合理的gain值，避免过小导致数值不稳定
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
