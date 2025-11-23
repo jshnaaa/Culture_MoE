@@ -375,7 +375,7 @@ python ft_enhanced_culturemoe_gen.py \
     --weight_decay 0.01 \
     --max_length 512 \
     --num_workers 2 \
-    --eval_interval 2 \
+    --eval_interval 1 \
     --device cuda
 
 if [ $? -eq 0 ]; then

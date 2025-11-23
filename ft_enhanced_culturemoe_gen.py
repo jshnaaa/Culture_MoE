@@ -1087,8 +1087,14 @@ class EnhancedCultureMoETrainer:
 
             # ✅ 检查损失是否为NaN/Inf，如果是则跳过当前batch
             if torch.isnan(loss) or torch.isinf(loss):
-                logging.warning(f"⚠️  Step {self.global_step}: Loss is NaN/Inf ({loss.item():.6f}), skipping batch")
+                try:
+                    loss_val = loss.item()
+                except:
+                    loss_val = "NaN/Inf"
+                logging.warning(f"⚠️  Step {self.global_step}: Loss is NaN/Inf ({loss_val}), skipping batch")
                 skipped_batches += 1
+                # 清零梯度以防止累积异常值
+                self.optimizer.zero_grad()
                 # 跳过当前batch，继续下一个
                 self.global_step += 1
                 continue
@@ -1126,6 +1132,7 @@ class EnhancedCultureMoETrainer:
                     logging.info(f"      entropy_weight: {self.args.entropy_weight}")
 
             # 梯度累积反向传播
+            original_loss = loss.clone()  # 保存原始损失用于统计
             loss = loss / self.gradient_accumulation_steps
 
             if self.use_amp and self.scaler:
@@ -1135,6 +1142,7 @@ class EnhancedCultureMoETrainer:
                 loss.backward()
 
             # 每隔gradient_accumulation_steps步更新一次
+            should_skip_batch = False  # 标记是否需要跳过当前batch
             if (self.global_step + 1) % self.gradient_accumulation_steps == 0:
                 if self.use_amp and self.scaler:
                     # AMP优化器步骤
@@ -1161,18 +1169,19 @@ class EnhancedCultureMoETrainer:
                         skipped_batches += 1
                         # 清零梯度但跳过优化器步骤
                         self.optimizer.zero_grad()
-                        # 跳过当前优化步骤，继续下一个batch
-                        continue
+                        # 标记需要跳过当前batch
+                        should_skip_batch = True
+                    else:
+                        # 只有在没有NaN梯度时才执行正常的优化步骤
+                        if router_params:
+                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
+                        if other_params:
+                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)   # 其他参数正常
 
-                    if router_params:
-                        torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
-                    if other_params:
-                        torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)   # 其他参数正常
-
-                    self.scaler.step(self.optimizer.optimizer)
-                    self.scaler.update()
-                    self.scheduler.step()
-                    self.optimizer.zero_grad()
+                        self.scaler.step(self.optimizer.optimizer)
+                        self.scaler.update()
+                        self.scheduler.step()
+                        self.optimizer.zero_grad()
                 else:
                     # 标准优化器步骤
                     # 对路由器参数进行更严格的梯度裁剪
@@ -1196,20 +1205,26 @@ class EnhancedCultureMoETrainer:
                         skipped_batches += 1
                         # 清零梯度但跳过优化器步骤
                         self.optimizer.zero_grad()
-                        # 跳过当前优化步骤，继续下一个batch
-                        continue
+                        # 标记需要跳过当前batch
+                        should_skip_batch = True
+                    else:
+                        # 只有在没有NaN梯度时才执行正常的优化步骤
+                        if router_params:
+                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
+                        if other_params:
+                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)   # 其他参数正常
 
-                    if router_params:
-                        torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
-                    if other_params:
-                        torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)   # 其他参数正常
+                        self.optimizer.step()
+                        self.scheduler.step()
+                        self.optimizer.zero_grad()
 
-                    self.optimizer.step()
-                    self.scheduler.step()
-                    self.optimizer.zero_grad()
+            # 检查是否需要跳过当前batch
+            if should_skip_batch:
+                self.global_step += 1
+                continue
 
             # 统计
-            total_loss += loss.item()
+            total_loss += original_loss.item()
             if 'generation_loss' in outputs:
                 total_generation_loss += outputs['generation_loss'].item()
             if 'culture_loss' in outputs:
@@ -1231,7 +1246,7 @@ class EnhancedCultureMoETrainer:
 
             # 更新进度条 - 添加更多损失信息
             progress_bar.set_postfix({
-                'loss': f"{loss.item():.4f}",
+                'loss': f"{original_loss.item():.4f}",
                 'gen': f"{outputs.get('generation_loss', torch.tensor(0)).item():.4f}",
                 'cult': f"{outputs.get('culture_loss', torch.tensor(0)).item():.4f}",
                 'load': f"{outputs.get('load_balance_loss', torch.tensor(0)).item():.4f}",
@@ -1373,7 +1388,11 @@ class EnhancedCultureMoETrainer:
 
                         # ✅ 检查评估损失是否为NaN/Inf，如果是则跳过当前batch
                         if torch.isnan(loss) or torch.isinf(loss):
-                            logging.warning(f"⚠️  Evaluation batch {batch_idx}: Loss is NaN/Inf ({loss.item():.6f}), skipping batch")
+                            try:
+                                loss_val = loss.item()
+                            except:
+                                loss_val = "NaN/Inf"
+                            logging.warning(f"⚠️  Evaluation batch {batch_idx}: Loss is NaN/Inf ({loss_val}), skipping batch")
                             eval_skipped_batches += 1
                             continue
 
@@ -1642,6 +1661,15 @@ class EnhancedCultureMoETrainer:
 
                         loss = outputs['loss']
                         logits = outputs['logits']
+
+                        # ✅ 检查测试损失是否为NaN/Inf，如果是则跳过当前batch
+                        if torch.isnan(loss) or torch.isinf(loss):
+                            try:
+                                loss_val = loss.item()
+                            except:
+                                loss_val = "NaN/Inf"
+                            logging.warning(f"⚠️  Test batch {batch_idx}: Loss is NaN/Inf ({loss_val}), skipping batch")
+                            continue
 
                         # 统计损失
                         total_loss += loss.item()
