@@ -268,11 +268,29 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
         moe_warmup_weight = self.get_moe_warmup_weight()
 
         # ✅ Step 9: 专家输出加权融合
-        weighted_expert_outs = [
-            expert_outputs[i] * expert_weights[:, i].unsqueeze(-1).unsqueeze(-1)
-            for i in range(len(expert_outputs))
-        ]
+        weighted_expert_outs = []
+        for i in range(len(expert_outputs)):
+            # 检查专家输出是否有异常
+            expert_out = expert_outputs[i]
+            if torch.isnan(expert_out).any() or torch.isinf(expert_out).any():
+                logging.warning(f"⚠️  Expert {i} output contains NaN/Inf, replacing with zeros")
+                expert_out = torch.zeros_like(expert_out)
+
+            # 检查专家权重是否有异常
+            weight = expert_weights[:, i].unsqueeze(-1).unsqueeze(-1)
+            if torch.isnan(weight).any() or torch.isinf(weight).any():
+                logging.warning(f"⚠️  Expert {i} weight contains NaN/Inf, replacing with uniform weight")
+                weight = torch.ones_like(weight) / len(expert_outputs)
+
+            weighted_out = expert_out * weight
+            weighted_expert_outs.append(weighted_out)
+
         expert_sum = torch.stack(weighted_expert_outs, dim=0).sum(dim=0)  # [B, L, H]
+
+        # 检查融合后的专家输出
+        if torch.isnan(expert_sum).any() or torch.isinf(expert_sum).any():
+            logging.error("⚠️  Expert sum contains NaN/Inf, replacing with zeros")
+            expert_sum = torch.zeros_like(expert_sum)
 
         # ✅ Step 10: 处理序列长度不匹配
         if shared_out.size(1) != expert_sum.size(1):
@@ -303,7 +321,13 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
             moe_direct = moe_fusion_alpha * expert_sum  # [B, L, H]
             enhanced_hidden = shared_out + moe_warmup_weight * moe_direct  # [B, L, H]
 
-        # ✅ Step 12: 生成logits
+        # ✅ Step 12: 检查enhanced_hidden的数值稳定性
+        if torch.isnan(enhanced_hidden).any() or torch.isinf(enhanced_hidden).any():
+            logging.error("⚠️  Enhanced hidden states contain NaN/Inf, attempting repair")
+            enhanced_hidden = torch.nan_to_num(enhanced_hidden, nan=0.0, posinf=10.0, neginf=-10.0)
+            enhanced_hidden = torch.clamp(enhanced_hidden, min=-50.0, max=50.0)
+
+        # 生成logits
         lm_head_dtype = self.llama_model.lm_head.weight.dtype
         if enhanced_hidden.dtype != lm_head_dtype:
             enhanced_hidden = enhanced_hidden.to(lm_head_dtype)
@@ -312,6 +336,7 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
         # ✅ Step 13: 检查和修复异常值
         if torch.isnan(logits).any() or torch.isinf(logits).any():
+            logging.error("⚠️  Logits contain NaN/Inf, attempting repair")
             logits = torch.nan_to_num(logits, nan=0.0, posinf=100.0, neginf=-100.0)
         logits = torch.clamp(logits, min=-100, max=100)
 

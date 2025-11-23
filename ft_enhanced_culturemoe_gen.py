@@ -1026,6 +1026,7 @@ class EnhancedCultureMoETrainer:
         total_specialization_loss = 0.0
         total_diversity_loss = 0.0
         num_batches = 0
+        skipped_batches = 0  # 跳过的batch数量
 
         progress_bar = tqdm(self.train_loader, desc=f"Epoch {epoch+1}")
 
@@ -1084,6 +1085,14 @@ class EnhancedCultureMoETrainer:
 
             loss = outputs['loss']
 
+            # ✅ 检查损失是否为NaN/Inf，如果是则跳过当前batch
+            if torch.isnan(loss) or torch.isinf(loss):
+                logging.warning(f"⚠️  Step {self.global_step}: Loss is NaN/Inf ({loss.item():.6f}), skipping batch")
+                skipped_batches += 1
+                # 跳过当前batch，继续下一个
+                self.global_step += 1
+                continue
+
             # 调试：检查损失计算（仅前5步）
             if self.global_step <= 4:
                 unique_cultures = torch.unique(batch['culture_ids'])
@@ -1140,15 +1149,20 @@ class EnhancedCultureMoETrainer:
                         else:
                             other_params.append(param)
 
-                    # 检查梯度中的NaN/Inf (AMP版本)
+                    # ✅ 检查梯度中的NaN/Inf (AMP版本) - 跳过策略
                     has_nan_grad = False
                     for param in router_params + other_params:
                         if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
                             has_nan_grad = True
-                            param.grad = torch.zeros_like(param.grad)  # 清零异常梯度
+                            break  # 发现异常梯度就停止检查
 
                     if has_nan_grad:
-                        logging.warning("⚠️  Detected NaN/Inf gradients, zeroed them out")
+                        logging.warning(f"⚠️  Step {self.global_step}: Detected NaN/Inf gradients, skipping optimizer step")
+                        skipped_batches += 1
+                        # 清零梯度但跳过优化器步骤
+                        self.optimizer.zero_grad()
+                        # 跳过当前优化步骤，继续下一个batch
+                        continue
 
                     if router_params:
                         torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
@@ -1170,15 +1184,20 @@ class EnhancedCultureMoETrainer:
                         else:
                             other_params.append(param)
 
-                    # 检查梯度中的NaN/Inf (标准版本)
+                    # ✅ 检查梯度中的NaN/Inf (标准版本) - 跳过策略
                     has_nan_grad = False
                     for param in router_params + other_params:
                         if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
                             has_nan_grad = True
-                            param.grad = torch.zeros_like(param.grad)  # 清零异常梯度
+                            break  # 发现异常梯度就停止检查
 
                     if has_nan_grad:
-                        logging.warning("⚠️  Detected NaN/Inf gradients, zeroed them out")
+                        logging.warning(f"⚠️  Step {self.global_step}: Detected NaN/Inf gradients, skipping optimizer step")
+                        skipped_batches += 1
+                        # 清零梯度但跳过优化器步骤
+                        self.optimizer.zero_grad()
+                        # 跳过当前优化步骤，继续下一个batch
+                        continue
 
                     if router_params:
                         torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
@@ -1244,17 +1263,30 @@ class EnhancedCultureMoETrainer:
 
         # Epoch结束时的专家使用情况汇总
         logging.info(f"\n=== Epoch {epoch+1} Training Summary ===")
-        logging.info(f"Total Loss: {total_loss / num_batches:.6f}")
-        logging.info(f"  ├─ Generation Loss: {total_generation_loss / num_batches:.6f}")
-        logging.info(f"  ├─ Culture Loss: {total_culture_loss / num_batches:.6f}")
-        logging.info(f"  ├─ Load Balance Loss: {total_load_balance_loss / num_batches:.6f}")
-        logging.info(f"  ├─ Entropy Loss: {total_entropy_loss / num_batches:.6f}")
-        logging.info(f"  ├─ Specialization Loss: {total_specialization_loss / num_batches:.6f}")
-        logging.info(f"  └─ Diversity Loss: {total_diversity_loss / num_batches:.6f}")
+
+        # 批次处理统计
+        total_attempted_batches = num_batches + skipped_batches
+        success_rate = (num_batches / total_attempted_batches * 100) if total_attempted_batches > 0 else 0
+        logging.info(f"Batch Processing: {num_batches} successful, {skipped_batches} skipped ({success_rate:.1f}% success rate)")
+
+        if num_batches > 0:
+            logging.info(f"Total Loss: {total_loss / num_batches:.6f}")
+            logging.info(f"  ├─ Generation Loss: {total_generation_loss / num_batches:.6f}")
+            logging.info(f"  ├─ Culture Loss: {total_culture_loss / num_batches:.6f}")
+            logging.info(f"  ├─ Load Balance Loss: {total_load_balance_loss / num_batches:.6f}")
+            logging.info(f"  ├─ Entropy Loss: {total_entropy_loss / num_batches:.6f}")
+            logging.info(f"  ├─ Specialization Loss: {total_specialization_loss / num_batches:.6f}")
+            logging.info(f"  └─ Diversity Loss: {total_diversity_loss / num_batches:.6f}")
+        else:
+            logging.error("⚠️  All batches were skipped due to NaN/Inf issues!")
 
         # 负载均衡和熵损失的健康检查
-        avg_load_loss = total_load_balance_loss / num_batches
-        avg_entropy_loss = total_entropy_loss / num_batches
+        if num_batches > 0:
+            avg_load_loss = total_load_balance_loss / num_batches
+            avg_entropy_loss = total_entropy_loss / num_batches
+        else:
+            avg_load_loss = 0.0
+            avg_entropy_loss = 0.0
 
         if avg_load_loss > 0.5:
             logging.warning(f"⚠️  High load balance loss ({avg_load_loss:.4f}) - Expert usage may be imbalanced")
@@ -1269,14 +1301,19 @@ class EnhancedCultureMoETrainer:
         # 保存epoch路由汇总信息
         self.save_epoch_routing_summary(epoch)
 
+        # 安全的平均值计算
+        safe_avg = lambda x: x / num_batches if num_batches > 0 else 0.0
+
         return {
-            'train_loss': total_loss / num_batches,
-            'train_generation_loss': total_generation_loss / num_batches,
-            'train_culture_loss': total_culture_loss / num_batches,
-            'train_load_balance_loss': total_load_balance_loss / num_batches,
-            'train_entropy_loss': total_entropy_loss / num_batches,
-            'train_specialization_loss': total_specialization_loss / num_batches,
-            'train_diversity_loss': total_diversity_loss / num_batches,
+            'train_loss': safe_avg(total_loss),
+            'train_generation_loss': safe_avg(total_generation_loss),
+            'train_culture_loss': safe_avg(total_culture_loss),
+            'train_load_balance_loss': safe_avg(total_load_balance_loss),
+            'train_entropy_loss': safe_avg(total_entropy_loss),
+            'train_specialization_loss': safe_avg(total_specialization_loss),
+            'train_diversity_loss': safe_avg(total_diversity_loss),
+            'skipped_batches': skipped_batches,  # 添加跳过的batch统计
+            'success_rate': (num_batches / (num_batches + skipped_batches) * 100) if (num_batches + skipped_batches) > 0 else 0.0
         }
 
     def evaluate(self, epoch: int) -> Dict[str, float]:
@@ -1290,6 +1327,7 @@ class EnhancedCultureMoETrainer:
             total_culture_loss = 0.0
             correct_predictions = 0
             total_predictions = 0
+            eval_skipped_batches = 0  # 评估时跳过的batch数量
 
             generated_answers = []
 
@@ -1332,6 +1370,12 @@ class EnhancedCultureMoETrainer:
 
                         loss = outputs['loss']
                         logits = outputs['logits']
+
+                        # ✅ 检查评估损失是否为NaN/Inf，如果是则跳过当前batch
+                        if torch.isnan(loss) or torch.isinf(loss):
+                            logging.warning(f"⚠️  Evaluation batch {batch_idx}: Loss is NaN/Inf ({loss.item():.6f}), skipping batch")
+                            eval_skipped_batches += 1
+                            continue
 
                         # 统计损失
                         total_loss += loss.item()
@@ -1393,14 +1437,31 @@ class EnhancedCultureMoETrainer:
 
             accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0.0
 
-            logging.info(f"Evaluation completed - Loss: {total_loss / len(self.val_loader):.6f}, Accuracy: {accuracy:.4f}")
+            # 评估批次统计
+            total_eval_batches = len(self.val_loader)
+            successful_eval_batches = total_eval_batches - eval_skipped_batches
+            eval_success_rate = (successful_eval_batches / total_eval_batches * 100) if total_eval_batches > 0 else 0.0
+
+            if eval_skipped_batches > 0:
+                logging.warning(f"⚠️  Evaluation: {eval_skipped_batches} batches skipped due to NaN/Inf losses ({eval_success_rate:.1f}% success rate)")
+
+            if successful_eval_batches > 0:
+                avg_loss = total_loss / successful_eval_batches
+                avg_gen_loss = total_generation_loss / successful_eval_batches
+                avg_culture_loss = total_culture_loss / successful_eval_batches
+                logging.info(f"Evaluation completed - Loss: {avg_loss:.6f}, Accuracy: {accuracy:.4f}")
+            else:
+                avg_loss = avg_gen_loss = avg_culture_loss = float('inf')
+                logging.error("⚠️  All evaluation batches were skipped due to NaN/Inf issues!")
 
             return {
-                'eval_loss': total_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0.0,
-                'eval_generation_loss': total_generation_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0.0,
-                'eval_culture_loss': total_culture_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0.0,
+                'eval_loss': avg_loss,
+                'eval_generation_loss': avg_gen_loss,
+                'eval_culture_loss': avg_culture_loss,
                 'eval_accuracy': accuracy,
-                'eval_samples': len(self.val_dataset)
+                'eval_samples': len(self.val_dataset),
+                'eval_skipped_batches': eval_skipped_batches,
+                'eval_success_rate': eval_success_rate
             }
 
         except Exception as e:
