@@ -81,10 +81,24 @@ class CultureDataset(Dataset):
         label = item.get('label', '0')  # 大洲标签
 
         # 构建输入文本 (使用原始instruction，不是mask版本)
+        # 🔍 调试：检查instruction是否包含special tokens
+        if '<|begin_of_text|>' in instruction:
+            logging.warning(f"Found <|begin_of_text|> in instruction: {instruction[:100]}...")
+        if '<|start_header_id|>' in instruction:
+            logging.warning(f"Found <|start_header_id|> in instruction: {instruction[:100]}...")
+
         # 清理instruction中可能重复的special tokens
         clean_instruction = instruction
-        if instruction.startswith('<|begin_of_text|>'):
-            clean_instruction = instruction.replace('<|begin_of_text|>', '').strip()
+        # 移除所有可能的special tokens
+        special_tokens_to_remove = [
+            '<|begin_of_text|>',
+            '<|start_header_id|>',
+            '<|end_header_id|>',
+            '<|eot_id|>'
+        ]
+        for token in special_tokens_to_remove:
+            clean_instruction = clean_instruction.replace(token, '')
+        clean_instruction = clean_instruction.strip()
 
         input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         full_text = input_text + output + "<|eot_id|>"
@@ -92,10 +106,15 @@ class CultureDataset(Dataset):
         # 构建mask版本的输入文本 (用于共享专家)
         # 如果使用MASK机制，共享专家使用instruction_mask；否则使用原始instruction
         if self.use_mask:
+            # 🔍 调试：检查instruction_mask是否包含special tokens
+            if '<|begin_of_text|>' in instruction_mask:
+                logging.warning(f"Found <|begin_of_text|> in instruction_mask: {instruction_mask[:100]}...")
+
             # 清理instruction_mask中可能重复的special tokens
             clean_instruction_mask = instruction_mask
-            if instruction_mask.startswith('<|begin_of_text|>'):
-                clean_instruction_mask = instruction_mask.replace('<|begin_of_text|>', '').strip()
+            for token in special_tokens_to_remove:
+                clean_instruction_mask = clean_instruction_mask.replace(token, '')
+            clean_instruction_mask = clean_instruction_mask.strip()
             input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         else:
             input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
