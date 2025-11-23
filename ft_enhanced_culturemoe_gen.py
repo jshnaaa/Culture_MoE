@@ -131,6 +131,26 @@ class CultureDataset(Dataset):
         input_ids_mask = encoding_mask['input_ids'].squeeze(0)
         attention_mask_mask = encoding_mask['attention_mask'].squeeze(0)
 
+        # 🔧 修复46: 验证token ID有效性，防止无效token导致梯度爆炸
+        vocab_size = getattr(self.tokenizer, 'vocab_size', 50000)
+
+        # 检查原始版本的token
+        invalid_tokens = input_ids[input_ids >= vocab_size]
+        if len(invalid_tokens) > 0:
+            # 替换无效token为unk_token_id
+            unk_token_id = getattr(self.tokenizer, 'unk_token_id', 0)
+            if unk_token_id >= vocab_size:
+                unk_token_id = 0  # 回退到0（通常是pad_token）
+            input_ids[input_ids >= vocab_size] = unk_token_id
+
+        # 检查mask版本的token
+        invalid_tokens_mask = input_ids_mask[input_ids_mask >= vocab_size]
+        if len(invalid_tokens_mask) > 0:
+            unk_token_id = getattr(self.tokenizer, 'unk_token_id', 0)
+            if unk_token_id >= vocab_size:
+                unk_token_id = 0
+            input_ids_mask[input_ids_mask >= vocab_size] = unk_token_id
+
         # 创建标签
         labels = input_ids.clone()
 
@@ -327,6 +347,63 @@ class EnhancedCultureMoETrainer:
         self.tokenizer = AutoTokenizer.from_pretrained(args.base_model_path)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # 🔧 修复44: 修复LLaMA tokenizer的vocab_size问题
+        # LLaMA的特殊token ID超出标准vocab_size，需要使用实际的token数量
+        if hasattr(self.tokenizer, 'get_vocab'):
+            actual_vocab_size = len(self.tokenizer.get_vocab())
+            standard_vocab_size = getattr(self.tokenizer, 'vocab_size', actual_vocab_size)
+            logging.info(f"Tokenizer vocab_size: {standard_vocab_size}")
+            logging.info(f"Actual vocab size: {actual_vocab_size}")
+
+            # 检查是否有超出vocab_size的特殊token
+            special_tokens = self.tokenizer.all_special_tokens
+            special_token_ids = self.tokenizer.all_special_ids
+            max_token_id = max(special_token_ids) if special_token_ids else 0
+
+            logging.info(f"Max special token ID: {max_token_id}")
+            logging.info(f"Special tokens: {special_tokens[:10]}...")  # 只显示前10个
+
+            # 🔧 修复45: 检测并修复vocab_size不匹配问题
+            if max_token_id >= standard_vocab_size:
+                logging.error(f"🚨 CRITICAL: Special token IDs exceed standard vocab_size!")
+                logging.error(f"   Standard vocab_size: {standard_vocab_size}")
+                logging.error(f"   Max special token ID: {max_token_id}")
+                logging.error(f"   This WILL cause embedding lookup errors and gradient explosions!")
+
+                # 检查模型的实际embedding层大小
+                try:
+                    if hasattr(self, 'model') and hasattr(self.model, 'llama_model'):
+                        embed_layer = self.model.llama_model.model.embed_tokens
+                        actual_embed_size = embed_layer.num_embeddings
+                        logging.error(f"   Model embedding layer size: {actual_embed_size}")
+
+                        if actual_embed_size > standard_vocab_size:
+                            logging.info(f"✅ Model embedding layer ({actual_embed_size}) can handle special tokens")
+                            logging.info(f"   Updating tokenizer vocab_size to match embedding layer")
+                            # 更新tokenizer的vocab_size以匹配实际embedding层
+                            self.tokenizer.vocab_size = actual_embed_size
+                            logging.info(f"   Updated tokenizer vocab_size: {self.tokenizer.vocab_size}")
+                        else:
+                            logging.error(f"❌ Model embedding layer ({actual_embed_size}) too small for special tokens!")
+                            logging.error(f"   This requires model architecture changes or data preprocessing")
+
+                    else:
+                        logging.warning(f"Cannot access model embedding layer for size check")
+
+                except Exception as e:
+                    logging.error(f"Failed to check model embedding layer: {e}")
+
+                # 提供解决方案建议
+                logging.error(f"")
+                logging.error(f"💡 SOLUTIONS:")
+                logging.error(f"1. 🔧 IMMEDIATE FIX: Update tokenizer vocab_size to match embedding layer")
+                logging.error(f"2. 🏗️  MODEL FIX: Resize embedding layer to accommodate special tokens")
+                logging.error(f"3. 📊 DATA FIX: Preprocess data to replace invalid tokens")
+                logging.error(f"4. ⚙️  CONFIG FIX: Use compatible tokenizer/model combination")
+                logging.error(f"")
+            else:
+                logging.info(f"✅ Tokenizer vocab_size check passed")
 
 
         # 创建输出目录
@@ -712,10 +789,19 @@ class EnhancedCultureMoETrainer:
 
             if total_invalid_tokens > 0:
                 logging.error(f"⚠️  FOUND {total_invalid_tokens} INVALID TOKEN IDs (>= vocab_size)")
+                logging.error(f"🔧 ROOT CAUSE: LLaMA special tokens exceed tokenizer.vocab_size")
+                logging.error(f"💡 IMMEDIATE SOLUTIONS:")
+                logging.error(f"   1. Update tokenizer.vocab_size to match model embedding layer")
+                logging.error(f"   2. Preprocess data to replace invalid tokens with valid ones")
+                logging.error(f"   3. Use a compatible tokenizer/model combination")
+                logging.error(f"🚨 THIS IS THE PRIMARY CAUSE OF NaN/Inf GRADIENTS!")
+
             if total_negative_tokens > 0:
                 logging.error(f"⚠️  FOUND {total_negative_tokens} NEGATIVE TOKEN IDs")
             if nan_count > 0 or inf_count > 0:
                 logging.error(f"⚠️  FOUND {nan_count} NaN + {inf_count} Inf VALUES IN EMBEDDINGS")
+                if total_invalid_tokens > 0:
+                    logging.error(f"💡 NaN/Inf embeddings are CAUSED by invalid token IDs above!")
 
         except Exception as e:
             logging.error(f"❌ Failed to diagnose NaN batch: {str(e)}")
@@ -1300,6 +1386,9 @@ class EnhancedCultureMoETrainer:
         # 移动到设备
         self.model = self.model.to(self.device)
 
+        # 🔧 修复47: 验证embedding层和tokenizer的兼容性
+        self.validate_tokenizer_model_compatibility()
+
         # LLaMA特殊内存优化
         if 'llama' in self.args.base_model_path.lower():
             logging.info("Applying LLaMA-specific memory optimizations")
@@ -1364,6 +1453,55 @@ class EnhancedCultureMoETrainer:
 
         # 计算参数统计
         self.log_model_info()
+
+    def validate_tokenizer_model_compatibility(self):
+        """验证tokenizer和模型embedding层的兼容性"""
+        try:
+            # 获取embedding层信息
+            actual_model = self.model.module if hasattr(self.model, 'module') else self.model
+            embed_layer = actual_model.llama_model.model.embed_tokens
+            model_vocab_size = embed_layer.num_embeddings
+
+            # 获取tokenizer信息
+            tokenizer_vocab_size = getattr(self.tokenizer, 'vocab_size', 50000)
+            special_token_ids = self.tokenizer.all_special_ids
+            max_special_token_id = max(special_token_ids) if special_token_ids else 0
+
+            logging.info(f"🔍 Tokenizer-Model Compatibility Check:")
+            logging.info(f"   Tokenizer vocab_size: {tokenizer_vocab_size}")
+            logging.info(f"   Model embedding size: {model_vocab_size}")
+            logging.info(f"   Max special token ID: {max_special_token_id}")
+
+            # 检查兼容性
+            if max_special_token_id >= model_vocab_size:
+                logging.error(f"🚨 CRITICAL INCOMPATIBILITY DETECTED!")
+                logging.error(f"   Special token IDs ({max_special_token_id}) exceed model vocab size ({model_vocab_size})")
+                logging.error(f"   This WILL cause embedding lookup errors and training failures!")
+
+                # 尝试自动修复
+                if model_vocab_size > tokenizer_vocab_size:
+                    logging.info(f"🔧 Auto-fixing: Updating tokenizer vocab_size to {model_vocab_size}")
+                    self.tokenizer.vocab_size = model_vocab_size
+                    logging.info(f"✅ Tokenizer vocab_size updated successfully")
+                else:
+                    logging.error(f"❌ Cannot auto-fix: Model embedding layer too small")
+                    logging.error(f"💡 Manual fixes required:")
+                    logging.error(f"   1. Resize model embedding layer to {max_special_token_id + 1}")
+                    logging.error(f"   2. Use different tokenizer without extended special tokens")
+                    logging.error(f"   3. Preprocess data to remove/replace invalid tokens")
+
+            elif max_special_token_id >= tokenizer_vocab_size:
+                logging.warning(f"⚠️  Special tokens exceed tokenizer vocab_size but fit in model")
+                if model_vocab_size > tokenizer_vocab_size:
+                    logging.info(f"🔧 Auto-fixing: Updating tokenizer vocab_size to {model_vocab_size}")
+                    self.tokenizer.vocab_size = model_vocab_size
+                    logging.info(f"✅ Tokenizer vocab_size updated successfully")
+            else:
+                logging.info(f"✅ Tokenizer and model are compatible")
+
+        except Exception as e:
+            logging.error(f"❌ Failed to validate tokenizer-model compatibility: {e}")
+            logging.warning(f"⚠️  Proceeding without validation - monitor for embedding lookup errors")
 
     def freeze_base_model(self):
         """冻结基础模型参数"""
