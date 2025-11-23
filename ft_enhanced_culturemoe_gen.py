@@ -84,21 +84,63 @@ class CultureDataset(Dataset):
         # 🔍 调试：检查instruction是否包含special tokens
         if '<|begin_of_text|>' in instruction:
             logging.warning(f"Found <|begin_of_text|> in instruction: {instruction[:100]}...")
+            logging.warning(f"Instruction length: {len(instruction)}")
+            logging.warning(f"This suggests data was pre-wrapped and possibly truncated!")
         if '<|start_header_id|>' in instruction:
             logging.warning(f"Found <|start_header_id|> in instruction: {instruction[:100]}...")
+            logging.warning(f"This confirms double-wrapping issue!")
 
-        # 清理instruction中可能重复的special tokens
+        # 🔧 智能清理：处理截断导致的重复包装问题
         clean_instruction = instruction
-        # 移除所有可能的special tokens
-        special_tokens_to_remove = [
-            '<|begin_of_text|>',
-            '<|start_header_id|>',
-            '<|end_header_id|>',
-            '<|eot_id|>'
-        ]
-        for token in special_tokens_to_remove:
-            clean_instruction = clean_instruction.replace(token, '')
-        clean_instruction = clean_instruction.strip()
+
+        # 检测是否是被截断的对话格式
+        is_truncated_chat = False
+        if '<|begin_of_text|>' in instruction and '<|start_header_id|>' in instruction:
+            is_truncated_chat = True
+            logging.warning("Detected truncated chat format - extracting user content")
+
+            # 尝试提取用户内容部分
+            try:
+                # 找到用户内容的开始和结束
+                user_start = instruction.find('<|start_header_id|>user<|end_header_id|>')
+                if user_start != -1:
+                    content_start = user_start + len('<|start_header_id|>user<|end_header_id|>')
+
+                    # 查找内容结束位置
+                    eot_pos = instruction.find('<|eot_id|>', content_start)
+                    assistant_pos = instruction.find('<|start_header_id|>assistant', content_start)
+
+                    if eot_pos != -1:
+                        clean_instruction = instruction[content_start:eot_pos].strip()
+                    elif assistant_pos != -1:
+                        clean_instruction = instruction[content_start:assistant_pos].strip()
+                    else:
+                        # 截断在用户内容中间，取剩余部分
+                        clean_instruction = instruction[content_start:].strip()
+
+                    logging.info(f"Extracted user content (length: {len(clean_instruction)})")
+            except Exception as e:
+                logging.warning(f"Failed to extract user content, falling back to simple cleaning: {e}")
+                is_truncated_chat = False
+
+        if not is_truncated_chat:
+            # 简单的token清理（原来的方法）
+            special_tokens_to_remove = [
+                '<|begin_of_text|>',
+                '<|start_header_id|>',
+                '<|end_header_id|>',
+                '<|eot_id|>'
+            ]
+            for token in special_tokens_to_remove:
+                clean_instruction = clean_instruction.replace(token, '')
+            clean_instruction = clean_instruction.strip()
+
+        # 最终验证：确保没有残留的special tokens
+        if any(token in clean_instruction for token in ['<|begin_of_text|>', '<|start_header_id|>', '<|end_header_id|>', '<|eot_id|>']):
+            logging.warning("Still found special tokens after cleaning, applying aggressive cleaning")
+            for token in ['<|begin_of_text|>', '<|start_header_id|>', '<|end_header_id|>', '<|eot_id|>']:
+                clean_instruction = clean_instruction.replace(token, '')
+            clean_instruction = clean_instruction.strip()
 
         input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         full_text = input_text + output + "<|eot_id|>"
@@ -2391,7 +2433,7 @@ def main():
     parser.add_argument('--router_lr_multiplier', type=float, default=0.1, help='路由器学习率倍数')
     parser.add_argument('--shared_lr_multiplier', type=float, default=1.0, help='共享层学习率倍数')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='权重衰减')
-    parser.add_argument('--max_length', type=int, default=512, help='最大序列长度')
+    parser.add_argument('--max_length', type=int, default=1024, help='最大序列长度')
     parser.add_argument('--num_workers', type=int, default=2, help='数据加载线程数')
     parser.add_argument('--eval_interval', type=int, default=2, help='评估间隔')
     parser.add_argument('--device', type=str, default='cuda', help='设备')

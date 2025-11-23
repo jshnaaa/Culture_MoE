@@ -240,22 +240,22 @@ echo "Model Architecture:"
 echo "  Base Model + LoRA weights → Complete LoRA-finetuned model (FROZEN)"
 echo "  + Enhanced MoE components → TRAINABLE"
 echo ""
-# 计算批次大小（用于显示）
+# 计算批次大小（用于显示）- 针对max_length=1024优化
 if [ "$DATA_ID" = "2" ] || [ "$DATA_ID" = "3" ]; then
     if [ "$BACKBONE" = "llama" ]; then
-        TRAIN_BATCH_SIZE=3
-        EVAL_BATCH_SIZE=2
+        TRAIN_BATCH_SIZE=2  # 从3减少到2（因为序列长度翻倍）
+        EVAL_BATCH_SIZE=1   # 从2减少到1
     else
-        TRAIN_BATCH_SIZE=8
-        EVAL_BATCH_SIZE=4
+        TRAIN_BATCH_SIZE=4  # 从8减少到4
+        EVAL_BATCH_SIZE=2   # 从4减少到2
     fi
 else
     if [ "$BACKBONE" = "llama" ]; then
-        TRAIN_BATCH_SIZE=2
-        EVAL_BATCH_SIZE=1
+        TRAIN_BATCH_SIZE=1  # 从2减少到1
+        EVAL_BATCH_SIZE=1   # 保持1
     else
-        TRAIN_BATCH_SIZE=4
-        EVAL_BATCH_SIZE=2
+        TRAIN_BATCH_SIZE=2  # 从4减少到2
+        EVAL_BATCH_SIZE=1   # 从2减少到1
     fi
 fi
 
@@ -373,7 +373,7 @@ python ft_enhanced_culturemoe_gen.py \
     --router_lr_multiplier 0.1 \
     --shared_lr_multiplier 1.0 \
     --weight_decay 0.01 \
-    --max_length 512 \
+    --max_length 1024 \
     --num_workers 2 \
     --eval_interval 1 \
     --device cuda
