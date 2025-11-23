@@ -1,5 +1,7 @@
 #!/bin/bash
 
+source /etc/network_turbo
+
 # 获取远程最新代码
 git pull
 
