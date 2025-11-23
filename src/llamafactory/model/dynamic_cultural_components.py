@@ -109,8 +109,8 @@ class LearnableCultureClustering(nn.Module):
         )
 
         # 固定文化分配（作为fallback和初始化）
-        self.register_buffer('fixed_culture_assignments',
-                           self._create_fixed_assignments())
+        # 注意：这是一个列表，不能用register_buffer，直接作为属性保存
+        self.fixed_culture_assignments = self._create_fixed_assignments()
 
         self._init_weights()
 
@@ -186,15 +186,21 @@ class LearnableCultureClustering(nn.Module):
         device = culture_features.device
 
         # 计算每个样本与各聚类中心的相似度
+        # 确保聚类中心在正确设备上
+        cluster_centers = self.culture_cluster_centers.to(device=culture_features.device, dtype=culture_features.dtype)
         similarities = torch.cosine_similarity(
             culture_features.unsqueeze(1),  # [B, 1, culture_dim]
-            self.culture_cluster_centers.unsqueeze(0),  # [1, num_experts, culture_dim]
+            cluster_centers.unsqueeze(0),  # [1, num_experts, culture_dim]
             dim=-1
         )  # [B, num_experts]
 
         # 应用温度和专家置信度
         temperature = torch.clamp(self.clustering_temperature, min=0.1, max=5.0)
         confidence_weights = torch.sigmoid(self.expert_confidence_weights)
+
+        # 确保设备一致性
+        temperature = temperature.to(device=similarities.device, dtype=similarities.dtype)
+        confidence_weights = confidence_weights.to(device=similarities.device, dtype=similarities.dtype)
 
         # 计算软分配
         weighted_similarities = similarities * confidence_weights.unsqueeze(0)
@@ -205,7 +211,7 @@ class LearnableCultureClustering(nn.Module):
             'similarities': similarities,
             'temperature': temperature.item(),
             'confidence_weights': confidence_weights,
-            'cluster_centers': self.culture_cluster_centers,
+            'cluster_centers': cluster_centers,  # 使用已经同步设备的聚类中心
             'affinity_entropy': -torch.sum(expert_affinities * torch.log(expert_affinities + 1e-8), dim=-1).mean()
         }
 
@@ -519,17 +525,27 @@ class DynamicCulturalAwareRouter(nn.Module):
 
         # 5. 最终路由决策
         routing_weights = F.softmax(self.routing_weights, dim=0)
+        # 确保所有logits数据类型一致
+        target_dtype = content_logits.dtype
+        target_device = content_logits.device
+
+        culture_logits = torch.log(culture_affinities + 1e-8).to(dtype=target_dtype, device=target_device)
+        fusion_logits = fusion_logits.to(dtype=target_dtype, device=target_device)
+        routing_weights = routing_weights.to(dtype=target_dtype, device=target_device)
+
         final_logits = (
             routing_weights[0] * content_logits +
-            routing_weights[1] * torch.log(culture_affinities + 1e-8) +  # 转换为logits
+            routing_weights[1] * culture_logits +
             routing_weights[2] * fusion_logits
         )
 
         # 6. 应用温度和softmax
         final_logits = torch.clamp(final_logits, min=-10.0, max=10.0)
+        # 确保温度参数类型匹配
+        temperature = torch.tensor(temperature, dtype=final_logits.dtype, device=final_logits.device)
 
         if final_logits.dtype == torch.float16:
-            logits_for_softmax = final_logits.float() / temperature
+            logits_for_softmax = final_logits.float() / temperature.float()
             expert_weights = F.softmax(logits_for_softmax, dim=-1).half()
         else:
             expert_weights = F.softmax(final_logits / temperature, dim=-1)

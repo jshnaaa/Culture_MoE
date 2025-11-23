@@ -261,6 +261,9 @@ class DynamicEnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 expert_out = torch.zeros_like(expert_out)
 
             weight = expert_weights[:, i].unsqueeze(-1).unsqueeze(-1)
+            # 确保权重和专家输出设备一致
+            weight = weight.to(device=expert_out.device, dtype=expert_out.dtype)
+
             if torch.isnan(weight).any() or torch.isinf(weight).any():
                 logging.warning(f"⚠️  Expert {i} weight contains NaN/Inf, replacing with uniform weight")
                 weight = torch.ones_like(weight) / len(expert_outputs)
@@ -287,6 +290,8 @@ class DynamicEnhancedCultureMoE(LlamaSharedRouterExpertsModel):
 
             # 获取文化特征
             culture_features = routing_info['culture_features']  # [B, culture_dim]
+            # 确保设备一致性
+            culture_features = culture_features.to(device=shared_out.device, dtype=shared_out.dtype)
             culture_features_expanded = culture_features.unsqueeze(1).expand(-1, shared_out.size(1), -1)
 
             gate_input = torch.cat([shared_out, culture_features_expanded], dim=-1)
