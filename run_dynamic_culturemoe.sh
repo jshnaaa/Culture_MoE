@@ -66,7 +66,7 @@ NUM_GPUS="${13:-1}"                 # 默认使用 1 个 GPU
 USE_MASK="${14:-True}"              # 默认使用 MASK 机制 (True=共享专家使用instruction_mask, False=共享专家使用instruction)
 USE_GATE="${15:-True}"              # 默认使用 GATE 机制 (True=使用文化感知门控, False=不使用门控)
 
-# 根据 backbone 选择 base 模型路径和 LoRA 权重路径 (与现有脚本完全一致)
+# 根据 backbone 选择 base 模型路径和 LoRA 权重路径
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
