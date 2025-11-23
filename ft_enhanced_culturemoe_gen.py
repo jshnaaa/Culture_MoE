@@ -81,14 +81,11 @@ class CultureDataset(Dataset):
         label = item.get('label', '0')  # 大洲标签
 
         # 构建输入文本 (使用原始instruction，不是mask版本)
-        # 🔍 调试：检查instruction是否包含special tokens
+        # 检查instruction是否包含special tokens
         if '<|begin_of_text|>' in instruction:
-            logging.warning(f"Found <|begin_of_text|> in instruction: {instruction[:100]}...")
-            logging.warning(f"Instruction length: {len(instruction)}")
-            logging.warning(f"This suggests data was pre-wrapped and possibly truncated!")
+            logging.warning(f"Found <|begin_of_text|> in instruction - possible double-wrapping")
         if '<|start_header_id|>' in instruction:
-            logging.warning(f"Found <|start_header_id|> in instruction: {instruction[:100]}...")
-            logging.warning(f"This confirms double-wrapping issue!")
+            logging.warning(f"Found <|start_header_id|> in instruction - double-wrapping detected")
 
         # 🔧 智能清理：处理截断导致的重复包装问题
         clean_instruction = instruction
@@ -97,7 +94,6 @@ class CultureDataset(Dataset):
         is_truncated_chat = False
         if '<|begin_of_text|>' in instruction and '<|start_header_id|>' in instruction:
             is_truncated_chat = True
-            logging.warning("Detected truncated chat format - extracting user content")
 
             # 尝试提取用户内容部分
             try:
@@ -118,9 +114,8 @@ class CultureDataset(Dataset):
                         # 截断在用户内容中间，取剩余部分
                         clean_instruction = instruction[content_start:].strip()
 
-                    logging.info(f"Extracted user content (length: {len(clean_instruction)})")
             except Exception as e:
-                logging.warning(f"Failed to extract user content, falling back to simple cleaning: {e}")
+                logging.warning(f"Failed to extract user content: {e}")
                 is_truncated_chat = False
 
         if not is_truncated_chat:
@@ -148,9 +143,9 @@ class CultureDataset(Dataset):
         # 构建mask版本的输入文本 (用于共享专家)
         # 如果使用MASK机制，共享专家使用instruction_mask；否则使用原始instruction
         if self.use_mask:
-            # 🔍 调试：检查instruction_mask是否包含special tokens
+            # 检查instruction_mask是否包含special tokens
             if '<|begin_of_text|>' in instruction_mask:
-                logging.warning(f"Found <|begin_of_text|> in instruction_mask: {instruction_mask[:100]}...")
+                logging.warning(f"Found <|begin_of_text|> in instruction_mask - possible double-wrapping")
 
             # 清理instruction_mask中可能重复的special tokens
             clean_instruction_mask = instruction_mask
@@ -186,7 +181,8 @@ class CultureDataset(Dataset):
         attention_mask_mask = encoding_mask['attention_mask'].squeeze(0)
 
         # ✅ 验证token ID范围，防止超大token ID导致NaN
-        vocab_size = getattr(self.tokenizer, 'vocab_size', 128000)
+        vocab_size = getattr(self.tokenizer, 'vocab_size', 128256)  # LLaMA默认是128256
+
 
         # 获取安全的替换token ID
         def get_safe_replacement_token_id():
@@ -405,13 +401,6 @@ class EnhancedCultureMoETrainer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # 🔍 调试tokenizer信息
-        logging.info(f"Tokenizer info:")
-        logging.info(f"  vocab_size: {getattr(self.tokenizer, 'vocab_size', 'Unknown')}")
-        logging.info(f"  unk_token_id: {getattr(self.tokenizer, 'unk_token_id', 'None')}")
-        logging.info(f"  pad_token_id: {getattr(self.tokenizer, 'pad_token_id', 'None')}")
-        logging.info(f"  eos_token_id: {getattr(self.tokenizer, 'eos_token_id', 'None')}")
-        logging.info(f"  bos_token_id: {getattr(self.tokenizer, 'bos_token_id', 'None')}")
 
         # 创建输出目录
         os.makedirs(args.output_dir, exist_ok=True)
