@@ -664,6 +664,10 @@ class SimpleMoETrainer:
                 # 检查损失是否为NaN或无穷大
                 if torch.isnan(loss) or torch.isinf(loss):
                     logging.warning(f"Invalid loss detected: {loss.item()}, skipping batch")
+                    # 清理优化器状态，防止NaN传播
+                    optimizer.zero_grad()
+                    # 强制垃圾回收
+                    torch.cuda.empty_cache() if torch.cuda.is_available() else None
                     continue
 
                 # 反向传播
@@ -679,6 +683,12 @@ class SimpleMoETrainer:
                 epoch_loss += loss.item()
                 epoch_steps += 1
                 global_step += 1
+
+                # 定期健康检查
+                if global_step % 50 == 0 and hasattr(model, 'check_model_health'):
+                    health = model.check_model_health()
+                    if health['has_nan_params'] or health['has_inf_params']:
+                        logging.warning(f"Model health issues detected at step {global_step}")
 
                 # 更新进度条
                 current_avg_loss = epoch_loss / epoch_steps

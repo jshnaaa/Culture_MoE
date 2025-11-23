@@ -350,6 +350,37 @@ class SimpleMoELayer(nn.Module):
                 self.expert_activation_history[:, idx] = expert_activation
                 self.activation_idx += 1
 
+    def _sanitize_expert_input(self, hidden_states: torch.Tensor, expert_idx: int) -> torch.Tensor:
+        """
+        为专家清理输入，防止NaN传播
+        """
+        # 检查是否有NaN/Inf
+        has_nan = torch.isnan(hidden_states).any()
+        has_inf = torch.isinf(hidden_states).any()
+
+        if has_nan or has_inf:
+            logging.warning(f"Expert {expert_idx} input contains NaN: {has_nan}, Inf: {has_inf}")
+
+            # 使用逐元素替换，保持梯度连接
+            clean_states = torch.where(
+                torch.isnan(hidden_states) | torch.isinf(hidden_states),
+                torch.zeros_like(hidden_states),
+                hidden_states
+            )
+
+            # 额外的范围限制
+            clean_states = torch.clamp(clean_states, min=-5.0, max=5.0)
+
+            # 最终验证
+            if torch.isnan(clean_states).any() or torch.isinf(clean_states).any():
+                logging.error(f"Failed to sanitize expert {expert_idx} input, using zeros")
+                return torch.zeros_like(hidden_states)
+
+            return clean_states
+
+        # 即使没有NaN/Inf，也应用温和的范围限制
+        return torch.clamp(hidden_states, min=-5.0, max=5.0)
+
     def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         前向传播 - 数值稳定版本
@@ -390,7 +421,9 @@ class SimpleMoELayer(nn.Module):
                 # 温和的专家权重约束（避免破坏梯度）
                 self._apply_expert_weight_constraints(expert)
 
-                expert_output = expert(hidden_states)  # [B, L, H]
+                # 关键修复：在传给专家之前先清理输入
+                clean_input = self._sanitize_expert_input(hidden_states, i)
+                expert_output = expert(clean_input)  # [B, L, H]
 
                 # 强制限制专家输出范围
                 expert_output = torch.clamp(expert_output, min=-3.0, max=3.0)
@@ -562,6 +595,94 @@ class SimpleMoEModel(nn.Module):
 
         logging.info("MoE model weights initialized with balanced initialization (std=0.02)")
 
+    def _sanitize_hidden_states(self, hidden_states: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
+        """
+        清理和修复隐藏状态中的NaN/Inf，这是防止级联失败的关键步骤
+        """
+        batch_size, seq_len, hidden_dim = hidden_states.shape
+
+        # 检查是否存在NaN/Inf
+        has_nan = torch.isnan(hidden_states).any()
+        has_inf = torch.isinf(hidden_states).any()
+
+        if has_nan or has_inf:
+            logging.warning(f"Base model output contains NaN: {has_nan}, Inf: {has_inf}. Applying emergency cleanup.")
+
+            # 策略1: 使用embedding层重新计算干净的隐藏状态
+            try:
+                with torch.no_grad():
+                    # 获取embedding层输出作为fallback
+                    if hasattr(self.llama_model, 'model') and hasattr(self.llama_model.model, 'embed_tokens'):
+                        clean_embeds = self.llama_model.model.embed_tokens(input_ids)
+
+                        # 如果embedding也有问题，使用随机初始化
+                        if torch.isnan(clean_embeds).any() or torch.isinf(clean_embeds).any():
+                            logging.warning("Embedding layer also corrupted, using random initialization")
+                            clean_embeds = torch.randn_like(hidden_states) * 0.02
+
+                        # 逐位置检查并替换损坏的隐藏状态
+                        mask_nan = torch.isnan(hidden_states)
+                        mask_inf = torch.isinf(hidden_states)
+                        mask_bad = mask_nan | mask_inf
+
+                        # 使用embedding扩展到hidden_dim（如果维度不匹配）
+                        if clean_embeds.size(-1) != hidden_dim:
+                            # 简单的线性投影或填充
+                            if clean_embeds.size(-1) < hidden_dim:
+                                padding = torch.zeros(batch_size, seq_len, hidden_dim - clean_embeds.size(-1),
+                                                    device=clean_embeds.device, dtype=clean_embeds.dtype)
+                                clean_embeds = torch.cat([clean_embeds, padding], dim=-1)
+                            else:
+                                clean_embeds = clean_embeds[:, :, :hidden_dim]
+
+                        # 替换损坏的部分
+                        hidden_states = torch.where(mask_bad, clean_embeds, hidden_states)
+
+            except Exception as e:
+                logging.warning(f"Emergency embedding fallback failed: {e}")
+                # 最后的fallback：使用小的随机值
+                hidden_states = torch.where(
+                    torch.isnan(hidden_states) | torch.isinf(hidden_states),
+                    torch.randn_like(hidden_states) * 0.01,
+                    hidden_states
+                )
+
+        # 额外的数值范围保护
+        hidden_states = torch.clamp(hidden_states, min=-10.0, max=10.0)
+
+        # 最终验证
+        if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
+            logging.error("Failed to sanitize hidden states, using zero tensor")
+            hidden_states = torch.zeros_like(hidden_states)
+
+        return hidden_states
+
+    def _compute_safe_fusion_weight(self, device, dtype) -> torch.Tensor:
+        """
+        安全地计算融合权重，防止NaN传播
+        """
+        try:
+            # 检查融合权重参数本身
+            if torch.isnan(self.moe_fusion_weight).any() or torch.isinf(self.moe_fusion_weight).any():
+                logging.warning("Fusion weight parameter contains NaN/Inf, resetting to 0.1")
+                with torch.no_grad():
+                    self.moe_fusion_weight.data.fill_(0.1)
+
+            # 安全计算sigmoid
+            raw_weight = self.moe_fusion_weight.clamp(-10.0, 10.0)  # 防止sigmoid饱和
+            fusion_weight = torch.sigmoid(raw_weight)
+
+            # 验证结果
+            if torch.isnan(fusion_weight).any() or torch.isinf(fusion_weight).any():
+                logging.warning("Sigmoid result contains NaN/Inf, using fallback")
+                fusion_weight = torch.tensor(0.1, device=device, dtype=dtype)
+
+            return fusion_weight
+
+        except Exception as e:
+            logging.warning(f"Fusion weight computation failed: {e}, using fallback")
+            return torch.tensor(0.1, device=device, dtype=dtype)
+
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         """
         前向传播
@@ -586,6 +707,9 @@ class SimpleMoEModel(nn.Module):
 
         hidden_states = llama_outputs.last_hidden_state  # [B, L, H]
 
+        # 关键修复：立即检查和清理基础模型输出
+        hidden_states = self._sanitize_hidden_states(hidden_states, input_ids)
+
         # hidden_states现在应该有梯度，因为最后一层是可训练的
 
         # 确保MoE层在正确的设备上
@@ -600,11 +724,7 @@ class SimpleMoEModel(nn.Module):
         moe_output, expert_weights, moe_load_balance_loss = self.moe_layer(hidden_states)  # [B, L, H], [B, num_experts], scalar
 
         # 融合原始隐藏状态和 MoE 输出（使用更保守的融合策略）
-        try:
-            fusion_weight = torch.sigmoid(self.moe_fusion_weight)
-        except:
-            logging.warning("Sigmoid failed, using fixed fusion weight")
-            fusion_weight = torch.tensor(0.1, device=hidden_states.device, dtype=hidden_states.dtype)
+        fusion_weight = self._compute_safe_fusion_weight(hidden_states.device, hidden_states.dtype)
 
         # 检查数值稳定性
         if torch.isnan(moe_output).any() or torch.isinf(moe_output).any():
@@ -671,6 +791,67 @@ class SimpleMoEModel(nn.Module):
             outputs['weighted_load_balance_loss'] = self.load_balance_weight * moe_load_balance_loss
 
         return outputs
+
+    def check_model_health(self) -> Dict:
+        """
+        检查模型健康状态，识别NaN/Inf参数
+        """
+        health_report = {
+            'has_nan_params': False,
+            'has_inf_params': False,
+            'problematic_modules': [],
+            'total_params': 0,
+            'nan_param_count': 0,
+            'inf_param_count': 0
+        }
+
+        for name, param in self.named_parameters():
+            if param is not None:
+                health_report['total_params'] += param.numel()
+
+                if torch.isnan(param).any():
+                    health_report['has_nan_params'] = True
+                    health_report['nan_param_count'] += torch.isnan(param).sum().item()
+                    health_report['problematic_modules'].append(f"{name} (NaN)")
+
+                if torch.isinf(param).any():
+                    health_report['has_inf_params'] = True
+                    health_report['inf_param_count'] += torch.isinf(param).sum().item()
+                    health_report['problematic_modules'].append(f"{name} (Inf)")
+
+        # 如果发现问题，尝试修复
+        if health_report['has_nan_params'] or health_report['has_inf_params']:
+            logging.error(f"Model health check failed: {health_report}")
+            self._emergency_parameter_reset()
+
+        return health_report
+
+    def _emergency_parameter_reset(self):
+        """
+        紧急参数重置，修复NaN/Inf参数
+        """
+        logging.warning("Performing emergency parameter reset due to NaN/Inf detection")
+
+        for name, param in self.named_parameters():
+            if param is not None and param.requires_grad:
+                with torch.no_grad():
+                    # 检查并修复NaN/Inf
+                    if torch.isnan(param).any() or torch.isinf(param).any():
+                        logging.warning(f"Resetting parameter: {name}")
+
+                        # 根据参数类型选择重置策略
+                        if 'weight' in name:
+                            if len(param.shape) >= 2:
+                                nn.init.xavier_uniform_(param, gain=0.1)
+                            else:
+                                param.data.normal_(0, 0.01)
+                        elif 'bias' in name:
+                            param.data.zero_()
+                        else:
+                            param.data.normal_(0, 0.01)
+
+                        # 应用范围限制
+                        param.data.clamp_(-1.0, 1.0)
 
     def apply_adaptive_gradient_clipping(self, max_norm: float = 1.0):
         """自适应梯度裁剪"""
