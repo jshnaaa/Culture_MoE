@@ -196,17 +196,20 @@ class LayeredOptimizer:
                  moe_lr_multiplier: float = 1.0,
                  router_lr_multiplier: float = 1.0,
                  shared_lr_multiplier: float = 1.0,
+                 dynamic_clustering_lr_multiplier: float = 0.1,  # 🔧 修复13: 动态聚类组件使用更低学习率
                  weight_decay: float = 0.01):
 
         self.base_lr = base_lr
         self.moe_lr_multiplier = moe_lr_multiplier
         self.router_lr_multiplier = router_lr_multiplier
         self.shared_lr_multiplier = shared_lr_multiplier
+        self.dynamic_clustering_lr_multiplier = dynamic_clustering_lr_multiplier
 
         # 分组参数
         moe_params = []
         router_params = []
         shared_params = []
+        dynamic_clustering_params = []  # 🔧 修复14: 添加动态聚类参数组
 
         for name, param in model.named_parameters():
             if not param.requires_grad:
@@ -215,7 +218,13 @@ class LayeredOptimizer:
             # DataParallel兼容性：移除module.前缀
             clean_name = name.replace('module.', '')
 
-            if 'cultural_experts' in clean_name or 'culture' in clean_name:
+            # 🔧 修复15: 更精确的参数分组
+            if any(keyword in clean_name.lower() for keyword in [
+                'culture_cluster_centers', 'clustering_temperature',
+                'expert_confidence_weights', 'culture_feature_extractor'
+            ]):
+                dynamic_clustering_params.append(param)
+            elif 'cultural_experts' in clean_name or 'culture' in clean_name:
                 moe_params.append(param)
             elif 'router' in clean_name:
                 router_params.append(param)
@@ -226,6 +235,13 @@ class LayeredOptimizer:
 
         # 创建参数组
         param_groups = []
+        # 🔧 修复16: 动态聚类参数组使用最低学习率
+        if dynamic_clustering_params:
+            param_groups.append({
+                'params': dynamic_clustering_params,
+                'lr': base_lr * dynamic_clustering_lr_multiplier,
+                'weight_decay': weight_decay * 0.1  # 更小的权重衰减
+            })
         if moe_params:
             param_groups.append({
                 'params': moe_params,
@@ -248,6 +264,7 @@ class LayeredOptimizer:
         self.optimizer = optim.AdamW(param_groups)
 
         logging.info(f"LayeredOptimizer initialized:")
+        logging.info(f"  Dynamic Clustering params: {len(dynamic_clustering_params)} (lr={base_lr * dynamic_clustering_lr_multiplier:.2e})")
         logging.info(f"  MoE params: {len(moe_params)} (lr={base_lr * moe_lr_multiplier:.2e})")
         logging.info(f"  Router params: {len(router_params)} (lr={base_lr * router_lr_multiplier:.2e})")
         logging.info(f"  Shared params: {len(shared_params)} (lr={base_lr * shared_lr_multiplier:.2e})")
@@ -1566,18 +1583,24 @@ class EnhancedCultureMoETrainer:
                     # AMP优化器步骤
                     self.scaler.unscale_(self.optimizer.optimizer)
 
-                    # 对路由器参数进行更严格的梯度裁剪
+                    # 🔧 修复9: 对动态聚类参数进行更严格的梯度裁剪
                     router_params = []
+                    dynamic_clustering_params = []
                     other_params = []
                     for name, param in self.model.named_parameters():
                         if 'router' in name.lower():
                             router_params.append(param)
+                        elif any(keyword in name.lower() for keyword in [
+                            'culture_cluster_centers', 'clustering_temperature',
+                            'expert_confidence_weights', 'culture_feature_extractor'
+                        ]):
+                            dynamic_clustering_params.append(param)
                         else:
                             other_params.append(param)
 
                     # ✅ 检查梯度中的NaN/Inf (AMP版本) - 跳过策略
                     has_nan_grad = False
-                    for param in router_params + other_params:
+                    for param in router_params + dynamic_clustering_params + other_params:
                         if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
                             has_nan_grad = True
                             break  # 发现异常梯度就停止检查
@@ -1592,11 +1615,13 @@ class EnhancedCultureMoETrainer:
                         # 标记需要跳过当前batch
                         should_skip_batch = True
                     else:
-                        # 只有在没有NaN梯度时才执行正常的优化步骤
+                        # 🔧 修复10: 更严格的梯度裁剪设置 (AMP版本)
+                        if dynamic_clustering_params:
+                            torch.nn.utils.clip_grad_norm_(dynamic_clustering_params, max_norm=0.1)  # 动态聚类最严格
                         if router_params:
-                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
+                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.3)  # 路由器严格
                         if other_params:
-                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)   # 其他参数正常
+                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=0.8)   # 其他参数也更严格
 
                         self.scaler.step(self.optimizer.optimizer)
                         self.scaler.update()
@@ -1604,18 +1629,24 @@ class EnhancedCultureMoETrainer:
                         self.optimizer.zero_grad()
                 else:
                     # 标准优化器步骤
-                    # 对路由器参数进行更严格的梯度裁剪
+                    # 🔧 修复11: 对动态聚类参数进行更严格的梯度裁剪 (非AMP版本)
                     router_params = []
+                    dynamic_clustering_params = []
                     other_params = []
                     for name, param in self.model.named_parameters():
                         if 'router' in name.lower():
                             router_params.append(param)
+                        elif any(keyword in name.lower() for keyword in [
+                            'culture_cluster_centers', 'clustering_temperature',
+                            'expert_confidence_weights', 'culture_feature_extractor'
+                        ]):
+                            dynamic_clustering_params.append(param)
                         else:
                             other_params.append(param)
 
                     # ✅ 检查梯度中的NaN/Inf (标准版本) - 跳过策略
                     has_nan_grad = False
-                    for param in router_params + other_params:
+                    for param in router_params + dynamic_clustering_params + other_params:
                         if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
                             has_nan_grad = True
                             break  # 发现异常梯度就停止检查
@@ -1628,11 +1659,13 @@ class EnhancedCultureMoETrainer:
                         # 标记需要跳过当前batch
                         should_skip_batch = True
                     else:
-                        # 只有在没有NaN梯度时才执行正常的优化步骤
+                        # 🔧 修复12: 更严格的梯度裁剪设置 (非AMP版本)
+                        if dynamic_clustering_params:
+                            torch.nn.utils.clip_grad_norm_(dynamic_clustering_params, max_norm=0.1)  # 动态聚类最严格
                         if router_params:
-                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.5)  # 路由器更严格
+                            torch.nn.utils.clip_grad_norm_(router_params, max_norm=0.3)  # 路由器严格
                         if other_params:
-                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)   # 其他参数正常
+                            torch.nn.utils.clip_grad_norm_(other_params, max_norm=0.8)   # 其他参数也更严格
 
                         self.optimizer.step()
                         self.scheduler.step()

@@ -96,16 +96,19 @@ class LearnableCultureClustering(nn.Module):
         self.num_cultures = num_cultures
 
         # 可学习的文化聚类中心 - 每个专家对应一个聚类中心
+        # 🔧 修复1: 使用更小的初始化，避免梯度爆炸
         self.culture_cluster_centers = nn.Parameter(
-            torch.randn(num_experts, culture_dim) * 0.1
+            torch.randn(num_experts, culture_dim) * 0.01  # 从0.1减小到0.01
         )
 
         # 聚类温度参数（可学习）
-        self.clustering_temperature = nn.Parameter(torch.tensor(1.0))
+        # 🔧 修复2: 初始温度设为更大值，提高数值稳定性
+        self.clustering_temperature = nn.Parameter(torch.tensor(2.0))  # 从1.0增加到2.0
 
         # 专家置信度权重（可学习）
+        # 🔧 修复3: 初始置信度设为更保守值
         self.expert_confidence_weights = nn.Parameter(
-            torch.ones(num_experts) * 0.5
+            torch.ones(num_experts) * 0.1  # 从0.5减小到0.1
         )
 
         # 固定文化分配（作为fallback和初始化）
@@ -113,6 +116,26 @@ class LearnableCultureClustering(nn.Module):
         self.fixed_culture_assignments = self._create_fixed_assignments()
 
         self._init_weights()
+
+        # 🔧 修复17: 添加参数初始化检查
+        self._validate_initialization()
+
+    def _validate_initialization(self):
+        """验证参数初始化是否合理"""
+        # 检查聚类中心是否包含NaN/Inf
+        if torch.isnan(self.culture_cluster_centers).any() or torch.isinf(self.culture_cluster_centers).any():
+            logging.warning("Cluster centers contain NaN/Inf, reinitializing...")
+            self.culture_cluster_centers.data = torch.randn_like(self.culture_cluster_centers) * 0.01
+
+        # 检查温度参数
+        if torch.isnan(self.clustering_temperature) or torch.isinf(self.clustering_temperature):
+            logging.warning("Clustering temperature contains NaN/Inf, reinitializing...")
+            self.clustering_temperature.data = torch.tensor(2.0)
+
+        # 检查置信度权重
+        if torch.isnan(self.expert_confidence_weights).any() or torch.isinf(self.expert_confidence_weights).any():
+            logging.warning("Expert confidence weights contain NaN/Inf, reinitializing...")
+            self.expert_confidence_weights.data = torch.ones_like(self.expert_confidence_weights) * 0.1
 
     def _init_weights(self):
         """初始化权重"""
@@ -188,23 +211,30 @@ class LearnableCultureClustering(nn.Module):
         # 计算每个样本与各聚类中心的相似度
         # 确保聚类中心在正确设备上
         cluster_centers = self.culture_cluster_centers.to(device=culture_features.device, dtype=culture_features.dtype)
-        similarities = torch.cosine_similarity(
-            culture_features.unsqueeze(1),  # [B, 1, culture_dim]
-            cluster_centers.unsqueeze(0),  # [1, num_experts, culture_dim]
-            dim=-1
-        )  # [B, num_experts]
+
+        # 🔧 修复4: 添加L2归一化，提高余弦相似度数值稳定性
+        culture_features_norm = F.normalize(culture_features, p=2, dim=-1, eps=1e-8)
+        cluster_centers_norm = F.normalize(cluster_centers, p=2, dim=-1, eps=1e-8)
+
+        # 使用归一化后的特征计算相似度
+        similarities = torch.mm(culture_features_norm, cluster_centers_norm.t())  # [B, num_experts]
+
+        # 🔧 修复5: 限制相似度范围，避免极值
+        similarities = torch.clamp(similarities, min=-0.9, max=0.9)
 
         # 应用温度和专家置信度
-        temperature = torch.clamp(self.clustering_temperature, min=0.1, max=5.0)
+        temperature = torch.clamp(self.clustering_temperature, min=0.5, max=3.0)  # 缩小温度范围
         confidence_weights = torch.sigmoid(self.expert_confidence_weights)
 
         # 确保设备一致性
         temperature = temperature.to(device=similarities.device, dtype=similarities.dtype)
         confidence_weights = confidence_weights.to(device=similarities.device, dtype=similarities.dtype)
 
-        # 计算软分配
+        # 🔧 修复6: 更稳定的软分配计算
         weighted_similarities = similarities * confidence_weights.unsqueeze(0)
-        expert_affinities = F.softmax(weighted_similarities / temperature, dim=-1)
+        # 限制logits范围，避免softmax溢出
+        weighted_similarities = torch.clamp(weighted_similarities / temperature, min=-10.0, max=10.0)
+        expert_affinities = F.softmax(weighted_similarities, dim=-1)
 
         # 收集聚类信息
         clustering_info = {
@@ -529,9 +559,17 @@ class DynamicCulturalAwareRouter(nn.Module):
         target_dtype = content_logits.dtype
         target_device = content_logits.device
 
-        culture_logits = torch.log(culture_affinities + 1e-8).to(dtype=target_dtype, device=target_device)
+        # 🔧 修复7: 更安全的log计算，避免数值不稳定
+        culture_logits = torch.log(torch.clamp(culture_affinities, min=1e-6, max=1.0)).to(dtype=target_dtype, device=target_device)
+        culture_logits = torch.clamp(culture_logits, min=-20.0, max=5.0)  # 限制log范围
+
         fusion_logits = fusion_logits.to(dtype=target_dtype, device=target_device)
+        fusion_logits = torch.clamp(fusion_logits, min=-10.0, max=10.0)  # 限制融合logits范围
+
         routing_weights = routing_weights.to(dtype=target_dtype, device=target_device)
+
+        # 🔧 修复8: 添加梯度裁剪和数值检查
+        content_logits = torch.clamp(content_logits, min=-10.0, max=10.0)
 
         final_logits = (
             routing_weights[0] * content_logits +
