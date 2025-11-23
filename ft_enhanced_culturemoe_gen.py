@@ -39,6 +39,7 @@ from peft import PeftModel
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 from llamafactory.model.enhanced_culturemoe import EnhancedCultureMoE
+from llamafactory.model.dynamic_enhanced_culturemoe import DynamicEnhancedCultureMoE
 from llamafactory.model.moe_args import ModelArgs
 
 
@@ -355,6 +356,40 @@ class EnhancedCultureMoETrainer:
                 culture_ids = batch['culture_ids'].cpu().numpy()
                 self.epoch_culture_ids.extend(culture_ids.tolist())
 
+            # 🆕 收集动态聚类信息（如果存在）
+            if 'routing_info' in outputs:
+                routing_info = outputs['routing_info']
+
+                # 收集动态权重信息
+                if 'affinity_info' in routing_info and 'dynamic_weight' in routing_info['affinity_info']:
+                    dynamic_weight = routing_info['affinity_info']['dynamic_weight']
+                    if not hasattr(self, 'epoch_dynamic_weights'):
+                        self.epoch_dynamic_weights = []
+                    self.epoch_dynamic_weights.append(float(dynamic_weight))
+
+                # 收集聚类信息
+                if 'affinity_info' in routing_info and 'clustering_info' in routing_info['affinity_info']:
+                    clustering_info = routing_info['affinity_info']['clustering_info']
+                    if not hasattr(self, 'epoch_clustering_info'):
+                        self.epoch_clustering_info = []
+
+                    # 提取聚类中心的统计信息
+                    cluster_centers = clustering_info.get('cluster_centers', None)
+                    if cluster_centers is not None:
+                        cluster_stats = {
+                            'center_norms': torch.norm(cluster_centers, dim=1).detach().cpu().numpy().tolist(),
+                            'temperature': clustering_info.get('temperature', 1.0),
+                            'affinity_entropy': clustering_info.get('affinity_entropy', 0.0)
+                        }
+                        self.epoch_clustering_info.append(cluster_stats)
+
+                # 收集文化亲和性信息
+                if 'culture_affinities' in routing_info:
+                    culture_affinities = routing_info['culture_affinities'].detach().cpu().numpy()
+                    if not hasattr(self, 'epoch_culture_affinities'):
+                        self.epoch_culture_affinities = []
+                    self.epoch_culture_affinities.append(culture_affinities)
+
         except Exception as e:
             # 静默处理错误，不影响训练
             pass
@@ -474,6 +509,47 @@ class EnhancedCultureMoETrainer:
                             'dominant_experts': np.argsort(culture_mean_usage)[-3:].tolist()
                         }
 
+            # 🆕 计算动态聚类统计
+            dynamic_clustering_stats = {}
+            if hasattr(self, 'epoch_dynamic_weights') and self.epoch_dynamic_weights:
+                dynamic_clustering_stats['dynamic_weight_progression'] = {
+                    'mean': float(np.mean(self.epoch_dynamic_weights)),
+                    'final': float(self.epoch_dynamic_weights[-1]) if self.epoch_dynamic_weights else 0.0,
+                    'progression': self.epoch_dynamic_weights
+                }
+
+            if hasattr(self, 'epoch_clustering_info') and self.epoch_clustering_info:
+                # 分析聚类中心的演变
+                center_norms_history = [info['center_norms'] for info in self.epoch_clustering_info]
+                if center_norms_history:
+                    final_norms = center_norms_history[-1]
+                    dynamic_clustering_stats['cluster_centers'] = {
+                        'final_center_norms': final_norms,
+                        'mean_center_norm': float(np.mean(final_norms)),
+                        'center_diversity': float(np.std(final_norms)),
+                        'norm_evolution': [float(np.mean(norms)) for norms in center_norms_history]
+                    }
+
+                # 温度和熵的演变
+                temperatures = [info['temperature'] for info in self.epoch_clustering_info]
+                entropies = [info['affinity_entropy'] for info in self.epoch_clustering_info]
+                if temperatures:
+                    dynamic_clustering_stats['clustering_parameters'] = {
+                        'final_temperature': float(temperatures[-1]),
+                        'temperature_evolution': temperatures,
+                        'affinity_entropy_evolution': entropies
+                    }
+
+            if hasattr(self, 'epoch_culture_affinities') and self.epoch_culture_affinities:
+                # 分析文化亲和性的分布
+                all_affinities = np.concatenate(self.epoch_culture_affinities, axis=0)
+                affinity_means = np.mean(all_affinities, axis=0)
+                dynamic_clustering_stats['culture_affinities'] = {
+                    'mean_affinity_per_expert': affinity_means.tolist(),
+                    'affinity_std_per_expert': np.std(all_affinities, axis=0).tolist(),
+                    'affinity_balance_ratio': float(np.min(affinity_means) / np.max(affinity_means)) if np.max(affinity_means) > 0 else 0.0
+                }
+
             # 计算汇总统计
             summary = {
                 'epoch': epoch + 1,
@@ -494,7 +570,8 @@ class EnhancedCultureMoETrainer:
                     'max': float(np.max(all_entropies))
                 },
                 'gate_distribution': gate_statistics,
-                'culture_specific_routing': culture_expert_usage
+                'culture_specific_routing': culture_expert_usage,
+                'dynamic_clustering': dynamic_clustering_stats  # 🆕 添加动态聚类统计
             }
 
             # 保存汇总到routing_logs目录
@@ -506,6 +583,25 @@ class EnhancedCultureMoETrainer:
             logging.info(f"   - 样本总数: {len(all_expert_weights)}")
             logging.info(f"   - Gini系数: {summary['expert_utilization']['gini_coefficient']:.4f}")
             logging.info(f"   - 平均路由熵: {summary['routing_entropy']['mean']:.4f}")
+
+            # 🆕 动态聚类指标日志
+            if dynamic_clustering_stats:
+                if 'dynamic_weight_progression' in dynamic_clustering_stats:
+                    final_dynamic_weight = dynamic_clustering_stats['dynamic_weight_progression']['final']
+                    logging.info(f"   - 动态聚类权重: {final_dynamic_weight:.2f}")
+
+                if 'cluster_centers' in dynamic_clustering_stats:
+                    mean_center_norm = dynamic_clustering_stats['cluster_centers']['mean_center_norm']
+                    center_diversity = dynamic_clustering_stats['cluster_centers']['center_diversity']
+                    logging.info(f"   - 聚类中心范数: {mean_center_norm:.4f} (多样性: {center_diversity:.4f})")
+
+                if 'clustering_parameters' in dynamic_clustering_stats:
+                    final_temp = dynamic_clustering_stats['clustering_parameters']['final_temperature']
+                    logging.info(f"   - 聚类温度: {final_temp:.4f}")
+
+                if 'culture_affinities' in dynamic_clustering_stats:
+                    affinity_balance = dynamic_clustering_stats['culture_affinities']['affinity_balance_ratio']
+                    logging.info(f"   - 文化亲和性平衡: {affinity_balance:.4f}")
 
             # ✅ 路由恶化检测
             routing_metrics = {
@@ -525,6 +621,13 @@ class EnhancedCultureMoETrainer:
             self.epoch_expert_weights = []
             self.epoch_gate_values = []
             self.epoch_culture_ids = []
+            # 🆕 清理动态聚类数据
+            if hasattr(self, 'epoch_dynamic_weights'):
+                self.epoch_dynamic_weights = []
+            if hasattr(self, 'epoch_clustering_info'):
+                self.epoch_clustering_info = []
+            if hasattr(self, 'epoch_culture_affinities'):
+                self.epoch_culture_affinities = []
 
         except Exception as e:
             logging.warning(f"保存Epoch {epoch + 1}路由汇总失败: {e}")
@@ -532,6 +635,13 @@ class EnhancedCultureMoETrainer:
             self.epoch_expert_weights = []
             self.epoch_gate_values = []
             self.epoch_culture_ids = []
+            # 🆕 清理动态聚类数据
+            if hasattr(self, 'epoch_dynamic_weights'):
+                self.epoch_dynamic_weights = []
+            if hasattr(self, 'epoch_clustering_info'):
+                self.epoch_clustering_info = []
+            if hasattr(self, 'epoch_culture_affinities'):
+                self.epoch_culture_affinities = []
 
     def compute_gini_coefficient(self, values):
         """计算基尼系数"""
@@ -843,8 +953,8 @@ class EnhancedCultureMoETrainer:
             dropout=self.args.dropout
         )
 
-        # 创建增强的CultureMoE模型
-        self.model = EnhancedCultureMoE(
+        # 创建动态增强的CultureMoE模型
+        self.model = DynamicEnhancedCultureMoE(
             llama_model=base_model,
             config=base_model.config,
             args=moe_args,
@@ -1116,6 +1226,10 @@ class EnhancedCultureMoETrainer:
         total_entropy_loss = 0.0
         total_specialization_loss = 0.0
         total_diversity_loss = 0.0
+        # 🆕 动态聚类损失
+        total_clustering_consistency_loss = 0.0
+        total_clustering_diversity_loss = 0.0
+        total_culture_strength_loss = 0.0
         num_batches = 0
         skipped_batches = 0  # 跳过的batch数量
 
@@ -1152,7 +1266,9 @@ class EnhancedCultureMoETrainer:
                         use_shared_experts=self.args.use_shared_experts,
                         router_temperature=self.args.router_temperature,
                         load_balance_weight=self.args.load_balance_weight,
-                        entropy_weight=self.args.entropy_weight
+                        entropy_weight=self.args.entropy_weight,
+                        current_epoch=epoch + 1,  # 1-based epoch for dynamic clustering
+                        total_epochs=self.args.num_epochs
                     )
             else:
                 outputs = self.model(
@@ -1171,7 +1287,9 @@ class EnhancedCultureMoETrainer:
                     use_shared_experts=self.args.use_shared_experts,
                     router_temperature=self.args.router_temperature,
                     load_balance_weight=self.args.load_balance_weight,
-                    entropy_weight=self.args.entropy_weight
+                    entropy_weight=self.args.entropy_weight,
+                    current_epoch=epoch + 1,  # 1-based epoch for dynamic clustering
+                    total_epochs=self.args.num_epochs
                 )
 
             loss = outputs['loss']
@@ -1539,6 +1657,13 @@ class EnhancedCultureMoETrainer:
                 total_specialization_loss += outputs['specialization_loss'].item()
             if 'diversity_loss' in outputs:
                 total_diversity_loss += outputs['diversity_loss'].item()
+            # 🆕 动态聚类损失收集
+            if 'clustering_consistency_loss' in outputs:
+                total_clustering_consistency_loss += outputs['clustering_consistency_loss'].item()
+            if 'clustering_diversity_loss' in outputs:
+                total_clustering_diversity_loss += outputs['clustering_diversity_loss'].item()
+            if 'culture_strength_loss' in outputs:
+                total_culture_strength_loss += outputs['culture_strength_loss'].item()
 
             num_batches += 1
             self.global_step += 1
@@ -1593,7 +1718,11 @@ class EnhancedCultureMoETrainer:
             logging.info(f"  ├─ Load Balance Loss: {total_load_balance_loss / num_batches:.6f}")
             logging.info(f"  ├─ Entropy Loss: {total_entropy_loss / num_batches:.6f}")
             logging.info(f"  ├─ Specialization Loss: {total_specialization_loss / num_batches:.6f}")
-            logging.info(f"  └─ Diversity Loss: {total_diversity_loss / num_batches:.6f}")
+            logging.info(f"  ├─ Diversity Loss: {total_diversity_loss / num_batches:.6f}")
+            # 🆕 动态聚类损失日志
+            logging.info(f"  ├─ Clustering Consistency Loss: {total_clustering_consistency_loss / num_batches:.6f}")
+            logging.info(f"  ├─ Clustering Diversity Loss: {total_clustering_diversity_loss / num_batches:.6f}")
+            logging.info(f"  └─ Culture Strength Loss: {total_culture_strength_loss / num_batches:.6f}")
         else:
             logging.error("⚠️  All batches were skipped due to NaN/Inf issues!")
 
@@ -1633,6 +1762,10 @@ class EnhancedCultureMoETrainer:
             'train_entropy_loss': safe_avg(total_entropy_loss),
             'train_specialization_loss': safe_avg(total_specialization_loss),
             'train_diversity_loss': safe_avg(total_diversity_loss),
+            # 🆕 动态聚类损失
+            'train_clustering_consistency_loss': safe_avg(total_clustering_consistency_loss),
+            'train_clustering_diversity_loss': safe_avg(total_clustering_diversity_loss),
+            'train_culture_strength_loss': safe_avg(total_culture_strength_loss),
             'skipped_batches': skipped_batches,  # 添加跳过的batch统计
             'success_rate': (num_batches / (num_batches + skipped_batches) * 100) if (num_batches + skipped_batches) > 0 else 0.0
         }
@@ -1686,7 +1819,9 @@ class EnhancedCultureMoETrainer:
                             use_shared_experts=self.args.use_shared_experts,
                             router_temperature=self.args.router_temperature,
                             load_balance_weight=self.args.load_balance_weight,
-                            entropy_weight=self.args.entropy_weight
+                            entropy_weight=self.args.entropy_weight,
+                            current_epoch=epoch + 1,  # 1-based epoch for dynamic clustering
+                            total_epochs=self.args.num_epochs
                         )
 
                         loss = outputs['loss']
@@ -1844,8 +1979,8 @@ class EnhancedCultureMoETrainer:
                 dropout=self.args.dropout
             )
 
-            # 4. 创建新的增强CultureMoE模型
-            test_model = EnhancedCultureMoE(
+            # 4. 创建新的动态增强CultureMoE模型
+            test_model = DynamicEnhancedCultureMoE(
                 llama_model=base_model,
                 config=base_model.config,
                 args=moe_args,
