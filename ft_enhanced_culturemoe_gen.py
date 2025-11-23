@@ -54,7 +54,14 @@ class CultureDataset(Dataset):
         self.use_mask = use_mask
 
         # 🔧 修复50: 使用effective_vocab_size进行token验证
-        self.effective_vocab_size = effective_vocab_size or getattr(tokenizer, 'vocab_size', 128000)
+        # 🔧 修复54: 确保默认值足够大以容纳LLaMA特殊token
+        if effective_vocab_size is None:
+            tokenizer_vocab_size = getattr(tokenizer, 'vocab_size', 128000)
+            # LLaMA最大特殊token是128009，设置为128300确保安全
+            self.effective_vocab_size = max(tokenizer_vocab_size, 128300)
+        else:
+            # 确保传入的值也足够大
+            self.effective_vocab_size = max(effective_vocab_size, 128300)
 
         # 大洲映射 (基于实际数据集的label字段)
         self.continent_map = {
@@ -1485,8 +1492,11 @@ class EnhancedCultureMoETrainer:
         except Exception as e:
             logging.error(f"❌ Failed to validate tokenizer-model compatibility: {e}")
             logging.warning(f"⚠️  Proceeding without validation - monitor for embedding lookup errors")
-            # 使用默认值
-            self._effective_vocab_size = getattr(self.tokenizer, 'vocab_size', 128000)
+            # 🔧 修复53: 使用安全的默认值，确保容纳所有LLaMA特殊token
+            tokenizer_vocab_size = getattr(self.tokenizer, 'vocab_size', 128000)
+            # LLaMA最大特殊token是128009，我们设置为128300确保安全
+            self._effective_vocab_size = max(tokenizer_vocab_size, 128300)
+            logging.info(f"Using safe fallback effective_vocab_size: {self._effective_vocab_size}")
 
     def freeze_base_model(self):
         """冻结基础模型参数"""
