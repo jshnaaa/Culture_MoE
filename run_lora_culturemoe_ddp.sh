@@ -145,7 +145,7 @@ echo "开始训练..."
 
 if [ "$NUM_GPUS" -eq 1 ]; then
     echo "使用单卡训练..."
-    python train_lora_culturemoe_ffn_integrated.py \
+    python train_lora_culturemoe_ffn_integrated_ddp.py \
         --base_model "$BASE_MODEL" \
         --data_path "$TRAIN_FILE" \
         --output_dir "$OUTPUT_DIR" \
@@ -157,6 +157,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --use_mask $USE_MASK \
         --use_gate $USE_GATE \
         --use_culture_loss $USE_CULTURE_LOSS \
+        --num_gpus 1 \
         --seed 42 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 else
@@ -195,13 +196,14 @@ if [ $? -eq 0 ]; then
             EVAL_OUTPUT_DIR="$OUTPUT_DIR/evaluation"
             if [ "$NUM_GPUS" -eq 1 ]; then
                 echo "使用单卡评估..."
-                python eval_lora_culturemoe_ffn_integrated.py \
+                python eval_lora_culturemoe_ffn_integrated_ddp.py \
                     --base_model "$BASE_MODEL" \
                     --lora_weights "$LORA_WEIGHTS" \
                     --test_data "$TEST_DATA_FILE" \
                     --output_dir "$EVAL_OUTPUT_DIR" \
                     --batch_size 8 \
                     --num_experts $NUM_EXPERTS \
+                    --num_gpus 1 \
                     2>&1 | tee "$OUTPUT_DIR/evaluation.log"
             else
                 echo "使用DDP多卡评估，GPU数量: $NUM_GPUS"
