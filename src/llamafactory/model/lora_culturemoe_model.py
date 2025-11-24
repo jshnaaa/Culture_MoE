@@ -48,7 +48,7 @@ class LoRACultureMoELlamaDecoderLayer(nn.Module):
             original_attention.layer_idx = layer_idx
 
         # LoRA增强的Attention
-        self.self_attn = LoRAEnhancedAttention(original_attention, lora_config)
+        self.self_attn = LoRAEnhancedAttention(original_attention, lora_config, config=config, layer_idx=layer_idx)
 
         # LoRA增强的MoE FFN（Enhanced版本，支持共享专家和文化专家分离）
         self.mlp = VectorizedCultureMoE_FFN_WithLoRA_Enhanced(
@@ -498,39 +498,43 @@ def _copy_attention_weights(lora_attn: LoRAEnhancedAttention, base_attn: LlamaAt
 
     # 复制投影层权重到base_layer
     for proj_name in ['q_proj', 'k_proj', 'v_proj', 'o_proj']:
-        lora_proj = getattr(lora_attn, proj_name)
-        base_proj = getattr(base_attn, proj_name)
+        if hasattr(lora_attn, proj_name) and hasattr(base_attn, proj_name):
+            lora_proj = getattr(lora_attn, proj_name)
+            base_proj = getattr(base_attn, proj_name)
 
-        if hasattr(lora_proj, 'base_layer'):
-            lora_proj.base_layer.weight.copy_(base_proj.weight)
-            if base_proj.bias is not None:
-                lora_proj.base_layer.bias.copy_(base_proj.bias)
-        else:
-            lora_proj.weight.copy_(base_proj.weight)
-            if base_proj.bias is not None:
-                lora_proj.bias.copy_(base_proj.bias)
+            if hasattr(lora_proj, 'base_layer'):
+                lora_proj.base_layer.weight.copy_(base_proj.weight)
+                if base_proj.bias is not None:
+                    lora_proj.base_layer.bias.copy_(base_proj.bias)
+            else:
+                lora_proj.weight.copy_(base_proj.weight)
+                if base_proj.bias is not None:
+                    lora_proj.bias.copy_(base_proj.bias)
 
 
 def _copy_ffn_weights_to_experts(lora_mlp, base_mlp: LlamaMLP):
     """复制FFN权重到专家层"""
     # 复制到共享专家
     shared_expert = lora_mlp.shared_expert
-    for proj_name in ['gate_proj', 'up_proj', 'down_proj']:
-        shared_proj = getattr(shared_expert, proj_name)
-        base_proj = getattr(base_mlp, proj_name)
+    if shared_expert is not None:  # 检查共享专家是否存在
+        for proj_name in ['gate_proj', 'up_proj', 'down_proj']:
+            if hasattr(shared_expert, proj_name) and hasattr(base_mlp, proj_name):
+                shared_proj = getattr(shared_expert, proj_name)
+                base_proj = getattr(base_mlp, proj_name)
 
-        if hasattr(shared_proj, 'base_layer'):
-            shared_proj.base_layer.weight.copy_(base_proj.weight)
-        else:
-            shared_proj.weight.copy_(base_proj.weight)
+                if hasattr(shared_proj, 'base_layer'):
+                    shared_proj.base_layer.weight.copy_(base_proj.weight)
+                else:
+                    shared_proj.weight.copy_(base_proj.weight)
 
     # 复制到所有文化专家（初始化为相同权重）
     for expert in lora_mlp.cultural_experts.experts:
         for proj_name in ['gate_proj', 'up_proj', 'down_proj']:
-            expert_proj = getattr(expert, proj_name)
-            base_proj = getattr(base_mlp, proj_name)
+            if hasattr(expert, proj_name) and hasattr(base_mlp, proj_name):
+                expert_proj = getattr(expert, proj_name)
+                base_proj = getattr(base_mlp, proj_name)
 
-            if hasattr(expert_proj, 'base_layer'):
-                expert_proj.base_layer.weight.copy_(base_proj.weight)
-            else:
-                expert_proj.weight.copy_(base_proj.weight)
+                if hasattr(expert_proj, 'base_layer'):
+                    expert_proj.base_layer.weight.copy_(base_proj.weight)
+                else:
+                    expert_proj.weight.copy_(base_proj.weight)

@@ -115,11 +115,16 @@ class LoRAEnhancedAttention(nn.Module):
     LoRA增强的Attention模块（支持文化感知注意力）
     在Q、K、V、O投影层添加LoRA适配器，可选择启用文化感知机制
     """
-    def __init__(self, original_attention: LlamaAttention, lora_config: LoRACultureMoEConfig):
+    def __init__(self, original_attention: LlamaAttention, lora_config: LoRACultureMoEConfig, config=None, layer_idx=None):
         super().__init__()
-        self.config = original_attention.config
-        self.layer_idx = original_attention.layer_idx
+        # 安全获取config和layer_idx
+        self.config = config if config is not None else getattr(original_attention, 'config', None)
+        self.layer_idx = layer_idx if layer_idx is not None else getattr(original_attention, 'layer_idx', 0)
         self.lora_config = lora_config
+
+        # 如果config仍然为None，抛出错误
+        if self.config is None:
+            raise ValueError("Config must be provided either through original_attention.config or as a parameter")
 
         # 从config获取属性，避免版本兼容性问题
         self.hidden_size = self.config.hidden_size
@@ -134,8 +139,29 @@ class LoRAEnhancedAttention(nn.Module):
         # 获取attention_dropout
         self.attention_dropout = getattr(self.config, 'attention_dropout', 0.0)
 
-        # 复制rotary embedding
-        self.rotary_emb = original_attention.rotary_emb
+        # 复制或创建rotary embedding
+        if hasattr(original_attention, 'rotary_emb'):
+            self.rotary_emb = original_attention.rotary_emb
+        else:
+            # 如果原始attention没有rotary_emb，我们需要创建一个
+            try:
+                from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
+                # 尝试不同的初始化参数
+                try:
+                    self.rotary_emb = LlamaRotaryEmbedding(
+                        self.head_dim,
+                        max_position_embeddings=self.max_position_embeddings,
+                        base=self.rope_theta,
+                    )
+                except TypeError:
+                    # 兼容旧版本
+                    self.rotary_emb = LlamaRotaryEmbedding(
+                        self.head_dim,
+                        max_position_embeddings=self.max_position_embeddings,
+                    )
+            except ImportError:
+                # 如果导入失败，使用简单的恒等函数
+                self.rotary_emb = None
 
         # 选择注意力机制类型
         if lora_config.enable_cultural_attention:
@@ -165,58 +191,73 @@ class LoRAEnhancedAttention(nn.Module):
         self.adaptive_fusion = self._create_adaptive_fusion(lora_config)
 
         # 输出投影（LoRA增强）
+        o_proj = self._get_or_create_proj(original_attention, 'o_proj', self.hidden_size, self.hidden_size)
         if "o_proj" in lora_config.attention_lora_targets:
             self.o_proj = LoRALinear(
-                original_attention.o_proj,
+                o_proj,
                 rank=lora_config.lora_rank,
                 alpha=lora_config.lora_alpha,
                 dropout=lora_config.lora_dropout
             )
         else:
-            self.o_proj = original_attention.o_proj
+            self.o_proj = o_proj
+
+    def _get_or_create_proj(self, original_attention: LlamaAttention, proj_name: str, in_features: int, out_features: int):
+        """获取或创建投影层"""
+        if hasattr(original_attention, proj_name):
+            return getattr(original_attention, proj_name)
+        else:
+            # 如果原始attention没有这个投影层，创建一个新的
+            return nn.Linear(in_features, out_features, bias=False)
 
     def _init_standard_lora_attention(self, original_attention: LlamaAttention, lora_config: LoRACultureMoEConfig):
         """初始化标准LoRA增强注意力"""
+        # 创建或获取投影层
+        q_proj = self._get_or_create_proj(original_attention, 'q_proj', self.hidden_size, self.hidden_size)
+        k_proj = self._get_or_create_proj(original_attention, 'k_proj', self.hidden_size, self.num_key_value_heads * self.head_dim)
+        v_proj = self._get_or_create_proj(original_attention, 'v_proj', self.hidden_size, self.num_key_value_heads * self.head_dim)
+        o_proj = self._get_or_create_proj(original_attention, 'o_proj', self.hidden_size, self.hidden_size)
+
         # 用LoRA包装投影层
         if "q_proj" in lora_config.attention_lora_targets:
             self.q_proj = LoRALinear(
-                original_attention.q_proj,
+                q_proj,
                 rank=lora_config.lora_rank,
                 alpha=lora_config.lora_alpha,
                 dropout=lora_config.lora_dropout
             )
         else:
-            self.q_proj = original_attention.q_proj
+            self.q_proj = q_proj
 
         if "k_proj" in lora_config.attention_lora_targets:
             self.k_proj = LoRALinear(
-                original_attention.k_proj,
+                k_proj,
                 rank=lora_config.lora_rank,
                 alpha=lora_config.lora_alpha,
                 dropout=lora_config.lora_dropout
             )
         else:
-            self.k_proj = original_attention.k_proj
+            self.k_proj = k_proj
 
         if "v_proj" in lora_config.attention_lora_targets:
             self.v_proj = LoRALinear(
-                original_attention.v_proj,
+                v_proj,
                 rank=lora_config.lora_rank,
                 alpha=lora_config.lora_alpha,
                 dropout=lora_config.lora_dropout
             )
         else:
-            self.v_proj = original_attention.v_proj
+            self.v_proj = v_proj
 
         if "o_proj" in lora_config.attention_lora_targets:
             self.o_proj = LoRALinear(
-                original_attention.o_proj,
+                o_proj,
                 rank=lora_config.lora_rank,
                 alpha=lora_config.lora_alpha,
                 dropout=lora_config.lora_dropout
             )
         else:
-            self.o_proj = original_attention.o_proj
+            self.o_proj = o_proj
 
     def _create_cultural_qkv_generator(self, lora_config: LoRACultureMoEConfig):
         """创建文化感知QKV生成器"""
@@ -412,13 +453,21 @@ class LoRAEnhancedAttention(nn.Module):
         )  # [B, num_heads, L, head_dim]
 
         # 4. 应用Rotary Position Embedding
-        cos, sin = self.rotary_emb(value_states, position_ids)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        if self.rotary_emb is not None:
+            cos, sin = self.rotary_emb(value_states, position_ids)
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        else:
+            cos, sin = None, None
 
         # 5. 处理past_key_value（KV缓存）
         if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            if cos is not None and sin is not None:
+                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+                key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            else:
+                # 如果没有rotary embedding，简化缓存处理
+                cache_kwargs = {"cache_position": cache_position}
+                key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         # 6. KV重复（如果需要）
         key_states = repeat_kv(key_states, self.num_key_value_groups)
@@ -480,13 +529,21 @@ class LoRAEnhancedAttention(nn.Module):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-        cos, sin = self.rotary_emb(value_states, position_ids)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        if self.rotary_emb is not None:
+            cos, sin = self.rotary_emb(value_states, position_ids)
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        else:
+            cos, sin = None, None
 
         if past_key_value is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            if cos is not None and sin is not None:
+                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+                key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            else:
+                # 如果没有rotary embedding，简化缓存处理
+                cache_kwargs = {"cache_position": cache_position}
+                key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)

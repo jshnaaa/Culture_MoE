@@ -504,7 +504,27 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
         )
 
         # 创建文化分配
-        from .cultural_components import create_culture_assignments
+        def create_culture_assignments(num_experts: int, num_cultures: int) -> List[List[int]]:
+            """创建专家的文化分配"""
+            assignments = []
+            for i in range(num_experts):
+                if i == 0:
+                    # 第一个专家处理所有文化（通用专家）
+                    assignments.append(list(range(num_cultures)))
+                elif i == num_experts - 1:
+                    # 最后一个专家处理文化冲突（空分配表示冲突处理专家）
+                    assignments.append([])
+                else:
+                    # 其他专家分配特定文化
+                    cultures_per_expert = max(1, num_cultures // (num_experts - 2))
+                    start_culture = ((i - 1) * cultures_per_expert) % num_cultures
+                    expert_cultures = []
+                    for j in range(cultures_per_expert):
+                        culture_id = (start_culture + j) % num_cultures
+                        expert_cultures.append(culture_id)
+                    assignments.append(expert_cultures)
+            return assignments
+
         culture_assignments = create_culture_assignments(self.num_experts, lora_config.num_cultures)
 
         # LoRA增强的文化专家组
