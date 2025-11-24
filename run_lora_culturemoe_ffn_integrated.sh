@@ -9,8 +9,7 @@ set -e
 BACKBONE=${1:-"llama"}  # llama 或 qwen
 DATA_ID=${2:-"2"}       # 2, 3, 4, 5
 USE_PROGRESSIVE=${3:-"true"}  # true 或 false
-LORA_RANK=${4:-"16"}    # LoRA rank
-NUM_EXPERTS=${5:-"8"}   # 专家数量
+NUM_EXPERTS=${4:-"8"}   # 专家数量
 
 # 设置基础模型路径
 if [ "$BACKBONE" = "llama" ]; then
@@ -77,7 +76,7 @@ fi
 
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="./outputs/lora_culturemoe_ffn_integrated/${MODEL_NAME}_${TASK_NAME}_experts${NUM_EXPERTS}_rank${LORA_RANK}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/ffn_moe/${BACKBONE}_${DATASET_TAG}_experts${NUM_EXPERTS}_${TIMESTAMP}"
 
 echo "======================================"
 echo "LoRA Enhanced CultureMoE FFN Integrated Training"
