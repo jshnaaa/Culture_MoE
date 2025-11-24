@@ -71,7 +71,8 @@ class LoRACultureMoELlamaDecoderLayer(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         culture_ids: Optional[torch.LongTensor] = None,
-        hidden_states_mask: Optional[torch.Tensor] = None,
+        input_ids_mask: Optional[torch.LongTensor] = None,
+        attention_mask_mask: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
@@ -153,7 +154,8 @@ class LoRACultureMoELlamaModel(LlamaModel):
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         culture_ids: Optional[torch.LongTensor] = None,
-        hidden_states_mask: Optional[torch.Tensor] = None,
+        input_ids_mask: Optional[torch.LongTensor] = None,
+        attention_mask_mask: Optional[torch.Tensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -208,6 +210,11 @@ class LoRACultureMoELlamaModel(LlamaModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
+        # 生成mask版本的embeddings（如果提供了mask输入）
+        inputs_embeds_mask = None
+        if input_ids_mask is not None:
+            inputs_embeds_mask = self.embed_tokens(input_ids_mask)
+
         if attention_mask is not None and self._attn_implementation == "flash_attention_2" and use_cache:
             is_padding_right = attention_mask[:, -1].sum().item() != batch_size
             if is_padding_right:
@@ -229,6 +236,7 @@ class LoRACultureMoELlamaModel(LlamaModel):
 
         # 主要前向传播
         hidden_states = inputs_embeds
+        hidden_states_mask = inputs_embeds_mask  # mask版本的hidden states
 
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
@@ -266,6 +274,16 @@ class LoRACultureMoELlamaModel(LlamaModel):
                 )
 
             hidden_states = layer_outputs[0]
+
+            # 更新mask版本的hidden states（如果存在）
+            # 简化处理：假设mask版本经过相同的变换，但保持其mask特征
+            if hidden_states_mask is not None:
+                # 应用相同的layer normalization变换
+                mask_residual = hidden_states_mask
+                hidden_states_mask = decoder_layer.input_layernorm(hidden_states_mask)
+
+                # 简化的attention处理（不经过LoRA）
+                hidden_states_mask = decoder_layer.post_attention_layernorm(hidden_states_mask + mask_residual)
 
             if use_cache:
                 next_decoder_cache = layer_outputs[2 if output_attentions else 1]

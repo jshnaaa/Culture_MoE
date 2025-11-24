@@ -46,7 +46,7 @@ import torch.nn.functional as F
 
 # ===== 数据集类 =====
 class CultureDatasetForLoRA(Dataset):
-    """LoRA训练用的文化数据集"""
+    """LoRA训练用的文化数据集，支持instruction_mask字段"""
 
     def __init__(self, data: List[Dict], tokenizer, max_length: int = 512, use_mask_mechanism: bool = True):
         self.data = data
@@ -66,14 +66,39 @@ class CultureDatasetForLoRA(Dataset):
     def __getitem__(self, idx):
         item = self.data[idx]
 
+        # 获取数据字段
         instruction = item.get('instruction', '')
+        instruction_mask = item.get('instruction_mask', instruction)  # mask版本的instruction
+        input_field = item.get('input', '')  # input字段（通常为空）
         output = item.get('output', '')
         label = item.get('label', '0')
 
-        # 构建完整的对话文本
-        full_text = f"### Instruction:\n{instruction}\n\n### Response:\n{output}"
+        # 清理可能的special tokens
+        def clean_text(text):
+            special_tokens = ['<|begin_of_text|>', '<|start_header_id|>', '<|end_header_id|>', '<|eot_id|>']
+            for token in special_tokens:
+                text = text.replace(token, '')
+            return text.strip()
 
-        # 分词
+        clean_instruction = clean_text(instruction)
+        clean_instruction_mask = clean_text(instruction_mask)
+        clean_input = clean_text(input_field) if input_field else ''
+
+        # 构建完整文本 - 原始版本（文化专家使用）
+        if clean_input:
+            input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction}\n{clean_input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        else:
+            input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        full_text = input_text + output + "<|eot_id|>"
+
+        # 构建mask版本（共享专家使用）
+        if clean_input:
+            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction_mask}\n{clean_input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        else:
+            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        full_text_mask = input_text_mask + output + "<|eot_id|>"
+
+        # 分词 - 原始版本
         encoding = self.tokenizer(
             full_text,
             truncation=True,
@@ -82,19 +107,29 @@ class CultureDatasetForLoRA(Dataset):
             return_tensors='pt'
         )
 
+        # 分词 - mask版本
+        encoding_mask = self.tokenizer(
+            full_text_mask,
+            truncation=True,
+            max_length=self.max_length,
+            padding='max_length',
+            return_tensors='pt'
+        )
+
         input_ids = encoding['input_ids'].squeeze()
         attention_mask = encoding['attention_mask'].squeeze()
+        input_ids_mask = encoding_mask['input_ids'].squeeze()
+        attention_mask_mask = encoding_mask['attention_mask'].squeeze()
 
         # 创建标签（用于语言模型损失）
         labels = input_ids.clone()
 
-        # 找到response开始位置，mask掉instruction部分
-        instruction_text = f"### Instruction:\n{instruction}\n\n### Response:\n"
-        instruction_tokens = self.tokenizer(instruction_text, add_special_tokens=False)['input_ids']
-        instruction_length = len(instruction_tokens)
+        # 找到assistant响应开始位置，mask掉instruction部分
+        assistant_start_tokens = self.tokenizer(input_text, add_special_tokens=False)['input_ids']
+        assistant_start_idx = len(assistant_start_tokens)
 
-        if instruction_length < len(labels):
-            labels[:instruction_length] = -100  # 忽略instruction部分的损失
+        if assistant_start_idx < len(labels):
+            labels[:assistant_start_idx] = -100  # 忽略instruction部分的损失
 
         # 解析文化标签
         try:
@@ -102,22 +137,16 @@ class CultureDatasetForLoRA(Dataset):
         except (ValueError, KeyError):
             culture_id = self.default_continent
 
-        result = {
-            'input_ids': input_ids,
+        return {
+            'input_ids': input_ids,                    # 文化专家使用的原始输入
             'attention_mask': attention_mask,
+            'input_ids_mask': input_ids_mask,          # 共享专家使用的mask输入
+            'attention_mask_mask': attention_mask_mask,
             'labels': labels,
-            'culture_ids': torch.tensor(culture_id, dtype=torch.long)
+            'culture_ids': torch.tensor(culture_id, dtype=torch.long),
+            'use_mask_mechanism': self.use_mask_mechanism,
+            'true_output': output  # 保存真实的output用于评估
         }
-
-        # 如果启用mask机制，生成masked版本的hidden states
-        if self.use_mask_mechanism:
-            # 这里我们为共享专家生成一个mask标记
-            # 在实际训练中，这个mask会在forward过程中应用到hidden states
-            result['use_mask_mechanism'] = True
-        else:
-            result['use_mask_mechanism'] = False
-
-        return result
 
 
 # ===== 损失计算类 =====
@@ -220,41 +249,6 @@ class LoRACultureMoELoss(nn.Module):
         return total_culture_loss / num_layers if num_layers > 0 else torch.tensor(0.0, device=culture_labels.device)
 
 
-# ===== Mask生成函数 =====
-def generate_cultural_mask(hidden_states: torch.Tensor, culture_ids: torch.Tensor,
-                          mask_ratio: float = 0.3) -> torch.Tensor:
-    """
-    为共享专家生成文化敏感的mask
-
-    Args:
-        hidden_states: [B, L, H] 输入的hidden states
-        culture_ids: [B] 文化标识
-        mask_ratio: mask的比例
-
-    Returns:
-        masked_hidden_states: [B, L, H] mask后的hidden states
-    """
-    batch_size, seq_len, hidden_dim = hidden_states.shape
-    device = hidden_states.device
-
-    # 创建mask后的hidden states副本
-    masked_hidden_states = hidden_states.clone()
-
-    # 为每个样本生成不同的mask模式
-    for i in range(batch_size):
-        culture_id = culture_ids[i].item()
-
-        # 基于文化ID生成确定性的mask模式
-        torch.manual_seed(42 + culture_id + i)  # 确保可重现性
-
-        # 生成随机mask
-        mask_indices = torch.rand(seq_len, hidden_dim, device=device) < mask_ratio
-
-        # 应用mask（将被mask的位置设为0或小的随机值）
-        masked_hidden_states[i][mask_indices] *= 0.1  # 保留10%的信息而不是完全置零
-
-    return masked_hidden_states
-
 
 # ===== 训练器类 =====
 class LoRACultureMoETrainer:
@@ -334,33 +328,21 @@ class LoRACultureMoETrainer:
         """单步训练"""
         self.model.train()
 
-        input_ids = batch['input_ids']
+        # 获取两种不同的输入
+        input_ids = batch['input_ids']                    # 文化专家使用的原始输入
         attention_mask = batch['attention_mask']
+        input_ids_mask = batch['input_ids_mask']          # 共享专家使用的mask输入
+        attention_mask_mask = batch['attention_mask_mask']
         labels = batch['labels']
         culture_ids = batch['culture_ids']
-        use_mask = batch.get('use_mask_mechanism', True)
 
-        # 生成mask（如果启用）
-        hidden_states_mask = None
-        if use_mask:
-            # 首先进行一次前向传播获取hidden states
-            with torch.no_grad():
-                temp_outputs = self.model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    culture_ids=culture_ids,
-                    return_dict=True
-                )
-                # 使用embedding后的hidden states生成mask
-                temp_hidden_states = self.model.embed_tokens(input_ids)
-                hidden_states_mask = generate_cultural_mask(temp_hidden_states, culture_ids)
-
-        # 前向传播
+        # 前向传播 - 传递mask版本的输入用于共享专家
         outputs = self.model(
-            input_ids=input_ids,
+            input_ids=input_ids,                          # 文化专家使用
             attention_mask=attention_mask,
             culture_ids=culture_ids,
-            hidden_states_mask=hidden_states_mask,
+            input_ids_mask=input_ids_mask,                # 共享专家使用
+            attention_mask_mask=attention_mask_mask,
             return_dict=True
         )
 
@@ -396,23 +378,20 @@ class LoRACultureMoETrainer:
         self.model.eval()
 
         with torch.no_grad():
+            # 获取两种不同的输入
             input_ids = batch['input_ids']
             attention_mask = batch['attention_mask']
+            input_ids_mask = batch['input_ids_mask']
+            attention_mask_mask = batch['attention_mask_mask']
             labels = batch['labels']
             culture_ids = batch['culture_ids']
-            use_mask = batch.get('use_mask_mechanism', True)
-
-            # 生成mask（如果启用）
-            hidden_states_mask = None
-            if use_mask:
-                temp_hidden_states = self.model.embed_tokens(input_ids)
-                hidden_states_mask = generate_cultural_mask(temp_hidden_states, culture_ids)
 
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 culture_ids=culture_ids,
-                hidden_states_mask=hidden_states_mask,
+                input_ids_mask=input_ids_mask,
+                attention_mask_mask=attention_mask_mask,
                 return_dict=True
             )
 

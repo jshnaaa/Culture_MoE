@@ -534,9 +534,9 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
         增强版前向传播，支持mask机制
 
         Args:
-            hidden_states: [B, L, H] 原始输入（未mask）
+            hidden_states: [B, L, H] 原始输入（文化专家使用）
             culture_ids: [B] 文化标识
-            hidden_states_mask: [B, L, H] mask版本输入（可选）
+            hidden_states_mask: [B, L, H] mask版本的hidden states（共享专家使用）
 
         Returns:
             output: [B, L, H]

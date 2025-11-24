@@ -69,34 +69,69 @@ class MaskMechanismDemo:
         }
 
     def prepare_sample_inputs(self):
-        """准备示例输入"""
-        # 文化特定的示例文本
-        sample_texts = [
-            "In Asian culture, respect for elders is fundamental to social harmony.",
-            "European traditions emphasize individual rights and democratic values.",
-            "Native American cultures have deep connections to the natural world.",
-            "South American festivals celebrate vibrant colors and community spirit.",
-            "African storytelling traditions pass wisdom through generations.",
-            "Oceanic island cultures value maritime knowledge and navigation."
+        """准备示例输入，模拟instruction和instruction_mask"""
+        # 文化特定的示例文本（原始instruction）
+        sample_instructions = [
+            "In Asian culture, respect for elders is fundamental to social harmony. What value does this represent?",
+            "European traditions emphasize individual rights and democratic values. What principle is this?",
+            "Native American cultures have deep connections to the natural world. What relationship is described?",
+            "South American festivals celebrate vibrant colors and community spirit. What aspect is highlighted?",
+            "African storytelling traditions pass wisdom through generations. What process is this?",
+            "Oceanic island cultures value maritime knowledge and navigation. What skill is emphasized?"
+        ]
+
+        # mask版本的instruction（移除了文化特定信息）
+        sample_instructions_mask = [
+            "Respect for elders is fundamental to social harmony. What value does this represent?",
+            "Traditions emphasize individual rights and democratic values. What principle is this?",
+            "Cultures have deep connections to the natural world. What relationship is described?",
+            "Festivals celebrate vibrant colors and community spirit. What aspect is highlighted?",
+            "Storytelling traditions pass wisdom through generations. What process is this?",
+            "Island cultures value maritime knowledge and navigation. What skill is emphasized?"
         ]
 
         # 对应的文化ID
         culture_ids = [0, 1, 2, 3, 4, 5]
 
-        # 分词
+        # 构建完整的对话格式
+        full_texts = []
+        full_texts_mask = []
+
+        for i, (instruction, instruction_mask) in enumerate(zip(sample_instructions, sample_instructions_mask)):
+            # 原始版本
+            full_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            full_texts.append(full_text)
+
+            # mask版本
+            full_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            full_texts_mask.append(full_text_mask)
+
+        # 分词 - 原始版本
         inputs = self.tokenizer(
-            sample_texts,
+            full_texts,
             truncation=True,
             padding=True,
-            max_length=128,
+            max_length=256,
+            return_tensors="pt"
+        )
+
+        # 分词 - mask版本
+        inputs_mask = self.tokenizer(
+            full_texts_mask,
+            truncation=True,
+            padding=True,
+            max_length=256,
             return_tensors="pt"
         )
 
         return {
             'input_ids': inputs['input_ids'].to(self.device),
             'attention_mask': inputs['attention_mask'].to(self.device),
+            'input_ids_mask': inputs_mask['input_ids'].to(self.device),
+            'attention_mask_mask': inputs_mask['attention_mask'].to(self.device),
             'culture_ids': torch.tensor(culture_ids, dtype=torch.long, device=self.device),
-            'texts': sample_texts
+            'original_instructions': sample_instructions,
+            'masked_instructions': sample_instructions_mask
         }
 
     def demonstrate_mask_mechanism(self):
@@ -108,57 +143,64 @@ class MaskMechanismDemo:
         # 准备输入
         inputs = self.prepare_sample_inputs()
 
-        print(f"处理 {len(inputs['texts'])} 个文化特定样本...")
-        for i, text in enumerate(inputs['texts']):
+        print(f"处理 {len(inputs['original_instructions'])} 个文化特定样本...")
+        for i, (orig, masked) in enumerate(zip(inputs['original_instructions'], inputs['masked_instructions'])):
             culture_name = self.culture_names[inputs['culture_ids'][i].item()]
-            print(f"  {i+1}. [{culture_name}] {text[:60]}...")
+            print(f"  {i+1}. [{culture_name}]")
+            print(f"      原始: {orig[:80]}...")
+            print(f"      Mask: {masked[:80]}...")
 
         with torch.no_grad():
-            # 1. 无mask的前向传播
-            print("\n🔍 步骤1: 无mask前向传播")
+            # 1. 无mask的前向传播（只使用原始输入）
+            print("\n🔍 步骤1: 无mask前向传播（共享专家和文化专家都使用原始输入）")
             outputs_no_mask = self.model(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs['attention_mask'],
                 culture_ids=inputs['culture_ids'],
-                hidden_states_mask=None,
                 return_dict=True
             )
 
-            # 2. 生成mask并进行有mask的前向传播
-            print("🔍 步骤2: 生成文化敏感mask")
-            temp_hidden_states = self.model.embed_tokens(inputs['input_ids'])
-            hidden_states_mask = generate_cultural_mask(
-                temp_hidden_states, inputs['culture_ids'], mask_ratio=0.3
-            )
+            # 2. 使用mask机制的前向传播
+            print("🔍 步骤2: 使用mask机制前向传播")
+            print("         共享专家使用mask版本输入，文化专家使用原始输入")
 
-            print("🔍 步骤3: 使用mask的前向传播")
+            # 生成mask版本的embeddings
+            inputs_embeds_mask = self.model.embed_tokens(inputs['input_ids_mask'])
+
             outputs_with_mask = self.model(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs['attention_mask'],
                 culture_ids=inputs['culture_ids'],
-                hidden_states_mask=hidden_states_mask,
+                input_ids_mask=inputs['input_ids_mask'],
+                attention_mask_mask=inputs['attention_mask_mask'],
                 return_dict=True
             )
 
         # 3. 分析结果
         self.analyze_mask_effects(
-            outputs_no_mask, outputs_with_mask, inputs,
-            temp_hidden_states, hidden_states_mask
+            outputs_no_mask, outputs_with_mask, inputs
         )
 
-    def analyze_mask_effects(self, outputs_no_mask, outputs_with_mask, inputs,
-                           original_hidden_states, masked_hidden_states):
+    def analyze_mask_effects(self, outputs_no_mask, outputs_with_mask, inputs):
         """分析mask机制的效果"""
         print("\n📊 Mask机制效果分析")
         print("-" * 60)
 
-        # 分析mask对hidden states的影响
-        print("1. Hidden States变化分析:")
-        mask_ratio = torch.mean((masked_hidden_states != original_hidden_states).float()).item()
-        print(f"   实际mask比例: {mask_ratio:.3f}")
+        # 分析输入差异
+        print("1. 输入文本差异分析:")
+        for i, (orig, masked) in enumerate(zip(inputs['original_instructions'], inputs['masked_instructions'])):
+            culture_name = self.culture_names[inputs['culture_ids'][i].item()]
+            print(f"   [{culture_name}] 文化特定词汇移除效果:")
 
-        reduction_ratio = torch.mean(masked_hidden_states / (original_hidden_states + 1e-8)).item()
-        print(f"   平均值缩减比例: {reduction_ratio:.3f}")
+            # 计算token差异
+            orig_tokens = set(orig.lower().split())
+            masked_tokens = set(masked.lower().split())
+            removed_tokens = orig_tokens - masked_tokens
+
+            if removed_tokens:
+                print(f"     移除的文化词汇: {', '.join(removed_tokens)}")
+            else:
+                print(f"     无明显文化词汇移除")
 
         # 分析专家权重变化
         if hasattr(outputs_no_mask, 'moe_aux_info') and hasattr(outputs_with_mask, 'moe_aux_info'):

@@ -33,7 +33,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 from llamafactory.model.lora_enhanced_culturemoe import LoRACultureMoEConfig
 from llamafactory.model.lora_culturemoe_model import create_lora_culturemoe_model
-from train_lora_culturemoe_ffn_integrated import CultureDatasetForLoRA, generate_cultural_mask
+from train_lora_culturemoe_ffn_integrated import CultureDatasetForLoRA
 
 
 class LoRACultureMoEEvaluator:
@@ -78,138 +78,219 @@ class LoRACultureMoEEvaluator:
         logging.info(f"Successfully loaded LoRA weights from {lora_weights_path}")
 
     def evaluate_on_dataset(self, dataloader: DataLoader) -> Dict[str, Any]:
-        """在数据集上评估模型"""
+        """在数据集上评估模型（生成式任务）"""
         self.model.eval()
 
-        all_predictions = []
-        all_true_labels = []
-        all_culture_ids = []
-        all_expert_weights = []
-        all_losses = []
-
+        generated_answers = []
         total_samples = 0
         correct_predictions = 0
 
         with torch.no_grad():
-            for batch in tqdm(dataloader, desc="Evaluating"):
+            for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating")):
                 batch = {k: v.to(self.device) for k, v in batch.items()}
 
                 input_ids = batch['input_ids']
                 attention_mask = batch['attention_mask']
+                input_ids_mask = batch['input_ids_mask']
+                attention_mask_mask = batch['attention_mask_mask']
                 labels = batch['labels']
                 culture_ids = batch['culture_ids']
-                use_mask = batch.get('use_mask_mechanism', True)
 
-                # 生成mask（如果启用）
-                hidden_states_mask = None
-                if use_mask:
-                    temp_hidden_states = self.model.embed_tokens(input_ids)
-                    hidden_states_mask = generate_cultural_mask(temp_hidden_states, culture_ids)
+                batch_size = input_ids.shape[0]
 
-                # 前向传播
-                outputs = self.model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    culture_ids=culture_ids,
-                    hidden_states_mask=hidden_states_mask,
-                    return_dict=True
-                )
+                for i in range(batch_size):
+                    try:
+                        # 准备单个样本的输入
+                        sample_input_ids = input_ids[i:i+1]
+                        sample_attention_mask = attention_mask[i:i+1]
+                        sample_input_ids_mask = input_ids_mask[i:i+1]
+                        sample_attention_mask_mask = attention_mask_mask[i:i+1]
+                        sample_culture_ids = culture_ids[i:i+1]
 
-                # 计算预测（基于生成概率）
-                logits = outputs.last_hidden_state
-                predictions = self._get_predictions_from_generation(
-                    input_ids, attention_mask, culture_ids, hidden_states_mask
-                )
+                        # 构建用于生成的prompt（去掉答案部分）
+                        # 找到assistant开始位置
+                        full_tokens = sample_input_ids[0].cpu().numpy()
+                        prompt_tokens = []
 
-                # 收集结果
-                all_predictions.extend(predictions)
-                all_true_labels.extend(culture_ids.cpu().numpy())
-                all_culture_ids.extend(culture_ids.cpu().numpy())
+                        # 寻找"<|start_header_id|>assistant<|end_header_id|>"之后的位置
+                        assistant_start_pattern = self.tokenizer.encode(
+                            "<|start_header_id|>assistant<|end_header_id|>\n\n",
+                            add_special_tokens=False
+                        )
 
-                # 收集专家权重信息
-                if hasattr(outputs, 'moe_aux_info') and outputs.moe_aux_info:
-                    layer_expert_weights = []
-                    for layer_aux in outputs.moe_aux_info:
-                        if 'expert_weights' in layer_aux:
-                            layer_expert_weights.append(layer_aux['expert_weights'].cpu().numpy())
-                    all_expert_weights.append(layer_expert_weights)
+                        # 简化处理：截断到assistant开始位置
+                        for j, token_id in enumerate(full_tokens):
+                            prompt_tokens.append(token_id)
+                            # 检查是否到达assistant开始位置
+                            if len(prompt_tokens) >= len(assistant_start_pattern):
+                                if prompt_tokens[-len(assistant_start_pattern):] == assistant_start_pattern:
+                                    break
 
-                # 统计准确率
-                batch_correct = sum(p == t for p, t in zip(predictions, culture_ids.cpu().numpy()))
-                correct_predictions += batch_correct
-                total_samples += len(predictions)
+                        prompt_input_ids = torch.tensor([prompt_tokens], device=self.device)
+                        prompt_attention_mask = torch.ones_like(prompt_input_ids)
 
-        # 计算评估指标
-        accuracy = accuracy_score(all_true_labels, all_predictions)
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            all_true_labels, all_predictions, average='weighted'
-        )
+                        # 生成答案
+                        max_new_tokens = 5  # 只生成几个token（数字答案）
 
-        # 每个文化的详细指标
+                        # 生成mask版本的hidden states
+                        inputs_embeds_mask = None
+                        if sample_input_ids_mask is not None:
+                            inputs_embeds_mask = self.model.embed_tokens(sample_input_ids_mask)
+
+                        generate_kwargs = {
+                            'input_ids': prompt_input_ids,
+                            'attention_mask': prompt_attention_mask,
+                            'max_new_tokens': max_new_tokens,
+                            'do_sample': False,
+                            'temperature': 1.0,
+                            'pad_token_id': self.tokenizer.pad_token_id,
+                            'eos_token_id': self.tokenizer.eos_token_id,
+                            'culture_ids': sample_culture_ids,
+                            'input_ids_mask': sample_input_ids_mask,
+                            'attention_mask_mask': sample_attention_mask_mask
+                        }
+
+                        outputs = self.model.generate(**generate_kwargs)
+
+                        # 解码生成的文本
+                        generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                        prompt_text = self.tokenizer.decode(prompt_input_ids[0], skip_special_tokens=True)
+
+                        # 提取生成的答案部分
+                        if len(generated_text) > len(prompt_text):
+                            generated_answer = generated_text[len(prompt_text):].strip()
+                        else:
+                            generated_answer = ""
+
+                        # 提取数字答案
+                        predicted_answer = self._extract_answer(generated_answer)
+
+                        # 获取真实答案
+                        true_answer = self._get_true_answer_from_batch(batch, i)
+
+                        # 判断正确性
+                        is_correct = self._is_answer_correct(predicted_answer, true_answer)
+
+                        if is_correct:
+                            correct_predictions += 1
+
+                        # 保存结果
+                        answer_data = {
+                            'index': total_samples,
+                            'generated_answer': generated_answer,
+                            'predicted_answer': predicted_answer,
+                            'true_answer': true_answer,
+                            'culture_id': culture_ids[i].item(),
+                            'culture_name': self.culture_names[culture_ids[i].item()],
+                            'is_correct': is_correct
+                        }
+
+                        generated_answers.append(answer_data)
+                        total_samples += 1
+
+                    except Exception as e:
+                        logging.error(f"Error processing sample {total_samples}: {str(e)}")
+                        # 添加错误样本
+                        generated_answers.append({
+                            'index': total_samples,
+                            'generated_answer': f"Error: {str(e)}",
+                            'predicted_answer': "0",
+                            'true_answer': "0",
+                            'culture_id': culture_ids[i].item() if i < len(culture_ids) else 0,
+                            'culture_name': "Unknown",
+                            'is_correct': False
+                        })
+                        total_samples += 1
+
+        # 计算总体准确率
+        overall_accuracy = correct_predictions / total_samples if total_samples > 0 else 0
+
+        # 计算各文化的准确率
         culture_metrics = {}
         for culture_id in range(self.lora_config.num_cultures):
-            culture_mask = np.array(all_true_labels) == culture_id
-            if culture_mask.sum() > 0:
-                culture_predictions = np.array(all_predictions)[culture_mask]
-                culture_true = np.array(all_true_labels)[culture_mask]
-
-                culture_accuracy = accuracy_score(culture_true, culture_predictions)
-                culture_precision, culture_recall, culture_f1, _ = precision_recall_fscore_support(
-                    culture_true, culture_predictions, average='weighted', zero_division=0
-                )
+            culture_data = [ans for ans in generated_answers if ans['culture_id'] == culture_id]
+            if culture_data:
+                culture_correct = sum(1 for ans in culture_data if ans['is_correct'])
+                culture_total = len(culture_data)
+                culture_accuracy = culture_correct / culture_total
 
                 culture_metrics[self.culture_names[culture_id]] = {
                     'accuracy': culture_accuracy,
-                    'precision': culture_precision,
-                    'recall': culture_recall,
-                    'f1': culture_f1,
-                    'sample_count': culture_mask.sum()
+                    'correct_count': culture_correct,
+                    'total_count': culture_total,
+                    'sample_count': culture_total
                 }
 
         return {
-            'overall_accuracy': accuracy,
-            'overall_precision': precision,
-            'overall_recall': recall,
-            'overall_f1': f1,
+            'overall_accuracy': overall_accuracy,
+            'correct_predictions': correct_predictions,
+            'total_samples': total_samples,
             'culture_metrics': culture_metrics,
-            'predictions': all_predictions,
-            'true_labels': all_true_labels,
-            'expert_weights': all_expert_weights,
-            'confusion_matrix': confusion_matrix(all_true_labels, all_predictions)
+            'generated_answers': generated_answers
         }
 
-    def _get_predictions_from_generation(self, input_ids, attention_mask, culture_ids, hidden_states_mask=None):
-        """基于生成任务获取预测"""
-        # 这是一个简化版本，实际应该基于生成的文本内容进行文化分类
-        # 这里我们使用专家权重的模式作为预测
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            culture_ids=culture_ids,
-            hidden_states_mask=hidden_states_mask,
-            return_dict=True
-        )
+    def _extract_answer(self, generated_text: str) -> str:
+        """从生成的文本中提取答案"""
+        import re
 
-        predictions = []
-        if hasattr(outputs, 'moe_aux_info') and outputs.moe_aux_info:
-            for i in range(input_ids.shape[0]):
-                # 使用最后一层的专家权重进行预测
-                last_layer_aux = outputs.moe_aux_info[-1]
-                if 'expert_weights' in last_layer_aux:
-                    expert_weights = last_layer_aux['expert_weights'][i]
+        # 清理文本
+        text = generated_text.strip()
 
-                    # 简单的启发式：选择权重最大的专家对应的文化
-                    max_expert = torch.argmax(expert_weights).item()
+        # 尝试提取数字（0-5）
+        number_match = re.search(r'^(\d+)', text)
+        if number_match:
+            return number_match.group(1)
 
-                    # 将专家映射到文化（简化映射）
-                    predicted_culture = max_expert % self.lora_config.num_cultures
-                    predictions.append(predicted_culture)
-                else:
-                    predictions.append(0)  # 默认预测
+        # 尝试提取字母（A-F）
+        letter_match = re.search(r'^([A-F])', text, re.IGNORECASE)
+        if letter_match:
+            letter = letter_match.group(1).upper()
+            # 将字母映射到数字
+            letter_to_number = {'A': '0', 'B': '1', 'C': '2', 'D': '3', 'E': '4', 'F': '5'}
+            return letter_to_number.get(letter, '0')
+
+        # 如果都没找到，返回第一个词或默认值
+        words = text.split()
+        if words:
+            return words[0]
+
+        return "0"  # 默认答案
+
+    def _get_true_answer_from_batch(self, batch: Dict[str, torch.Tensor], index: int) -> str:
+        """从batch中获取真实答案"""
+        # 从数据集中获取真实的output答案
+        if 'true_output' in batch:
+            return batch['true_output'][index].strip()
         else:
-            predictions = [0] * input_ids.shape[0]  # 默认预测
+            # 回退到使用culture_id
+            culture_id = batch['culture_ids'][index].item()
+            return str(culture_id)
 
-        return predictions
+    def _is_answer_correct(self, predicted: str, true: str) -> bool:
+        """判断答案是否正确"""
+        # 清理和标准化答案
+        pred_clean = predicted.strip().lower()
+        true_clean = true.strip().lower()
+
+        # 直接比较
+        if pred_clean == true_clean:
+            return True
+
+        # 尝试数字比较
+        try:
+            pred_num = int(pred_clean)
+            true_num = int(true_clean)
+            return pred_num == true_num
+        except ValueError:
+            pass
+
+        # 尝试字母到数字的映射比较
+        letter_to_number = {'a': '0', 'b': '1', 'c': '2', 'd': '3', 'e': '4', 'f': '5'}
+
+        pred_mapped = letter_to_number.get(pred_clean, pred_clean)
+        true_mapped = letter_to_number.get(true_clean, true_clean)
+
+        return pred_mapped == true_mapped
 
     def analyze_expert_utilization(self, expert_weights_data: List[List[np.ndarray]]) -> Dict[str, Any]:
         """分析专家利用率"""
