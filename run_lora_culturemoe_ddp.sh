@@ -1,25 +1,33 @@
 #!/bin/bash
 
-# LoRA增强FFN集成CultureMoE DDP训练脚本
+# LoRA增强FFN集成CultureMoE DDP训练脚本 - 支持消融实验
 # 使用方法:
-# sh run_lora_culturemoe_ddp.sh [BACKBONE] [DATA_ID] [NUM_EXPERTS] [NUM_GPUS]
+# sh run_lora_culturemoe_ddp.sh [BACKBONE] [DATA_ID] [NUM_EXPERTS] [USE_SHARED] [USE_MASK] [USE_GATE] [USE_CULTURE_LOSS] [NUM_GPUS]
 #
 # 参数说明:
-# BACKBONE   - 基础模型类型: llama 或 qwen (默认: llama)
-# DATA_ID    - 数据集ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认: 2)
-# NUM_EXPERTS- 专家数量 (默认: 8)
-# NUM_GPUS   - GPU数量: 1=单卡, 2+=多卡DDP (默认: 2)
+# BACKBONE       - 基础模型类型: llama 或 qwen (默认: llama)
+# DATA_ID        - 数据集ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认: 2)
+# NUM_EXPERTS    - 路由专家数量 (默认: 8)
+# USE_SHARED     - 是否使用共享专家: true/false (默认: true)
+# USE_MASK       - 是否使用mask机制: true/false (默认: true)
+# USE_GATE       - 是否使用门控融合: true/false (默认: true)
+# USE_CULTURE_LOSS - 是否使用文化损失: true/false (默认: true)
+# NUM_GPUS       - GPU数量: 1=单卡, 2+=多卡DDP (默认: 2)
 #
 # 示例:
-# sh run_lora_culturemoe_ddp.sh llama 2 8 2    # 双卡训练
-# sh run_lora_culturemoe_ddp.sh llama 2 8 1    # 单卡训练
-# sh run_lora_culturemoe_ddp.sh qwen 3 16 4    # 四卡训练
+# sh run_lora_culturemoe_ddp.sh llama 2 8 true true true true 2    # 完整配置双卡训练
+# sh run_lora_culturemoe_ddp.sh llama 2 8 false true true true 1   # 不使用共享专家，单卡训练
+# sh run_lora_culturemoe_ddp.sh llama 2 16 true false true false 4 # 消融实验：无mask+无文化损失
 
 # 默认参数
-BACKBONE=${1:-"llama"}  # llama 或 qwen
-DATA_ID=${2:-"2"}       # 2, 3, 4, 5
-NUM_EXPERTS=${3:-"8"}   # 专家数量
-NUM_GPUS=${4:-"2"}      # GPU数量，默认双卡
+BACKBONE=${1:-"llama"}           # llama 或 qwen
+DATA_ID=${2:-"2"}               # 2, 3, 4, 5
+NUM_EXPERTS=${3:-"8"}           # 路由专家数量
+USE_SHARED=${4:-"true"}         # 是否使用共享专家
+USE_MASK=${5:-"true"}           # 是否使用mask机制
+USE_GATE=${6:-"true"}           # 是否使用门控融合
+USE_CULTURE_LOSS=${7:-"true"}   # 是否使用文化损失
+NUM_GPUS=${8:-"2"}              # GPU数量，默认双卡
 
 # 设置基础模型路径
 if [ "$BACKBONE" = "llama" ]; then
@@ -91,12 +99,16 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_DIR="/root/autodl-fs/ffn_moe/${BACKBONE}_${DATASET_TAG}_experts${NUM_EXPERTS}_${TIMESTAMP}"
 
 echo "======================================"
-echo "LoRA Enhanced CultureMoE FFN Integrated Training"
+echo "LoRA Enhanced CultureMoE FFN Integrated Training - Ablation Study"
 echo "======================================"
 echo "Backbone: $BACKBONE ($BASE_MODEL)"
 echo "Data: $DATASET_TAG ($TRAIN_FILE)"
 echo "LoRA Rank: $LORA_RANK"
-echo "Experts: $NUM_EXPERTS"
+echo "Routing Experts: $NUM_EXPERTS"
+echo "Use Shared Expert: $USE_SHARED"
+echo "Use Mask Mechanism: $USE_MASK"
+echo "Use Gate Fusion: $USE_GATE"
+echo "Use Culture Loss: $USE_CULTURE_LOSS"
 echo "Num GPUs: $NUM_GPUS"
 echo "Output Directory: $OUTPUT_DIR"
 echo "======================================"
@@ -114,6 +126,10 @@ cat > "$OUTPUT_DIR/config.json" << EOF
     "dataset_tag": "$DATASET_TAG",
     "lora_rank": $LORA_RANK,
     "num_experts": $NUM_EXPERTS,
+    "use_shared": $USE_SHARED,
+    "use_mask": $USE_MASK,
+    "use_gate": $USE_GATE,
+    "use_culture_loss": $USE_CULTURE_LOSS,
     "num_gpus": $NUM_GPUS,
     "timestamp": "$TIMESTAMP"
 }
@@ -137,6 +153,10 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --batch_size $BATCH_SIZE \
         --learning_rate $LEARNING_RATE \
         --num_experts $NUM_EXPERTS \
+        --use_shared $USE_SHARED \
+        --use_mask $USE_MASK \
+        --use_gate $USE_GATE \
+        --use_culture_loss $USE_CULTURE_LOSS \
         --seed 42 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 else
@@ -149,6 +169,10 @@ else
         --batch_size $BATCH_SIZE \
         --learning_rate $LEARNING_RATE \
         --num_experts $NUM_EXPERTS \
+        --use_shared $USE_SHARED \
+        --use_mask $USE_MASK \
+        --use_gate $USE_GATE \
+        --use_culture_loss $USE_CULTURE_LOSS \
         --num_gpus $NUM_GPUS \
         --seed 42 \
         2>&1 | tee "$OUTPUT_DIR/training.log"

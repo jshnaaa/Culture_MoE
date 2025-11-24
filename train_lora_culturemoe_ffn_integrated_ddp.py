@@ -182,12 +182,13 @@ class CultureDatasetForLoRA(Dataset):
 class LoRACultureMoELoss(nn.Module):
     """LoRA增强CultureMoE的损失函数"""
 
-    def __init__(self, lora_config: LoRACultureMoEConfig):
+    def __init__(self, lora_config: LoRACultureMoEConfig, use_culture_loss: bool = True):
         super().__init__()
         self.lora_config = lora_config
         self.load_balance_weight = lora_config.load_balance_weight
         self.entropy_weight = lora_config.entropy_weight
-        self.culture_loss_weight = lora_config.culture_loss_weight
+        self.culture_loss_weight = lora_config.culture_loss_weight if use_culture_loss else 0.0
+        self.use_culture_loss = use_culture_loss
 
     def forward(self, logits: torch.Tensor, labels: torch.Tensor,
                 moe_aux_info: List[Dict], culture_labels: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
@@ -282,10 +283,10 @@ class LoRACultureMoELoss(nn.Module):
 class LoRACultureMoETrainerDDP:
     """LoRA增强CultureMoE训练器（DDP版本）"""
 
-    def __init__(self, model: LoRACultureMoELlamaModel, lora_config: LoRACultureMoEConfig, rank: int, world_size: int):
+    def __init__(self, model: LoRACultureMoELlamaModel, lora_config: LoRACultureMoEConfig, rank: int, world_size: int, use_culture_loss: bool = True):
         self.model = model
         self.lora_config = lora_config
-        self.loss_fn = LoRACultureMoELoss(lora_config)
+        self.loss_fn = LoRACultureMoELoss(lora_config, use_culture_loss)
         self.rank = rank
         self.world_size = world_size
 
@@ -515,12 +516,26 @@ def train_ddp(rank, world_size, args):
     # 设置随机种子
     set_seed(args.seed + rank)
 
+    # 转换字符串参数为布尔值
+    use_shared = args.use_shared.lower() == 'true'
+    use_mask = args.use_mask.lower() == 'true'
+    use_gate = args.use_gate.lower() == 'true'
+    use_culture_loss = args.use_culture_loss.lower() == 'true'
+
     # 设置日志（只在主进程）
     if rank == 0:
         logging.basicConfig(level=logging.INFO)
         logger = logging.getLogger(__name__)
         # 创建输出目录
         os.makedirs(args.output_dir, exist_ok=True)
+
+        # 打印消融实验配置
+        logger.info("=== Ablation Study Configuration ===")
+        logger.info(f"Use Shared Expert: {use_shared}")
+        logger.info(f"Use Mask Mechanism: {use_mask}")
+        logger.info(f"Use Gate Fusion: {use_gate}")
+        logger.info(f"Use Culture Loss: {use_culture_loss}")
+        logger.info("=====================================")
     else:
         logger = None
 
@@ -568,7 +583,7 @@ def train_ddp(rank, world_size, args):
     with open(args.data_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    dataset = CultureDatasetForLoRA(data, tokenizer, max_length=512, use_mask_mechanism=True)
+    dataset = CultureDatasetForLoRA(data, tokenizer, max_length=512, use_mask_mechanism=use_mask)
 
     # 分割训练和验证集
     train_size = int(0.9 * len(dataset))
@@ -583,7 +598,7 @@ def train_ddp(rank, world_size, args):
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler)
 
     # 创建训练器
-    trainer = LoRACultureMoETrainerDDP(model, lora_config, rank, world_size)
+    trainer = LoRACultureMoETrainerDDP(model, lora_config, rank, world_size, use_culture_loss)
     optimizer = trainer.setup_optimizer(learning_rate=args.learning_rate)
 
     total_steps = len(train_dataloader) * args.num_epochs
@@ -661,14 +676,18 @@ def train_ddp(rank, world_size, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='LoRA Enhanced CultureMoE Training with DDP')
+    parser = argparse.ArgumentParser(description='LoRA Enhanced CultureMoE Training with DDP - Ablation Study')
     parser.add_argument('--base_model', type=str, default='meta-llama/Llama-2-7b-hf', help='Base model path')
     parser.add_argument('--data_path', type=str, required=True, help='Training data path')
     parser.add_argument('--output_dir', type=str, default='./outputs/lora_culturemoe', help='Output directory')
     parser.add_argument('--num_epochs', type=int, default=8, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=4, help='Training batch size')
     parser.add_argument('--learning_rate', type=float, default=5e-4, help='Learning rate')
-    parser.add_argument('--num_experts', type=int, default=8, help='Number of experts')
+    parser.add_argument('--num_experts', type=int, default=8, help='Number of routing experts')
+    parser.add_argument('--use_shared', type=str, default='true', help='Whether to use shared expert (true/false)')
+    parser.add_argument('--use_mask', type=str, default='true', help='Whether to use mask mechanism (true/false)')
+    parser.add_argument('--use_gate', type=str, default='true', help='Whether to use gate fusion (true/false)')
+    parser.add_argument('--use_culture_loss', type=str, default='true', help='Whether to use culture loss (true/false)')
     parser.add_argument('--num_gpus', type=int, default=2, help='Number of GPUs (1 for single GPU, 2+ for DDP)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
 
