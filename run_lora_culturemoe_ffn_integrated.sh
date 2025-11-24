@@ -74,6 +74,8 @@ if [ ! -f "$DATA_FILE" ]; then
     exit 1
 fi
 
+LORA_RANK=32
+
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_DIR="/root/autodl-fs/ffn_moe/${BACKBONE}_${DATASET_TAG}_experts${NUM_EXPERTS}_${TIMESTAMP}"
