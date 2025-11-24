@@ -29,13 +29,13 @@ case $DATA_ID in
     0)
         # unified_all_datasets small
         TRAIN_FILE="/root/autodl-fs/unified_all_datasets_small.json"
-        DATASET_TAG="unified_all_datasets_small"
+        DATASET_TAG="unified_small"
         echo "Using unified_all_datasets dataset (enhanced format)"
         ;;
     1)
         # unified_all_datasets
         TRAIN_FILE="/root/autodl-fs/unified_all_datasets.json"
-        DATASET_TAG="unified_all_datasets"
+        DATASET_TAG="unified"
         echo "Using unified_all_datasets dataset (enhanced format)"
         ;;
     2)
@@ -63,7 +63,7 @@ case $DATA_ID in
         echo "  1 - unified_all_datasets"
         echo "  2 - CulturalBench"
         echo "  3 - NormAD"
-        echo "  4 - CultureLLM (default)"
+        echo "  4 - CultureLLM"
         exit 1
         ;;
 esac

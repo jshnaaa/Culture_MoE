@@ -96,7 +96,12 @@ class LoRACultureMoELlamaDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
 
-        hidden_states, aux_info = self.mlp(hidden_states, culture_ids, hidden_states_mask)
+        # 生成mask版本的hidden states（如果提供了input_ids_mask）
+        inputs_embeds_mask = None
+        if input_ids_mask is not None:
+            inputs_embeds_mask = self.embed_tokens(input_ids_mask)
+
+        hidden_states, aux_info = self.mlp(hidden_states, culture_ids, inputs_embeds_mask)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -270,7 +275,8 @@ class LoRACultureMoELlamaModel(LlamaModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     culture_ids=culture_ids,
-                    hidden_states_mask=hidden_states_mask,
+                    input_ids_mask=input_ids_mask,
+                    attention_mask_mask=attention_mask_mask,
                 )
 
             hidden_states = layer_outputs[0]
