@@ -1,9 +1,7 @@
 #!/bin/bash
 
-# LoRA增强FFN集成CultureMoE训练脚本
-# 使用方法: sh run_lora_culturemoe_ffn_integrated.sh <BACKBONE> <DATA_ID> <USE_PROGRESSIVE> [LORA_RANK] [NUM_EXPERTS]
-
-set -e
+# LoRA增强FFN集成CultureMoE DDP训练脚本
+# 使用方法:
 
 # 默认参数
 BACKBONE=${1:-"llama"}  # llama 或 qwen
