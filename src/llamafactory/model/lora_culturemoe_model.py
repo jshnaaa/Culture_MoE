@@ -39,7 +39,13 @@ class LoRACultureMoELlamaDecoderLayer(nn.Module):
         self.layer_idx = layer_idx
 
         # 创建原始attention（用于获取权重）
-        original_attention = LlamaAttention(config=config, layer_idx=layer_idx)
+        try:
+            original_attention = LlamaAttention(config=config, layer_idx=layer_idx)
+        except TypeError:
+            # 兼容不同版本的transformers
+            original_attention = LlamaAttention(config)
+            # 手动设置layer_idx属性
+            original_attention.layer_idx = layer_idx
 
         # LoRA增强的Attention
         self.self_attn = LoRAEnhancedAttention(original_attention, lora_config)

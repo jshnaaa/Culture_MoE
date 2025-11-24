@@ -120,15 +120,19 @@ class LoRAEnhancedAttention(nn.Module):
         self.config = original_attention.config
         self.layer_idx = original_attention.layer_idx
         self.lora_config = lora_config
-        self.attention_dropout = original_attention.attention_dropout
-        self.hidden_size = original_attention.hidden_size
-        self.num_heads = original_attention.num_heads
-        self.head_dim = original_attention.head_dim
-        self.num_key_value_heads = original_attention.num_key_value_heads
-        self.num_key_value_groups = original_attention.num_key_value_groups
-        self.max_position_embeddings = original_attention.max_position_embeddings
-        self.rope_theta = original_attention.rope_theta
-        self.is_causal = original_attention.is_causal
+
+        # 从config获取属性，避免版本兼容性问题
+        self.hidden_size = self.config.hidden_size
+        self.num_heads = self.config.num_attention_heads
+        self.head_dim = self.hidden_size // self.num_heads
+        self.num_key_value_heads = getattr(self.config, 'num_key_value_heads', self.num_heads)
+        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        self.max_position_embeddings = self.config.max_position_embeddings
+        self.rope_theta = getattr(self.config, 'rope_theta', 10000.0)
+        self.is_causal = True
+
+        # 获取attention_dropout
+        self.attention_dropout = getattr(self.config, 'attention_dropout', 0.0)
 
         # 复制rotary embedding
         self.rotary_emb = original_attention.rotary_emb
