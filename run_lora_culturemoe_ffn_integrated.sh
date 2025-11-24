@@ -14,10 +14,10 @@ NUM_EXPERTS=${5:-"8"}   # 专家数量
 
 # 设置基础模型路径
 if [ "$BACKBONE" = "llama" ]; then
-    BASE_MODEL="meta-llama/Llama-2-7b-hf"
+    BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="llama-7b"
 elif [ "$BACKBONE" = "qwen" ]; then
-    BASE_MODEL="Qwen/Qwen2.5-7B-Instruct"
+    BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="qwen-7b"
 else
     echo "错误：不支持的backbone类型: $BACKBONE"
@@ -27,25 +27,44 @@ fi
 
 # 设置数据文件路径
 case $DATA_ID in
-    "2")
-        DATA_FILE="data/CulturalBench_Hard_merge.json"
-        TASK_NAME="binary_cultural"
+    0)
+        # unified_all_datasets small
+        TRAIN_FILE="/root/autodl-fs/unified_all_datasets_small.json"
+        DATASET_TAG="unified_all_datasets_small"
+        echo "Using unified_all_datasets dataset (enhanced format)"
         ;;
-    "3")
-        DATA_FILE="data/normad_ed_merge.json"
-        TASK_NAME="ternary_cultural"
+    1)
+        # unified_all_datasets
+        TRAIN_FILE="/root/autodl-fs/unified_all_datasets.json"
+        DATASET_TAG="unified_all_datasets"
+        echo "Using unified_all_datasets dataset (enhanced format)"
         ;;
-    "4")
-        DATA_FILE="data/wvs_all_llama_merge_4.json"
-        TASK_NAME="quaternary_cultural"
+    2)
+        # CulturalBench
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
+        DATASET_TAG="CulturalBench"
+        echo "Using CulturalBench dataset (enhanced format)"
         ;;
-    "5")
-        DATA_FILE="data/wvs_all_llama_merge_5.json"
-        TASK_NAME="quinary_cultural"
+    3)
+        # NormAD
+        TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
+        DATASET_TAG="normad"
+        echo "Using NormAD dataset (enhanced format)"
+        ;;
+    4)
+        # CultureLLM
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
+        DATASET_TAG="cultureLLM"
+        echo "Using CultureLLM dataset (enhanced format)"
         ;;
     *)
-        echo "错误：不支持的数据ID: $DATA_ID"
-        echo "支持的ID: 2, 3, 4, 5"
+        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 1, 2, 3, or 4."
+        echo ""
+        echo "DATA_ID options:"
+        echo "  1 - unified_all_datasets"
+        echo "  2 - CulturalBench"
+        echo "  3 - NormAD"
+        echo "  4 - CultureLLM (default)"
         exit 1
         ;;
 esac
