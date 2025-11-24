@@ -146,21 +146,58 @@ class LoRAEnhancedAttention(nn.Module):
             # 如果原始attention没有rotary_emb，我们需要创建一个
             try:
                 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
-                # 尝试不同的初始化参数
-                try:
-                    self.rotary_emb = LlamaRotaryEmbedding(
-                        self.head_dim,
-                        max_position_embeddings=self.max_position_embeddings,
-                        base=self.rope_theta,
-                    )
-                except TypeError:
-                    # 兼容旧版本
-                    self.rotary_emb = LlamaRotaryEmbedding(
-                        self.head_dim,
-                        max_position_embeddings=self.max_position_embeddings,
-                    )
+                # 尝试不同的初始化参数组合（优先尝试较简单的参数）
+                rotary_emb_created = False
+
+                # 尝试1: 只带dim参数（最常见的情况）
+                if not rotary_emb_created:
+                    try:
+                        self.rotary_emb = LlamaRotaryEmbedding(self.head_dim)
+                        rotary_emb_created = True
+                    except TypeError as e:
+                        # 记录错误但继续尝试
+                        pass
+
+                # 尝试2: 带dim和base参数
+                if not rotary_emb_created:
+                    try:
+                        self.rotary_emb = LlamaRotaryEmbedding(
+                            self.head_dim,
+                            base=self.rope_theta,
+                        )
+                        rotary_emb_created = True
+                    except TypeError:
+                        pass
+
+                # 尝试3: 带dim, max_position_embeddings和base参数
+                if not rotary_emb_created:
+                    try:
+                        self.rotary_emb = LlamaRotaryEmbedding(
+                            self.head_dim,
+                            max_position_embeddings=self.max_position_embeddings,
+                            base=self.rope_theta,
+                        )
+                        rotary_emb_created = True
+                    except TypeError:
+                        pass
+
+                # 尝试4: 只带max_position_embeddings参数
+                if not rotary_emb_created:
+                    try:
+                        self.rotary_emb = LlamaRotaryEmbedding(
+                            self.head_dim,
+                            max_position_embeddings=self.max_position_embeddings,
+                        )
+                        rotary_emb_created = True
+                    except TypeError:
+                        pass
+
+                # 如果所有尝试都失败，设为None
+                if not rotary_emb_created:
+                    self.rotary_emb = None
+
             except ImportError:
-                # 如果导入失败，使用简单的恒等函数
+                # 如果导入失败，设为None
                 self.rotary_emb = None
 
         # 选择注意力机制类型
