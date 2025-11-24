@@ -568,8 +568,9 @@ def main():
     parser.add_argument('--test_data', type=str, required=True, help='Test data path')
     parser.add_argument('--output_dir', type=str, default='./evaluation_results', help='Output directory')
     parser.add_argument('--batch_size', type=int, default=8, help='Evaluation batch size')
-    parser.add_argument('--lora_rank', type=int, default=16, help='LoRA rank')
-    parser.add_argument('--lora_alpha', type=float, default=32.0, help='LoRA alpha')
+    # LoRA参数现在固定，不再作为命令行参数
+    # parser.add_argument('--lora_rank', type=int, default=16, help='LoRA rank')
+    # parser.add_argument('--lora_alpha', type=float, default=32.0, help='LoRA alpha')
     parser.add_argument('--num_experts', type=int, default=8, help='Number of experts')
 
     args = parser.parse_args()
@@ -585,8 +586,8 @@ def main():
         capacity_factor=1.25,
         num_cultures=6,
         culture_dim=256,
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
+        lora_rank=16,  # 固定值
+        lora_alpha=32.0,  # 固定值
         lora_dropout=0.1,
         attention_lora_targets=["q_proj", "k_proj", "v_proj", "o_proj"],
         expert_lora_targets=["gate_proj", "up_proj", "down_proj"],

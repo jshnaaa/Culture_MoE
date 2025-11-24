@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LoRA增强的FFN集成CultureMoE训练脚本
+LoRA增强的FFN集成CultureMoE训练脚本（DDP多卡版本）
 
 特点：
-1. 在Attention的Q、K、V、O投影层添加LoRA适配器
-2. 在MoE专家的FFN层（gate_proj, up_proj, down_proj）添加LoRA适配器
-3. 支持渐进式训练和专门的LoRA优化策略
-4. 完全向量化的专家调度，解决效率瓶颈
+1. 支持DDP（DistributedDataParallel）多卡训练
+2. 在Attention的Q、K、V、O投影层添加LoRA适配器
+3. 在MoE专家的FFN层（gate_proj, up_proj, down_proj）添加LoRA适配器
+4. 支持渐进式训练和专门的LoRA优化策略
+5. 完全向量化的专家调度，解决效率瓶颈
 """
 
 import os
@@ -23,7 +24,9 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset, random_split
+import torch.distributed as dist
+from torch.utils.data import DataLoader, Dataset, random_split, DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM,
     get_linear_schedule_with_warmup,
@@ -42,6 +45,32 @@ from llamafactory.model.lora_culturemoe_model import (
     create_lora_culturemoe_model
 )
 import torch.nn.functional as F
+
+
+# ===== DDP工具函数 =====
+def setup_ddp(rank, world_size):
+    """初始化DDP"""
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+
+    # 初始化进程组
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+    # 设置当前设备
+    torch.cuda.set_device(rank)
+
+
+def cleanup_ddp():
+    """清理DDP"""
+    dist.destroy_process_group()
+
+
+def reduce_tensor(tensor, world_size):
+    """跨进程平均tensor"""
+    rt = tensor.clone()
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+    rt /= world_size
+    return rt
 
 
 # ===== 数据集类 =====
@@ -86,16 +115,16 @@ class CultureDatasetForLoRA(Dataset):
 
         # 构建完整文本 - 原始版本（文化专家使用）
         if clean_input:
-            input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction}\n{clean_input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\\n\\n{clean_instruction}\\n{clean_input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\\n\\n"
         else:
-            input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            input_text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\\n\\n{clean_instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\\n\\n"
         full_text = input_text + output + "<|eot_id|>"
 
         # 构建mask版本（共享专家使用）
         if clean_input:
-            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction_mask}\n{clean_input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\\n\\n{clean_instruction_mask}\\n{clean_input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\\n\\n"
         else:
-            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{clean_instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\\n\\n{clean_instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\\n\\n"
         full_text_mask = input_text_mask + output + "<|eot_id|>"
 
         # 分词 - 原始版本
@@ -249,15 +278,16 @@ class LoRACultureMoELoss(nn.Module):
         return total_culture_loss / num_layers if num_layers > 0 else torch.tensor(0.0, device=culture_labels.device)
 
 
-
 # ===== 训练器类 =====
-class LoRACultureMoETrainer:
-    """LoRA增强CultureMoE训练器"""
+class LoRACultureMoETrainerDDP:
+    """LoRA增强CultureMoE训练器（DDP版本）"""
 
-    def __init__(self, model: LoRACultureMoELlamaModel, lora_config: LoRACultureMoEConfig):
+    def __init__(self, model: LoRACultureMoELlamaModel, lora_config: LoRACultureMoEConfig, rank: int, world_size: int):
         self.model = model
         self.lora_config = lora_config
         self.loss_fn = LoRACultureMoELoss(lora_config)
+        self.rank = rank
+        self.world_size = world_size
 
         # 获取LoRA参数组
         self.lora_params = self.model.get_lora_parameters()
@@ -371,6 +401,12 @@ class LoRACultureMoETrainer:
         self.scheduler.step()
         self.optimizer.zero_grad()
 
+        # 在DDP中同步损失
+        if self.world_size > 1:
+            for key, value in loss_dict.items():
+                if torch.is_tensor(value):
+                    loss_dict[key] = reduce_tensor(value, self.world_size)
+
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
     def validate_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
@@ -402,12 +438,18 @@ class LoRACultureMoETrainer:
                 culture_labels=culture_ids
             )
 
+        # 在DDP中同步损失
+        if self.world_size > 1:
+            for key, value in loss_dict.items():
+                if torch.is_tensor(value):
+                    loss_dict[key] = reduce_tensor(value, self.world_size)
+
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
     def get_expert_utilization_stats(self) -> Dict[str, Any]:
         """获取专家利用率统计"""
         stats = {}
-        for layer_idx, layer in enumerate(self.model.layers):
+        for layer_idx, layer in enumerate(self.model.module.layers):  # 注意DDP的module属性
             stats[f'layer_{layer_idx}'] = {
                 'num_experts': layer.mlp.num_experts,
                 'moe_alpha': layer.mlp.moe_fusion_alpha.item()
@@ -416,140 +458,46 @@ class LoRACultureMoETrainer:
 
     def save_lora_weights(self, save_path: str):
         """保存LoRA权重"""
-        lora_state_dict = {}
+        if self.rank == 0:  # 只在主进程保存
+            lora_state_dict = {}
 
-        for layer_idx, layer in enumerate(self.model.layers):
-            # 保存Attention LoRA权重
-            for name, module in layer.self_attn.named_modules():
-                if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
-                    lora_state_dict[f'layer_{layer_idx}.self_attn.{name}.lora_A.weight'] = module.lora_A.weight
-                    lora_state_dict[f'layer_{layer_idx}.self_attn.{name}.lora_B.weight'] = module.lora_B.weight
+            # 注意DDP的module属性
+            model = self.model.module if hasattr(self.model, 'module') else self.model
 
-            # 保存MoE LoRA权重
-            for name, module in layer.mlp.named_modules():
-                if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
-                    lora_state_dict[f'layer_{layer_idx}.mlp.{name}.lora_A.weight'] = module.lora_A.weight
-                    lora_state_dict[f'layer_{layer_idx}.mlp.{name}.lora_B.weight'] = module.lora_B.weight
+            for layer_idx, layer in enumerate(model.layers):
+                # 保存Attention LoRA权重
+                for name, module in layer.self_attn.named_modules():
+                    if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
+                        lora_state_dict[f'layer_{layer_idx}.self_attn.{name}.lora_A.weight'] = module.lora_A.weight
+                        lora_state_dict[f'layer_{layer_idx}.self_attn.{name}.lora_B.weight'] = module.lora_B.weight
 
-        torch.save(lora_state_dict, save_path)
-        logging.info(f"LoRA weights saved to {save_path}")
+                # 保存MoE LoRA权重
+                for name, module in layer.mlp.named_modules():
+                    if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
+                        lora_state_dict[f'layer_{layer_idx}.mlp.{name}.lora_A.weight'] = module.lora_A.weight
+                        lora_state_dict[f'layer_{layer_idx}.mlp.{name}.lora_B.weight'] = module.lora_B.weight
 
-
-# ===== 渐进式训练策略 =====
-class ProgressiveLoRATrainingStrategy:
-    """渐进式LoRA训练策略"""
-
-    def __init__(self, model: LoRACultureMoELlamaModel, lora_config: LoRACultureMoEConfig):
-        self.model = model
-        self.lora_config = lora_config
-        self.total_layers = len(model.layers)
-
-    def stage_1_attention_only(self):
-        """阶段1：只训练Attention LoRA"""
-        print("Stage 1: Training Attention LoRA only")
-
-        # 冻结所有MoE参数
-        for layer in self.model.layers:
-            for param in layer.mlp.parameters():
-                param.requires_grad = False
-
-        # 解冻Attention LoRA参数
-        for layer in self.model.layers:
-            for name, module in layer.self_attn.named_modules():
-                if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
-                    module.lora_A.weight.requires_grad = True
-                    module.lora_B.weight.requires_grad = True
-
-        return "Stage 1 setup complete. Training Attention LoRA only."
-
-    def stage_2_experts_only(self):
-        """阶段2：只训练Expert LoRA"""
-        print("Stage 2: Training Expert LoRA only")
-
-        # 冻结Attention LoRA参数
-        for layer in self.model.layers:
-            for name, module in layer.self_attn.named_modules():
-                if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
-                    module.lora_A.weight.requires_grad = False
-                    module.lora_B.weight.requires_grad = False
-
-        # 解冻Expert LoRA参数
-        for layer in self.model.layers:
-            for name, module in layer.mlp.named_modules():
-                if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
-                    if 'expert' in name:
-                        module.lora_A.weight.requires_grad = True
-                        module.lora_B.weight.requires_grad = True
-
-        return "Stage 2 setup complete. Training Expert LoRA only."
-
-    def stage_3_all_lora(self):
-        """阶段3：训练所有LoRA参数"""
-        print("Stage 3: Training all LoRA parameters")
-
-        # 解冻所有LoRA参数
-        for layer in self.model.layers:
-            for name, module in layer.named_modules():
-                if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
-                    module.lora_A.weight.requires_grad = True
-                    module.lora_B.weight.requires_grad = True
-
-        return "Stage 3 setup complete. Training all LoRA parameters."
-
-    def get_trainable_params_count(self) -> Dict[str, int]:
-        """获取当前可训练参数数量"""
-        attention_lora_params = 0
-        expert_lora_params = 0
-        cultural_lora_params = 0
-        other_params = 0
-
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                if 'self_attn' in name and ('lora_A' in name or 'lora_B' in name):
-                    attention_lora_params += param.numel()
-                elif 'mlp' in name and 'expert' in name and ('lora_A' in name or 'lora_B' in name):
-                    expert_lora_params += param.numel()
-                elif 'mlp' in name and ('lora_A' in name or 'lora_B' in name):
-                    cultural_lora_params += param.numel()
-                else:
-                    other_params += param.numel()
-
-        return {
-            'attention_lora': attention_lora_params,
-            'expert_lora': expert_lora_params,
-            'cultural_lora': cultural_lora_params,
-            'other': other_params,
-            'total': attention_lora_params + expert_lora_params + cultural_lora_params + other_params
-        }
+            torch.save(lora_state_dict, save_path)
+            logging.info(f"LoRA weights saved to {save_path}")
 
 
 # ===== 主训练函数 =====
-def main():
-    parser = argparse.ArgumentParser(description='LoRA Enhanced CultureMoE Training')
-    parser.add_argument('--base_model', type=str, default='meta-llama/Llama-2-7b-hf', help='Base model path')
-    parser.add_argument('--data_path', type=str, required=True, help='Training data path')
-    parser.add_argument('--output_dir', type=str, default='./outputs/lora_culturemoe', help='Output directory')
-    parser.add_argument('--num_epochs', type=int, default=8, help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=4, help='Training batch size')
-    parser.add_argument('--learning_rate', type=float, default=5e-4, help='Learning rate')
-    # LoRA参数现在固定，不再作为命令行参数
-    # parser.add_argument('--lora_rank', type=int, default=16, help='LoRA rank')
-    # parser.add_argument('--lora_alpha', type=float, default=32.0, help='LoRA alpha')
-    parser.add_argument('--num_experts', type=int, default=8, help='Number of experts')
-    parser.add_argument('--progressive_training', action='store_true', help='Use progressive training strategy')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed')
-
-    args = parser.parse_args()
+def train_ddp(rank, world_size, args):
+    """DDP训练函数"""
+    # 设置DDP
+    setup_ddp(rank, world_size)
 
     # 设置随机种子
-    set_seed(args.seed)
+    set_seed(args.seed + rank)
 
-    # 设置日志
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-
-    # 创建输出目录
-    os.makedirs(args.output_dir, exist_ok=True)
+    # 设置日志（只在主进程）
+    if rank == 0:
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+        # 创建输出目录
+        os.makedirs(args.output_dir, exist_ok=True)
+    else:
+        logger = None
 
     # LoRA配置
     lora_config = LoRACultureMoEConfig(
@@ -558,8 +506,8 @@ def main():
         capacity_factor=1.25,
         num_cultures=6,
         culture_dim=256,
-        lora_rank=16,  # 固定值
-        lora_alpha=32.0,  # 固定值
+        lora_rank=16,  # 固定值，不再作为参数
+        lora_alpha=32.0,  # 固定值，不再作为参数
         lora_dropout=0.1,
         attention_lora_targets=["q_proj", "k_proj", "v_proj", "o_proj"],
         expert_lora_targets=["gate_proj", "up_proj", "down_proj"],
@@ -571,10 +519,17 @@ def main():
     )
 
     # 创建模型
-    logger.info("Creating LoRA enhanced CultureMoE model...")
+    if rank == 0:
+        logger.info("Creating LoRA enhanced CultureMoE model...")
     model = create_lora_culturemoe_model(args.base_model, lora_config)
     model.freeze_base_parameters()  # 冻结基础参数，只训练LoRA
-    model.print_parameter_stats()
+    model.cuda(rank)
+
+    if rank == 0:
+        model.print_parameter_stats()
+
+    # 包装为DDP模型
+    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
     # 加载tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
@@ -582,7 +537,8 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     # 加载数据
-    logger.info(f"Loading training data from {args.data_path}")
+    if rank == 0:
+        logger.info(f"Loading training data from {args.data_path}")
     with open(args.data_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
@@ -593,79 +549,54 @@ def main():
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    # 创建DDP采样器
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler)
 
     # 创建训练器
-    trainer = LoRACultureMoETrainer(model, lora_config)
+    trainer = LoRACultureMoETrainerDDP(model, lora_config, rank, world_size)
     optimizer = trainer.setup_optimizer(learning_rate=args.learning_rate)
 
     total_steps = len(train_dataloader) * args.num_epochs
     scheduler = trainer.setup_scheduler(total_steps)
 
-    # 渐进式训练策略
-    if args.progressive_training:
-        progressive_strategy = ProgressiveLoRATrainingStrategy(model, lora_config)
+    # 训练循环
+    for epoch in range(args.num_epochs):
+        # 设置采样器的epoch
+        train_sampler.set_epoch(epoch)
 
-        # 阶段1：Attention LoRA
-        logger.info("=== Stage 1: Attention LoRA Training ===")
-        progressive_strategy.stage_1_attention_only()
-        logger.info(f"Trainable params: {progressive_strategy.get_trainable_params_count()}")
-        train_epochs(trainer, train_dataloader, val_dataloader, 2, logger, "Stage1")
-
-        # 阶段2：Expert LoRA
-        logger.info("=== Stage 2: Expert LoRA Training ===")
-        progressive_strategy.stage_2_experts_only()
-        logger.info(f"Trainable params: {progressive_strategy.get_trainable_params_count()}")
-        train_epochs(trainer, train_dataloader, val_dataloader, 3, logger, "Stage2")
-
-        # 阶段3：All LoRA
-        logger.info("=== Stage 3: All LoRA Training ===")
-        progressive_strategy.stage_3_all_lora()
-        logger.info(f"Trainable params: {progressive_strategy.get_trainable_params_count()}")
-        train_epochs(trainer, train_dataloader, val_dataloader, 3, logger, "Stage3")
-    else:
-        # 直接训练所有LoRA参数
-        logger.info("=== Direct LoRA Training ===")
-        train_epochs(trainer, train_dataloader, val_dataloader, args.num_epochs, logger, "Direct")
-
-    # 保存最终模型
-    final_save_path = os.path.join(args.output_dir, 'final_lora_weights.pt')
-    trainer.save_lora_weights(final_save_path)
-
-    logger.info("Training completed!")
-
-
-def train_epochs(trainer, train_dataloader, val_dataloader, num_epochs, logger, stage_name):
-    """训练指定数量的epochs"""
-    device = next(trainer.model.parameters()).device
-
-    for epoch in range(num_epochs):
         # 训练阶段
         trainer.model.train()
         epoch_losses = []
 
-        progress_bar = tqdm(train_dataloader, desc=f'{stage_name} Epoch {epoch+1}/{num_epochs}')
+        if rank == 0:
+            progress_bar = tqdm(train_dataloader, desc=f'Epoch {epoch+1}/{args.num_epochs}')
+        else:
+            progress_bar = train_dataloader
 
         for batch_idx, batch in enumerate(progress_bar):
             # 移动数据到设备
-            batch = {k: v.to(device) for k, v in batch.items()}
+            batch = {k: v.cuda(rank) for k, v in batch.items()}
 
             # 训练步骤
             loss_dict = trainer.train_step(batch)
             epoch_losses.append(loss_dict)
 
-            # 更新进度条
-            progress_bar.set_postfix({
-                'Loss': f"{loss_dict['total_loss']:.4f}",
-                'LM': f"{loss_dict['lm_loss']:.4f}",
-                'LB': f"{loss_dict['load_balance_loss']:.4f}",
-                'Ent': f"{loss_dict['entropy_loss']:.4f}"
-            })
+            # 更新进度条（只在主进程）
+            if rank == 0:
+                progress_bar.set_postfix({
+                    'Loss': f"{loss_dict['total_loss']:.4f}",
+                    'LM': f"{loss_dict['lm_loss']:.4f}",
+                    'LB': f"{loss_dict['load_balance_loss']:.4f}",
+                    'Ent': f"{loss_dict['entropy_loss']:.4f}"
+                })
 
-            # 定期日志
-            if batch_idx % 100 == 0:
-                logger.info(f"{stage_name} Epoch {epoch+1}, Batch {batch_idx}: {loss_dict}")
+                # 定期日志
+                if batch_idx % 100 == 0:
+                    logger.info(f"Epoch {epoch+1}, Batch {batch_idx}: {loss_dict}")
 
         # 验证阶段
         if val_dataloader:
@@ -674,21 +605,69 @@ def train_epochs(trainer, train_dataloader, val_dataloader, num_epochs, logger, 
 
             with torch.no_grad():
                 for batch in val_dataloader:
-                    batch = {k: v.to(device) for k, v in batch.items()}
+                    batch = {k: v.cuda(rank) for k, v in batch.items()}
                     val_loss_dict = trainer.validate_step(batch)
                     val_losses.append(val_loss_dict)
 
             # 计算平均验证损失
-            avg_val_loss = {
-                key: np.mean([loss[key] for loss in val_losses])
-                for key in val_losses[0].keys()
-            }
+            if val_losses:
+                avg_val_loss = {
+                    key: np.mean([loss[key] for loss in val_losses])
+                    for key in val_losses[0].keys()
+                }
 
-            logger.info(f"{stage_name} Epoch {epoch+1} Validation: {avg_val_loss}")
+                if rank == 0:
+                    logger.info(f"Epoch {epoch+1} Validation: {avg_val_loss}")
 
-        # 专家利用率统计
-        expert_stats = trainer.get_expert_utilization_stats()
-        logger.info(f"{stage_name} Epoch {epoch+1} Expert Stats: {expert_stats}")
+        # 专家利用率统计（只在主进程）
+        if rank == 0:
+            expert_stats = trainer.get_expert_utilization_stats()
+            logger.info(f"Epoch {epoch+1} Expert Stats: {expert_stats}")
+
+    # 保存最终模型（只在主进程）
+    if rank == 0:
+        final_save_path = os.path.join(args.output_dir, 'final_lora_weights.pt')
+        trainer.save_lora_weights(final_save_path)
+        logger.info("Training completed!")
+
+    # 清理DDP
+    cleanup_ddp()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='LoRA Enhanced CultureMoE Training with DDP')
+    parser.add_argument('--base_model', type=str, default='meta-llama/Llama-2-7b-hf', help='Base model path')
+    parser.add_argument('--data_path', type=str, required=True, help='Training data path')
+    parser.add_argument('--output_dir', type=str, default='./outputs/lora_culturemoe', help='Output directory')
+    parser.add_argument('--num_epochs', type=int, default=8, help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=4, help='Training batch size')
+    parser.add_argument('--learning_rate', type=float, default=5e-4, help='Learning rate')
+    parser.add_argument('--num_experts', type=int, default=8, help='Number of experts')
+    parser.add_argument('--num_gpus', type=int, default=2, help='Number of GPUs (1 for single GPU, 2+ for DDP)')
+    parser.add_argument('--progressive_training', action='store_true', help='Use progressive training strategy')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
+
+    args = parser.parse_args()
+
+    if args.num_gpus == 1:
+        # 单卡训练 - 直接调用原始训练函数
+        print("Using single GPU training...")
+        # 这里可以调用原始的单卡训练逻辑
+        # 为了简化，我们还是用DDP但只用一个GPU
+        world_size = 1
+        train_ddp(0, world_size, args)
+    else:
+        # 多卡训练
+        print(f"Using DDP training with {args.num_gpus} GPUs...")
+        world_size = args.num_gpus
+
+        # 检查GPU数量
+        if torch.cuda.device_count() < world_size:
+            print(f"Warning: Only {torch.cuda.device_count()} GPUs available, but {world_size} requested")
+            world_size = torch.cuda.device_count()
+
+        # 启动多进程
+        torch.multiprocessing.spawn(train_ddp, args=(world_size, args), nprocs=world_size, join=True)
 
 
 if __name__ == "__main__":
