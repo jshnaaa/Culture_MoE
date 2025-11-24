@@ -267,7 +267,22 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
         # ✅ Step 8: MoE 预热权重
         moe_warmup_weight = self.get_moe_warmup_weight()
 
-        # ✅ Step 9: 专家输出加权融合
+        # ✅ Step 9: Top-2专家激活和加权融合
+        # 从路由器输出概率计算Top-2选择
+        router_probs = F.softmax(final_logits, dim=-1)  # [B, num_experts] 路由器输出概率
+
+        # Top-2选择：为每个样本选择权重最高的2个专家
+        top2_weights, top2_indices = torch.topk(expert_weights, k=2, dim=-1)  # [B, 2], [B, 2]
+
+        # 对Top-2权重重新归一化
+        top2_weights_normalized = F.softmax(top2_weights, dim=-1)  # [B, 2]
+
+        # 创建稀疏的专家权重矩阵（只有Top-2专家有权重）
+        sparse_expert_weights = torch.zeros_like(expert_weights)  # [B, num_experts]
+        for b in range(expert_weights.shape[0]):
+            sparse_expert_weights[b, top2_indices[b]] = top2_weights_normalized[b]
+
+        # 使用稀疏权重进行专家融合
         weighted_expert_outs = []
         for i in range(len(expert_outputs)):
             # 检查专家输出是否有异常
@@ -276,16 +291,19 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 logging.warning(f"⚠️  Expert {i} output contains NaN/Inf, replacing with zeros")
                 expert_out = torch.zeros_like(expert_out)
 
-            # 检查专家权重是否有异常
-            weight = expert_weights[:, i].unsqueeze(-1).unsqueeze(-1)
+            # 使用稀疏权重（只有Top-2专家有非零权重）
+            weight = sparse_expert_weights[:, i].unsqueeze(-1).unsqueeze(-1)
             if torch.isnan(weight).any() or torch.isinf(weight).any():
-                logging.warning(f"⚠️  Expert {i} weight contains NaN/Inf, replacing with uniform weight")
-                weight = torch.ones_like(weight) / len(expert_outputs)
+                logging.warning(f"⚠️  Expert {i} weight contains NaN/Inf, setting to zero")
+                weight = torch.zeros_like(weight)
 
             weighted_out = expert_out * weight
             weighted_expert_outs.append(weighted_out)
 
         expert_sum = torch.stack(weighted_expert_outs, dim=0).sum(dim=0)  # [B, L, H]
+
+        # 更新expert_weights为稀疏版本（用于后续损失计算）
+        expert_weights = sparse_expert_weights
 
         # 检查融合后的专家输出
         if torch.isnan(expert_sum).any() or torch.isinf(expert_sum).any():
@@ -425,8 +443,8 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                     outputs['specialization_loss'] = spec_loss
                     outputs['diversity_loss'] = div_loss
 
-                # 防塌陷损失
-                load_balance_loss = self.router.compute_load_balancing_loss(expert_weights)
+                # 防塌陷损失 - 使用Switch Transformer方法
+                load_balance_loss = self.router.compute_load_balancing_loss(expert_weights, router_probs)
                 entropy_loss = self.router.entropy_regularization(expert_weights)
 
                 if load_balance_loss is None:
@@ -508,8 +526,8 @@ class EnhancedCultureMoE(LlamaSharedRouterExpertsModel):
                 outputs['specialization_loss'] = torch.tensor(0.0, device=generation_loss.device)
                 outputs['diversity_loss'] = torch.tensor(0.0, device=generation_loss.device)
 
-                # 防塌陷损失
-                load_balance_loss = self.router.compute_load_balancing_loss(expert_weights)
+                # 防塌陷损失 - 使用Switch Transformer方法
+                load_balance_loss = self.router.compute_load_balancing_loss(expert_weights, router_probs)
                 entropy_loss = self.router.entropy_regularization(expert_weights)
 
                 if load_balance_loss is None:

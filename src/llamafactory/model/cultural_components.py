@@ -274,21 +274,39 @@ class CulturalAwareRouter(nn.Module):
 
         return expert_weights, routing_info
 
-    def compute_load_balancing_loss(self, expert_weights: torch.Tensor) -> torch.Tensor:
-        """计算负载均衡损失"""
-        expert_usage = expert_weights.mean(dim=0)  # [num_experts]
+    def compute_load_balancing_loss(self, expert_weights: torch.Tensor, router_probs: torch.Tensor) -> torch.Tensor:
+        """
+        计算负载均衡损失 - 使用Switch Transformer方法
 
+        Args:
+            expert_weights: [B, num_experts] 专家权重（实际分配）
+            router_probs: [B, num_experts] 路由器输出概率
+
+        Returns:
+            load_balancing_loss: 负载均衡损失
+        """
         # 检查数值稳定性
-        if torch.isnan(expert_usage).any() or torch.isinf(expert_usage).any():
+        if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+            return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype)
+        if torch.isnan(router_probs).any() or torch.isinf(router_probs).any():
             return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype)
 
-        uniform_distribution = torch.ones_like(expert_usage) / self.num_experts
-        load_balancing_loss = F.mse_loss(expert_usage, uniform_distribution)
+        # 计算专家的令牌分配比例 f_i
+        # expert_weights 已经是分配给每个专家的权重，对batch维度求平均得到比例
+        f_i = expert_weights.mean(dim=0)  # [num_experts]
+
+        # 计算路由器的输出概率平均值 P_i
+        P_i = router_probs.mean(dim=0)  # [num_experts]
+
+        # Switch Transformer负载均衡损失公式：L_balance = α * N * Σ (f_i * P_i)
+        # 这里α由调用方控制，我们只计算 N * Σ (f_i * P_i)
+        N = self.num_experts
+        balance_loss = N * torch.sum(f_i * P_i)
 
         # 确保损失不为0（避免被优化器忽略）
-        load_balancing_loss = torch.clamp(load_balancing_loss, min=1e-8, max=1.0)
+        balance_loss = torch.clamp(balance_loss, min=1e-8, max=10.0)
 
-        return load_balancing_loss
+        return balance_loss
 
     def entropy_regularization(self, expert_weights: torch.Tensor) -> torch.Tensor:
         """计算熵正则化损失 - 鼓励均匀分布 (数值稳定性优化)"""
