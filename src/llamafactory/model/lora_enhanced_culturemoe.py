@@ -51,6 +51,9 @@ class LoRACultureMoEConfig:
     entropy_weight: float = 0.1
     culture_loss_weight: float = 0.05
 
+    # 文化感知注意力配置
+    enable_cultural_attention: bool = True  # 是否启用文化感知注意力
+
     # 训练配置
     moe_fusion_alpha_init: float = 0.3
     noise_epsilon: float = 1e-2
@@ -104,13 +107,14 @@ class LoRALinear(nn.Module):
 
 class LoRAEnhancedAttention(nn.Module):
     """
-    LoRA增强的Attention模块
-    在Q、K、V、O投影层添加LoRA适配器
+    LoRA增强的Attention模块（支持文化感知注意力）
+    在Q、K、V、O投影层添加LoRA适配器，可选择启用文化感知机制
     """
     def __init__(self, original_attention: LlamaAttention, lora_config: LoRACultureMoEConfig):
         super().__init__()
         self.config = original_attention.config
         self.layer_idx = original_attention.layer_idx
+        self.lora_config = lora_config
         self.attention_dropout = original_attention.attention_dropout
         self.hidden_size = original_attention.hidden_size
         self.num_heads = original_attention.num_heads
@@ -124,6 +128,46 @@ class LoRAEnhancedAttention(nn.Module):
         # 复制rotary embedding
         self.rotary_emb = original_attention.rotary_emb
 
+        # 选择注意力机制类型
+        if lora_config.enable_cultural_attention:
+            # 使用文化感知注意力
+            self.use_cultural_attention = True
+            self._init_cultural_attention(original_attention, lora_config)
+        else:
+            # 使用标准LoRA增强注意力
+            self.use_cultural_attention = False
+            self._init_standard_lora_attention(original_attention, lora_config)
+
+    def _init_cultural_attention(self, original_attention: LlamaAttention, lora_config: LoRACultureMoEConfig):
+        """初始化文化感知注意力组件"""
+        # 文化嵌入层
+        self.culture_embeddings = nn.Embedding(lora_config.num_cultures, lora_config.culture_dim)
+
+        # 文化感知QKV生成器
+        self.cultural_qkv_generator = self._create_cultural_qkv_generator(lora_config)
+
+        # 文化偏置生成器
+        self.cultural_bias_generator = self._create_cultural_bias_generator(lora_config)
+
+        # 文化上下文生成器
+        self.cultural_context_generator = self._create_cultural_context_generator(lora_config)
+
+        # 自适应融合网络
+        self.adaptive_fusion = self._create_adaptive_fusion(lora_config)
+
+        # 输出投影（LoRA增强）
+        if "o_proj" in lora_config.attention_lora_targets:
+            self.o_proj = LoRALinear(
+                original_attention.o_proj,
+                rank=lora_config.lora_rank,
+                alpha=lora_config.lora_alpha,
+                dropout=lora_config.lora_dropout
+            )
+        else:
+            self.o_proj = original_attention.o_proj
+
+    def _init_standard_lora_attention(self, original_attention: LlamaAttention, lora_config: LoRACultureMoEConfig):
+        """初始化标准LoRA增强注意力"""
         # 用LoRA包装投影层
         if "q_proj" in lora_config.attention_lora_targets:
             self.q_proj = LoRALinear(
@@ -165,7 +209,247 @@ class LoRAEnhancedAttention(nn.Module):
         else:
             self.o_proj = original_attention.o_proj
 
+    def _create_cultural_qkv_generator(self, lora_config: LoRACultureMoEConfig):
+        """创建文化感知QKV生成器"""
+        class CulturalQKVGenerator(nn.Module):
+            def __init__(self, hidden_size, culture_dim, num_heads, lora_cfg):
+                super().__init__()
+                self.hidden_size = hidden_size
+                self.culture_dim = culture_dim
+                self.num_heads = num_heads
+                self.head_dim = hidden_size // num_heads
+
+                # 文化条件的QKV投影（LoRA增强）
+                base_q_proj = nn.Linear(hidden_size + culture_dim, hidden_size, bias=False)
+                self.q_proj = LoRALinear(base_q_proj, lora_cfg.lora_rank, lora_cfg.lora_alpha, lora_cfg.lora_dropout)
+
+                base_k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+                self.k_proj = LoRALinear(base_k_proj, lora_cfg.lora_rank // 2, lora_cfg.lora_alpha * 0.5, lora_cfg.lora_dropout)
+
+                base_v_proj = nn.Linear(hidden_size + culture_dim // 2, hidden_size, bias=False)
+                self.v_proj = LoRALinear(base_v_proj, lora_cfg.lora_rank, lora_cfg.lora_alpha, lora_cfg.lora_dropout)
+
+                self.culture_projector = nn.Sequential(
+                    nn.Linear(culture_dim, culture_dim // 2),
+                    nn.ReLU(),
+                    nn.Linear(culture_dim // 2, culture_dim // 2)
+                )
+
+            def forward(self, hidden_states, culture_emb):
+                batch_size, seq_len, hidden_size = hidden_states.shape
+                culture_emb_expanded = culture_emb.unsqueeze(1).expand(-1, seq_len, -1)
+
+                q_input = torch.cat([hidden_states, culture_emb_expanded], dim=-1)
+                query_states = self.q_proj(q_input)
+
+                key_states = self.k_proj(hidden_states)
+
+                projected_culture = self.culture_projector(culture_emb_expanded)
+                v_input = torch.cat([hidden_states, projected_culture], dim=-1)
+                value_states = self.v_proj(v_input)
+
+                query_states = query_states.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+                key_states = key_states.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+                value_states = value_states.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+                return query_states, key_states, value_states
+
+        return CulturalQKVGenerator(self.hidden_size, lora_config.culture_dim, self.num_heads, lora_config)
+
+    def _create_cultural_bias_generator(self, lora_config: LoRACultureMoEConfig):
+        """创建文化偏置生成器"""
+        class CulturalBiasGenerator(nn.Module):
+            def __init__(self, culture_dim, num_heads):
+                super().__init__()
+                self.bias_network = nn.Sequential(
+                    nn.Linear(culture_dim, culture_dim // 2),
+                    nn.ReLU(),
+                    nn.Linear(culture_dim // 2, num_heads),
+                    nn.Tanh()
+                )
+
+            def forward(self, cultural_context, seq_len, batch_size):
+                global_bias = self.bias_network(cultural_context)
+                global_bias = global_bias.unsqueeze(-1).unsqueeze(-1)
+                return global_bias.expand(-1, -1, seq_len, seq_len) * 0.1
+
+        return CulturalBiasGenerator(lora_config.culture_dim, self.num_heads)
+
+    def _create_cultural_context_generator(self, lora_config: LoRACultureMoEConfig):
+        """创建文化上下文生成器"""
+        class CulturalContextGenerator(nn.Module):
+            def __init__(self, culture_dim, hidden_size, lora_cfg):
+                super().__init__()
+                self.cultural_prototypes = nn.Parameter(
+                    torch.randn(6, culture_dim, hidden_size // 4) * 0.02
+                )
+                self.cultural_weight_generator = nn.Sequential(
+                    nn.Linear(hidden_size, culture_dim),
+                    nn.ReLU(),
+                    nn.Linear(culture_dim, 6),
+                    nn.Softmax(dim=-1)
+                )
+                base_context_fusion = nn.Sequential(
+                    nn.Linear(culture_dim + hidden_size // 4, hidden_size // 2),
+                    nn.ReLU(),
+                    nn.Linear(hidden_size // 2, hidden_size)
+                )
+                base_final = base_context_fusion[-1]
+                lora_final = LoRALinear(base_final, lora_cfg.lora_rank // 2, lora_cfg.lora_alpha, lora_cfg.lora_dropout)
+                self.context_fusion = nn.Sequential(
+                    base_context_fusion[0],
+                    base_context_fusion[1],
+                    lora_final
+                )
+
+            def forward(self, culture_emb, hidden_states):
+                sequence_summary = hidden_states.mean(dim=1)
+                cultural_weights = self.cultural_weight_generator(sequence_summary)
+                weighted_prototypes = torch.einsum('bc,ckd->bkd', cultural_weights, self.cultural_prototypes)
+                weighted_prototypes = weighted_prototypes.mean(dim=1)
+                context_input = torch.cat([culture_emb, weighted_prototypes], dim=-1)
+                return self.context_fusion(context_input)
+
+        return CulturalContextGenerator(lora_config.culture_dim, self.hidden_size, lora_config)
+
+    def _create_adaptive_fusion(self, lora_config: LoRACultureMoEConfig):
+        """创建自适应融合网络"""
+        class AdaptiveFusion(nn.Module):
+            def __init__(self, hidden_size, culture_dim, lora_cfg):
+                super().__init__()
+                self.cultural_strength_network = nn.Sequential(
+                    nn.Linear(hidden_size + culture_dim, hidden_size // 2),
+                    nn.ReLU(),
+                    nn.Linear(hidden_size // 2, 1),
+                    nn.Sigmoid()
+                )
+                base_fusion = nn.Linear(hidden_size + culture_dim, hidden_size)
+                self.cultural_fusion = LoRALinear(base_fusion, lora_cfg.lora_rank, lora_cfg.lora_alpha * 0.5, lora_cfg.lora_dropout)
+                self.residual_gate = nn.Sequential(
+                    nn.Linear(hidden_size, hidden_size),
+                    nn.Sigmoid()
+                )
+
+            def forward(self, attn_output, cultural_context):
+                batch_size, seq_len, hidden_size = attn_output.shape
+                cultural_context_expanded = cultural_context.unsqueeze(1).expand(-1, seq_len, -1)
+
+                strength_input = torch.cat([attn_output, cultural_context_expanded], dim=-1)
+                cultural_strength = self.cultural_strength_network(strength_input)
+
+                fusion_input = torch.cat([attn_output, cultural_context_expanded], dim=-1)
+                cultural_features = self.cultural_fusion(fusion_input)
+
+                enhanced_output = attn_output + cultural_strength * cultural_features
+                gate_weights = self.residual_gate(enhanced_output)
+                return gate_weights * enhanced_output + (1 - gate_weights) * attn_output
+
+        return AdaptiveFusion(self.hidden_size, lora_config.culture_dim, lora_config)
+
     def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        culture_ids: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        """
+        前向传播 - 根据配置选择文化感知注意力或标准LoRA注意力
+        """
+        bsz, q_len, _ = hidden_states.size()
+
+        if self.use_cultural_attention and culture_ids is not None:
+            # 使用文化感知注意力
+            return self._forward_cultural_attention(
+                hidden_states, attention_mask, position_ids, past_key_value,
+                output_attentions, use_cache, cache_position, culture_ids, **kwargs
+            )
+        else:
+            # 使用标准LoRA增强注意力
+            return self._forward_standard_attention(
+                hidden_states, attention_mask, position_ids, past_key_value,
+                output_attentions, use_cache, cache_position, **kwargs
+            )
+
+    def _forward_cultural_attention(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        culture_ids: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        """文化感知注意力前向传播"""
+        bsz, q_len, _ = hidden_states.size()
+
+        # 1. 获取文化嵌入
+        culture_emb = self.culture_embeddings(culture_ids)  # [B, culture_dim]
+
+        # 2. 生成文化上下文
+        cultural_context = self.cultural_context_generator(culture_emb, hidden_states)  # [B, H]
+
+        # 3. 文化感知QKV生成
+        query_states, key_states, value_states = self.cultural_qkv_generator(
+            hidden_states, culture_emb
+        )  # [B, num_heads, L, head_dim]
+
+        # 4. 应用Rotary Position Embedding
+        cos, sin = self.rotary_emb(value_states, position_ids)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        # 5. 处理past_key_value（KV缓存）
+        if past_key_value is not None:
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
+        # 6. KV重复（如果需要）
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+        # 7. 计算基础注意力分数
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / (self.head_dim**0.5)
+
+        # 8. 生成并应用文化偏置
+        cultural_bias = self.cultural_bias_generator(cultural_context, q_len, bsz)  # [B, num_heads, L, L]
+        attn_weights = attn_weights + cultural_bias
+
+        # 9. 应用注意力掩码
+        if attention_mask is not None:
+            causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+            attn_weights = attn_weights + causal_mask
+
+        # 10. 计算注意力权重
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+
+        # 11. 应用注意力到值
+        attn_output = torch.matmul(attn_weights, value_states)  # [B, num_heads, L, head_dim]
+
+        # 12. 重塑输出
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+
+        # 13. 自适应文化融合
+        attn_output = self.adaptive_fusion(attn_output, cultural_context)
+
+        # 14. 输出投影
+        attn_output = self.o_proj(attn_output)
+
+        if not output_attentions:
+            attn_weights = None
+
+        return attn_output, attn_weights, past_key_value
+
+    def _forward_standard_attention(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
@@ -176,9 +460,7 @@ class LoRAEnhancedAttention(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        """
-        前向传播 - 使用与原始LlamaAttention相同的逻辑
-        """
+        """标准LoRA增强注意力前向传播"""
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states)

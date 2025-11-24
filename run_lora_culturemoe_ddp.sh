@@ -8,6 +8,7 @@ BACKBONE=${1:-"llama"}  # llama 或 qwen
 DATA_ID=${2:-"2"}       # 2, 3, 4, 5
 USE_PROGRESSIVE=${3:-"true"}  # true 或 false
 NUM_EXPERTS=${4:-"8"}   # 专家数量
+NUM_GPUS=${5:-"2"}      # GPU数量，默认双卡
 
 # 设置基础模型路径
 if [ "$BACKBONE" = "llama" ]; then
@@ -67,8 +68,8 @@ case $DATA_ID in
 esac
 
 # 检查数据文件是否存在
-if [ ! -f "$DATA_FILE" ]; then
-    echo "错误：数据文件不存在: $DATA_FILE"
+if [ ! -f "$TRAIN_FILE" ]; then
+    echo "错误：数据文件不存在: $TRAIN_FILE"
     exit 1
 fi
 
@@ -82,10 +83,11 @@ echo "======================================"
 echo "LoRA Enhanced CultureMoE FFN Integrated Training"
 echo "======================================"
 echo "Backbone: $BACKBONE ($BASE_MODEL)"
-echo "Data: $TASK_NAME ($DATA_FILE)"
+echo "Data: $DATASET_TAG ($TRAIN_FILE)"
 echo "LoRA Rank: $LORA_RANK"
 echo "Experts: $NUM_EXPERTS"
 echo "Progressive Training: $USE_PROGRESSIVE"
+echo "Num GPUs: $NUM_GPUS"
 echo "Output Directory: $OUTPUT_DIR"
 echo "======================================"
 
@@ -98,11 +100,12 @@ cat > "$OUTPUT_DIR/config.json" << EOF
     "backbone": "$BACKBONE",
     "base_model": "$BASE_MODEL",
     "data_id": "$DATA_ID",
-    "data_file": "$DATA_FILE",
-    "task_name": "$TASK_NAME",
+    "data_file": "$TRAIN_FILE",
+    "dataset_tag": "$DATASET_TAG",
     "lora_rank": $LORA_RANK,
     "num_experts": $NUM_EXPERTS,
     "use_progressive": $USE_PROGRESSIVE,
+    "num_gpus": $NUM_GPUS,
     "timestamp": "$TIMESTAMP"
 }
 EOF
@@ -120,19 +123,35 @@ fi
 
 # 开始训练
 echo "开始训练..."
-python train_lora_culturemoe_ffn_integrated.py \
-    --base_model "$BASE_MODEL" \
-    --data_path "$DATA_FILE" \
-    --output_dir "$OUTPUT_DIR" \
-    --num_epochs $NUM_EPOCHS \
-    --batch_size $BATCH_SIZE \
-    --learning_rate $LEARNING_RATE \
-    --lora_rank $LORA_RANK \
-    --lora_alpha 32.0 \
-    --num_experts $NUM_EXPERTS \
-    $PROGRESSIVE_FLAG \
-    --seed 42 \
-    2>&1 | tee "$OUTPUT_DIR/training.log"
+
+if [ "$NUM_GPUS" -eq 1 ]; then
+    echo "使用单卡训练..."
+    python train_lora_culturemoe_ffn_integrated.py \
+        --base_model "$BASE_MODEL" \
+        --data_path "$TRAIN_FILE" \
+        --output_dir "$OUTPUT_DIR" \
+        --num_epochs $NUM_EPOCHS \
+        --batch_size $BATCH_SIZE \
+        --learning_rate $LEARNING_RATE \
+        --num_experts $NUM_EXPERTS \
+        $PROGRESSIVE_FLAG \
+        --seed 42 \
+        2>&1 | tee "$OUTPUT_DIR/training.log"
+else
+    echo "使用DDP多卡训练，GPU数量: $NUM_GPUS"
+    python train_lora_culturemoe_ffn_integrated_ddp.py \
+        --base_model "$BASE_MODEL" \
+        --data_path "$TRAIN_FILE" \
+        --output_dir "$OUTPUT_DIR" \
+        --num_epochs $NUM_EPOCHS \
+        --batch_size $BATCH_SIZE \
+        --learning_rate $LEARNING_RATE \
+        --num_experts $NUM_EXPERTS \
+        --num_gpus $NUM_GPUS \
+        $PROGRESSIVE_FLAG \
+        --seed 42 \
+        2>&1 | tee "$OUTPUT_DIR/training.log"
+fi
 
 # 检查训练是否成功
 if [ $? -eq 0 ]; then
@@ -144,21 +163,33 @@ if [ $? -eq 0 ]; then
         echo "LoRA权重已保存: $LORA_WEIGHTS"
 
         # 自动运行评估（如果有测试数据）
-        TEST_DATA_FILE="${DATA_FILE%_merge.json}_test.json"
+        TEST_DATA_FILE="${TRAIN_FILE%_merge_gen.json}_test.json"
         if [ -f "$TEST_DATA_FILE" ]; then
             echo "发现测试数据，开始评估..."
 
             EVAL_OUTPUT_DIR="$OUTPUT_DIR/evaluation"
-            python eval_lora_culturemoe_ffn_integrated.py \
-                --base_model "$BASE_MODEL" \
-                --lora_weights "$LORA_WEIGHTS" \
-                --test_data "$TEST_DATA_FILE" \
-                --output_dir "$EVAL_OUTPUT_DIR" \
-                --batch_size 8 \
-                --lora_rank $LORA_RANK \
-                --lora_alpha 32.0 \
-                --num_experts $NUM_EXPERTS \
-                2>&1 | tee "$OUTPUT_DIR/evaluation.log"
+            if [ "$NUM_GPUS" -eq 1 ]; then
+                echo "使用单卡评估..."
+                python eval_lora_culturemoe_ffn_integrated.py \
+                    --base_model "$BASE_MODEL" \
+                    --lora_weights "$LORA_WEIGHTS" \
+                    --test_data "$TEST_DATA_FILE" \
+                    --output_dir "$EVAL_OUTPUT_DIR" \
+                    --batch_size 8 \
+                    --num_experts $NUM_EXPERTS \
+                    2>&1 | tee "$OUTPUT_DIR/evaluation.log"
+            else
+                echo "使用DDP多卡评估，GPU数量: $NUM_GPUS"
+                python eval_lora_culturemoe_ffn_integrated_ddp.py \
+                    --base_model "$BASE_MODEL" \
+                    --lora_weights "$LORA_WEIGHTS" \
+                    --test_data "$TEST_DATA_FILE" \
+                    --output_dir "$EVAL_OUTPUT_DIR" \
+                    --batch_size 8 \
+                    --num_experts $NUM_EXPERTS \
+                    --num_gpus $NUM_GPUS \
+                    2>&1 | tee "$OUTPUT_DIR/evaluation.log"
+            fi
 
             if [ $? -eq 0 ]; then
                 echo "评估完成！结果保存在: $EVAL_OUTPUT_DIR"

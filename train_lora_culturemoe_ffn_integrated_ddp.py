@@ -376,9 +376,23 @@ class LoRACultureMoETrainerDDP:
             return_dict=True
         )
 
+        # 需要添加语言模型头来生成logits
+        # 这里我们需要从模型获取logits而不是hidden_states
+        # 假设模型有lm_head属性
+        if hasattr(self.model, 'lm_head'):
+            logits = self.model.lm_head(outputs.last_hidden_state)
+        elif hasattr(self.model.module, 'lm_head'):
+            logits = self.model.module.lm_head(outputs.last_hidden_state)
+        else:
+            # 如果没有lm_head，我们需要创建一个临时的
+            vocab_size = self.model.module.config.vocab_size if hasattr(self.model, 'module') else self.model.config.vocab_size
+            if not hasattr(self, 'temp_lm_head'):
+                self.temp_lm_head = nn.Linear(outputs.last_hidden_state.size(-1), vocab_size).to(self.rank)
+            logits = self.temp_lm_head(outputs.last_hidden_state)
+
         # 计算损失
         loss_dict = self.loss_fn(
-            logits=outputs.last_hidden_state,
+            logits=logits,
             labels=labels,
             moe_aux_info=getattr(outputs, 'moe_aux_info', []),
             culture_labels=culture_ids
@@ -431,8 +445,19 @@ class LoRACultureMoETrainerDDP:
                 return_dict=True
             )
 
+            # 生成logits用于损失计算
+            if hasattr(self.model, 'lm_head'):
+                logits = self.model.lm_head(outputs.last_hidden_state)
+            elif hasattr(self.model.module, 'lm_head'):
+                logits = self.model.module.lm_head(outputs.last_hidden_state)
+            else:
+                if not hasattr(self, 'temp_lm_head'):
+                    vocab_size = self.model.module.config.vocab_size if hasattr(self.model, 'module') else self.model.config.vocab_size
+                    self.temp_lm_head = nn.Linear(outputs.last_hidden_state.size(-1), vocab_size).to(self.rank)
+                logits = self.temp_lm_head(outputs.last_hidden_state)
+
             loss_dict = self.loss_fn(
-                logits=outputs.last_hidden_state,
+                logits=logits,
                 labels=labels,
                 moe_aux_info=getattr(outputs, 'moe_aux_info', []),
                 culture_labels=culture_ids
@@ -514,6 +539,7 @@ def train_ddp(rank, world_size, args):
         load_balance_weight=0.01,
         entropy_weight=0.1,
         culture_loss_weight=0.05,
+        enable_cultural_attention=True,  # 启用文化感知注意力
         warmup_steps=1000,
         gradient_clip_norm=1.0
     )

@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import logging
 from copy import deepcopy
 
-from transformers import LlamaModel, LlamaConfig
+from transformers import LlamaModel, LlamaConfig, LlamaForCausalLM
 from transformers.models.llama.modeling_llama import (
     LlamaDecoderLayer,
     LlamaAttention,
@@ -148,6 +148,12 @@ class LoRACultureMoELlamaModel(LlamaModel):
         for param in self.norm.parameters():
             param.requires_grad = False
 
+        # 语言模型头（用于生成logits）
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # 冻结lm_head参数，只训练LoRA
+        for param in self.lm_head.parameters():
+            param.requires_grad = False
+
         # 初始化权重
         self.post_init()
 
@@ -172,7 +178,8 @@ class LoRACultureMoELlamaModel(LlamaModel):
         # 如果没有提供culture_ids，使用默认值
         if culture_ids is None:
             batch_size = input_ids.shape[0] if input_ids is not None else inputs_embeds.shape[0]
-            culture_ids = torch.zeros(batch_size, dtype=torch.long, device=self.device)
+            device = input_ids.device if input_ids is not None else inputs_embeds.device
+            culture_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
 
         # 收集所有MoE辅助信息
         all_aux_info = []
@@ -362,10 +369,12 @@ class LoRACultureMoELlamaModel(LlamaModel):
 
     def freeze_base_parameters(self):
         """冻结所有基础参数，只训练LoRA"""
-        # 冻结embedding和norm
+        # 冻结embedding、norm和lm_head
         for param in self.embed_tokens.parameters():
             param.requires_grad = False
         for param in self.norm.parameters():
+            param.requires_grad = False
+        for param in self.lm_head.parameters():
             param.requires_grad = False
 
         # 冻结每层的基础参数
@@ -440,9 +449,9 @@ def create_lora_culturemoe_model(
 
     # 加载基础模型权重到非LoRA部分
     try:
-        base_model = LlamaModel.from_pretrained(base_model_path)
-        _load_base_weights_to_lora_model(model, base_model)
-        del base_model  # 释放内存
+        base_model_full = LlamaForCausalLM.from_pretrained(base_model_path)
+        _load_base_weights_to_lora_model(model, base_model_full)
+        del base_model_full  # 释放内存
     except Exception as e:
         logging.warning(f"Failed to load base model weights: {e}")
         logging.warning("Model will be initialized with random weights")
@@ -450,14 +459,20 @@ def create_lora_culturemoe_model(
     return model
 
 
-def _load_base_weights_to_lora_model(lora_model: LoRACultureMoELlamaModel, base_model: LlamaModel):
+def _load_base_weights_to_lora_model(lora_model: LoRACultureMoELlamaModel, base_model_full):
     """将基础模型权重加载到LoRA模型的非LoRA部分"""
     with torch.no_grad():
+        # 获取基础模型的model部分
+        base_model = base_model_full.model
+
         # 复制embedding权重
         lora_model.embed_tokens.weight.copy_(base_model.embed_tokens.weight)
 
         # 复制norm权重
         lora_model.norm.weight.copy_(base_model.norm.weight)
+
+        # 复制lm_head权重
+        lora_model.lm_head.weight.copy_(base_model_full.lm_head.weight)
 
         # 复制每层的权重
         for lora_layer, base_layer in zip(lora_model.layers, base_model.layers):
