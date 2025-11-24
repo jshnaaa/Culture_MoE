@@ -480,6 +480,11 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
         self.num_experts = lora_config.num_experts
         self.top_k = lora_config.top_k
 
+        # 消融实验配置
+        self.use_shared_expert = lora_config.use_shared_expert
+        self.use_gate_fusion = lora_config.use_gate_fusion
+        self.use_mask_mechanism = lora_config.use_mask_mechanism
+
         # 文化信息注入层（每层都有，使用LoRA）
         self.cultural_injector = CulturalInjectorWithLoRA(
             hidden_dim=self.hidden_size,
@@ -513,13 +518,16 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
             lora_config=lora_config
         )
 
-        # LoRA增强的共享专家
-        self.shared_expert = SharedExpertWithLoRA(
-            hidden_size=self.hidden_size,
-            intermediate_size=self.intermediate_size,
-            activation=config.hidden_act,
-            lora_config=lora_config
-        )
+        # LoRA增强的共享专家（根据配置决定是否创建）
+        if self.use_shared_expert:
+            self.shared_expert = SharedExpertWithLoRA(
+                hidden_size=self.hidden_size,
+                intermediate_size=self.intermediate_size,
+                activation=config.hidden_act,
+                lora_config=lora_config
+            )
+        else:
+            self.shared_expert = None
 
         # 融合参数
         self.moe_fusion_alpha = nn.Parameter(torch.tensor(lora_config.moe_fusion_alpha_init))
@@ -551,13 +559,18 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
         # 1. 文化信息注入（使用原始输入）
         culturally_enhanced_states = self.cultural_injector(hidden_states, culture_ids)
 
-        # 2. 共享专家处理（使用mask输入，如果提供的话）
-        if hidden_states_mask is not None:
-            shared_input = hidden_states_mask
-        else:
-            shared_input = hidden_states  # 如果没有mask，使用原始输入
+        # 2. 共享专家处理（根据配置决定是否使用和如何处理）
+        if self.use_shared_expert:
+            # 决定共享专家的输入
+            if self.use_mask_mechanism and hidden_states_mask is not None:
+                shared_input = hidden_states_mask  # 使用mask版本
+            else:
+                shared_input = hidden_states  # 使用原始输入
 
-        shared_output = self.shared_expert(shared_input)
+            shared_output = self.shared_expert(shared_input)
+        else:
+            # 不使用共享专家
+            shared_output = torch.zeros_like(hidden_states)
 
         # 3. 文化专家处理（使用未mask的输入）
         # 增强的池化表示
@@ -577,9 +590,17 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
             capacity_factor=self.cultural_router.capacity_factor
         )
 
-        # 4. 共享专家和文化专家融合
-        moe_alpha = torch.sigmoid(self.moe_fusion_alpha)
-        final_output = (1 - moe_alpha) * shared_output + moe_alpha * cultural_expert_output
+        # 4. 共享专家和文化专家融合（根据配置决定融合方式）
+        if self.use_gate_fusion and self.use_shared_expert:
+            # 使用门控融合
+            moe_alpha = torch.sigmoid(self.moe_fusion_alpha)
+            final_output = (1 - moe_alpha) * shared_output + moe_alpha * cultural_expert_output
+        elif self.use_shared_expert:
+            # 直接相加
+            final_output = shared_output + cultural_expert_output
+        else:
+            # 只使用文化专家输出
+            final_output = cultural_expert_output
 
         # 5. 计算辅助损失
         load_balance_loss = self.cultural_router.compute_load_balancing_loss(

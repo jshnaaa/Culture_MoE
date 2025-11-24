@@ -54,6 +54,11 @@ class LoRACultureMoEConfig:
     # 文化感知注意力配置
     enable_cultural_attention: bool = True  # 是否启用文化感知注意力
 
+    # 消融实验配置
+    use_shared_expert: bool = True    # 是否使用共享专家
+    use_gate_fusion: bool = True      # 是否使用门控融合
+    use_mask_mechanism: bool = True   # 是否使用mask机制
+
     # 训练配置
     moe_fusion_alpha_init: float = 0.3
     noise_epsilon: float = 1e-2

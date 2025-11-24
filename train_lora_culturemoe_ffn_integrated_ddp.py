@@ -121,11 +121,16 @@ class CultureDatasetForLoRA(Dataset):
         full_text = input_text + output + "<|eot_id|>"
 
         # 构建mask版本（共享专家使用）
-        if clean_input:
-            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\\n\\n{clean_instruction_mask}\\n{clean_input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\\n\\n"
+        if self.use_mask_mechanism:
+            # 使用mask机制：共享专家使用instruction_mask
+            if clean_input:
+                input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\\n\\n{clean_instruction_mask}\\n{clean_input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\\n\\n"
+            else:
+                input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\\n\\n{clean_instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\\n\\n"
+            full_text_mask = input_text_mask + output + "<|eot_id|>"
         else:
-            input_text_mask = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\\n\\n{clean_instruction_mask}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\\n\\n"
-        full_text_mask = input_text_mask + output + "<|eot_id|>"
+            # 不使用mask机制：共享专家和路由专家使用相同输入
+            full_text_mask = full_text
 
         # 分词 - 原始版本
         encoding = self.tokenizer(
@@ -555,6 +560,10 @@ def train_ddp(rank, world_size, args):
         entropy_weight=0.1,
         culture_loss_weight=0.05,
         enable_cultural_attention=True,  # 启用文化感知注意力
+        # 消融实验配置
+        use_shared_expert=use_shared,
+        use_gate_fusion=use_gate,
+        use_mask_mechanism=use_mask,
         warmup_steps=1000,
         gradient_clip_norm=1.0
     )
