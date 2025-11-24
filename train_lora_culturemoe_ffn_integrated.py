@@ -41,16 +41,18 @@ from llamafactory.model.lora_culturemoe_model import (
     LoRACultureMoELlamaModel,
     create_lora_culturemoe_model
 )
+import torch.nn.functional as F
 
 
 # ===== 数据集类 =====
 class CultureDatasetForLoRA(Dataset):
     """LoRA训练用的文化数据集"""
 
-    def __init__(self, data: List[Dict], tokenizer, max_length: int = 512):
+    def __init__(self, data: List[Dict], tokenizer, max_length: int = 512, use_mask_mechanism: bool = True):
         self.data = data
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.use_mask_mechanism = use_mask_mechanism
 
         # 大洲映射
         self.continent_map = {
@@ -100,12 +102,22 @@ class CultureDatasetForLoRA(Dataset):
         except (ValueError, KeyError):
             culture_id = self.default_continent
 
-        return {
+        result = {
             'input_ids': input_ids,
             'attention_mask': attention_mask,
             'labels': labels,
             'culture_ids': torch.tensor(culture_id, dtype=torch.long)
         }
+
+        # 如果启用mask机制，生成masked版本的hidden states
+        if self.use_mask_mechanism:
+            # 这里我们为共享专家生成一个mask标记
+            # 在实际训练中，这个mask会在forward过程中应用到hidden states
+            result['use_mask_mechanism'] = True
+        else:
+            result['use_mask_mechanism'] = False
+
+        return result
 
 
 # ===== 损失计算类 =====
@@ -208,6 +220,42 @@ class LoRACultureMoELoss(nn.Module):
         return total_culture_loss / num_layers if num_layers > 0 else torch.tensor(0.0, device=culture_labels.device)
 
 
+# ===== Mask生成函数 =====
+def generate_cultural_mask(hidden_states: torch.Tensor, culture_ids: torch.Tensor,
+                          mask_ratio: float = 0.3) -> torch.Tensor:
+    """
+    为共享专家生成文化敏感的mask
+
+    Args:
+        hidden_states: [B, L, H] 输入的hidden states
+        culture_ids: [B] 文化标识
+        mask_ratio: mask的比例
+
+    Returns:
+        masked_hidden_states: [B, L, H] mask后的hidden states
+    """
+    batch_size, seq_len, hidden_dim = hidden_states.shape
+    device = hidden_states.device
+
+    # 创建mask后的hidden states副本
+    masked_hidden_states = hidden_states.clone()
+
+    # 为每个样本生成不同的mask模式
+    for i in range(batch_size):
+        culture_id = culture_ids[i].item()
+
+        # 基于文化ID生成确定性的mask模式
+        torch.manual_seed(42 + culture_id + i)  # 确保可重现性
+
+        # 生成随机mask
+        mask_indices = torch.rand(seq_len, hidden_dim, device=device) < mask_ratio
+
+        # 应用mask（将被mask的位置设为0或小的随机值）
+        masked_hidden_states[i][mask_indices] *= 0.1  # 保留10%的信息而不是完全置零
+
+    return masked_hidden_states
+
+
 # ===== 训练器类 =====
 class LoRACultureMoETrainer:
     """LoRA增强CultureMoE训练器"""
@@ -290,12 +338,29 @@ class LoRACultureMoETrainer:
         attention_mask = batch['attention_mask']
         labels = batch['labels']
         culture_ids = batch['culture_ids']
+        use_mask = batch.get('use_mask_mechanism', True)
+
+        # 生成mask（如果启用）
+        hidden_states_mask = None
+        if use_mask:
+            # 首先进行一次前向传播获取hidden states
+            with torch.no_grad():
+                temp_outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    culture_ids=culture_ids,
+                    return_dict=True
+                )
+                # 使用embedding后的hidden states生成mask
+                temp_hidden_states = self.model.embed_tokens(input_ids)
+                hidden_states_mask = generate_cultural_mask(temp_hidden_states, culture_ids)
 
         # 前向传播
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             culture_ids=culture_ids,
+            hidden_states_mask=hidden_states_mask,
             return_dict=True
         )
 
@@ -335,11 +400,19 @@ class LoRACultureMoETrainer:
             attention_mask = batch['attention_mask']
             labels = batch['labels']
             culture_ids = batch['culture_ids']
+            use_mask = batch.get('use_mask_mechanism', True)
+
+            # 生成mask（如果启用）
+            hidden_states_mask = None
+            if use_mask:
+                temp_hidden_states = self.model.embed_tokens(input_ids)
+                hidden_states_mask = generate_cultural_mask(temp_hidden_states, culture_ids)
 
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 culture_ids=culture_ids,
+                hidden_states_mask=hidden_states_mask,
                 return_dict=True
             )
 
@@ -533,7 +606,7 @@ def main():
     with open(args.data_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    dataset = CultureDatasetForLoRA(data, tokenizer, max_length=512)
+    dataset = CultureDatasetForLoRA(data, tokenizer, max_length=512, use_mask_mechanism=True)
 
     # 分割训练和验证集
     train_size = int(0.9 * len(dataset))

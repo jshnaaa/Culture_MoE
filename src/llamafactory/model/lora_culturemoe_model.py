@@ -25,7 +25,7 @@ from .lora_enhanced_culturemoe import (
     LoRACultureMoEConfig,
     LoRAEnhancedAttention
 )
-from .lora_vectorized_culturemoe_ffn import VectorizedCultureMoE_FFN_WithLoRA
+from .lora_vectorized_culturemoe_ffn_enhanced import VectorizedCultureMoE_FFN_WithLoRA_Enhanced
 
 
 class LoRACultureMoELlamaDecoderLayer(nn.Module):
@@ -44,8 +44,8 @@ class LoRACultureMoELlamaDecoderLayer(nn.Module):
         # LoRA增强的Attention
         self.self_attn = LoRAEnhancedAttention(original_attention, lora_config)
 
-        # LoRA增强的MoE FFN
-        self.mlp = VectorizedCultureMoE_FFN_WithLoRA(
+        # LoRA增强的MoE FFN（Enhanced版本，支持共享专家和文化专家分离）
+        self.mlp = VectorizedCultureMoE_FFN_WithLoRA_Enhanced(
             config=config,
             layer_idx=layer_idx,
             lora_config=lora_config
@@ -71,6 +71,7 @@ class LoRACultureMoELlamaDecoderLayer(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         culture_ids: Optional[torch.LongTensor] = None,
+        hidden_states_mask: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
@@ -94,7 +95,7 @@ class LoRACultureMoELlamaDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
 
-        hidden_states, aux_info = self.mlp(hidden_states, culture_ids)
+        hidden_states, aux_info = self.mlp(hidden_states, culture_ids, hidden_states_mask)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -152,6 +153,7 @@ class LoRACultureMoELlamaModel(LlamaModel):
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         culture_ids: Optional[torch.LongTensor] = None,
+        hidden_states_mask: Optional[torch.Tensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -248,6 +250,7 @@ class LoRACultureMoELlamaModel(LlamaModel):
                     use_cache,
                     cache_position,
                     culture_ids,
+                    hidden_states_mask,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -259,6 +262,7 @@ class LoRACultureMoELlamaModel(LlamaModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     culture_ids=culture_ids,
+                    hidden_states_mask=hidden_states_mask,
                 )
 
             hidden_states = layer_outputs[0]
@@ -478,8 +482,8 @@ def _copy_ffn_weights_to_experts(lora_mlp, base_mlp: LlamaMLP):
         else:
             shared_proj.weight.copy_(base_proj.weight)
 
-    # 复制到所有专家（初始化为相同权重）
-    for expert in lora_mlp.expert_layer.experts:
+    # 复制到所有文化专家（初始化为相同权重）
+    for expert in lora_mlp.cultural_experts.experts:
         for proj_name in ['gate_proj', 'up_proj', 'down_proj']:
             expert_proj = getattr(expert, proj_name)
             base_proj = getattr(base_mlp, proj_name)

@@ -33,7 +33,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 from llamafactory.model.lora_enhanced_culturemoe import LoRACultureMoEConfig
 from llamafactory.model.lora_culturemoe_model import create_lora_culturemoe_model
-from train_lora_culturemoe_ffn_integrated import CultureDatasetForLoRA
+from train_lora_culturemoe_ffn_integrated import CultureDatasetForLoRA, generate_cultural_mask
 
 
 class LoRACultureMoEEvaluator:
@@ -98,19 +98,27 @@ class LoRACultureMoEEvaluator:
                 attention_mask = batch['attention_mask']
                 labels = batch['labels']
                 culture_ids = batch['culture_ids']
+                use_mask = batch.get('use_mask_mechanism', True)
+
+                # 生成mask（如果启用）
+                hidden_states_mask = None
+                if use_mask:
+                    temp_hidden_states = self.model.embed_tokens(input_ids)
+                    hidden_states_mask = generate_cultural_mask(temp_hidden_states, culture_ids)
 
                 # 前向传播
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     culture_ids=culture_ids,
+                    hidden_states_mask=hidden_states_mask,
                     return_dict=True
                 )
 
                 # 计算预测（基于生成概率）
                 logits = outputs.last_hidden_state
                 predictions = self._get_predictions_from_generation(
-                    input_ids, attention_mask, culture_ids
+                    input_ids, attention_mask, culture_ids, hidden_states_mask
                 )
 
                 # 收集结果
@@ -170,7 +178,7 @@ class LoRACultureMoEEvaluator:
             'confusion_matrix': confusion_matrix(all_true_labels, all_predictions)
         }
 
-    def _get_predictions_from_generation(self, input_ids, attention_mask, culture_ids):
+    def _get_predictions_from_generation(self, input_ids, attention_mask, culture_ids, hidden_states_mask=None):
         """基于生成任务获取预测"""
         # 这是一个简化版本，实际应该基于生成的文本内容进行文化分类
         # 这里我们使用专家权重的模式作为预测
@@ -178,6 +186,7 @@ class LoRACultureMoEEvaluator:
             input_ids=input_ids,
             attention_mask=attention_mask,
             culture_ids=culture_ids,
+            hidden_states_mask=hidden_states_mask,
             return_dict=True
         )
 
@@ -523,7 +532,7 @@ def main():
     with open(args.test_data, 'r', encoding='utf-8') as f:
         test_data = json.load(f)
 
-    test_dataset = CultureDatasetForLoRA(test_data, tokenizer, max_length=512)
+    test_dataset = CultureDatasetForLoRA(test_data, tokenizer, max_length=512, use_mask_mechanism=True)
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
     # 评估模型
