@@ -2,13 +2,24 @@
 
 # LoRA增强FFN集成CultureMoE DDP训练脚本
 # 使用方法:
+# sh run_lora_culturemoe_ddp.sh [BACKBONE] [DATA_ID] [NUM_EXPERTS] [NUM_GPUS]
+#
+# 参数说明:
+# BACKBONE   - 基础模型类型: llama 或 qwen (默认: llama)
+# DATA_ID    - 数据集ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认: 2)
+# NUM_EXPERTS- 专家数量 (默认: 8)
+# NUM_GPUS   - GPU数量: 1=单卡, 2+=多卡DDP (默认: 2)
+#
+# 示例:
+# sh run_lora_culturemoe_ddp.sh llama 2 8 2    # 双卡训练
+# sh run_lora_culturemoe_ddp.sh llama 2 8 1    # 单卡训练
+# sh run_lora_culturemoe_ddp.sh qwen 3 16 4    # 四卡训练
 
 # 默认参数
 BACKBONE=${1:-"llama"}  # llama 或 qwen
 DATA_ID=${2:-"2"}       # 2, 3, 4, 5
-USE_PROGRESSIVE=${3:-"true"}  # true 或 false
-NUM_EXPERTS=${4:-"8"}   # 专家数量
-NUM_GPUS=${5:-"2"}      # GPU数量，默认双卡
+NUM_EXPERTS=${3:-"8"}   # 专家数量
+NUM_GPUS=${4:-"2"}      # GPU数量，默认双卡
 
 # 设置基础模型路径
 if [ "$BACKBONE" = "llama" ]; then
@@ -86,7 +97,6 @@ echo "Backbone: $BACKBONE ($BASE_MODEL)"
 echo "Data: $DATASET_TAG ($TRAIN_FILE)"
 echo "LoRA Rank: $LORA_RANK"
 echo "Experts: $NUM_EXPERTS"
-echo "Progressive Training: $USE_PROGRESSIVE"
 echo "Num GPUs: $NUM_GPUS"
 echo "Output Directory: $OUTPUT_DIR"
 echo "======================================"
@@ -104,7 +114,6 @@ cat > "$OUTPUT_DIR/config.json" << EOF
     "dataset_tag": "$DATASET_TAG",
     "lora_rank": $LORA_RANK,
     "num_experts": $NUM_EXPERTS,
-    "use_progressive": $USE_PROGRESSIVE,
     "num_gpus": $NUM_GPUS,
     "timestamp": "$TIMESTAMP"
 }
@@ -114,12 +123,6 @@ EOF
 BATCH_SIZE=4
 LEARNING_RATE=5e-4
 NUM_EPOCHS=8
-
-if [ "$USE_PROGRESSIVE" = "true" ]; then
-    PROGRESSIVE_FLAG="--progressive_training"
-else
-    PROGRESSIVE_FLAG=""
-fi
 
 # 开始训练
 echo "开始训练..."
@@ -134,7 +137,6 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --batch_size $BATCH_SIZE \
         --learning_rate $LEARNING_RATE \
         --num_experts $NUM_EXPERTS \
-        $PROGRESSIVE_FLAG \
         --seed 42 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 else
@@ -148,7 +150,6 @@ else
         --learning_rate $LEARNING_RATE \
         --num_experts $NUM_EXPERTS \
         --num_gpus $NUM_GPUS \
-        $PROGRESSIVE_FLAG \
         --seed 42 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 fi

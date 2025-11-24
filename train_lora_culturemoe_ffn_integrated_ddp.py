@@ -7,8 +7,8 @@ LoRA增强的FFN集成CultureMoE训练脚本（DDP多卡版本）
 1. 支持DDP（DistributedDataParallel）多卡训练
 2. 在Attention的Q、K、V、O投影层添加LoRA适配器
 3. 在MoE专家的FFN层（gate_proj, up_proj, down_proj）添加LoRA适配器
-4. 支持渐进式训练和专门的LoRA优化策略
-5. 完全向量化的专家调度，解决效率瓶颈
+4. 文化感知注意力机制集成
+5. 专门的LoRA优化策略和完全向量化的专家调度
 """
 
 import os
@@ -605,7 +605,7 @@ def train_ddp(rank, world_size, args):
 
         for batch_idx, batch in enumerate(progress_bar):
             # 移动数据到设备
-            batch = {k: v.cuda(rank) for k, v in batch.items()}
+            batch = {k: v.cuda(rank) if torch.is_tensor(v) else v for k, v in batch.items()}
 
             # 训练步骤
             loss_dict = trainer.train_step(batch)
@@ -631,7 +631,7 @@ def train_ddp(rank, world_size, args):
 
             with torch.no_grad():
                 for batch in val_dataloader:
-                    batch = {k: v.cuda(rank) for k, v in batch.items()}
+                    batch = {k: v.cuda(rank) if torch.is_tensor(v) else v for k, v in batch.items()}
                     val_loss_dict = trainer.validate_step(batch)
                     val_losses.append(val_loss_dict)
 
@@ -670,7 +670,6 @@ def main():
     parser.add_argument('--learning_rate', type=float, default=5e-4, help='Learning rate')
     parser.add_argument('--num_experts', type=int, default=8, help='Number of experts')
     parser.add_argument('--num_gpus', type=int, default=2, help='Number of GPUs (1 for single GPU, 2+ for DDP)')
-    parser.add_argument('--progressive_training', action='store_true', help='Use progressive training strategy')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
 
     args = parser.parse_args()
