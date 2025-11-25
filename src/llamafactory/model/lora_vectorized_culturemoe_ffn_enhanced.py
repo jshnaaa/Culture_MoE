@@ -230,10 +230,105 @@ class VectorizedCulturalRouterWithLoRA(nn.Module):
         return entropy_loss
 
 
+class SharedFFNWithLoRA(nn.Module):
+    """
+    MixLoRA优化：共享基础FFN层
+    所有专家共享gate_proj和up_proj的计算，只有down_proj和适配器不同
+    """
+    def __init__(self, hidden_size: int, intermediate_size: int, activation: str, lora_config: LoRACultureMoEConfig):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+
+        # 共享的基础FFN层（所有专家共用）
+        base_gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        base_up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+
+        # 用LoRA包装共享层
+        self.shared_gate_proj = LoRALinear(
+            base_gate_proj,
+            rank=lora_config.lora_rank,
+            alpha=lora_config.lora_alpha,
+            dropout=lora_config.lora_dropout
+        )
+        self.shared_up_proj = LoRALinear(
+            base_up_proj,
+            rank=lora_config.lora_rank,
+            alpha=lora_config.lora_alpha,
+            dropout=lora_config.lora_dropout
+        )
+
+        # 激活函数
+        if activation == "silu":
+            self.act_fn = F.silu
+        elif activation == "relu":
+            self.act_fn = F.relu
+        elif activation == "gelu":
+            self.act_fn = F.gelu
+        else:
+            raise ValueError(f"Unsupported activation: {activation}")
+
+    def forward(self, x):
+        """共享FFN前向传播，返回中间结果供专家使用"""
+        gate_output = self.act_fn(self.shared_gate_proj(x))
+        up_output = self.shared_up_proj(x)
+        return gate_output, up_output  # 返回中间结果而不是最终输出
+
+
+class ExpertAdapter(nn.Module):
+    """
+    MixLoRA优化：轻量级专家适配器
+    每个专家只需要小的适配器层，大幅减少参数量
+    """
+    def __init__(self, intermediate_size: int, hidden_size: int, lora_config: LoRACultureMoEConfig):
+        super().__init__()
+
+        # 使用更小的适配器rank来减少参数
+        adapter_rank = max(4, lora_config.lora_rank // 4)
+
+        # 中间层适配器（调整共享计算结果）
+        self.gate_adapter = nn.Sequential(
+            nn.Linear(intermediate_size, adapter_rank, bias=False),
+            nn.ReLU(),
+            nn.Linear(adapter_rank, intermediate_size, bias=False)
+        )
+
+        self.up_adapter = nn.Sequential(
+            nn.Linear(intermediate_size, adapter_rank, bias=False),
+            nn.ReLU(),
+            nn.Linear(adapter_rank, intermediate_size, bias=False)
+        )
+
+        # 输出投影层（每个专家独有）
+        base_down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+        self.down_proj = LoRALinear(
+            base_down_proj,
+            rank=adapter_rank,
+            alpha=lora_config.lora_alpha,
+            dropout=lora_config.lora_dropout
+        )
+
+        # 初始化适配器权重为接近零，保持初始时接近原始行为
+        for module in [self.gate_adapter, self.up_adapter]:
+            for layer in module:
+                if isinstance(layer, nn.Linear):
+                    nn.init.zeros_(layer.weight)
+
+    def forward(self, shared_gate, shared_up):
+        """专家适配器前向传播"""
+        # 应用轻量级适配器调整
+        adapted_gate = shared_gate + self.gate_adapter(shared_gate) * 0.1  # 小的调整幅度
+        adapted_up = shared_up + self.up_adapter(shared_up) * 0.1
+
+        # 专家特化的输出投影
+        expert_output = self.down_proj(adapted_gate * adapted_up)
+        return expert_output
+
+
 class SharedExpertWithLoRA(nn.Module):
     """
-    共享专家（LoRA增强）
-    处理通用知识，使用mask字段的输入
+    MixLoRA优化：共享专家（处理通用知识）
+    使用LoRA增强的标准FFN结构
     """
     def __init__(self, hidden_size: int, intermediate_size: int, activation: str, lora_config: LoRACultureMoEConfig):
         super().__init__()
@@ -245,7 +340,7 @@ class SharedExpertWithLoRA(nn.Module):
         base_up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
         base_down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
 
-        # 用LoRA包装
+        # 用LoRA包装FFN层
         self.gate_proj = LoRALinear(
             base_gate_proj,
             rank=lora_config.lora_rank,
@@ -275,15 +370,18 @@ class SharedExpertWithLoRA(nn.Module):
         else:
             raise ValueError(f"Unsupported activation: {activation}")
 
-    def forward(self, x):
-        """共享专家前向传播（SwiGLU架构）"""
-        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """共享专家前向传播"""
+        # SwiGLU FFN前向传播（通过LoRA增强）
+        gate_output = self.act_fn(self.gate_proj(hidden_states))
+        up_output = self.up_proj(hidden_states)
+        return self.down_proj(gate_output * up_output)
 
 
 class CulturalExpertsWithLoRA(nn.Module):
     """
-    文化专家组（LoRA增强）
-    处理文化特定知识，使用未mask的输入
+    MixLoRA优化：文化专家组（共享计算架构）
+    使用共享FFN + 轻量级适配器的架构
     """
     def __init__(self, num_experts: int, hidden_size: int, intermediate_size: int,
                  activation: str, culture_assignments: List[List[int]],
@@ -294,35 +392,72 @@ class CulturalExpertsWithLoRA(nn.Module):
         self.intermediate_size = intermediate_size
         self.culture_assignments = culture_assignments
 
-        # 创建LoRA增强的文化专家
-        self.experts = nn.ModuleList([
-            CulturalExpertWithLoRA(
-                expert_id=i,
-                primary_culture_ids=culture_assignments[i],
-                hidden_size=hidden_size,
+        # MixLoRA优化：共享基础FFN计算
+        self.shared_ffn = SharedFFNWithLoRA(
+            hidden_size=hidden_size,
+            intermediate_size=intermediate_size,
+            activation=activation,
+            lora_config=lora_config
+        )
+
+        # MixLoRA优化：轻量级专家适配器
+        self.expert_adapters = nn.ModuleList([
+            ExpertAdapter(
                 intermediate_size=intermediate_size,
-                activation=activation,
-                culture_dim=culture_dim,
+                hidden_size=hidden_size,
                 lora_config=lora_config
+            ) for _ in range(num_experts)
+        ])
+
+        # 文化条件向量（保持原有的文化感知能力）
+        self.culture_prompts = nn.ParameterList([
+            nn.Parameter(
+                torch.randn(len(culture_assignments[i]) if culture_assignments[i] else 1, culture_dim) * 0.01
             ) for i in range(num_experts)
         ])
+
+        # 文化条件层
+        self.culture_condition = nn.Linear(culture_dim, hidden_size)
+
+        # MixLoRA优化：稀疏激活参数
+        self.activation_threshold = 0.01  # 专家激活阈值
+        self.max_active_experts = min(2, num_experts)  # 最大激活专家数
+
+        self._init_weights()
+
+    def _init_weights(self):
+        """初始化权重"""
+        nn.init.normal_(self.culture_condition.weight, mean=0, std=0.001)
+        if self.culture_condition.bias is not None:
+            nn.init.zeros_(self.culture_condition.bias)
 
     def forward_with_dispatch(self, hidden_states: torch.Tensor, expert_weights: torch.Tensor,
                             culture_ids: torch.Tensor, top_k: int, capacity_factor: float) -> Tuple[torch.Tensor, Dict]:
         """
-        向量化的专家调度和处理
+        MixLoRA优化：稀疏激活的专家调度和处理
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
-        # Top-K专家选择
-        top_k_weights, top_k_indices = torch.topk(expert_weights, k=top_k, dim=-1)
+        # MixLoRA优化1：稀疏激活 - 只选择权重超过阈值的专家
+        active_mask = expert_weights > self.activation_threshold
+        expert_weights = expert_weights * active_mask.float()
+
+        # MixLoRA优化2：限制最大激活专家数
+        effective_top_k = min(top_k, self.max_active_experts)
+        top_k_weights, top_k_indices = torch.topk(expert_weights, k=effective_top_k, dim=-1)
+
+        # 重新归一化权重
         top_k_weights = F.softmax(top_k_weights, dim=-1)
 
-        # 向量化专家处理
+        # MixLoRA优化3：共享基础计算 - 所有专家共享gate_proj和up_proj
+        shared_gate, shared_up = self.shared_ffn(hidden_states)
+
+        # 只对激活的专家进行计算
         expert_outputs = []
         culture_relevances = []
+        active_expert_count = 0
 
-        for i in range(top_k):
+        for i in range(effective_top_k):
             batch_expert_output = torch.zeros_like(hidden_states)
             batch_relevance = torch.zeros(batch_size, device=hidden_states.device)
 
@@ -330,25 +465,80 @@ class CulturalExpertsWithLoRA(nn.Module):
                 expert_idx = top_k_indices[b, i].item()
                 weight = top_k_weights[b, i]
 
-                expert = self.experts[expert_idx]
-                expert_out, relevance = expert(hidden_states[b:b+1], culture_ids[b:b+1])
+                # 跳过权重过小的专家（稀疏激活）
+                if weight < self.activation_threshold:
+                    continue
+
+                active_expert_count += 1
+
+                # 获取文化条件
+                culture_prompt = self._get_culture_prompt(expert_idx, culture_ids[b:b+1])
+                culture_condition = self.culture_condition(culture_prompt).unsqueeze(1)
+
+                # 应用文化条件到输入
+                conditioned_input = hidden_states[b:b+1] + culture_condition
+
+                # 重新计算该样本的共享基础（考虑文化条件）
+                sample_gate, sample_up = self.shared_ffn(conditioned_input)
+
+                # 使用专家适配器进行特化处理
+                expert_out = self.expert_adapters[expert_idx](
+                    sample_gate[0], sample_up[0]
+                ).unsqueeze(0)
 
                 batch_expert_output[b] = expert_out[0] * weight
+
+                # 计算文化相关性
+                relevance = self._compute_culture_relevance(expert_idx, culture_ids[b:b+1])
                 batch_relevance[b] = relevance[0]
 
             expert_outputs.append(batch_expert_output)
             culture_relevances.append(batch_relevance)
 
         # 专家输出融合
-        final_output = sum(expert_outputs)
+        final_output = sum(expert_outputs) if expert_outputs else torch.zeros_like(hidden_states)
 
         dispatch_info = {
             'top_k_indices': top_k_indices,
             'top_k_weights': top_k_weights,
-            'culture_relevances': torch.stack(culture_relevances, dim=1)
+            'culture_relevances': torch.stack(culture_relevances, dim=1) if culture_relevances else torch.zeros(batch_size, effective_top_k, device=hidden_states.device),
+            'active_expert_count': active_expert_count,
+            'activation_rate': active_expert_count / (batch_size * effective_top_k)
         }
 
         return final_output, dispatch_info
+
+    def _get_culture_prompt(self, expert_idx: int, culture_ids: torch.Tensor) -> torch.Tensor:
+        """获取专家的文化提示向量"""
+        prompts = []
+        culture_assignments = self.culture_assignments[expert_idx]
+
+        for culture_id in culture_ids:
+            if len(culture_assignments) == 0:
+                prompt = self.culture_prompts[expert_idx][0]
+            elif culture_id.item() in culture_assignments:
+                idx = culture_assignments.index(culture_id.item())
+                prompt = self.culture_prompts[expert_idx][idx]
+            else:
+                prompt = self.culture_prompts[expert_idx].mean(dim=0)
+            prompts.append(prompt)
+
+        return torch.stack(prompts)
+
+    def _compute_culture_relevance(self, expert_idx: int, culture_ids: torch.Tensor) -> torch.Tensor:
+        """计算专家对文化的相关性"""
+        relevance_scores = []
+        culture_assignments = self.culture_assignments[expert_idx]
+
+        for culture_id in culture_ids:
+            if len(culture_assignments) == 0:
+                relevance_scores.append(0.5)  # 冲突处理专家
+            elif culture_id.item() in culture_assignments:
+                relevance_scores.append(1.0)  # 高相关性
+            else:
+                relevance_scores.append(0.1)  # 低相关性
+
+        return torch.tensor(relevance_scores, device=culture_ids.device, dtype=torch.float32)
 
 
 class CulturalExpertWithLoRA(nn.Module):
@@ -662,6 +852,7 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
         )
 
         # 4. 共享专家和文化专家融合（根据配置决定融合方式）
+        moe_alpha = torch.tensor(0.5, device=hidden_states.device)  # 默认值
         if self.use_gate_fusion and self.use_shared_expert:
             # 使用门控融合
             moe_alpha = torch.sigmoid(self.moe_fusion_alpha)
@@ -696,22 +887,29 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
 
     def get_expert_type_info(self) -> Dict[str, Any]:
         """获取专家类型信息"""
-        return {
-            'shared_expert': {
+        expert_info = {}
+
+        # 共享专家信息（如果存在）
+        if self.use_shared_expert and self.shared_expert is not None:
+            expert_info['shared_expert'] = {
                 'type': 'shared',
-                'input_type': 'masked',
+                'input_type': 'masked' if self.use_mask_mechanism else 'unmasked',
                 'param_count': sum(p.numel() for p in self.shared_expert.parameters()),
-                'description': 'Handles general knowledge using masked input'
-            },
-            'cultural_experts': {
+                'description': 'Handles general knowledge using masked input' if self.use_mask_mechanism else 'Handles general knowledge'
+            }
+
+        # 文化专家信息
+        if hasattr(self, 'cultural_experts'):
+            expert_info['cultural_experts'] = {
                 'type': 'cultural',
                 'input_type': 'unmasked',
                 'num_experts': self.num_experts,
                 'param_count': sum(p.numel() for p in self.cultural_experts.parameters()),
                 'description': 'Handle culture-specific knowledge using unmasked input',
-                'culture_assignments': [expert.primary_culture_ids for expert in self.cultural_experts.experts]
+                'culture_assignments': getattr(self.cultural_experts, 'culture_assignments', [])
             }
-        }
+
+        return expert_info
 
     def get_lora_parameters(self) -> List[nn.Parameter]:
         """获取所有LoRA参数"""
@@ -743,32 +941,40 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
         print(f"Layer {self.layer_idx} Expert Information:")
         print("-" * 50)
 
-        # 共享专家信息
-        shared_info = expert_info['shared_expert']
-        print(f"Shared Expert:")
-        print(f"  Type: {shared_info['type']}")
-        print(f"  Input: {shared_info['input_type']}")
-        print(f"  Parameters: {shared_info['param_count']:,}")
-        print(f"  Description: {shared_info['description']}")
+        # 共享专家信息（如果存在）
+        if 'shared_expert' in expert_info:
+            shared_info = expert_info['shared_expert']
+            print(f"Shared Expert:")
+            print(f"  Type: {shared_info['type']}")
+            print(f"  Input: {shared_info['input_type']}")
+            print(f"  Parameters: {shared_info['param_count']:,}")
+            print(f"  Description: {shared_info['description']}")
+            print()
 
         # 文化专家信息
-        cultural_info = expert_info['cultural_experts']
-        print(f"\nCultural Experts:")
-        print(f"  Type: {cultural_info['type']}")
-        print(f"  Input: {cultural_info['input_type']}")
-        print(f"  Count: {cultural_info['num_experts']}")
-        print(f"  Parameters: {cultural_info['param_count']:,}")
-        print(f"  Description: {cultural_info['description']}")
+        if 'cultural_experts' in expert_info:
+            cultural_info = expert_info['cultural_experts']
+            print(f"Cultural Experts:")
+            print(f"  Type: {cultural_info['type']}")
+            print(f"  Input: {cultural_info['input_type']}")
+            print(f"  Count: {cultural_info['num_experts']}")
+            print(f"  Parameters: {cultural_info['param_count']:,}")
+            print(f"  Description: {cultural_info['description']}")
 
-        # 文化分配
-        print(f"\nCulture Assignments:")
-        for i, assignment in enumerate(cultural_info['culture_assignments']):
-            if len(assignment) == 0:
-                role = "Conflict Resolution Specialist"
-            elif len(assignment) == 6:
-                role = "Cross-Cultural Generalist"
-            else:
-                role = f"Cultures {assignment}"
-            print(f"  Expert {i}: {role}")
+            # 文化分配（如果有）
+            culture_assignments = cultural_info.get('culture_assignments', [])
+            if culture_assignments:
+                print(f"\nCulture Assignments:")
+                for i, assignment in enumerate(culture_assignments):
+                    if len(assignment) == 0:
+                        role = "Conflict Resolution Specialist"
+                    elif len(assignment) == 6:
+                        role = "Cross-Cultural Generalist"
+                    else:
+                        role = f"Cultures {assignment}"
+                    print(f"  Expert {i}: {role}")
+
+        if not expert_info:
+            print("  This layer uses standard FFN (no MoE)")
 
         print("-" * 50)
