@@ -28,11 +28,11 @@ fi
 # 设置基础模型路径
 if [ "$BACKBONE" = "llama" ]; then
     BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-    MODEL_NAME="llama-3.1-8b"
+    MODEL_NAME="llama"
     echo "⚠️  LLaMA-3.1-8B显存需求: ~52GB/卡，接近48GB限制"
 elif [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-    MODEL_NAME="qwen2.5-7b"
+    MODEL_NAME="qwen"
     echo "✅ Qwen2.5-7B显存需求: ~52GB/卡，推荐选择"
 else
     echo "❌ 不支持的backbone: $BACKBONE (支持: llama, qwen)"
