@@ -477,7 +477,11 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
         self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.num_experts = lora_config.num_experts
+        # 支持层级专家分配
+        if hasattr(lora_config, 'get_layer_expert_count'):
+            self.num_experts = lora_config.get_layer_expert_count(layer_idx)
+        else:
+            self.num_experts = lora_config.num_experts
         self.top_k = lora_config.top_k
 
         # 消融实验配置
@@ -485,13 +489,43 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
         self.use_gate_fusion = lora_config.use_gate_fusion
         self.use_mask_mechanism = lora_config.use_mask_mechanism
 
-        # 文化信息注入层（每层都有，使用LoRA）
-        self.cultural_injector = CulturalInjectorWithLoRA(
-            hidden_dim=self.hidden_size,
-            culture_dim=lora_config.culture_dim,
-            layer_idx=layer_idx,
-            lora_config=lora_config
-        )
+        # 检查是否为MoE层
+        self.is_moe_layer = self.num_experts > 0
+
+        if self.is_moe_layer:
+            # MoE层：创建文化信息注入层（使用LoRA）
+            self.cultural_injector = CulturalInjectorWithLoRA(
+                hidden_dim=self.hidden_size,
+                culture_dim=lora_config.culture_dim,
+                layer_idx=layer_idx,
+                lora_config=lora_config
+            )
+        else:
+            # 原始FFN层：创建带LoRA的标准FFN
+            from transformers.models.llama.modeling_llama import LlamaMLP
+            original_ffn = LlamaMLP(config)
+
+            # 为原始FFN添加LoRA适配器
+            self.gate_proj = LoRALinear(
+                original_ffn.gate_proj,
+                rank=lora_config.lora_rank,
+                alpha=lora_config.lora_alpha,
+                dropout=lora_config.lora_dropout
+            )
+            self.up_proj = LoRALinear(
+                original_ffn.up_proj,
+                rank=lora_config.lora_rank,
+                alpha=lora_config.lora_alpha,
+                dropout=lora_config.lora_dropout
+            )
+            self.down_proj = LoRALinear(
+                original_ffn.down_proj,
+                rank=lora_config.lora_rank,
+                alpha=lora_config.lora_alpha,
+                dropout=lora_config.lora_dropout
+            )
+            self.act_fn = original_ffn.act_fn
+            return  # 早期返回，不需要创建MoE组件
 
         # LoRA增强的路由器（只用于文化专家）
         self.cultural_router = VectorizedCulturalRouterWithLoRA(
@@ -556,20 +590,37 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
         self.load_balance_weight = lora_config.load_balance_weight
         self.entropy_weight = lora_config.entropy_weight
 
-    def forward(self, hidden_states: torch.Tensor, culture_ids: torch.Tensor,
+    def forward(self, hidden_states: torch.Tensor, culture_ids: torch.Tensor = None,
                 hidden_states_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Dict]:
         """
-        增强版前向传播，支持mask机制
+        增强版前向传播，支持层级专家分配和mask机制
 
         Args:
             hidden_states: [B, L, H] 原始输入（文化专家使用）
-            culture_ids: [B] 文化标识
+            culture_ids: [B] 文化标识（可选）
             hidden_states_mask: [B, L, H] mask版本的hidden states（共享专家使用）
 
         Returns:
             output: [B, L, H]
             aux_info: Dict 辅助信息
         """
+        # 如果不是MoE层，使用原始FFN
+        if not self.is_moe_layer:
+            # 标准FFN前向传播 (SwiGLU)
+            gate_output = self.gate_proj(hidden_states)
+            up_output = self.up_proj(hidden_states)
+            activated = self.act_fn(gate_output) * up_output
+            output = self.down_proj(activated)
+
+            # 返回空的辅助信息以保持接口一致
+            aux_info = {
+                'load_balance_loss': torch.tensor(0.0, device=hidden_states.device),
+                'entropy_loss': torch.tensor(0.0, device=hidden_states.device),
+                'expert_weights': torch.zeros(hidden_states.shape[0], 1, device=hidden_states.device)  # 假的权重
+            }
+            return output, aux_info
+
+        # MoE层的处理逻辑
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
         # 如果没有提供culture_ids，使用默认值

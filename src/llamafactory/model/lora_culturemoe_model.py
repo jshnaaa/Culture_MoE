@@ -121,8 +121,15 @@ class LoRACultureMoELlamaDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
 
-        # LoRA增强的MoE FFN - 传递None作为hidden_states_mask（简化版本）
-        hidden_states, aux_info = self.mlp(hidden_states, culture_ids, None)
+        # LoRA增强的MoE FFN - 支持mask机制
+        # 如果提供了mask版本的hidden_states，传递给MLP
+        hidden_states_mask_for_mlp = None
+        if input_ids_mask is not None:
+            # 这里需要将input_ids_mask转换为hidden_states格式
+            # 简化处理：如果有mask，就使用当前的hidden_states作为mask版本
+            hidden_states_mask_for_mlp = hidden_states
+
+        hidden_states, aux_info = self.mlp(hidden_states, culture_ids, hidden_states_mask_for_mlp)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -363,24 +370,32 @@ class LoRACultureMoELlamaModel(LlamaModel):
         return next(self.parameters()).device
 
     def get_lora_parameters(self) -> Dict[str, List[nn.Parameter]]:
-        """获取所有LoRA参数，按类型分组"""
+        """获取所有LoRA参数，按类型分组，支持层级专家分配"""
         attention_lora_params = []
         expert_lora_params = []
         cultural_lora_params = []
 
-        for layer in self.layers:
-            # Attention LoRA参数
+        for layer_idx, layer in enumerate(self.layers):
+            # Attention LoRA参数（所有层都有）
             for name, module in layer.self_attn.named_modules():
                 if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
                     attention_lora_params.extend([module.lora_A.weight, module.lora_B.weight])
 
-            # Expert LoRA参数
-            for name, module in layer.mlp.named_modules():
-                if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
-                    if 'expert' in name:
+            # MLP LoRA参数（根据层级分配）
+            if hasattr(layer.mlp, 'is_moe_layer') and layer.mlp.is_moe_layer:
+                # MoE层：有专家和文化参数
+                for name, module in layer.mlp.named_modules():
+                    if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
+                        if 'expert' in name or 'cultural' in name:
+                            expert_lora_params.extend([module.lora_A.weight, module.lora_B.weight])
+                        else:
+                            cultural_lora_params.extend([module.lora_A.weight, module.lora_B.weight])
+            else:
+                # 原始FFN层：只有基础FFN的LoRA参数
+                for name, module in layer.mlp.named_modules():
+                    if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
+                        # 原始FFN的LoRA参数归类为expert_lora
                         expert_lora_params.extend([module.lora_A.weight, module.lora_B.weight])
-                    else:
-                        cultural_lora_params.extend([module.lora_A.weight, module.lora_B.weight])
 
         return {
             'attention_lora': attention_lora_params,
@@ -453,26 +468,65 @@ def create_lora_culturemoe_model(
     lora_config: LoRACultureMoEConfig
 ) -> LoRACultureMoELlamaModel:
     """
-    创建LoRA增强的CultureMoE模型
+    创建LoRA增强的CultureMoE模型，支持LLaMA和Qwen
 
     Args:
-        base_model_path: 基础LLaMA模型路径
+        base_model_path: 基础模型路径
         lora_config: LoRA配置
 
     Returns:
         LoRA增强的CultureMoE模型
     """
-    # 加载基础模型配置
-    base_config = LlamaConfig.from_pretrained(base_model_path)
+    # 检测模型类型
+    try:
+        from transformers import AutoConfig
+        base_config = AutoConfig.from_pretrained(base_model_path)
+
+        # 检查模型架构
+        if hasattr(base_config, 'architectures') and base_config.architectures:
+            arch = base_config.architectures[0]
+            if 'Qwen' in arch:
+                # Qwen模型，转换为LLaMA兼容配置
+                from transformers import LlamaConfig
+                llama_config = LlamaConfig(
+                    vocab_size=base_config.vocab_size,
+                    hidden_size=base_config.hidden_size,
+                    intermediate_size=base_config.intermediate_size,
+                    num_hidden_layers=base_config.num_hidden_layers,
+                    num_attention_heads=base_config.num_attention_heads,
+                    num_key_value_heads=getattr(base_config, 'num_key_value_heads', base_config.num_attention_heads),
+                    max_position_embeddings=getattr(base_config, 'max_position_embeddings', 8192),
+                    rms_norm_eps=getattr(base_config, 'rms_norm_eps', 1e-6),
+                    rope_theta=getattr(base_config, 'rope_theta', 10000.0),
+                    pad_token_id=getattr(base_config, 'pad_token_id', None),
+                    bos_token_id=getattr(base_config, 'bos_token_id', 1),
+                    eos_token_id=getattr(base_config, 'eos_token_id', 2),
+                )
+                base_config = llama_config
+                logging.info(f"Detected Qwen model, converted to LLaMA-compatible config")
+            else:
+                # LLaMA模型，直接使用
+                base_config = LlamaConfig.from_pretrained(base_model_path)
+                logging.info(f"Detected LLaMA model")
+        else:
+            # 默认尝试作为LLaMA模型
+            base_config = LlamaConfig.from_pretrained(base_model_path)
+
+    except Exception as e:
+        logging.warning(f"Failed to auto-detect model type: {e}")
+        # 回退到LLaMA配置
+        base_config = LlamaConfig.from_pretrained(base_model_path)
 
     # 创建LoRA增强模型
     model = LoRACultureMoELlamaModel(base_config, lora_config)
 
     # 加载基础模型权重到非LoRA部分
     try:
-        base_model_full = LlamaForCausalLM.from_pretrained(base_model_path)
+        from transformers import AutoModelForCausalLM
+        base_model_full = AutoModelForCausalLM.from_pretrained(base_model_path)
         _load_base_weights_to_lora_model(model, base_model_full)
         del base_model_full  # 释放内存
+        logging.info("Successfully loaded base model weights")
     except Exception as e:
         logging.warning(f"Failed to load base model weights: {e}")
         logging.warning("Model will be initialized with random weights")

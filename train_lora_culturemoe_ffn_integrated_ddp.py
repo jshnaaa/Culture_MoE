@@ -393,7 +393,7 @@ class LoRACultureMoETrainerDDP:
             # 如果没有lm_head，我们需要创建一个临时的
             vocab_size = self.model.module.config.vocab_size if hasattr(self.model, 'module') else self.model.config.vocab_size
             if not hasattr(self, 'temp_lm_head'):
-                self.temp_lm_head = nn.Linear(outputs.last_hidden_state.size(-1), vocab_size).to(self.rank)
+                self.temp_lm_head = nn.Linear(outputs.last_hidden_state.size(-1), vocab_size).to(outputs.last_hidden_state.device)
             logits = self.temp_lm_head(outputs.last_hidden_state)
 
         # 计算损失
@@ -468,7 +468,7 @@ class LoRACultureMoETrainerDDP:
             else:
                 if not hasattr(self, 'temp_lm_head'):
                     vocab_size = self.model.module.config.vocab_size if hasattr(self.model, 'module') else self.model.config.vocab_size
-                    self.temp_lm_head = nn.Linear(outputs.last_hidden_state.size(-1), vocab_size).to(self.rank)
+                    self.temp_lm_head = nn.Linear(outputs.last_hidden_state.size(-1), vocab_size).to(outputs.last_hidden_state.device)
                 logits = self.temp_lm_head(outputs.last_hidden_state)
 
             loss_dict = self.loss_fn(
@@ -489,11 +489,29 @@ class LoRACultureMoETrainerDDP:
     def get_expert_utilization_stats(self) -> Dict[str, Any]:
         """获取专家利用率统计"""
         stats = {}
-        for layer_idx, layer in enumerate(self.model.module.layers):  # 注意DDP的module属性
-            stats[f'layer_{layer_idx}'] = {
-                'num_experts': layer.mlp.num_experts,
-                'moe_alpha': layer.mlp.moe_fusion_alpha.item()
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+
+        for layer_idx, layer in enumerate(model.layers):
+            layer_stats = {
+                'layer_idx': layer_idx + 1,  # 1-indexed
+                'is_moe_layer': getattr(layer.mlp, 'is_moe_layer', False)
             }
+
+            if hasattr(layer.mlp, 'num_experts'):
+                layer_stats['num_experts'] = layer.mlp.num_experts
+            else:
+                layer_stats['num_experts'] = 0
+
+            # 只在MoE层中查找moe_fusion_alpha
+            if hasattr(layer.mlp, 'moe_fusion_alpha') and layer.mlp.is_moe_layer:
+                try:
+                    layer_stats['moe_alpha'] = layer.mlp.moe_fusion_alpha.item()
+                except:
+                    layer_stats['moe_alpha'] = 'N/A'
+            else:
+                layer_stats['moe_alpha'] = 'N/A'
+
+            stats[f'layer_{layer_idx + 1}'] = layer_stats
         return stats
 
     def save_lora_weights(self, save_path: str):
