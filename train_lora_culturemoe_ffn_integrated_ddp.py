@@ -360,8 +360,8 @@ class LoRACultureMoETrainerDDP:
         )
         return self.scheduler
 
-    def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """单步训练"""
+    def train_step(self, batch: Dict[str, torch.Tensor], accumulation_steps: int = 1, step_idx: int = 0) -> Dict[str, float]:
+        """支持梯度累积的训练步骤"""
         self.model.train()
 
         # 获取两种不同的输入
@@ -406,20 +406,29 @@ class LoRACultureMoETrainerDDP:
 
         total_loss = loss_dict['total_loss']
 
+        # 梯度累积：按累积步数缩放损失
+        total_loss = total_loss / accumulation_steps
+
         # 反向传播
         total_loss.backward()
 
-        # 梯度裁剪（只对LoRA参数）
-        if self.lora_config.gradient_clip_norm > 0:
-            all_lora_params = []
-            for group_params in self.lora_params.values():
-                all_lora_params.extend(group_params)
-            torch.nn.utils.clip_grad_norm_(all_lora_params, self.lora_config.gradient_clip_norm)
+        # 只在累积步骤的最后一步执行优化器更新
+        if (step_idx + 1) % accumulation_steps == 0:
+            # 梯度裁剪（只对LoRA参数）
+            if self.lora_config.gradient_clip_norm > 0:
+                all_lora_params = []
+                for group_params in self.lora_params.values():
+                    all_lora_params.extend(group_params)
+                torch.nn.utils.clip_grad_norm_(all_lora_params, self.lora_config.gradient_clip_norm)
 
-        # 优化器步骤
-        self.optimizer.step()
-        self.scheduler.step()
-        self.optimizer.zero_grad()
+            # 优化器步骤
+            self.optimizer.step()
+            self.scheduler.step()
+            self.optimizer.zero_grad()
+
+            # 清理GPU缓存
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         # 在DDP中同步损失
         if self.world_size > 1:
@@ -661,8 +670,14 @@ def train_ddp(rank, world_size, args):
     trainer = LoRACultureMoETrainerDDP(model, lora_config, rank, world_size, use_culture_loss)
     optimizer = trainer.setup_optimizer(learning_rate=args.learning_rate)
 
-    total_steps = len(train_dataloader) * args.num_epochs
+    # 计算总步数（考虑梯度累积）
+    gradient_accumulation_steps = getattr(args, 'gradient_accumulation_steps', 1)
+    total_steps = len(train_dataloader) * args.num_epochs // gradient_accumulation_steps
     scheduler = trainer.setup_scheduler(total_steps)
+
+    if rank == 0:
+        logger.info(f"梯度累积步数: {gradient_accumulation_steps}")
+        logger.info(f"有效batch size: {args.batch_size * gradient_accumulation_steps * world_size}")
 
     # 训练循环
     for epoch in range(args.num_epochs):
@@ -682,8 +697,8 @@ def train_ddp(rank, world_size, args):
             # 移动数据到设备
             batch = {k: v.cuda(rank) if torch.is_tensor(v) else v for k, v in batch.items()}
 
-            # 训练步骤
-            loss_dict = trainer.train_step(batch)
+            # 训练步骤（支持梯度累积）
+            loss_dict = trainer.train_step(batch, gradient_accumulation_steps, batch_idx)
             epoch_losses.append(loss_dict)
 
             # 更新进度条（只在主进程）
@@ -692,12 +707,14 @@ def train_ddp(rank, world_size, args):
                     'Loss': f"{loss_dict['total_loss']:.4f}",
                     'LM': f"{loss_dict['lm_loss']:.4f}",
                     'LB': f"{loss_dict['load_balance_loss']:.4f}",
-                    'Ent': f"{loss_dict['entropy_loss']:.4f}"
+                    'Ent': f"{loss_dict['entropy_loss']:.4f}",
+                    'Accum': f"{(batch_idx % gradient_accumulation_steps) + 1}/{gradient_accumulation_steps}"
                 })
 
-                # 定期日志
-                if batch_idx % 100 == 0:
-                    logger.info(f"Epoch {epoch+1}, Batch {batch_idx}: {loss_dict}")
+                # 定期日志（只在梯度累积完成时）
+                if (batch_idx + 1) % gradient_accumulation_steps == 0 and batch_idx % (100 * gradient_accumulation_steps) < gradient_accumulation_steps:
+                    step_num = (batch_idx + 1) // gradient_accumulation_steps
+                    logger.info(f"Epoch {epoch+1}, Step {step_num}: {loss_dict}")
 
         # 验证阶段
         if val_dataloader:
@@ -750,6 +767,7 @@ def main():
     parser.add_argument('--output_dir', type=str, default='./outputs/lora_culturemoe', help='Output directory')
     parser.add_argument('--num_epochs', type=int, default=8, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=4, help='Training batch size')
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help='Gradient accumulation steps')
     parser.add_argument('--learning_rate', type=float, default=5e-4, help='Learning rate')
     parser.add_argument('--num_experts', type=int, default=8, help='Number of routing experts')
     parser.add_argument('--use_shared', type=str, default='true', help='Whether to use shared expert (true/false)')

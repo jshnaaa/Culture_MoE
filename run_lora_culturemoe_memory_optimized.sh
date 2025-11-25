@@ -129,7 +129,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --num_gpus 1 \
         --seed 42 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
-    TRAINING_SUCCESS=${PIPESTATUS[0]}
+    TRAINING_SUCCESS=$?
 else
     echo "使用DDP多卡训练（内存优化），GPU数量: $NUM_GPUS"
     python train_lora_culturemoe_ffn_integrated_ddp.py \
@@ -147,7 +147,7 @@ else
         --num_gpus $NUM_GPUS \
         --seed 42 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
-    TRAINING_SUCCESS=${PIPESTATUS[0]}
+    TRAINING_SUCCESS=$?
 fi
 
 # 检查训练结果
