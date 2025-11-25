@@ -701,6 +701,11 @@ def train_ddp(rank, world_size, args):
         # 设置DDP
         setup_ddp(rank, world_size)
 
+        # 监控内存使用
+        if rank == 0 and torch.cuda.is_available():
+            print(f"初始GPU内存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
+            print(f"可用GPU内存: {torch.cuda.memory_reserved(0) / 1024**3:.1f}GB")
+
         # 设置随机种子
         set_seed(args.seed + rank)
 
@@ -711,11 +716,14 @@ def train_ddp(rank, world_size, args):
         # 设置内存管理
         if torch.cuda.is_available():
             # 启用内存分片以减少碎片
-            torch.cuda.set_per_process_memory_fraction(0.90)
+            torch.cuda.set_per_process_memory_fraction(0.85)  # 降低到85%
+
+            # 清理缓存
+            torch.cuda.empty_cache()
 
             # 设置内存分配策略
             import os
-            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64,expandable_segments:True'
 
     except Exception as e:
         if rank == 0:
@@ -739,9 +747,9 @@ def train_ddp(rank, world_size, args):
 
         # 打印层级专家分配配置
         logger.info("=== Layer-wise Expert Allocation Configuration ===")
-        logger.info(f"MoE Start Layer: {args.moe_start_layer}")
-        logger.info(f"Layer 17-24 Experts: {args.layer_17_24_experts}")
-        logger.info(f"Layer 25-32 Experts: {args.layer_25_32_experts}")
+        logger.info(f"MoE Layers: 25-32 (8 layers)")
+        logger.info(f"Experts per MoE layer: 2 routing experts + {1 if use_shared else 0} shared expert")
+        logger.info(f"Total experts: {8 * (2 + (1 if use_shared else 0))}")
         logger.info(f"Use Shared Expert: {use_shared}")
         logger.info(f"Use Mask Mechanism: {use_mask}")
         logger.info(f"Use Gate Fusion: {use_gate}")
@@ -756,15 +764,9 @@ def train_ddp(rank, world_size, args):
     total_layers = 32  # LLaMA/Qwen通常有32层
 
     for layer_idx in range(1, total_layers + 1):
-        if layer_idx < args.moe_start_layer:
-            # 前面的层保持原始FFN
-            layer_expert_config[layer_idx] = 0
-        elif 17 <= layer_idx <= 24:
-            # Layer 17-24: 指定数量的路由专家 + 1个共享专家
-            layer_expert_config[layer_idx] = args.layer_17_24_experts + (1 if use_shared else 0)
-        elif 25 <= layer_idx <= 32:
-            # Layer 25-32: 指定数量的路由专家 + 1个共享专家
-            layer_expert_config[layer_idx] = args.layer_25_32_experts + (1 if use_shared else 0)
+        if 25 <= layer_idx <= 32:
+            # 只在Layer 25-32使用MoE，大幅减少专家数量
+            layer_expert_config[layer_idx] = 2 + (1 if use_shared else 0)  # 2个路由专家 + 1个共享专家
         else:
             # 其他层保持原始FFN
             layer_expert_config[layer_idx] = 0
@@ -808,8 +810,20 @@ def train_ddp(rank, world_size, args):
         # 创建模型
         if rank == 0:
             logger.info("Creating LoRA enhanced CultureMoE model...")
+
+        # 在创建模型前再次清理内存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            import gc
+            gc.collect()
+
         model = create_lora_culturemoe_model(args.base_model, lora_config)
         model.freeze_base_parameters()  # 冻结基础参数，只训练LoRA
+
+        # 移动到GPU前再次清理
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         model.cuda(rank)
 
         if rank == 0:
@@ -824,7 +838,7 @@ def train_ddp(rank, world_size, args):
             logger.warning("⚠️ 模型不支持gradient checkpointing")
 
         # 包装为DDP模型
-        model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+        model = DDP(model, device_ids=[rank], find_unused_parameters=True, broadcast_buffers=False)
 
     except Exception as e:
         if rank == 0:

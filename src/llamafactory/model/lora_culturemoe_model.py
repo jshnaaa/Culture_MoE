@@ -523,10 +523,30 @@ def create_lora_culturemoe_model(
     # 加载基础模型权重到非LoRA部分
     try:
         from transformers import AutoModelForCausalLM
-        base_model_full = AutoModelForCausalLM.from_pretrained(base_model_path)
+        import torch
+        import gc
+
+        # 清理内存
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        logging.info("Loading base model for weight initialization...")
+        base_model_full = AutoModelForCausalLM.from_pretrained(
+            base_model_path,
+            torch_dtype=torch.float16,  # 使用半精度减少内存
+            device_map="cpu"  # 先加载到CPU
+        )
+
         _load_base_weights_to_lora_model(model, base_model_full)
-        del base_model_full  # 释放内存
-        logging.info("Successfully loaded base model weights")
+
+        # 立即释放内存
+        del base_model_full
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        logging.info("Successfully loaded base model weights and cleaned memory")
     except Exception as e:
         logging.warning(f"Failed to load base model weights: {e}")
         logging.warning("Model will be initialized with random weights")

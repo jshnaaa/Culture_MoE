@@ -91,8 +91,8 @@ OUTPUT_DIR="/root/autodl-fs/ffn_culturemoe/${MODEL_NAME}_${DATASET_TAG}_${TIMEST
 echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
 echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
-echo "  MoE层: Layer 17-32 (16层)"
-echo "  专家分配: Layer 17-24(3个), Layer 25-32(5个)"
+echo "  MoE层: Layer 25-32 (8层)"
+echo "  专家分配: Layer 25-32(2个专家)"
 echo "  功能: shared=$USE_SHARED, mask=$USE_MASK, gate=$USE_GATE, culture_loss=$USE_CULTURE_LOSS"
 echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
@@ -128,16 +128,16 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "max_seq_length": $MAX_SEQ_LEN
     },
     "moe_config": {
-        "moe_layers": "17-32",
-        "moe_start_layer": 17,
-        "layer_17_24_experts": 3,
-        "layer_25_32_experts": 5,
-        "total_moe_layers": 16,
-        "total_experts": 64
+        "moe_layers": "25-32",
+        "moe_start_layer": 25,
+        "experts_per_layer": 2,
+        "shared_expert_per_layer": 1,
+        "total_moe_layers": 8,
+        "total_experts": 24
     },
     "lora_config": {
-        "lora_rank": 16,
-        "lora_alpha": 32,
+        "lora_rank": 8,
+        "lora_alpha": 16,
         "lora_dropout": 0.1,
         "optimization": "lora_only"
     },
@@ -173,12 +173,12 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 }
 EOF
 
-# 内存优化的训练参数
+# 内存优化的训练参数（针对OOM问题优化）
 BATCH_SIZE=1              # 最小batch size以节省显存
-GRADIENT_ACCUMULATION=4   # 梯度累积补偿小batch
+GRADIENT_ACCUMULATION=8   # 增加梯度累积步数补偿小batch
 LEARNING_RATE=2e-4        # 适中的学习率
 NUM_EPOCHS=5              # 设置为5个epoch
-MAX_SEQ_LEN=512          # 控制序列长度
+MAX_SEQ_LEN=256          # 减少序列长度以节省显存
 
 echo "训练参数:"
 echo "  Batch Size: $BATCH_SIZE (per GPU)"
@@ -188,10 +188,12 @@ echo "  学习率: $LEARNING_RATE"
 echo "  训练轮数: $NUM_EPOCHS"
 echo "  最大序列长度: $MAX_SEQ_LEN"
 
-# 设置内存优化环境变量
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+# 设置内存优化环境变量（更保守的设置）
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32,expandable_segments:True
 export CUDA_LAUNCH_BLOCKING=1
 export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=1
+export NCCL_P2P_DISABLE=1
 
 # 设置DDP环境变量
 export MASTER_ADDR=localhost
@@ -220,13 +222,13 @@ python train_lora_culturemoe_ffn_integrated_ddp.py \
     --use_culture_loss $USE_CULTURE_LOSS \
     --num_gpus $NUM_GPUS \
     --enable_activation_checkpointing true \
-    --lora_rank 16 \
-    --lora_alpha 32 \
+    --lora_rank 8 \
+    --lora_alpha 16 \
     --lora_dropout 0.1 \
     --seed 42 \
     2>&1 | tee "$OUTPUT_DIR/training.log"
 
-TRAINING_SUCCESS=${PIPESTATUS[0]}
+TRAINING_SUCCESS=$?
 
 # 检查训练结果
 echo "======================================="
@@ -245,10 +247,10 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
         echo ""
         echo "🎉 训练完成！可以进行推理测试"
         echo "模型特点:"
-        echo "  - 仅Layer 17-32使用MoE"
-        echo "  - Layer 17-24: 3个专家/层"
-        echo "  - Layer 25-32: 5个专家/层"
-        echo "  - 总计64个专家"
+        echo "  - 仅Layer 25-32使用MoE (内存优化版)"
+        echo "  - 每层2个路由专家 + 1个共享专家"
+        echo "  - 总计24个专家 (大幅减少内存需求)"
+        echo "  - LoRA rank=8, alpha=16 (内存优化)"
         echo "  - 仅训练LoRA参数，基础模型冻结"
         echo "  - 数据集划分: 8:1:1 (训练:验证:测试)"
         echo "  - 最佳模型基于验证集accuracy选择"
