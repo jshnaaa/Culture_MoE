@@ -91,8 +91,8 @@ OUTPUT_DIR="/root/autodl-fs/ffn_culturemoe/${MODEL_NAME}_${DATASET_TAG}_${TIMEST
 echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
 echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
-echo "  MoE层: Layer 25-32 (8层)"
-echo "  专家分配: Layer 25-32(2个专家)"
+echo "  MoE层: Layer 29-32 (4层) - 极度内存优化"
+echo "  专家分配: Layer 29-32(1个路由专家+1个共享专家)"
 echo "  功能: shared=$USE_SHARED, mask=$USE_MASK, gate=$USE_GATE, culture_loss=$USE_CULTURE_LOSS"
 echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
@@ -128,12 +128,12 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "max_seq_length": $MAX_SEQ_LEN
     },
     "moe_config": {
-        "moe_layers": "25-32",
-        "moe_start_layer": 25,
-        "experts_per_layer": 2,
+        "moe_layers": "29-32",
+        "moe_start_layer": 29,
+        "experts_per_layer": 1,
         "shared_expert_per_layer": 1,
-        "total_moe_layers": 8,
-        "total_experts": 24
+        "total_moe_layers": 4,
+        "total_experts": 8
     },
     "lora_config": {
         "lora_rank": 8,
@@ -247,9 +247,9 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
         echo ""
         echo "🎉 训练完成！可以进行推理测试"
         echo "模型特点:"
-        echo "  - 仅Layer 25-32使用MoE (内存优化版)"
-        echo "  - 每层2个路由专家 + 1个共享专家"
-        echo "  - 总计24个专家 (大幅减少内存需求)"
+        echo "  - 仅Layer 29-32使用MoE (极度内存优化版)"
+        echo "  - 每层1个路由专家 + 1个共享专家"
+        echo "  - 总计8个专家 (最小化内存需求)"
         echo "  - LoRA rank=8, alpha=16 (内存优化)"
         echo "  - 仅训练LoRA参数，基础模型冻结"
         echo "  - 数据集划分: 8:1:1 (训练:验证:测试)"

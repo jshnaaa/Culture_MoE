@@ -606,9 +606,24 @@ def _copy_attention_weights(lora_attn: LoRAEnhancedAttention, base_attn: LlamaAt
 
 def _copy_ffn_weights_to_experts(lora_mlp, base_mlp: LlamaMLP):
     """复制FFN权重到专家层"""
-    # 复制到共享专家
-    shared_expert = lora_mlp.shared_expert
-    if shared_expert is not None:  # 检查共享专家是否存在
+    # 检查是否是MoE层
+    if not hasattr(lora_mlp, 'is_moe_layer') or not lora_mlp.is_moe_layer:
+        # 原始FFN层，直接复制权重
+        for proj_name in ['gate_proj', 'up_proj', 'down_proj']:
+            if hasattr(lora_mlp, proj_name) and hasattr(base_mlp, proj_name):
+                lora_proj = getattr(lora_mlp, proj_name)
+                base_proj = getattr(base_mlp, proj_name)
+
+                if hasattr(lora_proj, 'base_layer'):
+                    lora_proj.base_layer.weight.copy_(base_proj.weight)
+                else:
+                    lora_proj.weight.copy_(base_proj.weight)
+        return
+
+    # MoE层处理
+    # 复制到共享专家（如果存在）
+    if hasattr(lora_mlp, 'shared_expert') and lora_mlp.shared_expert is not None:
+        shared_expert = lora_mlp.shared_expert
         for proj_name in ['gate_proj', 'up_proj', 'down_proj']:
             if hasattr(shared_expert, proj_name) and hasattr(base_mlp, proj_name):
                 shared_proj = getattr(shared_expert, proj_name)
@@ -619,14 +634,15 @@ def _copy_ffn_weights_to_experts(lora_mlp, base_mlp: LlamaMLP):
                 else:
                     shared_proj.weight.copy_(base_proj.weight)
 
-    # 复制到所有文化专家（初始化为相同权重）
-    for expert in lora_mlp.cultural_experts.experts:
-        for proj_name in ['gate_proj', 'up_proj', 'down_proj']:
-            if hasattr(expert, proj_name) and hasattr(base_mlp, proj_name):
-                expert_proj = getattr(expert, proj_name)
-                base_proj = getattr(base_mlp, proj_name)
+    # 复制到所有文化专家（如果存在）
+    if hasattr(lora_mlp, 'cultural_experts') and hasattr(lora_mlp.cultural_experts, 'experts'):
+        for expert in lora_mlp.cultural_experts.experts:
+            for proj_name in ['gate_proj', 'up_proj', 'down_proj']:
+                if hasattr(expert, proj_name) and hasattr(base_mlp, proj_name):
+                    expert_proj = getattr(expert, proj_name)
+                    base_proj = getattr(base_mlp, proj_name)
 
-                if hasattr(expert_proj, 'base_layer'):
-                    expert_proj.base_layer.weight.copy_(base_proj.weight)
-                else:
-                    expert_proj.weight.copy_(base_proj.weight)
+                    if hasattr(expert_proj, 'base_layer'):
+                        expert_proj.base_layer.weight.copy_(base_proj.weight)
+                    else:
+                        expert_proj.weight.copy_(base_proj.weight)

@@ -716,14 +716,14 @@ def train_ddp(rank, world_size, args):
         # 设置内存管理
         if torch.cuda.is_available():
             # 启用内存分片以减少碎片
-            torch.cuda.set_per_process_memory_fraction(0.85)  # 降低到85%
+            torch.cuda.set_per_process_memory_fraction(0.75)  # 进一步降低到75%
 
             # 清理缓存
             torch.cuda.empty_cache()
 
             # 设置内存分配策略
             import os
-            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64,expandable_segments:True'
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32,expandable_segments:True'
 
     except Exception as e:
         if rank == 0:
@@ -747,9 +747,9 @@ def train_ddp(rank, world_size, args):
 
         # 打印层级专家分配配置
         logger.info("=== Layer-wise Expert Allocation Configuration ===")
-        logger.info(f"MoE Layers: 25-32 (8 layers)")
-        logger.info(f"Experts per MoE layer: 2 routing experts + {1 if use_shared else 0} shared expert")
-        logger.info(f"Total experts: {8 * (2 + (1 if use_shared else 0))}")
+        logger.info(f"MoE Layers: 29-32 (4 layers) - 极度内存优化版")
+        logger.info(f"Experts per MoE layer: 1 routing expert + {1 if use_shared else 0} shared expert")
+        logger.info(f"Total experts: {4 * (1 + (1 if use_shared else 0))}")
         logger.info(f"Use Shared Expert: {use_shared}")
         logger.info(f"Use Mask Mechanism: {use_mask}")
         logger.info(f"Use Gate Fusion: {use_gate}")
@@ -764,9 +764,9 @@ def train_ddp(rank, world_size, args):
     total_layers = 32  # LLaMA/Qwen通常有32层
 
     for layer_idx in range(1, total_layers + 1):
-        if 25 <= layer_idx <= 32:
-            # 只在Layer 25-32使用MoE，大幅减少专家数量
-            layer_expert_config[layer_idx] = 2 + (1 if use_shared else 0)  # 2个路由专家 + 1个共享专家
+        if 29 <= layer_idx <= 32:
+            # 只在Layer 29-32使用MoE，进一步减少专家数量
+            layer_expert_config[layer_idx] = 1 + (1 if use_shared else 0)  # 1个路由专家 + 1个共享专家
         else:
             # 其他层保持原始FFN
             layer_expert_config[layer_idx] = 0
