@@ -529,7 +529,11 @@ def train_ddp(rank, world_size, args):
         # 设置内存管理
         if torch.cuda.is_available():
             # 启用内存分片以减少碎片
-            torch.cuda.set_per_process_memory_fraction(0.95)
+            torch.cuda.set_per_process_memory_fraction(0.90)
+
+            # 设置内存分配策略
+            import os
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
 
     except Exception as e:
         if rank == 0:
@@ -594,6 +598,12 @@ def train_ddp(rank, world_size, args):
 
         if rank == 0:
             model.print_parameter_stats()
+
+        # 启用gradient checkpointing以节省内存
+        if hasattr(model, 'gradient_checkpointing_enable'):
+            model.gradient_checkpointing_enable()
+            if rank == 0:
+                logger.info("✅ 启用gradient checkpointing以节省内存")
 
         # 包装为DDP模型
         model = DDP(model, device_ids=[rank], find_unused_parameters=True)
