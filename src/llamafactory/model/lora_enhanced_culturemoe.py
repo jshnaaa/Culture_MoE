@@ -26,9 +26,13 @@ from transformers.models.llama.modeling_llama import (
 
 @dataclass
 class LoRACultureMoEConfig:
-    """LoRA增强CultureMoE配置"""
-    # MoE配置
-    num_experts: int = 8
+    """LoRA增强CultureMoE配置 - 支持层级专家分配"""
+    # 层级专家分配配置
+    layer_expert_config: Dict[int, int] = None  # {layer_idx: num_experts}
+    moe_start_layer: int = 17  # MoE开始的层数
+
+    # MoE基础配置
+    num_experts: int = 8  # 默认专家数（向后兼容）
     top_k: int = 2
     capacity_factor: float = 1.25
 
@@ -71,6 +75,20 @@ class LoRACultureMoEConfig:
             self.attention_lora_targets = ["q_proj", "k_proj", "v_proj", "o_proj"]
         if self.expert_lora_targets is None:
             self.expert_lora_targets = ["gate_proj", "up_proj", "down_proj"]
+
+        # 如果没有提供层级专家配置，使用默认配置
+        if self.layer_expert_config is None:
+            self.layer_expert_config = {}
+            for i in range(1, 33):  # 假设32层
+                self.layer_expert_config[i] = self.num_experts
+
+    def get_layer_expert_count(self, layer_idx: int) -> int:
+        """获取指定层的专家数量"""
+        return self.layer_expert_config.get(layer_idx, 0)
+
+    def is_moe_layer(self, layer_idx: int) -> bool:
+        """判断指定层是否为MoE层"""
+        return self.get_layer_expert_count(layer_idx) > 0
 
 
 class LoRALinear(nn.Module):

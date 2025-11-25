@@ -555,6 +555,7 @@ def train_ddp(rank, world_size, args):
     use_mask = args.use_mask.lower() == 'true'
     use_gate = args.use_gate.lower() == 'true'
     use_culture_loss = args.use_culture_loss.lower() == 'true'
+    enable_activation_checkpointing = args.enable_activation_checkpointing.lower() == 'true'
 
     # 设置日志（只在主进程）
     if rank == 0:
@@ -563,37 +564,70 @@ def train_ddp(rank, world_size, args):
         # 创建输出目录
         os.makedirs(args.output_dir, exist_ok=True)
 
-        # 打印消融实验配置
-        logger.info("=== Ablation Study Configuration ===")
+        # 打印层级专家分配配置
+        logger.info("=== Layer-wise Expert Allocation Configuration ===")
+        logger.info(f"MoE Start Layer: {args.moe_start_layer}")
+        logger.info(f"Layer 17-24 Experts: {args.layer_17_24_experts}")
+        logger.info(f"Layer 25-32 Experts: {args.layer_25_32_experts}")
         logger.info(f"Use Shared Expert: {use_shared}")
         logger.info(f"Use Mask Mechanism: {use_mask}")
         logger.info(f"Use Gate Fusion: {use_gate}")
         logger.info(f"Use Culture Loss: {use_culture_loss}")
-        logger.info("=====================================")
+        logger.info(f"Activation Checkpointing: {enable_activation_checkpointing}")
+        logger.info("====================================================")
     else:
         logger = None
 
+    # 创建层级专家分配配置
+    layer_expert_config = {}
+    total_layers = 32  # LLaMA/Qwen通常有32层
+
+    for layer_idx in range(1, total_layers + 1):
+        if layer_idx < args.moe_start_layer:
+            # 前面的层保持原始FFN
+            layer_expert_config[layer_idx] = 0
+        elif 17 <= layer_idx <= 24:
+            # Layer 17-24: 指定数量的路由专家 + 1个共享专家
+            layer_expert_config[layer_idx] = args.layer_17_24_experts + (1 if use_shared else 0)
+        elif 25 <= layer_idx <= 32:
+            # Layer 25-32: 指定数量的路由专家 + 1个共享专家
+            layer_expert_config[layer_idx] = args.layer_25_32_experts + (1 if use_shared else 0)
+        else:
+            # 其他层保持原始FFN
+            layer_expert_config[layer_idx] = 0
+
     # LoRA配置
     lora_config = LoRACultureMoEConfig(
-        num_experts=args.num_experts,
+        # 层级专家分配
+        layer_expert_config=layer_expert_config,
+        moe_start_layer=args.moe_start_layer,
+
+        # MoE基础配置
         top_k=2,
         capacity_factor=1.25,
         num_cultures=6,
         culture_dim=256,
-        lora_rank=16,  # 固定值，不再作为参数
-        lora_alpha=32.0,  # 固定值，不再作为参数
-        lora_dropout=0.1,
+
+        # LoRA配置
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
         attention_lora_targets=["q_proj", "k_proj", "v_proj", "o_proj"],
         expert_lora_targets=["gate_proj", "up_proj", "down_proj"],
+
+        # 损失权重
         load_balance_weight=0.01,
         entropy_weight=0.1,
-        culture_loss_weight=0.05,
-        enable_cultural_attention=True,  # 启用文化感知注意力
-        # 消融实验配置
+        culture_loss_weight=0.05 if use_culture_loss else 0.0,
+
+        # 功能开关
+        enable_cultural_attention=True,
         use_shared_expert=use_shared,
         use_gate_fusion=use_gate,
         use_mask_mechanism=use_mask,
-        warmup_steps=1000,
+
+        # 训练配置
+        warmup_steps=500,
         gradient_clip_norm=1.0
     )
 
@@ -609,10 +643,12 @@ def train_ddp(rank, world_size, args):
             model.print_parameter_stats()
 
         # 启用gradient checkpointing以节省内存
-        if hasattr(model, 'gradient_checkpointing_enable'):
+        if enable_activation_checkpointing and hasattr(model, 'gradient_checkpointing_enable'):
             model.gradient_checkpointing_enable()
             if rank == 0:
                 logger.info("✅ 启用gradient checkpointing以节省内存")
+        elif enable_activation_checkpointing and rank == 0:
+            logger.warning("⚠️ 模型不支持gradient checkpointing")
 
         # 包装为DDP模型
         model = DDP(model, device_ids=[rank], find_unused_parameters=True)
@@ -646,7 +682,7 @@ def train_ddp(rank, world_size, args):
         if rank == 0:
             logger.info(f"成功加载 {len(data)} 条训练数据")
 
-        dataset = CultureDatasetForLoRA(data, tokenizer, max_length=512, use_mask_mechanism=use_mask)
+        dataset = CultureDatasetForLoRA(data, tokenizer, max_length=args.max_seq_length, use_mask_mechanism=use_mask)
 
     except Exception as e:
         if rank == 0:
@@ -761,20 +797,35 @@ def train_ddp(rank, world_size, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='LoRA Enhanced CultureMoE Training with DDP - Ablation Study')
+    parser = argparse.ArgumentParser(description='LoRA Enhanced CultureMoE Training with DDP - Layer-wise Expert Allocation')
     parser.add_argument('--base_model', type=str, default='meta-llama/Llama-2-7b-hf', help='Base model path')
     parser.add_argument('--data_path', type=str, required=True, help='Training data path')
     parser.add_argument('--output_dir', type=str, default='./outputs/lora_culturemoe', help='Output directory')
-    parser.add_argument('--num_epochs', type=int, default=8, help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=4, help='Training batch size')
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help='Gradient accumulation steps')
-    parser.add_argument('--learning_rate', type=float, default=5e-4, help='Learning rate')
-    parser.add_argument('--num_experts', type=int, default=8, help='Number of routing experts')
+    parser.add_argument('--num_epochs', type=int, default=3, help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=1, help='Training batch size')
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=4, help='Gradient accumulation steps')
+    parser.add_argument('--learning_rate', type=float, default=2e-4, help='Learning rate')
+    parser.add_argument('--max_seq_length', type=int, default=512, help='Maximum sequence length')
+
+    # 层级专家分配参数
+    parser.add_argument('--moe_start_layer', type=int, default=17, help='Start layer for MoE (1-indexed)')
+    parser.add_argument('--layer_17_24_experts', type=int, default=3, help='Number of experts for layers 17-24')
+    parser.add_argument('--layer_25_32_experts', type=int, default=5, help='Number of experts for layers 25-32')
+
+    # LoRA参数
+    parser.add_argument('--lora_rank', type=int, default=16, help='LoRA rank')
+    parser.add_argument('--lora_alpha', type=float, default=32.0, help='LoRA alpha')
+    parser.add_argument('--lora_dropout', type=float, default=0.1, help='LoRA dropout')
+
+    # 功能开关
     parser.add_argument('--use_shared', type=str, default='true', help='Whether to use shared expert (true/false)')
     parser.add_argument('--use_mask', type=str, default='true', help='Whether to use mask mechanism (true/false)')
     parser.add_argument('--use_gate', type=str, default='true', help='Whether to use gate fusion (true/false)')
     parser.add_argument('--use_culture_loss', type=str, default='true', help='Whether to use culture loss (true/false)')
+
+    # 训练配置
     parser.add_argument('--num_gpus', type=int, default=2, help='Number of GPUs (1 for single GPU, 2+ for DDP)')
+    parser.add_argument('--enable_activation_checkpointing', type=str, default='true', help='Enable activation checkpointing (true/false)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
 
     args = parser.parse_args()
