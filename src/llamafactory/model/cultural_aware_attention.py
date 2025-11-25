@@ -73,12 +73,68 @@ class CulturallyAwareAttention(nn.Module):
 
         # 7. Rotary Position Embedding（如果需要）
         if hasattr(config, 'rope_theta'):
-            from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
-            self.rotary_emb = LlamaRotaryEmbedding(
-                self.head_dim,
-                max_position_embeddings=config.max_position_embeddings,
-                base=config.rope_theta,
-            )
+            try:
+                from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
+                # 尝试不同的初始化参数组合（兼容不同版本的transformers）
+                rotary_emb_created = False
+
+                # 尝试1: 使用config对象（新版本的方式）
+                if not rotary_emb_created:
+                    try:
+                        self.rotary_emb = LlamaRotaryEmbedding(config=config)
+                        rotary_emb_created = True
+                    except (TypeError, AttributeError):
+                        pass
+
+                # 尝试2: 只带dim参数（旧版本的方式）
+                if not rotary_emb_created:
+                    try:
+                        self.rotary_emb = LlamaRotaryEmbedding(self.head_dim)
+                        rotary_emb_created = True
+                    except (TypeError, AttributeError):
+                        pass
+
+                # 尝试3: 带dim和base参数
+                if not rotary_emb_created:
+                    try:
+                        self.rotary_emb = LlamaRotaryEmbedding(
+                            self.head_dim,
+                            base=config.rope_theta,
+                        )
+                        rotary_emb_created = True
+                    except (TypeError, AttributeError):
+                        pass
+
+                # 尝试4: 带dim和max_position_embeddings参数
+                if not rotary_emb_created:
+                    try:
+                        self.rotary_emb = LlamaRotaryEmbedding(
+                            self.head_dim,
+                            max_position_embeddings=config.max_position_embeddings,
+                        )
+                        rotary_emb_created = True
+                    except (TypeError, AttributeError):
+                        pass
+
+                # 尝试5: 带dim, max_position_embeddings和base参数（原始方式）
+                if not rotary_emb_created:
+                    try:
+                        self.rotary_emb = LlamaRotaryEmbedding(
+                            self.head_dim,
+                            max_position_embeddings=config.max_position_embeddings,
+                            base=config.rope_theta,
+                        )
+                        rotary_emb_created = True
+                    except (TypeError, AttributeError):
+                        pass
+
+                # 如果所有尝试都失败，设为None
+                if not rotary_emb_created:
+                    self.rotary_emb = None
+
+            except ImportError:
+                # 如果导入失败，设为None
+                self.rotary_emb = None
         else:
             self.rotary_emb = None
 

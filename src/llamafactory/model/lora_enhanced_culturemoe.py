@@ -19,8 +19,9 @@ from transformers.models.llama.modeling_llama import (
     LlamaRMSNorm
 )
 
-from .experts import LoRA
-from .moe_args import ModelArgs
+# 移除未使用的导入以避免潜在的导入错误
+# from .experts import LoRA  # 未使用
+# from .moe_args import ModelArgs  # 未使用
 
 
 @dataclass
@@ -117,88 +118,139 @@ class LoRAEnhancedAttention(nn.Module):
     """
     def __init__(self, original_attention: LlamaAttention, lora_config: LoRACultureMoEConfig, config=None, layer_idx=None):
         super().__init__()
-        # 安全获取config和layer_idx
-        self.config = config if config is not None else getattr(original_attention, 'config', None)
-        self.layer_idx = layer_idx if layer_idx is not None else getattr(original_attention, 'layer_idx', 0)
-        self.lora_config = lora_config
 
-        # 如果config仍然为None，抛出错误
-        if self.config is None:
-            raise ValueError("Config must be provided either through original_attention.config or as a parameter")
+        # 调试信息：检查原始attention对象的类型和属性
+        try:
+            logging.info(f"Initializing LoRAEnhancedAttention with original_attention type: {type(original_attention)}")
+
+            # 安全获取config和layer_idx
+            self.config = config if config is not None else getattr(original_attention, 'config', None)
+            self.layer_idx = layer_idx if layer_idx is not None else getattr(original_attention, 'layer_idx', 0)
+            self.lora_config = lora_config
+
+            # 如果config仍然为None，抛出错误
+            if self.config is None:
+                raise ValueError("Config must be provided either through original_attention.config or as a parameter")
+
+            logging.info(f"Successfully initialized config and layer_idx: {self.layer_idx}")
+
+        except Exception as e:
+            logging.error(f"Error in LoRAEnhancedAttention.__init__: {e}")
+            logging.error(f"original_attention attributes: {dir(original_attention)}")
+            raise
 
         # 从config获取属性，避免版本兼容性问题
-        self.hidden_size = self.config.hidden_size
-        self.num_heads = self.config.num_attention_heads
-        self.head_dim = self.hidden_size // self.num_heads
-        self.num_key_value_heads = getattr(self.config, 'num_key_value_heads', self.num_heads)
-        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
-        self.max_position_embeddings = self.config.max_position_embeddings
-        self.rope_theta = getattr(self.config, 'rope_theta', 10000.0)
-        self.is_causal = True
+        try:
+            self.hidden_size = self.config.hidden_size
+            self.num_heads = self.config.num_attention_heads
+            self.head_dim = self.hidden_size // self.num_heads
+            self.num_key_value_heads = getattr(self.config, 'num_key_value_heads', self.num_heads)
+            self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+            self.max_position_embeddings = self.config.max_position_embeddings
+            self.rope_theta = getattr(self.config, 'rope_theta', 10000.0)
+            self.is_causal = True
 
-        # 获取attention_dropout
-        self.attention_dropout = getattr(self.config, 'attention_dropout', 0.0)
+            # 获取attention_dropout
+            self.attention_dropout = getattr(self.config, 'attention_dropout', 0.0)
+
+            logging.info(f"Config attributes successfully loaded: hidden_size={self.hidden_size}, num_heads={self.num_heads}")
+
+        except AttributeError as e:
+            logging.error(f"AttributeError accessing config attributes: {e}")
+            logging.error(f"Config type: {type(self.config)}, Config attributes: {dir(self.config)}")
+            raise
 
         # 复制或创建rotary embedding
-        if hasattr(original_attention, 'rotary_emb'):
-            self.rotary_emb = original_attention.rotary_emb
-        else:
-            # 如果原始attention没有rotary_emb，我们需要创建一个
-            try:
-                from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
-                # 尝试不同的初始化参数组合（优先尝试较简单的参数）
-                rotary_emb_created = False
+        try:
+            if hasattr(original_attention, 'rotary_emb'):
+                self.rotary_emb = original_attention.rotary_emb
+                logging.info("Successfully copied rotary_emb from original attention")
+            else:
+                # 如果原始attention没有rotary_emb，我们需要创建一个
+                logging.info("Creating new rotary embedding")
+                try:
+                    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
+                    # 尝试不同的初始化参数组合（优先尝试较常见的方式）
+                    rotary_emb_created = False
 
-                # 尝试1: 只带dim参数（最常见的情况）
-                if not rotary_emb_created:
-                    try:
-                        self.rotary_emb = LlamaRotaryEmbedding(self.head_dim)
-                        rotary_emb_created = True
-                    except TypeError as e:
-                        # 记录错误但继续尝试
-                        pass
+                    # 尝试1: 使用config对象（新版本的方式）
+                    if not rotary_emb_created:
+                        try:
+                            logging.info("Attempting config-based LlamaRotaryEmbedding initialization")
+                            self.rotary_emb = LlamaRotaryEmbedding(config=self.config)
+                            rotary_emb_created = True
+                            logging.info("Successfully created rotary_emb with config")
+                        except (TypeError, AttributeError) as e:
+                            logging.info(f"Config-based initialization failed: {e}")
+                            pass
 
-                # 尝试2: 带dim和base参数
-                if not rotary_emb_created:
-                    try:
-                        self.rotary_emb = LlamaRotaryEmbedding(
-                            self.head_dim,
-                            base=self.rope_theta,
-                        )
-                        rotary_emb_created = True
-                    except TypeError:
-                        pass
+                    # 尝试2: 只带dim参数（旧版本的方式）
+                    if not rotary_emb_created:
+                        try:
+                            logging.info(f"Attempting dimension-based LlamaRotaryEmbedding initialization with head_dim={self.head_dim}")
+                            self.rotary_emb = LlamaRotaryEmbedding(self.head_dim)
+                            rotary_emb_created = True
+                            logging.info("Successfully created rotary_emb with head_dim")
+                        except (TypeError, AttributeError) as e:
+                            logging.info(f"Dimension-based initialization failed: {e}")
+                            pass
 
-                # 尝试3: 带dim, max_position_embeddings和base参数
-                if not rotary_emb_created:
-                    try:
-                        self.rotary_emb = LlamaRotaryEmbedding(
-                            self.head_dim,
-                            max_position_embeddings=self.max_position_embeddings,
-                            base=self.rope_theta,
-                        )
-                        rotary_emb_created = True
-                    except TypeError:
-                        pass
+                    # 尝试3: 带dim和base参数
+                    if not rotary_emb_created:
+                        try:
+                            logging.info(f"Attempting LlamaRotaryEmbedding initialization with head_dim={self.head_dim}, base={self.rope_theta}")
+                            self.rotary_emb = LlamaRotaryEmbedding(
+                                self.head_dim,
+                                base=self.rope_theta,
+                            )
+                            rotary_emb_created = True
+                            logging.info("Successfully created rotary_emb with head_dim and base")
+                        except (TypeError, AttributeError) as e:
+                            logging.info(f"head_dim+base initialization failed: {e}")
+                            pass
 
-                # 尝试4: 只带max_position_embeddings参数
-                if not rotary_emb_created:
-                    try:
-                        self.rotary_emb = LlamaRotaryEmbedding(
-                            self.head_dim,
-                            max_position_embeddings=self.max_position_embeddings,
-                        )
-                        rotary_emb_created = True
-                    except TypeError:
-                        pass
+                    # 尝试4: 带dim和max_position_embeddings参数
+                    if not rotary_emb_created:
+                        try:
+                            logging.info(f"Attempting LlamaRotaryEmbedding initialization with head_dim={self.head_dim}, max_pos_emb={self.max_position_embeddings}")
+                            self.rotary_emb = LlamaRotaryEmbedding(
+                                self.head_dim,
+                                max_position_embeddings=self.max_position_embeddings,
+                            )
+                            rotary_emb_created = True
+                            logging.info("Successfully created rotary_emb with head_dim and max_position_embeddings")
+                        except (TypeError, AttributeError) as e:
+                            logging.info(f"head_dim+max_pos_emb initialization failed: {e}")
+                            pass
 
-                # 如果所有尝试都失败，设为None
-                if not rotary_emb_created:
+                    # 尝试5: 带dim, max_position_embeddings和base参数
+                    if not rotary_emb_created:
+                        try:
+                            logging.info(f"Attempting LlamaRotaryEmbedding initialization with all parameters")
+                            self.rotary_emb = LlamaRotaryEmbedding(
+                                self.head_dim,
+                                max_position_embeddings=self.max_position_embeddings,
+                                base=self.rope_theta,
+                            )
+                            rotary_emb_created = True
+                            logging.info("Successfully created rotary_emb with all parameters")
+                        except (TypeError, AttributeError) as e:
+                            logging.info(f"All parameters initialization failed: {e}")
+                            pass
+
+                    # 如果所有尝试都失败，设为None
+                    if not rotary_emb_created:
+                        logging.warning("All LlamaRotaryEmbedding initialization attempts failed, setting to None")
+                        self.rotary_emb = None
+
+                except ImportError as e:
+                    # 如果导入失败，设为None
+                    logging.warning(f"Failed to import LlamaRotaryEmbedding: {e}")
                     self.rotary_emb = None
 
-            except ImportError:
-                # 如果导入失败，设为None
-                self.rotary_emb = None
+        except Exception as e:
+            logging.error(f"Unexpected error in rotary embedding setup: {e}")
+            self.rotary_emb = None
 
         # 选择注意力机制类型
         if lora_config.enable_cultural_attention:

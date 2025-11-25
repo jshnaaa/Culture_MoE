@@ -43,9 +43,27 @@ class LoRACultureMoELlamaDecoderLayer(nn.Module):
             original_attention = LlamaAttention(config=config, layer_idx=layer_idx)
         except TypeError:
             # 兼容不同版本的transformers
-            original_attention = LlamaAttention(config)
-            # 手动设置layer_idx属性
-            original_attention.layer_idx = layer_idx
+            try:
+                original_attention = LlamaAttention(config)
+                # 手动设置layer_idx属性
+                original_attention.layer_idx = layer_idx
+            except Exception as e:
+                # 如果创建失败，创建一个简单的替代对象
+                class SimpleAttentionProxy:
+                    def __init__(self, config, layer_idx):
+                        self.config = config
+                        self.layer_idx = layer_idx
+                        # 创建基本的投影层
+                        hidden_size = config.hidden_size
+                        num_key_value_heads = getattr(config, 'num_key_value_heads', config.num_attention_heads)
+                        head_dim = hidden_size // config.num_attention_heads
+                        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+                        self.k_proj = nn.Linear(hidden_size, num_key_value_heads * head_dim, bias=False)
+                        self.v_proj = nn.Linear(hidden_size, num_key_value_heads * head_dim, bias=False)
+                        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+                        # 不创建rotary_emb，让LoRAEnhancedAttention自己创建
+
+                original_attention = SimpleAttentionProxy(config, layer_idx)
 
         # LoRA增强的Attention
         self.self_attn = LoRAEnhancedAttention(original_attention, lora_config, config=config, layer_idx=layer_idx)
