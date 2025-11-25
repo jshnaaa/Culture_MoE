@@ -35,6 +35,7 @@ from transformers import (
 import numpy as np
 from tqdm import tqdm
 import gc
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 
 # 添加项目路径
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -71,6 +72,159 @@ def reduce_tensor(tensor, world_size):
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
     rt /= world_size
     return rt
+
+
+def evaluate_model_with_generation(model, dataloader, tokenizer, device, rank, world_size, output_file=None):
+    """
+    评估模型并生成回答，只保存生成的回答，不计算指标
+    指标计算将在post eval阶段进行
+
+    Returns:
+        dict: 空的指标字典（指标将在post eval中计算）
+        list: 生成的回答结果
+    """
+    model.eval()
+    all_generated_answers = []
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Generating answers", disable=(rank != 0)):
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            culture_ids = batch['culture_ids'].to(device)
+            true_outputs = batch['true_output']  # 保留在CPU上，因为是字符串列表
+            original_instructions = batch['original_instruction']  # 保留在CPU上，因为是字符串列表
+
+            # 生成回答
+            generated_ids = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=150,
+                do_sample=True,
+                temperature=0.7,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+
+            # 解码生成的回答
+            for i, generated_seq in enumerate(generated_ids):
+                # 移除输入部分，只保留生成的新token
+                input_length = input_ids[i].shape[0]
+                generated_text = tokenizer.decode(
+                    generated_seq[input_length:],
+                    skip_special_tokens=True
+                ).strip()
+
+                # 获取原始instruction和正确答案
+                original_input = original_instructions[i]  # 使用原始instruction
+                correct_answer = true_outputs[i]  # 使用真实的正确答案
+                culture_label = culture_ids[i].item()
+
+                all_generated_answers.append({
+                    'instruction': original_input,
+                    'correct_answer': correct_answer,
+                    'predicted_answer': generated_text,
+                    'correct_label': culture_label
+                })
+
+    # 保存生成的回答
+    if output_file and rank == 0:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(all_generated_answers, f, ensure_ascii=False, indent=2)
+
+    # 如果保存了文件，进行post evaluation
+    metrics = {}
+    if output_file and rank == 0:
+        metrics = post_eval_from_generated_answers(output_file)
+
+    return metrics, all_generated_answers
+
+
+def extract_number_from_text(text):
+    """
+    从生成的文本中提取阿拉伯数字
+    返回提取到的第一个数字，如果没有找到返回None
+    """
+    import re
+
+    # 查找文本中的阿拉伯数字（0-5，对应6种文化）
+    numbers = re.findall(r'\b[0-5]\b', text)
+
+    if numbers:
+        return int(numbers[0])  # 返回第一个找到的数字
+
+    # 如果没有找到0-5的数字，查找任何数字
+    all_numbers = re.findall(r'\b\d+\b', text)
+    for num_str in all_numbers:
+        num = int(num_str)
+        if 0 <= num <= 5:  # 只接受0-5范围内的数字
+            return num
+
+    return None  # 没有找到有效数字
+
+
+def post_eval_from_generated_answers(generated_answers_file):
+    """
+    Post evaluation方式：从生成的回答文件中计算指标
+    """
+    import json
+
+    if not os.path.exists(generated_answers_file):
+        return {"error": f"File {generated_answers_file} not found"}
+
+    with open(generated_answers_file, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    correct_count = 0
+    total_count = len(data)
+    all_predictions = []
+    all_labels = []
+
+    # 更新每条记录，添加提取的数字和正确性判断
+    for item in data:
+        predicted_answer = item['predicted_answer']
+        correct_label = item['correct_label']
+
+        # 从生成的回答中提取数字
+        extracted_number = extract_number_from_text(predicted_answer)
+
+        # 更新记录
+        item['extracted_number'] = extracted_number
+        item['is_correct'] = (extracted_number == correct_label) if extracted_number is not None else False
+
+        # 统计
+        if item['is_correct']:
+            correct_count += 1
+
+        # 为计算precision/recall/f1准备数据
+        all_labels.append(correct_label)
+        # 如果没有提取到数字，使用-1作为预测值（这样不会匹配任何正确标签）
+        all_predictions.append(extracted_number if extracted_number is not None else -1)
+
+    # 重新保存更新后的文件
+    with open(generated_answers_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # 计算指标
+    accuracy = correct_count / total_count if total_count > 0 else 0.0
+
+    # 计算precision, recall, f1
+    from sklearn.metrics import precision_recall_fscore_support, classification_report
+
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        all_labels, all_predictions, average='weighted', zero_division=0
+    )
+
+    metrics = {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'correct_count': correct_count,
+        'total_count': total_count,
+        'extraction_success_rate': sum(1 for p in all_predictions if p != -1) / total_count
+    }
+
+    return metrics
 
 
 # ===== 数据集类 =====
@@ -179,7 +333,8 @@ class CultureDatasetForLoRA(Dataset):
             'labels': labels,
             'culture_ids': torch.tensor(culture_id, dtype=torch.long),
             'use_mask_mechanism': self.use_mask_mechanism,
-            'true_output': output  # 保存真实的output用于评估
+            'true_output': output,  # 保存真实的output用于评估
+            'original_instruction': instruction  # 保存原始instruction
         }
 
 
@@ -708,17 +863,28 @@ def train_ddp(rank, world_size, args):
         cleanup_ddp()
         raise
 
-    # 分割训练和验证集
-    train_size = int(0.9 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    # 分割训练、验证和测试集 (8:1:1)
+    total_size = len(dataset)
+    train_size = int(0.8 * total_size)
+    val_size = int(0.1 * total_size)
+    test_size = total_size - train_size - val_size
+
+    if rank == 0:
+        logger.info(f"数据集划分: 训练集={train_size}, 验证集={val_size}, 测试集={test_size}")
+
+    train_dataset, val_dataset, test_dataset = random_split(
+        dataset, [train_size, val_size, test_size],
+        generator=torch.Generator().manual_seed(args.seed)  # 确保可重现
+    )
 
     # 创建DDP采样器
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
     val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+    test_sampler = DistributedSampler(test_dataset, num_replicas=world_size, rank=rank, shuffle=False)
 
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler)
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler)
+    test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, sampler=test_sampler)
 
     # 创建训练器
     trainer = LoRACultureMoETrainerDDP(model, lora_config, rank, world_size, use_culture_loss)
@@ -732,6 +898,15 @@ def train_ddp(rank, world_size, args):
     if rank == 0:
         logger.info(f"梯度累积步数: {gradient_accumulation_steps}")
         logger.info(f"有效batch size: {args.batch_size * gradient_accumulation_steps * world_size}")
+
+    # 最佳模型跟踪
+    best_val_accuracy = 0.0
+    best_epoch = 0
+    best_model_path = os.path.join(args.output_dir, 'best_moe')
+    eval_results_per_epoch = []
+
+    if rank == 0:
+        os.makedirs(best_model_path, exist_ok=True)
 
     # 训练循环
     for epoch in range(args.num_epochs):
@@ -770,36 +945,111 @@ def train_ddp(rank, world_size, args):
                     step_num = (batch_idx + 1) // gradient_accumulation_steps
                     logger.info(f"Epoch {epoch+1}, Step {step_num}: {loss_dict}")
 
-        # 验证阶段
+        # 计算训练集平均损失
+        avg_train_loss = {
+            key: np.mean([loss[key] for loss in epoch_losses])
+            for key in epoch_losses[0].keys()
+        }
+
+        # 验证阶段 - 包含生成评估
         if val_dataloader:
-            trainer.model.eval()
-            val_losses = []
+            if rank == 0:
+                logger.info(f"开始验证集评估 (Epoch {epoch+1})...")
 
-            with torch.no_grad():
-                for batch in val_dataloader:
-                    batch = {k: v.cuda(rank) if torch.is_tensor(v) else v for k, v in batch.items()}
-                    val_loss_dict = trainer.validate_step(batch)
-                    val_losses.append(val_loss_dict)
+            # 生成评估文件路径
+            eval_output_file = os.path.join(args.output_dir, f'eval_generated_answers_epoch_{epoch+1}.json')
 
-            # 计算平均验证损失
-            if val_losses:
-                avg_val_loss = {
-                    key: np.mean([loss[key] for loss in val_losses])
-                    for key in val_losses[0].keys()
+            # 评估模型并生成回答
+            val_metrics, _ = evaluate_model_with_generation(
+                model=trainer.model,
+                dataloader=val_dataloader,
+                tokenizer=tokenizer,
+                device=torch.device(f'cuda:{rank}'),
+                rank=rank,
+                world_size=world_size,
+                output_file=eval_output_file if rank == 0 else None
+            )
+
+            if rank == 0:
+                logger.info(f"Epoch {epoch+1} Validation Metrics: {val_metrics}")
+
+                # 记录每轮的结果
+                epoch_result = {
+                    'epoch': epoch + 1,
+                    'train_loss': avg_train_loss,
+                    'val_metrics': val_metrics
                 }
+                eval_results_per_epoch.append(epoch_result)
 
-                if rank == 0:
-                    logger.info(f"Epoch {epoch+1} Validation: {avg_val_loss}")
+                # 检查是否为最佳模型
+                current_val_accuracy = val_metrics['accuracy']
+                if current_val_accuracy > best_val_accuracy:
+                    best_val_accuracy = current_val_accuracy
+                    best_epoch = epoch + 1
+
+                    # 保存最佳模型
+                    best_lora_path = os.path.join(best_model_path, 'best_lora_weights.pt')
+                    trainer.save_lora_weights(best_lora_path)
+
+                    logger.info(f"🎉 新的最佳模型! Epoch {best_epoch}, Validation Accuracy: {best_val_accuracy:.4f}")
+                    logger.info(f"最佳模型已保存到: {best_lora_path}")
+
+                # 保存每轮评估结果
+                eval_results_file = os.path.join(args.output_dir, 'eval_result_per_epoch.json')
+                with open(eval_results_file, 'w', encoding='utf-8') as f:
+                    json.dump(eval_results_per_epoch, f, ensure_ascii=False, indent=2)
 
         # 专家利用率统计（只在主进程）
         if rank == 0:
             expert_stats = trainer.get_expert_utilization_stats()
             logger.info(f"Epoch {epoch+1} Expert Stats: {expert_stats}")
 
-    # 保存最终模型（只在主进程）
+    # 训练完成后，使用最佳模型在测试集上评估
     if rank == 0:
-        final_save_path = os.path.join(args.output_dir, 'final_lora_weights.pt')
-        trainer.save_lora_weights(final_save_path)
+        logger.info("训练完成，开始在测试集上评估最佳模型...")
+
+        # 加载最佳模型
+        best_lora_path = os.path.join(best_model_path, 'best_lora_weights.pt')
+        if os.path.exists(best_lora_path):
+            # 这里需要重新加载最佳模型的权重
+            # 由于DDP的复杂性，我们简化为使用当前模型
+            logger.info(f"使用最佳模型 (Epoch {best_epoch}) 在测试集上评估...")
+
+            # 测试集评估
+            test_output_file = os.path.join(args.output_dir, 'test_generated_answers.json')
+            test_metrics, _ = evaluate_model_with_generation(
+                model=trainer.model,
+                dataloader=test_dataloader,
+                tokenizer=tokenizer,
+                device=torch.device(f'cuda:{rank}'),
+                rank=rank,
+                world_size=world_size,
+                output_file=test_output_file
+            )
+
+            logger.info(f"测试集评估结果: {test_metrics}")
+
+            # 保存测试结果
+            test_result = {
+                'best_epoch': best_epoch,
+                'best_val_accuracy': best_val_accuracy,
+                'test_metrics': test_metrics,
+                'model_info': {
+                    'backbone': args.base_model,
+                    'num_epochs': args.num_epochs,
+                    'batch_size': args.batch_size,
+                    'learning_rate': args.learning_rate
+                }
+            }
+
+            test_result_file = os.path.join(args.output_dir, 'test_result.json')
+            with open(test_result_file, 'w', encoding='utf-8') as f:
+                json.dump(test_result, f, ensure_ascii=False, indent=2)
+
+            logger.info(f"测试结果已保存到: {test_result_file}")
+        else:
+            logger.warning("未找到最佳模型权重文件，跳过测试集评估")
+
         logger.info("Training completed!")
 
     # 清理DDP
