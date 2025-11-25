@@ -515,11 +515,27 @@ class LoRACultureMoETrainerDDP:
 # ===== 主训练函数 =====
 def train_ddp(rank, world_size, args):
     """DDP训练函数"""
-    # 设置DDP
-    setup_ddp(rank, world_size)
+    try:
+        # 设置DDP
+        setup_ddp(rank, world_size)
 
-    # 设置随机种子
-    set_seed(args.seed + rank)
+        # 设置随机种子
+        set_seed(args.seed + rank)
+
+        # 清理GPU缓存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # 设置内存管理
+        if torch.cuda.is_available():
+            # 启用内存分片以减少碎片
+            torch.cuda.set_per_process_memory_fraction(0.95)
+
+    except Exception as e:
+        if rank == 0:
+            print(f"❌ DDP初始化失败: {e}")
+        cleanup_ddp()
+        raise
 
     # 转换字符串参数为布尔值
     use_shared = args.use_shared.lower() == 'true'
@@ -568,18 +584,26 @@ def train_ddp(rank, world_size, args):
         gradient_clip_norm=1.0
     )
 
-    # 创建模型
-    if rank == 0:
-        logger.info("Creating LoRA enhanced CultureMoE model...")
-    model = create_lora_culturemoe_model(args.base_model, lora_config)
-    model.freeze_base_parameters()  # 冻结基础参数，只训练LoRA
-    model.cuda(rank)
+    try:
+        # 创建模型
+        if rank == 0:
+            logger.info("Creating LoRA enhanced CultureMoE model...")
+        model = create_lora_culturemoe_model(args.base_model, lora_config)
+        model.freeze_base_parameters()  # 冻结基础参数，只训练LoRA
+        model.cuda(rank)
 
-    if rank == 0:
-        model.print_parameter_stats()
+        if rank == 0:
+            model.print_parameter_stats()
 
-    # 包装为DDP模型
-    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+        # 包装为DDP模型
+        model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+
+    except Exception as e:
+        if rank == 0:
+            logger.error(f"❌ 模型创建失败: {e}")
+            logger.error(f"可能原因: 1) 基础模型路径错误 2) GPU显存不足 3) 模型配置问题")
+        cleanup_ddp()
+        raise
 
     # 加载tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
@@ -587,12 +611,29 @@ def train_ddp(rank, world_size, args):
         tokenizer.pad_token = tokenizer.eos_token
 
     # 加载数据
-    if rank == 0:
-        logger.info(f"Loading training data from {args.data_path}")
-    with open(args.data_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    try:
+        if rank == 0:
+            logger.info(f"Loading training data from {args.data_path}")
 
-    dataset = CultureDatasetForLoRA(data, tokenizer, max_length=512, use_mask_mechanism=use_mask)
+        if not os.path.exists(args.data_path):
+            raise FileNotFoundError(f"数据文件不存在: {args.data_path}")
+
+        with open(args.data_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        if not data:
+            raise ValueError("数据文件为空")
+
+        if rank == 0:
+            logger.info(f"成功加载 {len(data)} 条训练数据")
+
+        dataset = CultureDatasetForLoRA(data, tokenizer, max_length=512, use_mask_mechanism=use_mask)
+
+    except Exception as e:
+        if rank == 0:
+            logger.error(f"❌ 数据加载失败: {e}")
+        cleanup_ddp()
+        raise
 
     # 分割训练和验证集
     train_size = int(0.9 * len(dataset))
@@ -681,7 +722,15 @@ def train_ddp(rank, world_size, args):
         logger.info("Training completed!")
 
     # 清理DDP
-    cleanup_ddp()
+    try:
+        cleanup_ddp()
+    except Exception as e:
+        if rank == 0:
+            print(f"Warning: DDP cleanup failed: {e}")
+
+    # 最终清理GPU缓存
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def main():

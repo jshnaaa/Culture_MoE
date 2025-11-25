@@ -135,13 +135,15 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 }
 EOF
 
-# 设置训练参数
-BATCH_SIZE=4
+# 设置训练参数（为了避免OOM，使用较小的batch_size）
+BATCH_SIZE=2  # 减少batch_size以避免内存不足
 LEARNING_RATE=5e-4
 NUM_EPOCHS=8
 
 # 开始训练
 echo "开始训练..."
+
+TRAINING_SUCCESS=0
 
 if [ "$NUM_GPUS" -eq 1 ]; then
     echo "使用单卡训练..."
@@ -160,6 +162,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --num_gpus 1 \
         --seed 42 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
+    TRAINING_SUCCESS=${PIPESTATUS[0]}
 else
     echo "使用DDP多卡训练，GPU数量: $NUM_GPUS"
     python train_lora_culturemoe_ffn_integrated_ddp.py \
@@ -177,10 +180,11 @@ else
         --num_gpus $NUM_GPUS \
         --seed 42 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
+    TRAINING_SUCCESS=${PIPESTATUS[0]}
 fi
 
 # 检查训练是否成功
-if [ $? -eq 0 ]; then
+if [ $TRAINING_SUCCESS -eq 0 ]; then
     echo "训练完成成功！"
 
     # 检查是否有LoRA权重文件
@@ -231,7 +235,20 @@ if [ $? -eq 0 ]; then
         echo "警告：未找到LoRA权重文件"
     fi
 else
-    echo "训练失败！请检查错误日志。"
+    echo "❌ 训练失败！退出码: $TRAINING_SUCCESS"
+    echo "请检查错误日志: $OUTPUT_DIR/training.log"
+    echo ""
+    echo "常见失败原因："
+    echo "1. 内存不足（OOM）- 尝试减少batch_size"
+    echo "2. GPU显存不足 - 尝试减少batch_size或使用单卡训练"
+    echo "3. 数据文件问题 - 检查数据文件路径和格式"
+    echo "4. 模型路径问题 - 检查base_model路径是否正确"
+    echo "5. DDP通信问题 - 尝试使用单卡训练调试"
+    echo ""
+    echo "建议调试步骤："
+    echo "1. 先尝试单卡训练: sh run_lora_culturemoe_ddp.sh llama 2 8 true true true true 1"
+    echo "2. 减少batch_size: 修改脚本中的BATCH_SIZE=2"
+    echo "3. 减少专家数量: 使用较少的experts数量"
     exit 1
 fi
 
