@@ -145,6 +145,11 @@ class SimplifiedMoELayer(nn.Module):
         # 合并专家输出
         final_output = torch.zeros_like(hidden_states.view(-1, hidden_dim))
 
+        # 确保有专家输出，否则返回原始输入
+        if not expert_outputs:
+            # 如果没有专家被选中，返回原始输入（fallback）
+            return hidden_states
+
         for expert_mask, expert_output, expert_idx in expert_outputs:
             # 获取该专家的权重
             expert_weights = torch.zeros(batch_size * seq_len, device=hidden_states.device)
@@ -158,15 +163,11 @@ class SimplifiedMoELayer(nn.Module):
 
         final_output = final_output.view(batch_size, seq_len, hidden_dim)
 
-        # 计算辅助损失
+        # 计算辅助损失（但不返回，为了兼容性）
         aux_loss = self._compute_aux_loss(router_probs)
 
-        return final_output, {
-            'router_logits': router_logits,
-            'router_probs': router_probs,
-            'aux_loss': aux_loss,
-            'expert_weights': router_probs  # 用于文化损失计算
-        }
+        # 为了兼容性，只返回输出张量，就像普通MLP一样
+        return final_output
 
     def _compute_aux_loss(self, router_probs):
         """计算负载均衡辅助损失"""
@@ -197,12 +198,15 @@ class SimplifiedCultureMoEAdapter:
 
     def _replace_mlp_with_moe(self):
         """替换指定层的MLP为MoE"""
-        if hasattr(self.base_model, 'model'):
+        # 处理DDP包装的模型
+        model_to_modify = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        if hasattr(model_to_modify, 'model'):
             # LlamaForCausalLM
-            layers = self.base_model.model.layers
+            layers = model_to_modify.model.layers
         else:
             # LlamaModel
-            layers = self.base_model.layers
+            layers = model_to_modify.layers
 
         for layer_idx in self.config.moe_layers:
             if layer_idx < len(layers):
@@ -213,7 +217,9 @@ class SimplifiedCultureMoEAdapter:
 
     def _freeze_non_lora_parameters(self):
         """冻结非LoRA参数"""
-        for name, param in self.base_model.named_parameters():
+        # 处理DDP包装的模型
+        model_to_freeze = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+        for name, param in model_to_freeze.named_parameters():
             if 'lora_' not in name and 'router' not in name:
                 param.requires_grad = False
             else:
@@ -221,14 +227,17 @@ class SimplifiedCultureMoEAdapter:
 
     def _ensure_device_consistency(self):
         """确保所有参数在同一设备上"""
+        # 处理DDP包装的模型
+        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
         # 获取基础模型的设备
-        base_device = next(self.base_model.parameters()).device
+        base_device = next(model_to_check.parameters()).device
 
         # 验证所有MoE层都在正确设备上
-        if hasattr(self.base_model, 'model'):
-            layers = self.base_model.model.layers
+        if hasattr(model_to_check, 'model'):
+            layers = model_to_check.model.layers
         else:
-            layers = self.base_model.layers
+            layers = model_to_check.layers
 
         for layer_idx in self.config.moe_layers:
             if layer_idx < len(layers):
@@ -268,7 +277,9 @@ class SimplifiedCultureMoEAdapter:
 
         # 只保存LoRA参数
         lora_state_dict = {}
-        for name, param in self.base_model.named_parameters():
+        # 处理DDP包装的模型
+        model_to_save = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+        for name, param in model_to_save.named_parameters():
             if 'lora_' in name and param.requires_grad:
                 lora_state_dict[name] = param.data
 
@@ -291,7 +302,9 @@ class SimplifiedCultureMoEAdapter:
         total_params = 0
         trainable_params = 0
 
-        for param in self.base_model.parameters():
+        # 处理DDP包装的模型
+        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+        for param in model_to_check.parameters():
             total_params += param.numel()
             if param.requires_grad:
                 trainable_params += param.numel()
@@ -304,7 +317,7 @@ class SimplifiedCultureMoEAdapter:
         lora_params = 0
         router_params = 0
 
-        for name, param in self.base_model.named_parameters():
+        for name, param in model_to_check.named_parameters():
             if param.requires_grad:
                 if 'lora_' in name:
                     lora_params += param.numel()

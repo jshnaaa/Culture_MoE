@@ -99,7 +99,7 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
     if batch_size < 2:
         return torch.tensor(0.0, device=culture_labels.device)
 
-    culture_loss = 0.0
+    culture_loss = torch.tensor(0.0, device=culture_labels.device)
     count = 0
 
     # 计算同文化样本间的相似性和不同文化样本间的差异性
@@ -123,8 +123,10 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
 
     if count > 0:
         culture_loss = culture_loss / count * loss_weight
-    else:
-        culture_loss = torch.tensor(0.0, device=culture_labels.device)
+
+    # 确保返回的是标量张量
+    if not isinstance(culture_loss, torch.Tensor):
+        culture_loss = torch.tensor(culture_loss, device=culture_labels.device)
 
     return culture_loss
 
@@ -153,8 +155,13 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device,
         if 'culture_labels' in batch:
             culture_labels = batch['culture_labels'].to(device)
         elif 'label' in batch:
-            # 假设label就是文化标签
-            culture_labels = batch['label'].to(device)
+            # label字段是字符串列表，需要转换为张量
+            if isinstance(batch['label'], list):
+                # 将字符串标签转换为整数张量
+                label_ints = [int(label) if label.isdigit() else 0 for label in batch['label']]
+                culture_labels = torch.tensor(label_ints, dtype=torch.long, device=device)
+            else:
+                culture_labels = batch['label'].to(device)
 
         # 前向传播
         outputs = model_adapter.forward(
@@ -258,7 +265,13 @@ def evaluate_simplified(model_adapter, val_loader, device, rank=0, use_culture_l
             if 'culture_labels' in batch:
                 culture_labels = batch['culture_labels'].to(device)
             elif 'label' in batch:
-                culture_labels = batch['label'].to(device)
+                # label字段是字符串列表，需要转换为张量
+                if isinstance(batch['label'], list):
+                    # 将字符串标签转换为整数张量
+                    label_ints = [int(label) if label.isdigit() else 0 for label in batch['label']]
+                    culture_labels = torch.tensor(label_ints, dtype=torch.long, device=device)
+                else:
+                    culture_labels = batch['label'].to(device)
 
             # 前向传播
             outputs = model_adapter.forward(
@@ -331,8 +344,10 @@ def generate_and_evaluate_answers_simplified(
         label = sample['label']
 
         # 生成答案（使用基础模型进行推理）
+        # 处理DDP包装的模型
+        base_model = model_adapter.base_model.module if hasattr(model_adapter.base_model, 'module') else model_adapter.base_model
         generated_text = generate_answer(
-            model_adapter.base_model, tokenizer, instruction, input_text, device
+            base_model, tokenizer, instruction, input_text, device
         )
 
         # 提取答案
