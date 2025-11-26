@@ -109,7 +109,7 @@ echo ""
 BATCH_SIZE=1              # 最小batch size
 GRADIENT_ACCUMULATION=8   # 梯度累积
 LEARNING_RATE=1e-4        # 学习率
-NUM_EPOCHS=6              # 训练轮数
+NUM_EPOCHS=5              # 训练轮数
 MAX_SEQ_LEN=512          # 序列长度
 
 echo "训练参数:"
@@ -183,6 +183,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --backbone $BACKBONE \
         --num_routing_experts $NUM_ROUTING_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
+        --eval_interval 1 \
         --lora_r 16 \
         --lora_alpha 8 \
         --memory_efficient \
@@ -205,6 +206,7 @@ else
         --backbone $BACKBONE \
         --num_routing_experts $NUM_ROUTING_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
+        --eval_interval 1 \
         --lora_r 16 \
         --lora_alpha 8 \
         --memory_efficient \
