@@ -202,8 +202,11 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         if use_culture_loss and culture_labels is not None:
             culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
 
+        # 获取MoE的z-loss用于稳定router
+        z_loss = model_adapter.get_accumulated_z_loss()
+
         # 总损失
-        total_batch_loss = loss + culture_loss
+        total_batch_loss = loss + culture_loss + z_loss
 
         # 梯度累积
         total_batch_loss = total_batch_loss / num_accumulation_steps
@@ -332,7 +335,10 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             if use_culture_loss and culture_labels is not None:
                 culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
 
-            total_batch_loss = loss + culture_loss
+            # 获取MoE的z-loss用于稳定router
+            z_loss = model_adapter.get_accumulated_z_loss()
+
+            total_batch_loss = loss + culture_loss + z_loss
             total_loss += total_batch_loss.item()
 
             # 记录详细损失

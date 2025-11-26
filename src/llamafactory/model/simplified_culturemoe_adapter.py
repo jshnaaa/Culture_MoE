@@ -29,8 +29,8 @@ class LoRALinear(nn.Module):
         self.lora_B = nn.Linear(rank, out_features, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-        # 初始化
-        nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+        # 初始化 - 使用更小的scale防止梯度爆炸
+        nn.init.normal_(self.lora_A.weight, mean=0.0, std=0.002)  # 进一步降低初始化scale
         nn.init.zeros_(self.lora_B.weight)
 
     def to(self, *args, **kwargs):
@@ -73,11 +73,17 @@ class SimplifiedMoEExpert(nn.Module):
             dropout=config.lora_dropout
         ).to(device=device, dtype=dtype)
 
+        # 添加LayerNorm用于稳定专家输出（MoE标准做法）
+        self.expert_ln = nn.LayerNorm(out_features, dtype=dtype, device=device)
+
     def forward(self, x):
         # 基础输出 + LoRA适配
         base_output = self.base_layer(x)
         lora_output = self.lora_adapter(x)
-        return base_output + lora_output
+        combined_output = base_output + lora_output
+
+        # 应用LayerNorm稳定输出（MoE标准做法）
+        return self.expert_ln(combined_output)
 
 
 class SimplifiedMoELayer(nn.Module):
@@ -89,6 +95,9 @@ class SimplifiedMoELayer(nn.Module):
         self.num_experts = config.num_routing_experts
         self.top_k = config.top_k
         self.aux_loss_coef = config.aux_loss_coef
+
+        # 用于累积z-loss的缓冲区
+        self.register_buffer('accumulated_z_loss', torch.tensor(0.0))
 
         # 获取原始MLP的维度、设备和数据类型
         self.hidden_size = original_mlp.gate_proj.in_features
@@ -103,6 +112,11 @@ class SimplifiedMoELayer(nn.Module):
         # 创建路由器（在正确设备和数据类型上）
         self.router = nn.Linear(self.hidden_size, self.num_experts, dtype=self.dtype, device=self.device)
 
+        # 使用更小的初始化scale防止router logits爆炸
+        nn.init.normal_(self.router.weight, mean=0.0, std=0.002)  # 进一步降低router初始化scale
+        if self.router.bias is not None:
+            nn.init.zeros_(self.router.bias)
+
         # 创建专家 - 每个专家都基于原始MLP + LoRA
         self.experts = nn.ModuleList([
             self._create_expert_from_mlp(original_mlp, config)
@@ -111,6 +125,9 @@ class SimplifiedMoELayer(nn.Module):
 
         # 激活函数
         self.act_fn = original_mlp.act_fn
+
+        # 添加pre-MoE LayerNorm用于稳定输入（Switch Transformer做法）
+        self.pre_moe_ln = nn.LayerNorm(self.hidden_size, dtype=self.dtype, device=self.device)
 
         # 确保所有专家在正确设备和数据类型上
         self.experts = self.experts.to(device=self.device, dtype=self.dtype)
@@ -133,18 +150,29 @@ class SimplifiedMoELayer(nn.Module):
     def forward(self, hidden_states):
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
+        # 应用pre-MoE LayerNorm稳定输入（Switch Transformer标准做法）
+        hidden_states = self.pre_moe_ln(hidden_states)
+
         # 强制确保router的dtype与输入一致（激进的防御性检查）
         if hasattr(self, 'router'):
             if self.router.weight.dtype != hidden_states.dtype:
                 # 重新创建router以确保正确的dtype
                 self.router = nn.Linear(self.hidden_size, self.num_experts,
                                       dtype=hidden_states.dtype, device=hidden_states.device)
+                # 使用小的初始化scale
+                nn.init.normal_(self.router.weight, mean=0.0, std=0.002)
+                if self.router.bias is not None:
+                    nn.init.zeros_(self.router.bias)
                 # 确保可训练
                 for param in self.router.parameters():
                     param.requires_grad = True
 
         # 路由决策
         router_logits = self.router(hidden_states.view(-1, hidden_dim))  # [B*L, num_experts]
+
+        # 关键修复：Clamp router logits防止爆炸（Switch Transformer标准做法）
+        router_logits = torch.clamp(router_logits, -10.0, 10.0)
+
         router_probs = F.softmax(router_logits, dim=-1)
 
         # Top-K选择
@@ -193,6 +221,13 @@ class SimplifiedMoELayer(nn.Module):
         # 计算辅助损失（但不返回，为了兼容性）
         aux_loss = self._compute_aux_loss(router_probs)
 
+        # 计算z-loss用于稳定router（Google PaLM做法）
+        z_loss = self._compute_z_loss(router_logits)
+
+        # 累积z-loss用于后续损失计算
+        if self.training:
+            self.accumulated_z_loss = self.accumulated_z_loss + z_loss
+
         # 为了兼容性，只返回输出张量，就像普通MLP一样
         return final_output
 
@@ -205,6 +240,12 @@ class SimplifiedMoELayer(nn.Module):
         aux_loss = torch.var(expert_freq) * self.aux_loss_coef
 
         return aux_loss
+
+    def _compute_z_loss(self, router_logits):
+        """计算z-loss用于稳定router logits（Google PaLM方法）"""
+        # z-loss惩罚过大的logits值，防止router爆炸
+        z_loss = 0.001 * (router_logits ** 2).mean()
+        return z_loss
 
 
 class SimplifiedCultureMoEAdapter:
@@ -354,6 +395,34 @@ class SimplifiedCultureMoEAdapter:
         print(f"✅ Simplified CultureMoE weights saved to {save_path}")
         print(f"   - LoRA weights: {lora_path}")
         print(f"   - Config: {config_path}")
+
+    def get_accumulated_z_loss(self):
+        """获取并重置累积的z-loss"""
+        total_z_loss = torch.tensor(0.0, device=next(self.base_model.parameters()).device, dtype=torch.float16)
+
+        # 处理DDP包装的模型
+        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        if hasattr(model_to_check, 'model'):
+            layers = model_to_check.model.layers
+        else:
+            layers = model_to_check.layers
+
+        # 收集所有MoE层的z-loss
+        moe_layer_count = 0
+        for layer_idx in self.config.moe_layers:
+            if layer_idx < len(layers):
+                moe_layer = layers[layer_idx].mlp
+                if isinstance(moe_layer, SimplifiedMoELayer) and hasattr(moe_layer, 'accumulated_z_loss'):
+                    total_z_loss += moe_layer.accumulated_z_loss
+                    moe_layer.accumulated_z_loss.zero_()  # 重置累积值
+                    moe_layer_count += 1
+
+        # 平均化z-loss
+        if moe_layer_count > 0:
+            total_z_loss = total_z_loss / moe_layer_count
+
+        return total_z_loss
 
     def print_trainable_parameters(self):
         """打印可训练参数统计"""
