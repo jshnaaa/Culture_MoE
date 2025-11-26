@@ -175,9 +175,19 @@ class SimplifiedMoELayer(nn.Module):
 
         router_probs = F.softmax(router_logits, dim=-1)
 
+        # 检查softmax结果的数值稳定性
+        if torch.isnan(router_probs).any() or torch.isinf(router_probs).any():
+            # 如果出现NaN/Inf，使用均匀分布作为fallback
+            router_probs = torch.ones_like(router_probs) / router_probs.shape[-1]
+
         # Top-K选择
         top_k_probs, top_k_indices = torch.topk(router_probs, self.top_k, dim=-1)
-        top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)  # 重新归一化
+
+        # 安全的重新归一化
+        sum_probs = top_k_probs.sum(dim=-1, keepdim=True)
+        # 避免除零错误
+        sum_probs = torch.clamp(sum_probs, min=1e-8)
+        top_k_probs = top_k_probs / sum_probs
 
         # 专家计算 - 简化版本，避免复杂的调度
         expert_outputs = []
@@ -250,6 +260,12 @@ class SimplifiedMoELayer(nn.Module):
         """计算z-loss用于稳定router logits（Google PaLM方法）"""
         # z-loss惩罚过大的logits值，防止router爆炸
         z_loss = 0.001 * (router_logits ** 2).mean()
+
+        # 确保z_loss为float16并检查数值稳定性
+        z_loss = z_loss.to(dtype=torch.float16)
+        if torch.isnan(z_loss) or torch.isinf(z_loss):
+            z_loss = torch.tensor(0.0, device=router_logits.device, dtype=torch.float16)
+
         return z_loss
 
 
@@ -444,6 +460,11 @@ class SimplifiedCultureMoEAdapter:
             # 平均化z-loss
             if moe_layer_count > 1:
                 total_z_loss = total_z_loss / moe_layer_count
+
+            # 检查数值稳定性
+            if torch.isnan(total_z_loss) or torch.isinf(total_z_loss):
+                device = next(model_to_check.parameters()).device
+                total_z_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
 
         return total_z_loss
 

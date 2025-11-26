@@ -91,16 +91,16 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
         culture_loss: 文化损失
     """
     if not hasattr(model_outputs, 'expert_weights') or model_outputs.expert_weights is None:
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float32)
+        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
 
     expert_weights = model_outputs.expert_weights  # [B, num_experts]
     batch_size = expert_weights.shape[0]
 
     if batch_size < 2:
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float32)
+        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
 
-    # 使用expert_weights的dtype作为基准
-    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=expert_weights.dtype)
+    # 统一使用float16以节省显存
+    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
     count = 0
 
     # 计算同文化样本间的相似性和不同文化样本间的差异性
@@ -108,21 +108,41 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
         for j in range(i + 1, batch_size):
             if culture_labels[i] == culture_labels[j]:
                 # 相同文化，鼓励相似的专家权重
-                similarity = F.cosine_similarity(
-                    expert_weights[i].unsqueeze(0),
-                    expert_weights[j].unsqueeze(0)
-                )
-                # 确保similarity与culture_loss的dtype一致
-                similarity = similarity.to(dtype=culture_loss.dtype)
+                vec1 = expert_weights[i].unsqueeze(0)
+                vec2 = expert_weights[j].unsqueeze(0)
+
+                # 检查向量是否为零向量，避免cosine_similarity中的NaN
+                norm1 = torch.norm(vec1)
+                norm2 = torch.norm(vec2)
+                if norm1 < 1e-8 or norm2 < 1e-8:
+                    # 如果任一向量接近零向量，跳过这对比较
+                    continue
+
+                similarity = F.cosine_similarity(vec1, vec2)
+                # 确保similarity使用float16并检查数值稳定性
+                similarity = similarity.to(dtype=torch.float16)
+                if torch.isnan(similarity) or torch.isinf(similarity):
+                    continue  # 跳过无效的相似度计算
+
                 culture_loss += (1.0 - similarity)
             else:
                 # 不同文化，鼓励不同的专家权重
-                similarity = F.cosine_similarity(
-                    expert_weights[i].unsqueeze(0),
-                    expert_weights[j].unsqueeze(0)
-                )
-                # 确保similarity与culture_loss的dtype一致
-                similarity = similarity.to(dtype=culture_loss.dtype)
+                vec1 = expert_weights[i].unsqueeze(0)
+                vec2 = expert_weights[j].unsqueeze(0)
+
+                # 检查向量是否为零向量，避免cosine_similarity中的NaN
+                norm1 = torch.norm(vec1)
+                norm2 = torch.norm(vec2)
+                if norm1 < 1e-8 or norm2 < 1e-8:
+                    # 如果任一向量接近零向量，跳过这对比较
+                    continue
+
+                similarity = F.cosine_similarity(vec1, vec2)
+                # 确保similarity使用float16并检查数值稳定性
+                similarity = similarity.to(dtype=torch.float16)
+                if torch.isnan(similarity) or torch.isinf(similarity):
+                    continue  # 跳过无效的相似度计算
+
                 culture_loss += similarity
             count += 1
 
@@ -131,7 +151,11 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
 
     # 确保返回的是标量张量
     if not isinstance(culture_loss, torch.Tensor):
-        culture_loss = torch.tensor(culture_loss, device=culture_labels.device)
+        culture_loss = torch.tensor(culture_loss, device=culture_labels.device, dtype=torch.float16)
+
+    # 检查文化损失是否为NaN/Inf，如果是则返回零损失
+    if torch.isnan(culture_loss) or torch.isinf(culture_loss):
+        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
 
     return culture_loss
 
@@ -197,25 +221,25 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         loss = outputs.loss
 
-        # 检查 NaN loss
-        if torch.isnan(loss) or torch.isinf(loss):
-            print(f"❌ NaN or Inf loss detected at batch {batch_idx}")
-            continue
-
-        # 计算文化损失 - 使用与主损失相同的dtype
-        culture_loss = torch.tensor(0.0, device=device, dtype=loss.dtype)
+        # 计算文化损失 - 统一使用float16节省显存
+        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
         if use_culture_loss and culture_labels is not None:
             culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
-            # 确保文化损失与主损失dtype一致
-            culture_loss = culture_loss.to(dtype=loss.dtype)
 
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss()
-        # 确保z-loss与主损失dtype一致
-        z_loss = z_loss.to(device=device, dtype=loss.dtype)
+
+        # 将主损失转换为float16以保持一致性和节省显存
+        loss = loss.to(dtype=torch.float16)
 
         # 总损失
         total_batch_loss = loss + culture_loss + z_loss
+
+        # 检查 NaN/Inf loss - 在所有损失计算完成后检查
+        if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
+            print(f"❌ NaN or Inf total loss detected at batch {batch_idx}")
+            print(f"  Main loss: {loss.item()}, Culture loss: {culture_loss.item()}, Z loss: {z_loss.item()}")
+            continue
 
         # 梯度累积
         total_batch_loss = total_batch_loss / num_accumulation_steps
@@ -336,22 +360,22 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
 
             loss = outputs.loss
 
-            if torch.isnan(loss) or torch.isinf(loss):
-                continue
-
-            # 计算文化损失 - 使用与主损失相同的dtype
-            culture_loss = torch.tensor(0.0, device=device, dtype=loss.dtype)
+            # 计算文化损失 - 统一使用float16节省显存
+            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
             if use_culture_loss and culture_labels is not None:
                 culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
-                # 确保文化损失与主损失dtype一致
-                culture_loss = culture_loss.to(dtype=loss.dtype)
 
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss()
-            # 确保z-loss与主损失dtype一致
-            z_loss = z_loss.to(device=device, dtype=loss.dtype)
+
+            # 将主损失转换为float16以保持一致性和节省显存
+            loss = loss.to(dtype=torch.float16)
 
             total_batch_loss = loss + culture_loss + z_loss
+
+            # 检查总损失是否为NaN/Inf
+            if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
+                continue
             total_loss += total_batch_loss.item()
 
             # 记录详细损失
