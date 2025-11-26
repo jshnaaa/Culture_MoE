@@ -869,8 +869,15 @@ def train_ddp(rank, world_size, args):
         elif enable_activation_checkpointing and rank == 0:
             logger.warning("⚠️ 模型不支持gradient checkpointing")
 
-        # 包装为DDP模型
-        model = DDP(model, device_ids=[rank], find_unused_parameters=True, broadcast_buffers=False)
+        # 包装为DDP模型 - 优化显存使用
+        model = DDP(
+            model,
+            device_ids=[rank],
+            find_unused_parameters=False,  # 设为False减少显存开销
+            broadcast_buffers=False,
+            gradient_as_bucket_view=True,  # 减少梯度同步的显存开销
+            static_graph=True  # 静态图优化
+        )
 
     except Exception as e:
         if rank == 0:

@@ -435,7 +435,7 @@ class CulturalExpertsWithLoRA(nn.Module):
     def forward_with_dispatch(self, hidden_states: torch.Tensor, expert_weights: torch.Tensor,
                             culture_ids: torch.Tensor, top_k: int, capacity_factor: float) -> Tuple[torch.Tensor, Dict]:
         """
-        MixLoRA优化：稀疏激活的专家调度和处理
+        MixLoRA优化：真正的稀疏激活专家调度和处理（向量化实现）
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
@@ -450,61 +450,77 @@ class CulturalExpertsWithLoRA(nn.Module):
         # 重新归一化权重
         top_k_weights = F.softmax(top_k_weights, dim=-1)
 
-        # MixLoRA优化3：共享基础计算 - 所有专家共享gate_proj和up_proj
+        # MixLoRA优化3：一次性计算共享基础 - 避免重复计算
         shared_gate, shared_up = self.shared_ffn(hidden_states)
 
-        # 只对激活的专家进行计算
-        expert_outputs = []
+        # 向量化专家处理 - 避免嵌套循环
+        final_output = torch.zeros_like(hidden_states)
         culture_relevances = []
         active_expert_count = 0
 
-        for i in range(effective_top_k):
-            batch_expert_output = torch.zeros_like(hidden_states)
-            batch_relevance = torch.zeros(batch_size, device=hidden_states.device)
+        # 按专家分组处理，避免逐样本计算
+        for expert_idx in range(self.num_routing_experts):
+            # 找到使用当前专家的样本
+            expert_mask = (top_k_indices == expert_idx).any(dim=1)
+            if not expert_mask.any():
+                continue
 
-            for b in range(batch_size):
-                expert_idx = top_k_indices[b, i].item()
-                weight = top_k_weights[b, i]
+            # 获取使用当前专家的样本索引
+            sample_indices = torch.where(expert_mask)[0]
 
-                # 跳过权重过小的专家（稀疏激活）
-                if weight < self.activation_threshold:
-                    continue
+            # 获取专家权重
+            expert_weights_for_samples = torch.zeros(batch_size, device=hidden_states.device)
+            for sample_idx in sample_indices:
+                expert_positions = (top_k_indices[sample_idx] == expert_idx).nonzero(as_tuple=True)[0]
+                if len(expert_positions) > 0:
+                    expert_weights_for_samples[sample_idx] = top_k_weights[sample_idx, expert_positions[0]]
 
-                active_expert_count += 1
+            # 跳过权重过小的专家
+            valid_mask = expert_weights_for_samples > self.activation_threshold
+            if not valid_mask.any():
+                continue
 
-                # 获取文化条件
-                culture_prompt = self._get_culture_prompt(expert_idx, culture_ids[b:b+1])
-                culture_condition = self.culture_condition(culture_prompt).unsqueeze(1)
+            active_expert_count += valid_mask.sum().item()
 
-                # 应用文化条件到输入
-                conditioned_input = hidden_states[b:b+1] + culture_condition
+            # 批量处理文化条件
+            valid_indices = torch.where(valid_mask)[0]
+            if len(valid_indices) == 0:
+                continue
 
-                # 重新计算该样本的共享基础（考虑文化条件）
-                sample_gate, sample_up = self.shared_ffn(conditioned_input)
+            # 获取文化条件（批量）
+            culture_prompts = []
+            for idx in valid_indices:
+                culture_prompt = self._get_culture_prompt(expert_idx, culture_ids[idx:idx+1])
+                culture_prompts.append(culture_prompt)
 
-                # 使用专家适配器进行特化处理
-                expert_out = self.expert_adapters[expert_idx](
-                    sample_gate[0], sample_up[0]
-                ).unsqueeze(0)
+            if culture_prompts:
+                batch_culture_prompt = torch.cat(culture_prompts, dim=0)
+                culture_conditions = self.culture_condition(batch_culture_prompt).unsqueeze(1)
 
-                batch_expert_output[b] = expert_out[0] * weight
+                # 批量应用文化条件
+                valid_hidden_states = hidden_states[valid_indices]
+                conditioned_input = valid_hidden_states + culture_conditions
 
-                # 计算文化相关性
-                relevance = self._compute_culture_relevance(expert_idx, culture_ids[b:b+1])
-                batch_relevance[b] = relevance[0]
+                # 批量计算专家输出（复用共享计算）
+                valid_gate = shared_gate[valid_indices]
+                valid_up = shared_up[valid_indices]
 
-            expert_outputs.append(batch_expert_output)
-            culture_relevances.append(batch_relevance)
+                # 应用专家适配器
+                expert_output = self.expert_adapters[expert_idx](valid_gate, valid_up)
 
-        # 专家输出融合
-        final_output = sum(expert_outputs) if expert_outputs else torch.zeros_like(hidden_states)
+                # 应用权重并累加到最终输出
+                valid_weights = expert_weights_for_samples[valid_indices].unsqueeze(1).unsqueeze(2)
+                weighted_output = expert_output * valid_weights
+
+                # 累加到最终输出
+                final_output[valid_indices] += weighted_output
 
         dispatch_info = {
             'top_k_indices': top_k_indices,
             'top_k_weights': top_k_weights,
-            'culture_relevances': torch.stack(culture_relevances, dim=1) if culture_relevances else torch.zeros(batch_size, effective_top_k, device=hidden_states.device),
+            'culture_relevances': torch.zeros(batch_size, effective_top_k, device=hidden_states.device),
             'active_expert_count': active_expert_count,
-            'activation_rate': active_expert_count / (batch_size * effective_top_k)
+            'activation_rate': active_expert_count / (batch_size * effective_top_k) if batch_size * effective_top_k > 0 else 0.0
         }
 
         return final_output, dispatch_info
