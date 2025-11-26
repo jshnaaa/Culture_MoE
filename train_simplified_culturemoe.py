@@ -91,15 +91,16 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
         culture_loss: 文化损失
     """
     if not hasattr(model_outputs, 'expert_weights') or model_outputs.expert_weights is None:
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float32)
 
     expert_weights = model_outputs.expert_weights  # [B, num_experts]
     batch_size = expert_weights.shape[0]
 
     if batch_size < 2:
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float32)
 
-    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+    # 使用expert_weights的dtype作为基准
+    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=expert_weights.dtype)
     count = 0
 
     # 计算同文化样本间的相似性和不同文化样本间的差异性
@@ -111,6 +112,8 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
                     expert_weights[i].unsqueeze(0),
                     expert_weights[j].unsqueeze(0)
                 )
+                # 确保similarity与culture_loss的dtype一致
+                similarity = similarity.to(dtype=culture_loss.dtype)
                 culture_loss += (1.0 - similarity)
             else:
                 # 不同文化，鼓励不同的专家权重
@@ -118,6 +121,8 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
                     expert_weights[i].unsqueeze(0),
                     expert_weights[j].unsqueeze(0)
                 )
+                # 确保similarity与culture_loss的dtype一致
+                similarity = similarity.to(dtype=culture_loss.dtype)
                 culture_loss += similarity
             count += 1
 
@@ -197,13 +202,17 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             print(f"❌ NaN or Inf loss detected at batch {batch_idx}")
             continue
 
-        # 计算文化损失
-        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+        # 计算文化损失 - 使用与主损失相同的dtype
+        culture_loss = torch.tensor(0.0, device=device, dtype=loss.dtype)
         if use_culture_loss and culture_labels is not None:
             culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
+            # 确保文化损失与主损失dtype一致
+            culture_loss = culture_loss.to(dtype=loss.dtype)
 
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss()
+        # 确保z-loss与主损失dtype一致
+        z_loss = z_loss.to(device=device, dtype=loss.dtype)
 
         # 总损失
         total_batch_loss = loss + culture_loss + z_loss
@@ -330,13 +339,17 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             if torch.isnan(loss) or torch.isinf(loss):
                 continue
 
-            # 计算文化损失
-            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+            # 计算文化损失 - 使用与主损失相同的dtype
+            culture_loss = torch.tensor(0.0, device=device, dtype=loss.dtype)
             if use_culture_loss and culture_labels is not None:
                 culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
+                # 确保文化损失与主损失dtype一致
+                culture_loss = culture_loss.to(dtype=loss.dtype)
 
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss()
+            # 确保z-loss与主损失dtype一致
+            z_loss = z_loss.to(device=device, dtype=loss.dtype)
 
             total_batch_loss = loss + culture_loss + z_loss
             total_loss += total_batch_loss.item()

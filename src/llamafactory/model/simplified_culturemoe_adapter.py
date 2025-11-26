@@ -96,8 +96,8 @@ class SimplifiedMoELayer(nn.Module):
         self.top_k = config.top_k
         self.aux_loss_coef = config.aux_loss_coef
 
-        # 用于累积z-loss的缓冲区
-        self.register_buffer('accumulated_z_loss', torch.tensor(0.0))
+        # 用于累积z-loss的缓冲区 - 初始化时设备会在后续to()调用中正确设置
+        self.register_buffer('accumulated_z_loss', torch.tensor(0.0, dtype=torch.float16))
 
         # 获取原始MLP的维度、设备和数据类型
         self.hidden_size = original_mlp.gate_proj.in_features
@@ -197,7 +197,7 @@ class SimplifiedMoELayer(nn.Module):
 
                 expert_outputs.append((expert_mask, expert_output, i))
 
-        # 合并专家输出
+        # 合并专家输出 - 使用与hidden_states相同的设备和dtype
         final_output = torch.zeros_like(hidden_states.view(-1, hidden_dim))
 
         # 确保有专家输出，否则返回原始输入
@@ -206,14 +206,17 @@ class SimplifiedMoELayer(nn.Module):
             return hidden_states
 
         for expert_mask, expert_output, expert_idx in expert_outputs:
-            # 获取该专家的权重
+            # 获取该专家的权重 - 强制使用torch.float16确保一致性
             expert_weights = torch.zeros(batch_size * seq_len, device=hidden_states.device, dtype=torch.float16)
             for k in range(self.top_k):
                 mask_k = (top_k_indices[:, k] == expert_idx)
                 expert_weights[mask_k] = top_k_probs[mask_k, k]
 
-            # 应用权重
-            weighted_output = expert_output * expert_weights[expert_mask].unsqueeze(-1)
+            # 应用权重 - 确保dtype匹配
+            expert_weights_selected = expert_weights[expert_mask].unsqueeze(-1)
+            # 将expert_weights转换为与expert_output相同的dtype
+            expert_weights_selected = expert_weights_selected.to(dtype=expert_output.dtype)
+            weighted_output = expert_output * expert_weights_selected
             final_output[expert_mask] += weighted_output
 
         final_output = final_output.view(batch_size, seq_len, hidden_dim)
@@ -226,6 +229,8 @@ class SimplifiedMoELayer(nn.Module):
 
         # 累积z-loss用于后续损失计算
         if self.training:
+            # 确保z_loss与accumulated_z_loss在同一设备和dtype
+            z_loss = z_loss.to(device=self.accumulated_z_loss.device, dtype=self.accumulated_z_loss.dtype)
             self.accumulated_z_loss = self.accumulated_z_loss + z_loss
 
         # 为了兼容性，只返回输出张量，就像普通MLP一样
@@ -320,6 +325,11 @@ class SimplifiedCultureMoEAdapter:
                     # 强制重新创建router以确保正确的dtype（强制使用float16）
                     moe_layer.router = nn.Linear(moe_layer.hidden_size, moe_layer.num_experts, dtype=torch.float16, device=base_device)
 
+                    # 使用小的初始化scale防止router logits爆炸
+                    nn.init.normal_(moe_layer.router.weight, mean=0.0, std=0.002)
+                    if moe_layer.router.bias is not None:
+                        nn.init.zeros_(moe_layer.router.bias)
+
                     # 确保router参数可训练
                     for param in moe_layer.router.parameters():
                         param.requires_grad = True
@@ -398,8 +408,6 @@ class SimplifiedCultureMoEAdapter:
 
     def get_accumulated_z_loss(self):
         """获取并重置累积的z-loss"""
-        total_z_loss = torch.tensor(0.0, device=next(self.base_model.parameters()).device, dtype=torch.float16)
-
         # 处理DDP包装的模型
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
@@ -409,18 +417,33 @@ class SimplifiedCultureMoEAdapter:
             layers = model_to_check.layers
 
         # 收集所有MoE层的z-loss
+        total_z_loss = None
         moe_layer_count = 0
+
         for layer_idx in self.config.moe_layers:
             if layer_idx < len(layers):
                 moe_layer = layers[layer_idx].mlp
                 if isinstance(moe_layer, SimplifiedMoELayer) and hasattr(moe_layer, 'accumulated_z_loss'):
-                    total_z_loss += moe_layer.accumulated_z_loss
+                    if total_z_loss is None:
+                        # 使用第一个MoE层的accumulated_z_loss作为基准设备和dtype
+                        total_z_loss = moe_layer.accumulated_z_loss.clone()
+                    else:
+                        # 确保设备和dtype一致
+                        z_loss_item = moe_layer.accumulated_z_loss.to(device=total_z_loss.device, dtype=total_z_loss.dtype)
+                        total_z_loss += z_loss_item
+
                     moe_layer.accumulated_z_loss.zero_()  # 重置累积值
                     moe_layer_count += 1
 
-        # 平均化z-loss
-        if moe_layer_count > 0:
-            total_z_loss = total_z_loss / moe_layer_count
+        # 如果没有找到任何MoE层，返回零损失
+        if total_z_loss is None:
+            # 使用模型参数的设备和dtype
+            device = next(model_to_check.parameters()).device
+            total_z_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+        else:
+            # 平均化z-loss
+            if moe_layer_count > 1:
+                total_z_loss = total_z_loss / moe_layer_count
 
         return total_z_loss
 
