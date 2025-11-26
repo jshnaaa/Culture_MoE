@@ -131,7 +131,7 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
     return culture_loss
 
 
-def train_epoch_simplified(model_adapter, train_loader, optimizer, device,
+def train_epoch_simplified(model_adapter, train_loader, optimizer, device, tokenizer,
                          num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
     """
     简化版CultureMoE训练一个epoch
@@ -149,6 +149,26 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device,
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         labels = batch['labels'].to(device)
+
+        # 正确处理labels masking - 只计算output部分的loss
+        # 获取instruction和input的文本长度来确定mask位置
+        for i in range(labels.shape[0]):
+            instruction = batch['instruction'][i] if isinstance(batch['instruction'], list) else batch['instruction']
+            input_text = batch['input'][i] if isinstance(batch['input'], list) else batch['input']
+
+            # 构建input部分（需要mask的部分）
+            if input_text:
+                input_part = f"{instruction}\n{input_text}\n"
+            else:
+                input_part = f"{instruction}\n"
+
+            # 计算input部分的token长度
+            input_tokens = tokenizer(input_part, add_special_tokens=False)['input_ids']
+            input_length = len(input_tokens)
+
+            # Mask掉input部分，只保留output部分用于loss计算
+            if input_length < labels.shape[1]:
+                labels[i, :input_length] = -100
 
         # 获取文化标签（从label字段提取）
         culture_labels = None
@@ -206,6 +226,9 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device,
             if hasattr(model_adapter.base_model, 'module'):  # DDP wrapped
                 torch.distributed.barrier()
 
+            # 梯度裁剪防止梯度爆炸
+            torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=1.0)
+
             optimizer.step()
             optimizer.zero_grad()
 
@@ -241,7 +264,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device,
     }
 
 
-def evaluate_simplified(model_adapter, val_loader, device, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
+def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
     """
     简化版CultureMoE验证
     """
@@ -259,6 +282,25 @@ def evaluate_simplified(model_adapter, val_loader, device, rank=0, use_culture_l
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
+
+            # 正确处理labels masking - 只计算output部分的loss
+            for i in range(labels.shape[0]):
+                instruction = batch['instruction'][i] if isinstance(batch['instruction'], list) else batch['instruction']
+                input_text = batch['input'][i] if isinstance(batch['input'], list) else batch['input']
+
+                # 构建input部分（需要mask的部分）
+                if input_text:
+                    input_part = f"{instruction}\n{input_text}\n"
+                else:
+                    input_part = f"{instruction}\n"
+
+                # 计算input部分的token长度
+                input_tokens = tokenizer(input_part, add_special_tokens=False)['input_ids']
+                input_length = len(input_tokens)
+
+                # Mask掉input部分，只保留output部分用于loss计算
+                if input_length < labels.shape[1]:
+                    labels[i, :input_length] = -100
 
             # 获取文化标签
             culture_labels = None
@@ -675,7 +717,7 @@ def main():
 
         # 训练
         train_metrics = train_epoch_simplified(
-            model_adapter, train_loader, optimizer, device,
+            model_adapter, train_loader, optimizer, device, tokenizer,
             num_accumulation_steps=args.gradient_accumulation_steps,
             rank=rank,
             use_culture_loss=use_culture_loss,
@@ -694,7 +736,7 @@ def main():
         if (epoch + 1) % args.eval_interval == 0:
             # 验证
             val_metrics = evaluate_simplified(
-                model_adapter, val_loader, device, rank=rank,
+                model_adapter, val_loader, device, tokenizer, rank=rank,
                 use_culture_loss=use_culture_loss,
                 culture_loss_weight=args.culture_loss_weight
             )

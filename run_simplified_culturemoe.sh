@@ -110,7 +110,7 @@ BATCH_SIZE=1              # 最小batch size
 GRADIENT_ACCUMULATION=8   # 梯度累积
 LEARNING_RATE=1e-4        # 学习率
 NUM_EPOCHS=6              # 训练轮数
-MAX_SEQ_LEN=256          # 序列长度
+MAX_SEQ_LEN=512          # 序列长度
 
 echo "训练参数:"
 echo "  Batch Size: $BATCH_SIZE (per GPU)"
