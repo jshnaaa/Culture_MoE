@@ -13,16 +13,16 @@ echo "======================================="
 # 参数设置
 BACKBONE=${1:-"qwen"}  # 默认使用qwen2.5-7B（显存需求更小）
 DATA_ID=${2:-"2"}
-USE_SHARED=${3:-"true"}
-USE_MASK=${4:-"true"}
-USE_GATE=${5:-"true"}
-USE_CULTURE_LOSS=${6:-"true"}
-NUM_GPUS=${7:-"2"}
-NUM_ROUTING_EXPERTS=${8:-"4"}  # 路由专家数量，默认4个
+NUM_ROUTING_EXPERTS=${3:-"4"}  # 路由专家数量，默认4个
+USE_SHARED=${4:-"true"}
+USE_MASK=${5:-"true"}
+USE_GATE=${6:-"true"}
+USE_CULTURE_LOSS=${7:-"true"}
+NUM_GPUS=${8:-"2"}
 
 # 检查参数
 if [ "$#" -gt 8 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss] [num_gpus] [num_routing_experts]"
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [num_routing_experts] [use_shared] [use_mask] [use_gate] [use_culture_loss] [num_gpus]"
     exit 1
 fi
 
@@ -300,8 +300,8 @@ else
     echo "1. 减少batch_size: --batch_size 1"
     echo "2. 增加梯度累积: --gradient_accumulation_steps 8"
     echo "3. 减少序列长度: --max_seq_length 256"
-    echo "4. 使用单卡训练: $0 $BACKBONE $DATA_ID $USE_SHARED $USE_MASK $USE_GATE $USE_CULTURE_LOSS 1 $NUM_ROUTING_EXPERTS"
-    echo "5. 减少路由专家数: $0 $BACKBONE $DATA_ID $USE_SHARED $USE_MASK $USE_GATE $USE_CULTURE_LOSS $NUM_GPUS 2"
+    echo "4. 使用单卡训练: $0 $BACKBONE $DATA_ID $NUM_ROUTING_EXPERTS $USE_SHARED $USE_MASK $USE_GATE $USE_CULTURE_LOSS 1"
+    echo "5. 减少路由专家数: $0 $BACKBONE $DATA_ID 2 $USE_SHARED $USE_MASK $USE_GATE $USE_CULTURE_LOSS $NUM_GPUS"
 fi
 
 echo ""
