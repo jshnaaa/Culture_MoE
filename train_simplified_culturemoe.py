@@ -96,6 +96,11 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
     expert_weights = model_outputs.expert_weights  # [B, num_experts]
     batch_size = expert_weights.shape[0]
 
+    # 检查维度匹配
+    if expert_weights.shape[0] != culture_labels.shape[0]:
+        print(f"⚠️ Dimension mismatch: expert_weights.shape={expert_weights.shape}, culture_labels.shape={culture_labels.shape}")
+        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+
     if batch_size < 2:
         return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
 
@@ -649,26 +654,24 @@ def main():
     if is_main_process(rank):
         print("✅ Base model loaded")
 
-    # 确定MoE层
+    # 获取模型层数
     if args.backbone == "qwen":
         total_layers = 28
-        moe_layers = [26, 27]  # 最后2层 (0-indexed)
     else:  # llama
         total_layers = 32
-        moe_layers = [30, 31]  # 最后2层 (0-indexed)
 
-    # 创建简化版CultureMoE配置
+    # 创建简化版CultureMoE配置 - 与MixLoRA保持一致，所有层都使用MoE
     if is_main_process(rank):
-        print(f"\nConfiguring Simplified CultureMoE...")
+        print(f"\nConfiguring Simplified CultureMoE (like MixLoRA)...")
         print(f"Total layers: {total_layers}")
-        print(f"MoE layers: {moe_layers}")
+        print(f"MoE layers: ALL layers (like MixLoRA)")
 
     culturemoe_config = SimplifiedCultureMoEConfig(
         lora_rank=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         num_routing_experts=args.num_routing_experts,
-        moe_layers=moe_layers,
+        moe_layers=None,  # None表示所有层都使用MoE
         use_culture_loss=use_culture_loss,
         culture_loss_weight=args.culture_loss_weight,
         aux_loss_coef=0.001  # 小的辅助损失

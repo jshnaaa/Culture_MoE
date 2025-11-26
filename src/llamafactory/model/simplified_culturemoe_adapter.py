@@ -98,6 +98,9 @@ class SimplifiedMoELayer(nn.Module):
 
         # 保存最新的router_logits用于z-loss计算
         self.latest_router_logits = None
+        # 保存batch和序列信息用于文化损失计算
+        self.latest_batch_size = None
+        self.latest_seq_len = None
 
         # 获取原始MLP的维度、设备和数据类型
         self.hidden_size = original_mlp.gate_proj.in_features
@@ -176,6 +179,9 @@ class SimplifiedMoELayer(nn.Module):
         # 保存router_logits的detached副本用于z-loss计算（避免梯度图问题）
         if self.training:
             self.latest_router_logits = router_logits.detach().clone()
+            # 保存batch和序列信息
+            self.latest_batch_size = batch_size
+            self.latest_seq_len = seq_len
 
         router_probs = F.softmax(router_logits, dim=-1)
 
@@ -283,7 +289,7 @@ class SimplifiedCultureMoEAdapter:
         self._ensure_device_consistency()
 
     def _replace_mlp_with_moe(self):
-        """替换指定层的MLP为MoE"""
+        """替换所有层的MLP为MoE，与MixLoRA保持一致"""
         # 处理DDP包装的模型
         model_to_modify = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
@@ -294,12 +300,18 @@ class SimplifiedCultureMoEAdapter:
             # LlamaModel
             layers = model_to_modify.layers
 
-        for layer_idx in self.config.moe_layers:
-            if layer_idx < len(layers):
-                original_mlp = layers[layer_idx].mlp
-                moe_layer = SimplifiedMoELayer(original_mlp, self.config)
-                layers[layer_idx].mlp = moe_layer
-                print(f"✅ Replaced layer {layer_idx} MLP with SimplifiedMoE")
+        print(f"🔄 Replacing ALL {len(layers)} layers with SimplifiedMoE (like MixLoRA)")
+
+        # 替换所有层的MLP为MoE
+        for layer_idx in range(len(layers)):
+            original_mlp = layers[layer_idx].mlp
+            moe_layer = SimplifiedMoELayer(original_mlp, self.config)
+            layers[layer_idx].mlp = moe_layer
+            if layer_idx % 5 == 0 or layer_idx == len(layers) - 1:  # 每5层打印一次进度
+                print(f"✅ Replaced layer {layer_idx}/{len(layers)-1} MLP with SimplifiedMoE")
+
+        # 更新配置中的moe_layers为所有层
+        self.config.moe_layers = list(range(len(layers)))
 
     def _freeze_non_lora_parameters(self):
         """冻结非LoRA参数"""
@@ -331,39 +343,91 @@ class SimplifiedCultureMoEAdapter:
         else:
             layers = model_to_check.layers
 
-        for layer_idx in self.config.moe_layers:
-            if layer_idx < len(layers):
-                moe_layer = layers[layer_idx].mlp
-                if isinstance(moe_layer, SimplifiedMoELayer):
-                    # 强制重新创建router以确保正确的dtype（强制使用float16）
-                    moe_layer.router = nn.Linear(moe_layer.hidden_size, moe_layer.num_experts, dtype=torch.float16, device=base_device)
+        # 处理所有MoE层
+        for layer_idx in range(len(layers)):
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, SimplifiedMoELayer):
+                # 强制重新创建router以确保正确的dtype（强制使用float16）
+                moe_layer.router = nn.Linear(moe_layer.hidden_size, moe_layer.num_experts, dtype=torch.float16, device=base_device)
 
-                    # 使用小的初始化scale防止router logits爆炸
-                    nn.init.normal_(moe_layer.router.weight, mean=0.0, std=0.002)
-                    if moe_layer.router.bias is not None:
-                        nn.init.zeros_(moe_layer.router.bias)
+                # 使用小的初始化scale防止router logits爆炸
+                nn.init.normal_(moe_layer.router.weight, mean=0.0, std=0.002)
+                if moe_layer.router.bias is not None:
+                    nn.init.zeros_(moe_layer.router.bias)
 
-                    # 确保router参数可训练
-                    for param in moe_layer.router.parameters():
-                        param.requires_grad = True
+                # 确保router参数可训练
+                for param in moe_layer.router.parameters():
+                    param.requires_grad = True
 
-                    # 确保所有专家也在正确设备和数据类型上
-                    moe_layer.experts = moe_layer.experts.to(device=base_device, dtype=base_dtype)
+                # 确保所有专家也在正确设备和数据类型上
+                moe_layer.experts = moe_layer.experts.to(device=base_device, dtype=base_dtype)
 
-                    # 强制重新创建LoRA适配器以确保正确的dtype
-                    for expert in moe_layer.experts:
-                        if hasattr(expert, 'gate_proj') and hasattr(expert.gate_proj, 'lora_adapter'):
-                            expert.gate_proj.lora_adapter = expert.gate_proj.lora_adapter.to(device=base_device, dtype=base_dtype)
-                        if hasattr(expert, 'up_proj') and hasattr(expert.up_proj, 'lora_adapter'):
-                            expert.up_proj.lora_adapter = expert.up_proj.lora_adapter.to(device=base_device, dtype=base_dtype)
-                        if hasattr(expert, 'down_proj') and hasattr(expert.down_proj, 'lora_adapter'):
-                            expert.down_proj.lora_adapter = expert.down_proj.lora_adapter.to(device=base_device, dtype=base_dtype)
+                # 强制重新创建LoRA适配器以确保正确的dtype
+                for expert in moe_layer.experts:
+                    if hasattr(expert, 'gate_proj') and hasattr(expert.gate_proj, 'lora_adapter'):
+                        expert.gate_proj.lora_adapter = expert.gate_proj.lora_adapter.to(device=base_device, dtype=base_dtype)
+                    if hasattr(expert, 'up_proj') and hasattr(expert.up_proj, 'lora_adapter'):
+                        expert.up_proj.lora_adapter = expert.up_proj.lora_adapter.to(device=base_device, dtype=base_dtype)
+                    if hasattr(expert, 'down_proj') and hasattr(expert.down_proj, 'lora_adapter'):
+                        expert.down_proj.lora_adapter = expert.down_proj.lora_adapter.to(device=base_device, dtype=base_dtype)
 
-                    # 更新MoE层的设备和dtype记录
-                    moe_layer.device = base_device
-                    moe_layer.dtype = base_dtype
+                # 更新MoE层的设备和dtype记录
+                moe_layer.device = base_device
+                moe_layer.dtype = base_dtype
 
-                    print(f"✅ Recreated router for MoE layer {layer_idx} on device {base_device} with dtype {base_dtype}")
+                if layer_idx % 10 == 0 or layer_idx == len(layers) - 1:  # 每10层打印一次进度
+                    print(f"✅ Ensured device consistency for MoE layer {layer_idx}/{len(layers)-1} on device {base_device}")
+
+    def get_expert_weights_for_culture_loss(self):
+        """收集所有MoE层的专家权重用于文化损失计算"""
+        # 处理DDP包装的模型
+        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        if hasattr(model_to_check, 'model'):
+            layers = model_to_check.model.layers
+        else:
+            layers = model_to_check.layers
+
+        # 使用第一个有效的MoE层来确定目标维度
+        target_batch_size = None
+        target_seq_len = None
+        num_experts = self.config.num_routing_experts
+
+        # 收集所有层的路由概率，平均后作为专家权重
+        all_router_probs = []
+
+        for layer_idx in range(len(layers)):
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, SimplifiedMoELayer) and hasattr(moe_layer, 'latest_router_logits'):
+                if moe_layer.latest_router_logits is not None:
+                    router_logits = moe_layer.latest_router_logits  # [batch_size * seq_len, num_experts]
+
+                    # 从第一个有效层确定目标维度
+                    if target_batch_size is None and hasattr(moe_layer, 'latest_batch_size'):
+                        target_batch_size = moe_layer.latest_batch_size
+                        target_seq_len = moe_layer.latest_seq_len
+
+                    # 从保存的router_logits计算概率分布
+                    router_probs = F.softmax(router_logits, dim=-1)  # [batch_size * seq_len, num_experts]
+
+                    # 简化处理：对所有token求平均，得到每个专家的全局使用概率
+                    avg_probs = router_probs.mean(dim=0, keepdim=True)  # [1, num_experts]
+                    all_router_probs.append(avg_probs)
+
+        if all_router_probs and target_batch_size is not None:
+            # 对所有层的专家权重求平均
+            layer_avg_probs = torch.stack(all_router_probs, dim=0).mean(dim=0)  # [1, num_experts]
+
+            # 扩展到目标batch_size
+            expert_weights = layer_avg_probs.expand(target_batch_size, -1)  # [batch_size, num_experts]
+            return expert_weights.to(dtype=torch.float16)
+        elif all_router_probs:
+            # 如果没有batch_size信息，假设batch_size=1
+            layer_avg_probs = torch.stack(all_router_probs, dim=0).mean(dim=0)  # [1, num_experts]
+            return layer_avg_probs.to(dtype=torch.float16)
+        else:
+            # 如果没有找到任何路由信息，返回None
+            return None
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """前向传播"""
@@ -374,19 +438,11 @@ class SimplifiedCultureMoEAdapter:
             **kwargs
         )
 
-        # 简化版本：不收集复杂的MoE辅助信息
-        # 只添加一个简单的专家权重用于文化损失计算
+        # 为文化损失计算收集真实的专家权重
         if hasattr(outputs, 'loss') and outputs.loss is not None:
-            # 创建一个虚拟的专家权重用于文化损失
-            batch_size = input_ids.shape[0]
-            # 简单的均匀分布权重，强制使用torch.float16
-            dummy_weights = torch.ones(
-                batch_size, self.config.num_routing_experts,
-                device=input_ids.device,
-                dtype=torch.float16
-            )
-            dummy_weights = F.softmax(dummy_weights, dim=-1)
-            outputs.expert_weights = dummy_weights
+            expert_weights = self.get_expert_weights_for_culture_loss()
+            if expert_weights is not None:
+                outputs.expert_weights = expert_weights
 
         return outputs
 
@@ -433,22 +489,22 @@ class SimplifiedCultureMoEAdapter:
         total_z_loss = None
         moe_layer_count = 0
 
-        for layer_idx in self.config.moe_layers:
-            if layer_idx < len(layers):
-                moe_layer = layers[layer_idx].mlp
-                if isinstance(moe_layer, SimplifiedMoELayer) and hasattr(moe_layer, 'latest_router_logits'):
-                    if moe_layer.latest_router_logits is not None:
-                        # 从保存的router_logits计算z-loss
-                        z_loss = moe_layer._compute_z_loss(moe_layer.latest_router_logits)
+        # 处理所有层
+        for layer_idx in range(len(layers)):
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, SimplifiedMoELayer) and hasattr(moe_layer, 'latest_router_logits'):
+                if moe_layer.latest_router_logits is not None:
+                    # 从保存的router_logits计算z-loss
+                    z_loss = moe_layer._compute_z_loss(moe_layer.latest_router_logits)
 
-                        if total_z_loss is None:
-                            total_z_loss = z_loss
-                        else:
-                            # 确保设备和dtype一致
-                            z_loss = z_loss.to(device=total_z_loss.device, dtype=total_z_loss.dtype)
-                            total_z_loss += z_loss
+                    if total_z_loss is None:
+                        total_z_loss = z_loss
+                    else:
+                        # 确保设备和dtype一致
+                        z_loss = z_loss.to(device=total_z_loss.device, dtype=total_z_loss.dtype)
+                        total_z_loss += z_loss
 
-                        moe_layer_count += 1
+                    moe_layer_count += 1
 
         # 如果没有找到任何MoE层，返回零损失
         if total_z_loss is None:
@@ -496,8 +552,9 @@ class SimplifiedCultureMoEAdapter:
 
         print(f"  - LoRA params: {lora_params:,}")
         print(f"  - Router params: {router_params:,}")
-        print(f"  - MoE layers: {self.config.moe_layers}")
+        print(f"  - MoE layers: ALL layers ({len(self.config.moe_layers)} layers total)")
         print(f"  - Routing experts per layer: {self.config.num_routing_experts}")
+        print(f"  - Total experts: {len(self.config.moe_layers) * self.config.num_routing_experts}")
 
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):

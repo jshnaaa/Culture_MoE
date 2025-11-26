@@ -22,8 +22,8 @@ class SimplifiedCultureMoEConfig:
     top_k: int = 1  # Top-K路由，设为1减少计算
     aux_loss_coef: float = 0.001  # 辅助损失系数
 
-    # 指定哪些层使用MoE (0-indexed)
-    moe_layers: List[int] = None  # 例如 [26, 27] for Qwen, [30, 31] for LLaMA
+    # 指定哪些层使用MoE (0-indexed) - None表示所有层都使用
+    moe_layers: List[int] = None  # None表示所有FFN层都替换为MoE
 
     # FFN目标模块
     ffn_target_modules: List[str] = None
@@ -36,9 +36,8 @@ class SimplifiedCultureMoEConfig:
     apply_to_attention: bool = False  # 暂时禁用注意力层LoRA
 
     def __post_init__(self):
-        if self.moe_layers is None:
-            # 默认为Qwen的最后2层
-            self.moe_layers = [26, 27]
+        # moe_layers为None表示所有层都使用MoE，与MixLoRA保持一致
+        # 具体的层数将在适配器中根据模型动态确定
 
         if self.ffn_target_modules is None:
             self.ffn_target_modules = ['gate_proj', 'up_proj', 'down_proj']

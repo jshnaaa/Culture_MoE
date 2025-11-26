@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # 简化版FFN CultureMoE训练脚本
-# 基于MixLoRA实现，只在26-27层使用MoE，添加文化损失
+# 基于MixLoRA实现，所有层都使用MoE，添加文化损失
 # 针对48GB×2卡优化
 
 echo "======================================="
 echo "简化版FFN CultureMoE训练"
-echo "基于MixLoRA + 文化损失，只在26-27层MoE"
+echo "基于MixLoRA + 文化损失，所有层都使用MoE"
 echo "针对48GB×2卡优化"
 echo "======================================="
 
@@ -141,7 +141,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "max_seq_length": $MAX_SEQ_LEN
     },
     "moe_config": {
-        "moe_layers": "last 2 layers only",
+        "moe_layers": "ALL layers (like MixLoRA)",
         "routing_experts": $NUM_ROUTING_EXPERTS,
         "use_culture_loss": $USE_CULTURE_LOSS,
         "architecture": "simplified_mixlora_based"
@@ -226,8 +226,8 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
         echo ""
         echo "🎉 训练完成！模型特点:"
         echo "  - 基于MixLoRA架构，内存优化"
-        echo "  - 只在最后2层($MoE_LAYERS)使用MoE"
-        echo "  - ${NUM_ROUTING_EXPERTS}个路由专家"
+        echo "  - 所有层都使用MoE (与MixLoRA一致)"
+        echo "  - ${NUM_ROUTING_EXPERTS}个路由专家每层"
         echo "  - 添加了文化损失"
         echo "  - LoRA rank=16, alpha=8"
         echo "  - 序列长度=$MAX_SEQ_LEN (内存优化)"
