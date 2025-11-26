@@ -48,10 +48,11 @@ class SimplifiedMoEExpert(nn.Module):
         for param in self.base_layer.parameters():
             param.requires_grad = False
 
-        # 添加LoRA适配器（在正确设备上）
+        # 添加LoRA适配器（在正确设备和数据类型上）
         in_features = base_layer.in_features
         out_features = base_layer.out_features
         device = base_layer.weight.device
+        dtype = base_layer.weight.dtype
 
         self.lora_adapter = LoRALinear(
             in_features=in_features,
@@ -59,7 +60,7 @@ class SimplifiedMoEExpert(nn.Module):
             rank=config.lora_rank,
             alpha=config.lora_alpha,
             dropout=config.lora_dropout
-        ).to(device)
+        ).to(device=device, dtype=dtype)
 
     def forward(self, x):
         # 基础输出 + LoRA适配
@@ -78,13 +79,14 @@ class SimplifiedMoELayer(nn.Module):
         self.top_k = config.top_k
         self.aux_loss_coef = config.aux_loss_coef
 
-        # 获取原始MLP的维度和设备
+        # 获取原始MLP的维度、设备和数据类型
         self.hidden_size = original_mlp.gate_proj.in_features
         self.intermediate_size = original_mlp.gate_proj.out_features
         self.device = original_mlp.gate_proj.weight.device
+        self.dtype = original_mlp.gate_proj.weight.dtype
 
-        # 创建路由器（在正确设备上）
-        self.router = nn.Linear(self.hidden_size, self.num_experts).to(self.device)
+        # 创建路由器（在正确设备和数据类型上）
+        self.router = nn.Linear(self.hidden_size, self.num_experts).to(device=self.device, dtype=self.dtype)
 
         # 创建专家 - 每个专家都基于原始MLP + LoRA
         self.experts = nn.ModuleList([
@@ -95,8 +97,8 @@ class SimplifiedMoELayer(nn.Module):
         # 激活函数
         self.act_fn = original_mlp.act_fn
 
-        # 确保所有专家在正确设备上
-        self.experts = self.experts.to(self.device)
+        # 确保所有专家在正确设备和数据类型上
+        self.experts = self.experts.to(device=self.device, dtype=self.dtype)
 
     def _create_expert_from_mlp(self, original_mlp, config):
         """从原始MLP创建专家"""
@@ -108,8 +110,8 @@ class SimplifiedMoELayer(nn.Module):
         expert.down_proj = SimplifiedMoEExpert(original_mlp.down_proj, config)
         expert.act_fn = original_mlp.act_fn
 
-        # 确保专家在正确设备上
-        expert = expert.to(self.device)
+        # 确保专家在正确设备和数据类型上
+        expert = expert.to(device=self.device, dtype=self.dtype)
 
         return expert
 
@@ -152,7 +154,7 @@ class SimplifiedMoELayer(nn.Module):
 
         for expert_mask, expert_output, expert_idx in expert_outputs:
             # 获取该专家的权重
-            expert_weights = torch.zeros(batch_size * seq_len, device=hidden_states.device)
+            expert_weights = torch.zeros(batch_size * seq_len, device=hidden_states.device, dtype=hidden_states.dtype)
             for k in range(self.top_k):
                 mask_k = (top_k_indices[:, k] == expert_idx)
                 expert_weights[mask_k] = top_k_probs[mask_k, k]
@@ -226,14 +228,16 @@ class SimplifiedCultureMoEAdapter:
                 param.requires_grad = True
 
     def _ensure_device_consistency(self):
-        """确保所有参数在同一设备上"""
+        """确保所有参数在同一设备和数据类型上"""
         # 处理DDP包装的模型
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        # 获取基础模型的设备
-        base_device = next(model_to_check.parameters()).device
+        # 获取基础模型的设备和数据类型
+        base_param = next(model_to_check.parameters())
+        base_device = base_param.device
+        base_dtype = base_param.dtype
 
-        # 验证所有MoE层都在正确设备上
+        # 验证所有MoE层都在正确设备和数据类型上
         if hasattr(model_to_check, 'model'):
             layers = model_to_check.model.layers
         else:
@@ -243,9 +247,9 @@ class SimplifiedCultureMoEAdapter:
             if layer_idx < len(layers):
                 moe_layer = layers[layer_idx].mlp
                 if isinstance(moe_layer, SimplifiedMoELayer):
-                    # 确保MoE层在正确设备上
-                    layers[layer_idx].mlp = moe_layer.to(base_device)
-                    print(f"✅ Ensured MoE layer {layer_idx} is on device {base_device}")
+                    # 确保MoE层在正确设备和数据类型上
+                    layers[layer_idx].mlp = moe_layer.to(device=base_device, dtype=base_dtype)
+                    print(f"✅ Ensured MoE layer {layer_idx} is on device {base_device} with dtype {base_dtype}")
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """前向传播"""
@@ -261,8 +265,12 @@ class SimplifiedCultureMoEAdapter:
         if hasattr(outputs, 'loss') and outputs.loss is not None:
             # 创建一个虚拟的专家权重用于文化损失
             batch_size = input_ids.shape[0]
-            # 简单的均匀分布权重
-            dummy_weights = torch.ones(batch_size, self.config.num_routing_experts, device=input_ids.device)
+            # 简单的均匀分布权重，确保dtype与模型一致
+            dummy_weights = torch.ones(
+                batch_size, self.config.num_routing_experts,
+                device=input_ids.device,
+                dtype=outputs.last_hidden_state.dtype
+            )
             dummy_weights = F.softmax(dummy_weights, dim=-1)
             outputs.expert_weights = dummy_weights
 

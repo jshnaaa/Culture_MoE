@@ -91,15 +91,15 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
         culture_loss: 文化损失
     """
     if not hasattr(model_outputs, 'expert_weights') or model_outputs.expert_weights is None:
-        return torch.tensor(0.0, device=culture_labels.device)
+        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float32)
 
     expert_weights = model_outputs.expert_weights  # [B, num_experts]
     batch_size = expert_weights.shape[0]
 
     if batch_size < 2:
-        return torch.tensor(0.0, device=culture_labels.device)
+        return torch.tensor(0.0, device=culture_labels.device, dtype=expert_weights.dtype)
 
-    culture_loss = torch.tensor(0.0, device=culture_labels.device)
+    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=expert_weights.dtype)
     count = 0
 
     # 计算同文化样本间的相似性和不同文化样本间的差异性
@@ -178,7 +178,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device,
             continue
 
         # 计算文化损失
-        culture_loss = torch.tensor(0.0, device=device)
+        culture_loss = torch.tensor(0.0, device=device, dtype=outputs.loss.dtype)
         if use_culture_loss and culture_labels is not None:
             culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
 
@@ -286,7 +286,7 @@ def evaluate_simplified(model_adapter, val_loader, device, rank=0, use_culture_l
                 continue
 
             # 计算文化损失
-            culture_loss = torch.tensor(0.0, device=device)
+            culture_loss = torch.tensor(0.0, device=device, dtype=outputs.loss.dtype)
             if use_culture_loss and culture_labels is not None:
                 culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
 
