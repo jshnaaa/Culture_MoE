@@ -878,7 +878,7 @@ def main():
             'learning_rate': args.learning_rate,
             'max_length': args.max_length,
             'num_routing_experts': args.num_routing_experts,
-            'moe_layers': moe_layers,
+            'moe_layers': 'ALL layers',
             'use_culture_loss': use_culture_loss,
             'culture_loss_weight': args.culture_loss_weight,
             'lora_config': {
@@ -905,7 +905,7 @@ def main():
         print(f"  - config.json (Training configuration)")
         print(f"\nBest validation accuracy: {best_eval_accuracy:.4f}")
         print(f"Architecture: Simplified CultureMoE based on MixLoRA")
-        print(f"MoE layers: {moe_layers} (last 2 layers only)")
+        print(f"MoE layers: ALL layers (like MixLoRA)")
         print(f"Routing experts: {args.num_routing_experts}")
         print(f"Culture loss: {'enabled' if use_culture_loss else 'disabled'}")
         print("="*80)
