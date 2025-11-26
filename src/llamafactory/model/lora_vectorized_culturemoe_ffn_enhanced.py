@@ -683,6 +683,9 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
         # 检查是否为MoE层
         self.is_moe_layer = self.num_experts > 0
 
+        # 获取路由专家数量（在MoE和非MoE分支之前获取）
+        num_routing_experts = getattr(lora_config, 'num_routing_experts', self.num_experts)
+
         if self.is_moe_layer:
             # MoE层：创建文化信息注入层（使用LoRA）
             self.cultural_injector = CulturalInjectorWithLoRA(
@@ -757,8 +760,6 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
                         assignments.append(expert_cultures)
             return assignments
 
-        # 获取路由专家数量
-        num_routing_experts = getattr(lora_config, 'num_routing_experts', self.num_experts)
         culture_assignments = create_culture_assignments(num_routing_experts, lora_config.num_cultures)
 
         # LoRA增强的文化专家组
