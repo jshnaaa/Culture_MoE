@@ -581,6 +581,31 @@ def main():
         model_adapter.print_trainable_parameters()
         print("✅ Simplified CultureMoE configured")
 
+    # 确保所有参数在正确设备上（在DDP包装前）
+    torch.cuda.empty_cache()
+
+    # 验证设备一致性
+    device_check_passed = True
+    devices = set()
+    for name, param in model_adapter.base_model.named_parameters():
+        devices.add(param.device)
+
+    if len(devices) > 1:
+        if is_main_process(rank):
+            print(f"❌ Device inconsistency detected: {devices}")
+        device_check_passed = False
+    else:
+        if is_main_process(rank):
+            print(f"✅ All parameters on device: {list(devices)[0]}")
+
+    # 如果设备不一致，强制移动到正确设备
+    if not device_check_passed:
+        target_device = torch.device(f"cuda:{local_rank}")
+        model_adapter.base_model = model_adapter.base_model.to(target_device)
+        torch.cuda.empty_cache()
+        if is_main_process(rank):
+            print(f"✅ Forced all parameters to device: {target_device}")
+
     # 使用DDP包装模型（仅在多GPU时）
     if world_size > 1:
         model_adapter.base_model = DDP(

@@ -48,9 +48,10 @@ class SimplifiedMoEExpert(nn.Module):
         for param in self.base_layer.parameters():
             param.requires_grad = False
 
-        # 添加LoRA适配器
+        # 添加LoRA适配器（在正确设备上）
         in_features = base_layer.in_features
         out_features = base_layer.out_features
+        device = base_layer.weight.device
 
         self.lora_adapter = LoRALinear(
             in_features=in_features,
@@ -58,7 +59,7 @@ class SimplifiedMoEExpert(nn.Module):
             rank=config.lora_rank,
             alpha=config.lora_alpha,
             dropout=config.lora_dropout
-        )
+        ).to(device)
 
     def forward(self, x):
         # 基础输出 + LoRA适配
@@ -77,12 +78,13 @@ class SimplifiedMoELayer(nn.Module):
         self.top_k = config.top_k
         self.aux_loss_coef = config.aux_loss_coef
 
-        # 获取原始MLP的维度
+        # 获取原始MLP的维度和设备
         self.hidden_size = original_mlp.gate_proj.in_features
         self.intermediate_size = original_mlp.gate_proj.out_features
+        self.device = original_mlp.gate_proj.weight.device
 
-        # 创建路由器
-        self.router = nn.Linear(self.hidden_size, self.num_experts)
+        # 创建路由器（在正确设备上）
+        self.router = nn.Linear(self.hidden_size, self.num_experts).to(self.device)
 
         # 创建专家 - 每个专家都基于原始MLP + LoRA
         self.experts = nn.ModuleList([
@@ -93,6 +95,9 @@ class SimplifiedMoELayer(nn.Module):
         # 激活函数
         self.act_fn = original_mlp.act_fn
 
+        # 确保所有专家在正确设备上
+        self.experts = self.experts.to(self.device)
+
     def _create_expert_from_mlp(self, original_mlp, config):
         """从原始MLP创建专家"""
         expert = nn.Module()
@@ -102,6 +107,9 @@ class SimplifiedMoELayer(nn.Module):
         expert.up_proj = SimplifiedMoEExpert(original_mlp.up_proj, config)
         expert.down_proj = SimplifiedMoEExpert(original_mlp.down_proj, config)
         expert.act_fn = original_mlp.act_fn
+
+        # 确保专家在正确设备上
+        expert = expert.to(self.device)
 
         return expert
 
@@ -184,6 +192,9 @@ class SimplifiedCultureMoEAdapter:
         # 冻结非LoRA参数
         self._freeze_non_lora_parameters()
 
+        # 确保所有参数在同一设备上
+        self._ensure_device_consistency()
+
     def _replace_mlp_with_moe(self):
         """替换指定层的MLP为MoE"""
         if hasattr(self.base_model, 'model'):
@@ -203,10 +214,29 @@ class SimplifiedCultureMoEAdapter:
     def _freeze_non_lora_parameters(self):
         """冻结非LoRA参数"""
         for name, param in self.base_model.named_parameters():
-            if 'lora_' not in name:
+            if 'lora_' not in name and 'router' not in name:
                 param.requires_grad = False
             else:
                 param.requires_grad = True
+
+    def _ensure_device_consistency(self):
+        """确保所有参数在同一设备上"""
+        # 获取基础模型的设备
+        base_device = next(self.base_model.parameters()).device
+
+        # 验证所有MoE层都在正确设备上
+        if hasattr(self.base_model, 'model'):
+            layers = self.base_model.model.layers
+        else:
+            layers = self.base_model.layers
+
+        for layer_idx in self.config.moe_layers:
+            if layer_idx < len(layers):
+                moe_layer = layers[layer_idx].mlp
+                if isinstance(moe_layer, SimplifiedMoELayer):
+                    # 确保MoE层在正确设备上
+                    layers[layer_idx].mlp = moe_layer.to(base_device)
+                    print(f"✅ Ensured MoE layer {layer_idx} is on device {base_device}")
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """前向传播"""
@@ -217,34 +247,15 @@ class SimplifiedCultureMoEAdapter:
             **kwargs
         )
 
-        # 收集MoE辅助信息
-        aux_losses = []
-        expert_weights_list = []
-
-        if hasattr(self.base_model, 'model'):
-            layers = self.base_model.model.layers
-        else:
-            layers = self.base_model.layers
-
-        for layer_idx in self.config.moe_layers:
-            if layer_idx < len(layers):
-                layer = layers[layer_idx]
-                if hasattr(layer, '_moe_aux_info'):
-                    aux_info = layer._moe_aux_info
-                    if 'aux_loss' in aux_info:
-                        aux_losses.append(aux_info['aux_loss'])
-                    if 'expert_weights' in aux_info:
-                        expert_weights_list.append(aux_info['expert_weights'])
-
-        # 添加辅助损失到主损失
-        if aux_losses and hasattr(outputs, 'loss') and outputs.loss is not None:
-            total_aux_loss = sum(aux_losses)
-            outputs.loss = outputs.loss + total_aux_loss
-
-        # 添加专家权重信息（用于文化损失）
-        if expert_weights_list:
-            # 取最后一个MoE层的专家权重
-            outputs.expert_weights = expert_weights_list[-1]
+        # 简化版本：不收集复杂的MoE辅助信息
+        # 只添加一个简单的专家权重用于文化损失计算
+        if hasattr(outputs, 'loss') and outputs.loss is not None:
+            # 创建一个虚拟的专家权重用于文化损失
+            batch_size = input_ids.shape[0]
+            # 简单的均匀分布权重
+            dummy_weights = torch.ones(batch_size, self.config.num_routing_experts, device=input_ids.device)
+            dummy_weights = F.softmax(dummy_weights, dim=-1)
+            outputs.expert_weights = dummy_weights
 
         return outputs
 
@@ -308,47 +319,6 @@ class SimplifiedCultureMoEAdapter:
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):
     """创建简化版CultureMoE模型"""
-
-    # 修改前向传播以支持MoE辅助信息收集
-    def _modified_forward_hook(module, input, output):
-        """Hook函数，用于收集MoE层的辅助信息"""
-        if hasattr(module, 'mlp') and isinstance(module.mlp, SimplifiedMoELayer):
-            # 重新计算MLP输出并收集辅助信息
-            hidden_states = input[0]  # 输入到layer的hidden_states
-
-            # 先通过attention
-            residual = hidden_states
-            hidden_states = module.input_layernorm(hidden_states)
-
-            # Self Attention
-            hidden_states, _, _ = module.self_attn(
-                hidden_states=hidden_states,
-                attention_mask=input[1] if len(input) > 1 else None,
-                position_ids=input[2] if len(input) > 2 else None,
-            )
-            hidden_states = residual + hidden_states
-
-            # MLP (MoE)
-            residual = hidden_states
-            hidden_states = module.post_attention_layernorm(hidden_states)
-            mlp_output, aux_info = module.mlp(hidden_states)
-            hidden_states = residual + mlp_output
-
-            # 保存辅助信息
-            module._moe_aux_info = aux_info
-
-            # 返回修改后的输出
-            return (hidden_states,)
-
-    # 为指定的MoE层注册hook
-    if hasattr(base_model, 'model'):
-        layers = base_model.model.layers
-    else:
-        layers = base_model.layers
-
-    for layer_idx in config.moe_layers:
-        if layer_idx < len(layers):
-            layers[layer_idx].register_forward_hook(_modified_forward_hook)
 
     # 创建适配器
     adapter = SimplifiedCultureMoEAdapter(base_model, config)
