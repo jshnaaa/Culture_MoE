@@ -759,17 +759,38 @@ def train_ddp(rank, world_size, args):
     else:
         logger = None
 
+    # 动态获取模型层数
+    try:
+        from transformers import AutoConfig
+        temp_config = AutoConfig.from_pretrained(args.base_model)
+        total_layers = temp_config.num_hidden_layers
+        if rank == 0:
+            logger.info(f"检测到模型层数: {total_layers}")
+    except Exception as e:
+        total_layers = 32  # 默认值
+        if rank == 0:
+            logger.warning(f"无法检测模型层数，使用默认值32: {e}")
+
     # 创建层级专家分配配置
     layer_expert_config = {}
-    total_layers = 32  # LLaMA/Qwen通常有32层
+
+    # 动态计算MoE层范围：使用最后4层作为MoE层
+    moe_start_layer = max(1, total_layers - 3)  # 最后4层
+    moe_end_layer = total_layers
 
     for layer_idx in range(1, total_layers + 1):
-        if 29 <= layer_idx <= 32:
-            # 只在Layer 29-32使用MoE，进一步减少专家数量
+        if moe_start_layer <= layer_idx <= moe_end_layer:
+            # 只在最后4层使用MoE，进一步减少专家数量
             layer_expert_config[layer_idx] = 1 + (1 if use_shared else 0)  # 1个路由专家 + 1个共享专家
         else:
             # 其他层保持原始FFN
             layer_expert_config[layer_idx] = 0
+
+    if rank == 0:
+        logger.info(f"MoE层范围: Layer {moe_start_layer}-{moe_end_layer} (共{moe_end_layer - moe_start_layer + 1}层)")
+        moe_layer_count = sum(1 for v in layer_expert_config.values() if v > 0)
+        total_experts = sum(v for v in layer_expert_config.values())
+        logger.info(f"MoE层数: {moe_layer_count}, 总专家数: {total_experts}")
 
     # LoRA配置
     lora_config = LoRACultureMoEConfig(

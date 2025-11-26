@@ -38,6 +38,9 @@ class LoRACultureMoELlamaDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.layer_idx = layer_idx
 
+        # Gradient checkpointing支持
+        self.gradient_checkpointing = False
+
         # 创建原始attention（用于获取权重）
         try:
             original_attention = LlamaAttention(config=config, layer_idx=layer_idx)
@@ -159,6 +162,12 @@ class LoRACultureMoELlamaModel(LlamaModel):
 
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+
+        # Gradient checkpointing支持
+        self.gradient_checkpointing = False
+
+        # Attention implementation
+        self._attn_implementation = getattr(config, '_attn_implementation', 'eager')
 
         # Embedding层（冻结）
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
@@ -461,6 +470,45 @@ class LoRACultureMoELlamaModel(LlamaModel):
         print(f"LoRA rank: {self.lora_config.lora_rank}")
         print(f"LoRA alpha: {self.lora_config.lora_alpha}")
         print("=" * 60)
+
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        """
+        启用gradient checkpointing以节省内存
+        """
+        if not self.supports_gradient_checkpointing:
+            raise ValueError(f"{self.__class__.__name__} does not support gradient checkpointing.")
+        self.gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self):
+        """
+        禁用gradient checkpointing
+        """
+        self.gradient_checkpointing = False
+
+    @property
+    def supports_gradient_checkpointing(self):
+        """
+        检查模型是否支持gradient checkpointing
+        """
+        return True
+
+    def _set_gradient_checkpointing(self, enable=True, gradient_checkpointing_func=None):
+        """
+        设置gradient checkpointing状态
+        """
+        self.gradient_checkpointing = enable
+
+        # 为每个layer设置gradient checkpointing
+        for layer in self.layers:
+            if hasattr(layer, 'gradient_checkpointing'):
+                layer.gradient_checkpointing = enable
+
+    def _gradient_checkpointing_func(self, func, *args, **kwargs):
+        """
+        Gradient checkpointing function wrapper
+        """
+        from torch.utils.checkpoint import checkpoint
+        return checkpoint(func, *args, use_reentrant=False)
 
 
 def create_lora_culturemoe_model(
