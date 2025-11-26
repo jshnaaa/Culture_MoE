@@ -96,8 +96,8 @@ class SimplifiedMoELayer(nn.Module):
         self.top_k = config.top_k
         self.aux_loss_coef = config.aux_loss_coef
 
-        # 用于累积z-loss的缓冲区 - 初始化时设备会在后续to()调用中正确设置
-        self.register_buffer('accumulated_z_loss', torch.tensor(0.0, dtype=torch.float16))
+        # 保存最新的router_logits用于z-loss计算
+        self.latest_router_logits = None
 
         # 获取原始MLP的维度、设备和数据类型
         self.hidden_size = original_mlp.gate_proj.in_features
@@ -173,6 +173,10 @@ class SimplifiedMoELayer(nn.Module):
         # 关键修复：Clamp router logits防止爆炸（Switch Transformer标准做法）
         router_logits = torch.clamp(router_logits, -10.0, 10.0)
 
+        # 保存router_logits的detached副本用于z-loss计算（避免梯度图问题）
+        if self.training:
+            self.latest_router_logits = router_logits.detach().clone()
+
         router_probs = F.softmax(router_logits, dim=-1)
 
         # 检查softmax结果的数值稳定性
@@ -234,14 +238,7 @@ class SimplifiedMoELayer(nn.Module):
         # 计算辅助损失（但不返回，为了兼容性）
         aux_loss = self._compute_aux_loss(router_probs)
 
-        # 计算z-loss用于稳定router（Google PaLM做法）
-        z_loss = self._compute_z_loss(router_logits)
-
-        # 累积z-loss用于后续损失计算
-        if self.training:
-            # 确保z_loss与accumulated_z_loss在同一设备和dtype
-            z_loss = z_loss.to(device=self.accumulated_z_loss.device, dtype=self.accumulated_z_loss.dtype)
-            self.accumulated_z_loss = self.accumulated_z_loss + z_loss
+        # z-loss将在get_accumulated_z_loss中从保存的router_logits计算
 
         # 为了兼容性，只返回输出张量，就像普通MLP一样
         return final_output
@@ -423,7 +420,7 @@ class SimplifiedCultureMoEAdapter:
         print(f"   - Config: {config_path}")
 
     def get_accumulated_z_loss(self):
-        """获取并重置累积的z-loss"""
+        """从最新的router_logits计算z-loss"""
         # 处理DDP包装的模型
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
@@ -439,17 +436,19 @@ class SimplifiedCultureMoEAdapter:
         for layer_idx in self.config.moe_layers:
             if layer_idx < len(layers):
                 moe_layer = layers[layer_idx].mlp
-                if isinstance(moe_layer, SimplifiedMoELayer) and hasattr(moe_layer, 'accumulated_z_loss'):
-                    if total_z_loss is None:
-                        # 使用第一个MoE层的accumulated_z_loss作为基准设备和dtype
-                        total_z_loss = moe_layer.accumulated_z_loss.clone()
-                    else:
-                        # 确保设备和dtype一致
-                        z_loss_item = moe_layer.accumulated_z_loss.to(device=total_z_loss.device, dtype=total_z_loss.dtype)
-                        total_z_loss += z_loss_item
+                if isinstance(moe_layer, SimplifiedMoELayer) and hasattr(moe_layer, 'latest_router_logits'):
+                    if moe_layer.latest_router_logits is not None:
+                        # 从保存的router_logits计算z-loss
+                        z_loss = moe_layer._compute_z_loss(moe_layer.latest_router_logits)
 
-                    moe_layer.accumulated_z_loss.zero_()  # 重置累积值
-                    moe_layer_count += 1
+                        if total_z_loss is None:
+                            total_z_loss = z_loss
+                        else:
+                            # 确保设备和dtype一致
+                            z_loss = z_loss.to(device=total_z_loss.device, dtype=total_z_loss.dtype)
+                            total_z_loss += z_loss
+
+                        moe_layer_count += 1
 
         # 如果没有找到任何MoE层，返回零损失
         if total_z_loss is None:
