@@ -33,6 +33,13 @@ class LoRALinear(nn.Module):
         nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_B.weight)
 
+    def to(self, *args, **kwargs):
+        """重写to方法确保dtype正确传播"""
+        super().to(*args, **kwargs)
+        self.lora_A = self.lora_A.to(*args, **kwargs)
+        self.lora_B = self.lora_B.to(*args, **kwargs)
+        return self
+
     def forward(self, x):
         return self.lora_B(self.dropout(self.lora_A(x))) * self.scaling
 
@@ -53,6 +60,10 @@ class SimplifiedMoEExpert(nn.Module):
         out_features = base_layer.out_features
         device = base_layer.weight.device
         dtype = base_layer.weight.dtype
+
+        # 强制使用torch.float16以确保与模型一致
+        if dtype == torch.float32:
+            dtype = torch.float16
 
         self.lora_adapter = LoRALinear(
             in_features=in_features,
@@ -85,8 +96,12 @@ class SimplifiedMoELayer(nn.Module):
         self.device = original_mlp.gate_proj.weight.device
         self.dtype = original_mlp.gate_proj.weight.dtype
 
+        # 强制使用torch.float16以确保与模型一致
+        if self.dtype == torch.float32:
+            self.dtype = torch.float16
+
         # 创建路由器（在正确设备和数据类型上）
-        self.router = nn.Linear(self.hidden_size, self.num_experts).to(device=self.device, dtype=self.dtype)
+        self.router = nn.Linear(self.hidden_size, self.num_experts, dtype=self.dtype, device=self.device)
 
         # 创建专家 - 每个专家都基于原始MLP + LoRA
         self.experts = nn.ModuleList([
@@ -117,6 +132,16 @@ class SimplifiedMoELayer(nn.Module):
 
     def forward(self, hidden_states):
         batch_size, seq_len, hidden_dim = hidden_states.shape
+
+        # 强制确保router的dtype与输入一致（激进的防御性检查）
+        if hasattr(self, 'router'):
+            if self.router.weight.dtype != hidden_states.dtype:
+                # 重新创建router以确保正确的dtype
+                self.router = nn.Linear(self.hidden_size, self.num_experts,
+                                      dtype=hidden_states.dtype, device=hidden_states.device)
+                # 确保可训练
+                for param in self.router.parameters():
+                    param.requires_grad = True
 
         # 路由决策
         router_logits = self.router(hidden_states.view(-1, hidden_dim))  # [B*L, num_experts]
@@ -154,7 +179,7 @@ class SimplifiedMoELayer(nn.Module):
 
         for expert_mask, expert_output, expert_idx in expert_outputs:
             # 获取该专家的权重
-            expert_weights = torch.zeros(batch_size * seq_len, device=hidden_states.device, dtype=hidden_states.dtype)
+            expert_weights = torch.zeros(batch_size * seq_len, device=hidden_states.device, dtype=torch.float16)
             for k in range(self.top_k):
                 mask_k = (top_k_indices[:, k] == expert_idx)
                 expert_weights[mask_k] = top_k_probs[mask_k, k]
@@ -237,6 +262,10 @@ class SimplifiedCultureMoEAdapter:
         base_device = base_param.device
         base_dtype = base_param.dtype
 
+        # 强制使用torch.float16以确保与模型一致
+        if base_dtype == torch.float32:
+            base_dtype = torch.float16
+
         # 验证所有MoE层都在正确设备和数据类型上
         if hasattr(model_to_check, 'model'):
             layers = model_to_check.model.layers
@@ -247,9 +276,30 @@ class SimplifiedCultureMoEAdapter:
             if layer_idx < len(layers):
                 moe_layer = layers[layer_idx].mlp
                 if isinstance(moe_layer, SimplifiedMoELayer):
-                    # 确保MoE层在正确设备和数据类型上
-                    layers[layer_idx].mlp = moe_layer.to(device=base_device, dtype=base_dtype)
-                    print(f"✅ Ensured MoE layer {layer_idx} is on device {base_device} with dtype {base_dtype}")
+                    # 强制重新创建router以确保正确的dtype（强制使用float16）
+                    moe_layer.router = nn.Linear(moe_layer.hidden_size, moe_layer.num_experts, dtype=torch.float16, device=base_device)
+
+                    # 确保router参数可训练
+                    for param in moe_layer.router.parameters():
+                        param.requires_grad = True
+
+                    # 确保所有专家也在正确设备和数据类型上
+                    moe_layer.experts = moe_layer.experts.to(device=base_device, dtype=base_dtype)
+
+                    # 强制重新创建LoRA适配器以确保正确的dtype
+                    for expert in moe_layer.experts:
+                        if hasattr(expert, 'gate_proj') and hasattr(expert.gate_proj, 'lora_adapter'):
+                            expert.gate_proj.lora_adapter = expert.gate_proj.lora_adapter.to(device=base_device, dtype=base_dtype)
+                        if hasattr(expert, 'up_proj') and hasattr(expert.up_proj, 'lora_adapter'):
+                            expert.up_proj.lora_adapter = expert.up_proj.lora_adapter.to(device=base_device, dtype=base_dtype)
+                        if hasattr(expert, 'down_proj') and hasattr(expert.down_proj, 'lora_adapter'):
+                            expert.down_proj.lora_adapter = expert.down_proj.lora_adapter.to(device=base_device, dtype=base_dtype)
+
+                    # 更新MoE层的设备和dtype记录
+                    moe_layer.device = base_device
+                    moe_layer.dtype = base_dtype
+
+                    print(f"✅ Recreated router for MoE layer {layer_idx} on device {base_device} with dtype {base_dtype}")
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """前向传播"""
@@ -265,11 +315,11 @@ class SimplifiedCultureMoEAdapter:
         if hasattr(outputs, 'loss') and outputs.loss is not None:
             # 创建一个虚拟的专家权重用于文化损失
             batch_size = input_ids.shape[0]
-            # 简单的均匀分布权重，确保dtype与模型一致
+            # 简单的均匀分布权重，强制使用torch.float16
             dummy_weights = torch.ones(
                 batch_size, self.config.num_routing_experts,
                 device=input_ids.device,
-                dtype=outputs.last_hidden_state.dtype
+                dtype=torch.float16
             )
             dummy_weights = F.softmax(dummy_weights, dim=-1)
             outputs.expert_weights = dummy_weights
