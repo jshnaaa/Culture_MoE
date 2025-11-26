@@ -383,11 +383,12 @@ class CulturalExpertsWithLoRA(nn.Module):
     MixLoRA优化：文化专家组（共享计算架构）
     使用共享FFN + 轻量级适配器的架构
     """
-    def __init__(self, num_experts: int, hidden_size: int, intermediate_size: int,
+    def __init__(self, num_experts: int, num_routing_experts: int, hidden_size: int, intermediate_size: int,
                  activation: str, culture_assignments: List[List[int]],
                  culture_dim: int, lora_config: LoRACultureMoEConfig):
         super().__init__()
-        self.num_experts = num_experts
+        self.num_experts = num_experts  # 总专家数（路由专家 + 共享专家）
+        self.num_routing_experts = num_routing_experts  # 路由专家数
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.culture_assignments = culture_assignments
@@ -400,20 +401,20 @@ class CulturalExpertsWithLoRA(nn.Module):
             lora_config=lora_config
         )
 
-        # MixLoRA优化：轻量级专家适配器
+        # MixLoRA优化：轻量级专家适配器（只为路由专家创建）
         self.expert_adapters = nn.ModuleList([
             ExpertAdapter(
                 intermediate_size=intermediate_size,
                 hidden_size=hidden_size,
                 lora_config=lora_config
-            ) for _ in range(num_experts)
+            ) for _ in range(num_routing_experts)
         ])
 
-        # 文化条件向量（保持原有的文化感知能力）
+        # 文化条件向量（保持原有的文化感知能力，只为路由专家创建）
         self.culture_prompts = nn.ParameterList([
             nn.Parameter(
                 torch.randn(len(culture_assignments[i]) if culture_assignments[i] else 1, culture_dim) * 0.01
-            ) for i in range(num_experts)
+            ) for i in range(num_routing_experts)
         ])
 
         # 文化条件层
@@ -421,7 +422,7 @@ class CulturalExpertsWithLoRA(nn.Module):
 
         # MixLoRA优化：稀疏激活参数
         self.activation_threshold = 0.01  # 专家激活阈值
-        self.max_active_experts = min(2, num_experts)  # 最大激活专家数
+        self.max_active_experts = min(2, num_routing_experts)  # 最大激活专家数（基于路由专家数）
 
         self._init_weights()
 
@@ -717,43 +718,53 @@ class VectorizedCultureMoE_FFN_WithLoRA_Enhanced(nn.Module):
             self.act_fn = original_ffn.act_fn
             return  # 早期返回，不需要创建MoE组件
 
-        # LoRA增强的路由器（只用于文化专家）
+        # LoRA增强的路由器（只用于路由专家）
         self.cultural_router = VectorizedCulturalRouterWithLoRA(
             hidden_dim=self.hidden_size,
-            num_experts=self.num_experts,
+            num_experts=num_routing_experts,  # 只路由到路由专家
             num_cultures=lora_config.num_cultures,
             culture_dim=lora_config.culture_dim,
             capacity_factor=lora_config.capacity_factor,
             lora_config=lora_config
         )
 
-        # 创建文化分配
-        def create_culture_assignments(num_experts: int, num_cultures: int) -> List[List[int]]:
-            """创建专家的文化分配"""
+        # 创建文化分配 - 只为路由专家分配，共享专家不参与路由
+        def create_culture_assignments(num_routing_experts: int, num_cultures: int) -> List[List[int]]:
+            """创建路由专家的文化分配"""
             assignments = []
-            for i in range(num_experts):
-                if i == 0:
-                    # 第一个专家处理所有文化（通用专家）
-                    assignments.append(list(range(num_cultures)))
-                elif i == num_experts - 1:
-                    # 最后一个专家处理文化冲突（空分配表示冲突处理专家）
-                    assignments.append([])
-                else:
-                    # 其他专家分配特定文化
-                    cultures_per_expert = max(1, num_cultures // (num_experts - 2))
-                    start_culture = ((i - 1) * cultures_per_expert) % num_cultures
-                    expert_cultures = []
-                    for j in range(cultures_per_expert):
-                        culture_id = (start_culture + j) % num_cultures
-                        expert_cultures.append(culture_id)
-                    assignments.append(expert_cultures)
+
+            # 如果只有1个路由专家，分配所有文化
+            if num_routing_experts == 1:
+                assignments.append(list(range(num_cultures)))
+            # 如果有多个路由专家，进行文化分配
+            else:
+                for i in range(num_routing_experts):
+                    if i == 0:
+                        # 第一个专家处理所有文化（通用专家）
+                        assignments.append(list(range(num_cultures)))
+                    elif i == num_routing_experts - 1:
+                        # 最后一个专家处理文化冲突（空分配表示冲突处理专家）
+                        assignments.append([])
+                    else:
+                        # 其他专家分配特定文化
+                        available_experts = max(1, num_routing_experts - 2)
+                        cultures_per_expert = max(1, num_cultures // available_experts)
+                        start_culture = ((i - 1) * cultures_per_expert) % num_cultures
+                        expert_cultures = []
+                        for j in range(cultures_per_expert):
+                            culture_id = (start_culture + j) % num_cultures
+                            expert_cultures.append(culture_id)
+                        assignments.append(expert_cultures)
             return assignments
 
-        culture_assignments = create_culture_assignments(self.num_experts, lora_config.num_cultures)
+        # 获取路由专家数量
+        num_routing_experts = getattr(lora_config, 'num_routing_experts', self.num_experts)
+        culture_assignments = create_culture_assignments(num_routing_experts, lora_config.num_cultures)
 
         # LoRA增强的文化专家组
         self.cultural_experts = CulturalExpertsWithLoRA(
             num_experts=self.num_experts,
+            num_routing_experts=num_routing_experts,
             hidden_size=self.hidden_size,
             intermediate_size=self.intermediate_size,
             activation=config.hidden_act,

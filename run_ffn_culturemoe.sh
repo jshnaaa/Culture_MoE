@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# FFN集成CultureMoE训练脚本 - 优化版
-# 仅在Layer 17-32使用MoE，Layer 1-16保持原始FFN
-# 支持LLaMA-3.1-8B和Qwen2.5-7B，针对48GB×2卡优化
+# FFN集成CultureMoE训练脚本 - 最后2层MoE版
+# 仅在最后2层替换FFN为MoE结构，支持可配置的路由专家数量
+# 支持LLaMA-3.1-8B(32层)和Qwen2.5-7B(28层)，针对48GB×2卡优化
 
 echo "======================================="
-echo "FFN集成CultureMoE训练 - 优化版"
-echo "Layer 17-24: 3个专家/层, Layer 25-32: 5个专家/层"
-echo "针对48GB×2卡优化"
+echo "FFN集成CultureMoE训练 - 最后2层MoE版"
+echo "仅最后2层替换为MoE结构，可配置路由专家数量"
+echo "针对48GB×2卡优化，支持LLaMA(32层)和Qwen(28层)"
 echo "======================================="
 
 # 参数设置
@@ -18,10 +18,17 @@ USE_MASK=${4:-"true"}
 USE_GATE=${5:-"true"}
 USE_CULTURE_LOSS=${6:-"true"}
 NUM_GPUS=${7:-"2"}
+NUM_ROUTING_EXPERTS=${8:-"4"}  # 路由专家数量，默认4个
 
 # 检查参数
-if [ "$#" -gt 7 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss] [num_gpus]"
+if [ "$#" -gt 8 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss] [num_gpus] [num_routing_experts]"
+    exit 1
+fi
+
+# 验证专家数参数
+if ! [[ "$NUM_ROUTING_EXPERTS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "❌ 路由专家数必须是正整数: $NUM_ROUTING_EXPERTS"
     exit 1
 fi
 
@@ -91,8 +98,8 @@ OUTPUT_DIR="/root/autodl-fs/ffn_culturemoe/${MODEL_NAME}_${DATASET_TAG}_${TIMEST
 echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
 echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
-echo "  MoE层: 动态检测 (最后4层) - 极度内存优化"
-echo "  专家分配: 最后4层(1个路由专家+1个共享专家)"
+echo "  MoE层: 最后2层 - 内存优化"
+echo "  专家配置: ${NUM_ROUTING_EXPERTS}个路由专家 + 1个共享专家 = $((NUM_ROUTING_EXPERTS + 1))个总专家"
 echo "  功能: shared=$USE_SHARED, mask=$USE_MASK, gate=$USE_GATE, culture_loss=$USE_CULTURE_LOSS"
 echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
@@ -128,12 +135,13 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "max_seq_length": $MAX_SEQ_LEN
     },
     "moe_config": {
-        "moe_layers": "dynamic (last 4 layers)",
-        "moe_start_layer": "dynamic",
-        "experts_per_layer": 1,
+        "moe_layers": "last 2 layers",
+        "moe_start_layer": "dynamic (total_layers - 1)",
+        "routing_experts_per_layer": $NUM_ROUTING_EXPERTS,
         "shared_expert_per_layer": 1,
-        "total_moe_layers": 4,
-        "total_experts": "dynamic (4 layers × 2 experts)"
+        "total_experts_per_layer": $((NUM_ROUTING_EXPERTS + 1)),
+        "total_moe_layers": 2,
+        "total_experts": $((2 * (NUM_ROUTING_EXPERTS + 1)))
     },
     "lora_config": {
         "lora_rank": 8,
@@ -213,9 +221,8 @@ python train_lora_culturemoe_ffn_integrated_ddp.py \
     --gradient_accumulation_steps $GRADIENT_ACCUMULATION \
     --learning_rate $LEARNING_RATE \
     --max_seq_length $MAX_SEQ_LEN \
-    --moe_start_layer 17 \
-    --layer_17_24_experts 3 \
-    --layer_25_32_experts 5 \
+    --backbone $BACKBONE \
+    --num_routing_experts $NUM_ROUTING_EXPERTS \
     --use_shared $USE_SHARED \
     --use_mask $USE_MASK \
     --use_gate $USE_GATE \
@@ -247,9 +254,9 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
         echo ""
         echo "🎉 训练完成！可以进行推理测试"
         echo "模型特点:"
-        echo "  - 仅最后4层使用MoE (动态检测，极度内存优化版)"
-        echo "  - 每层1个路由专家 + 1个共享专家"
-        echo "  - 总计动态专家数 (最小化内存需求)"
+        echo "  - 仅最后2层使用MoE (内存优化版)"
+        echo "  - 每层${NUM_ROUTING_EXPERTS}个路由专家 + 1个共享专家"
+        echo "  - 总计$((2 * (NUM_ROUTING_EXPERTS + 1)))个专家 (参数可配置)"
         echo "  - LoRA rank=8, alpha=16 (内存优化)"
         echo "  - 仅训练LoRA参数，基础模型冻结"
         echo "  - 数据集划分: 8:1:1 (训练:验证:测试)"
@@ -293,7 +300,8 @@ else
     echo "1. 减少batch_size: --batch_size 1"
     echo "2. 增加梯度累积: --gradient_accumulation_steps 8"
     echo "3. 减少序列长度: --max_seq_length 256"
-    echo "4. 使用单卡训练: $0 $BACKBONE $DATA_ID $USE_SHARED $USE_MASK $USE_GATE $USE_CULTURE_LOSS 1"
+    echo "4. 使用单卡训练: $0 $BACKBONE $DATA_ID $USE_SHARED $USE_MASK $USE_GATE $USE_CULTURE_LOSS 1 $NUM_ROUTING_EXPERTS"
+    echo "5. 减少路由专家数: $0 $BACKBONE $DATA_ID $USE_SHARED $USE_MASK $USE_GATE $USE_CULTURE_LOSS $NUM_GPUS 2"
 fi
 
 echo ""

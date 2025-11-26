@@ -33,6 +33,7 @@ class LoRACultureMoEConfig:
 
     # MoE基础配置
     num_experts: int = 8  # 默认专家数（向后兼容）
+    num_routing_experts: int = 4  # 路由专家数量
     top_k: int = 2
     capacity_factor: float = 1.25
 

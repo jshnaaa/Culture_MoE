@@ -767,39 +767,50 @@ def train_ddp(rank, world_size, args):
         if rank == 0:
             logger.info(f"检测到模型层数: {total_layers}")
     except Exception as e:
-        total_layers = 32  # 默认值
+        # 根据backbone类型设置默认层数
+        if args.backbone == 'llama':
+            total_layers = 32
+        elif args.backbone == 'qwen':
+            total_layers = 28
+        else:
+            total_layers = 32
         if rank == 0:
-            logger.warning(f"无法检测模型层数，使用默认值32: {e}")
+            logger.warning(f"无法检测模型层数，根据backbone '{args.backbone}' 使用默认值{total_layers}: {e}")
 
-    # 创建层级专家分配配置
+    # 创建层级专家分配配置 - 只在最后2层使用MoE
     layer_expert_config = {}
 
-    # 动态计算MoE层范围：使用最后4层作为MoE层
-    moe_start_layer = max(1, total_layers - 3)  # 最后4层
-    moe_end_layer = total_layers
+    # 计算最后2层的索引（1-indexed）
+    moe_layer_1 = total_layers - 1  # 倒数第二层
+    moe_layer_2 = total_layers      # 最后一层
+
+    # 计算每层的总专家数：路由专家数 + 共享专家数
+    experts_per_layer = args.num_routing_experts + (1 if use_shared else 0)
 
     for layer_idx in range(1, total_layers + 1):
-        if moe_start_layer <= layer_idx <= moe_end_layer:
-            # 只在最后4层使用MoE，进一步减少专家数量
-            layer_expert_config[layer_idx] = 1 + (1 if use_shared else 0)  # 1个路由专家 + 1个共享专家
+        if layer_idx in [moe_layer_1, moe_layer_2]:
+            # 最后2层使用MoE
+            layer_expert_config[layer_idx] = experts_per_layer
         else:
             # 其他层保持原始FFN
             layer_expert_config[layer_idx] = 0
 
     if rank == 0:
-        logger.info(f"MoE层范围: Layer {moe_start_layer}-{moe_end_layer} (共{moe_end_layer - moe_start_layer + 1}层)")
-        moe_layer_count = sum(1 for v in layer_expert_config.values() if v > 0)
-        total_experts = sum(v for v in layer_expert_config.values())
-        logger.info(f"MoE层数: {moe_layer_count}, 总专家数: {total_experts}")
+        logger.info(f"MoE层配置: Layer {moe_layer_1}, {moe_layer_2} (最后2层)")
+        logger.info(f"每层专家配置: {args.num_routing_experts}个路由专家 + {1 if use_shared else 0}个共享专家 = {experts_per_layer}个总专家")
+        total_experts = 2 * experts_per_layer
+        logger.info(f"总专家数: {total_experts}")
 
     # LoRA配置
     lora_config = LoRACultureMoEConfig(
         # 层级专家分配
         layer_expert_config=layer_expert_config,
-        moe_start_layer=args.moe_start_layer,
+        moe_start_layer=moe_layer_1,  # 使用计算出的MoE开始层
 
         # MoE基础配置
-        top_k=2,
+        num_experts=experts_per_layer,  # 每层总专家数
+        num_routing_experts=args.num_routing_experts,  # 路由专家数
+        top_k=min(2, args.num_routing_experts),  # top_k不能超过路由专家数
         capacity_factor=1.25,
         num_cultures=6,
         culture_dim=256,
@@ -1100,7 +1111,7 @@ def train_ddp(rank, world_size, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='LoRA Enhanced CultureMoE Training with DDP - Layer-wise Expert Allocation')
+    parser = argparse.ArgumentParser(description='LoRA Enhanced CultureMoE Training with DDP - Last 2 Layers MoE')
     parser.add_argument('--base_model', type=str, default='meta-llama/Llama-2-7b-hf', help='Base model path')
     parser.add_argument('--data_path', type=str, required=True, help='Training data path')
     parser.add_argument('--output_dir', type=str, default='./outputs/lora_culturemoe', help='Output directory')
@@ -1110,10 +1121,9 @@ def main():
     parser.add_argument('--learning_rate', type=float, default=2e-4, help='Learning rate')
     parser.add_argument('--max_seq_length', type=int, default=512, help='Maximum sequence length')
 
-    # 层级专家分配参数
-    parser.add_argument('--moe_start_layer', type=int, default=17, help='Start layer for MoE (1-indexed)')
-    parser.add_argument('--layer_17_24_experts', type=int, default=3, help='Number of experts for layers 17-24')
-    parser.add_argument('--layer_25_32_experts', type=int, default=5, help='Number of experts for layers 25-32')
+    # MoE配置参数
+    parser.add_argument('--backbone', type=str, default='qwen', choices=['llama', 'qwen'], help='Model backbone type')
+    parser.add_argument('--num_routing_experts', type=int, default=4, help='Number of routing experts per MoE layer')
 
     # LoRA参数
     parser.add_argument('--lora_rank', type=int, default=16, help='LoRA rank')
