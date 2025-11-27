@@ -374,6 +374,49 @@ class SimplifiedCultureMoEAdapter:
 
         print(f"✅ Simplified CultureMoE weights saved to {save_path}")
 
+    def get_accumulated_z_loss(self):
+        """计算z-loss用于稳定路由器"""
+        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        if hasattr(model_to_check, 'model'):
+            layers = model_to_check.model.layers
+        else:
+            layers = model_to_check.layers
+
+        total_z_loss = None
+        mixlora_layer_count = 0
+
+        # 收集所有MixLoRA层的z-loss
+        for layer_idx in range(len(layers)):
+            mixlora_layer = layers[layer_idx].mlp
+            if isinstance(mixlora_layer, SimplifiedMixLoRALayer) and hasattr(mixlora_layer, 'latest_router_logits'):
+                if mixlora_layer.latest_router_logits is not None:
+                    # 计算z-loss：惩罚过大的logits值
+                    z_loss = 0.001 * (mixlora_layer.latest_router_logits ** 2).mean()
+                    z_loss = z_loss.to(dtype=torch.float16)
+
+                    # 检查数值稳定性
+                    if torch.isnan(z_loss) or torch.isinf(z_loss):
+                        z_loss = torch.tensor(0.0, device=mixlora_layer.latest_router_logits.device, dtype=torch.float16)
+
+                    if total_z_loss is None:
+                        total_z_loss = z_loss
+                    else:
+                        total_z_loss += z_loss
+
+                    mixlora_layer_count += 1
+
+        # 如果没有找到任何MixLoRA层，返回零损失
+        if total_z_loss is None:
+            device = next(model_to_check.parameters()).device
+            total_z_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+        else:
+            # 平均化z-loss
+            if mixlora_layer_count > 1:
+                total_z_loss = total_z_loss / mixlora_layer_count
+
+        return total_z_loss
+
     def print_trainable_parameters(self):
         """打印可训练参数统计"""
         total_params = 0
