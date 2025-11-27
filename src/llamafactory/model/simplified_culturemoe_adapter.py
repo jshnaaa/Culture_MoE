@@ -131,21 +131,29 @@ class SimplifiedMixLoRALayer(nn.Module):
     def forward(self, hidden_states):
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
-        # 输入预处理（与MixLoRA一致）
+        # 输入预处理（与MixLoRA一致）- 数值稳定版本
         hidden_states = torch.clamp(hidden_states, min=-5.0, max=5.0)
+
+        # 检查输入是否有NaN/Inf
+        if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
+            print("⚠️ NaN/Inf detected in input, using zeros")
+            hidden_states = torch.zeros_like(hidden_states)
+
         hidden_flat = hidden_states.view(-1, hidden_dim)
 
         # 确保router在正确设备和dtype上
         if self.router.weight.device != hidden_flat.device or self.router.weight.dtype != hidden_flat.dtype:
             self.router = self.router.to(device=hidden_flat.device, dtype=hidden_flat.dtype)
 
-        # 限制router权重（与MixLoRA一致）
+        # 限制router权重（与MixLoRA一致）- 更保守的限制
         with torch.no_grad():
-            self.router.weight.data.clamp_(-2.0, 2.0)
+            self.router.weight.data.clamp_(-1.0, 1.0)  # 更保守的限制
+            if self.router.bias is not None:
+                self.router.bias.data.clamp_(-0.5, 0.5)
 
-        # 计算路由logits
+        # 计算路由logits - 数值稳定版本
         router_logits = self.router(hidden_flat)
-        router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
+        router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)  # 更保守的限制
 
         # 保存router logits用于文化损失
         if self.training:
@@ -153,28 +161,40 @@ class SimplifiedMixLoRALayer(nn.Module):
             self.latest_batch_size = batch_size
             self.latest_seq_len = seq_len
 
-        # 检查异常值
+        # 检查异常值（与MixLoRA一致）
         if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
+            print("⚠️ NaN/Inf detected in router_logits, using zeros")
             router_logits = torch.zeros_like(router_logits)
 
-        # Top-K选择（与MixLoRA一致）
+        # Top-K选择（与MixLoRA一致）- 数值稳定版本
         try:
             top_k_logits, selected_experts = torch.topk(router_logits, self.top_k, dim=-1)
-        except:
+        except Exception as e:
+            print(f"⚠️ TopK selection failed: {e}, using fallback")
             selected_experts = torch.arange(self.top_k, device=router_logits.device).unsqueeze(0).expand(router_logits.size(0), -1)
             top_k_logits = router_logits[:, :self.top_k]
 
-        # 数值稳定的softmax
+        # 数值稳定的softmax（与MixLoRA一致）
         try:
+            # 减去最大值提高数值稳定性
             top_k_logits_max = top_k_logits.max(dim=-1, keepdim=True)[0]
             top_k_logits_stable = top_k_logits - top_k_logits_max
+            # 进一步限制范围
+            top_k_logits_stable = torch.clamp(top_k_logits_stable, min=-10.0, max=10.0)
             expert_weights = F.softmax(top_k_logits_stable, dim=-1)
-        except:
+        except Exception as e:
+            print(f"⚠️ Softmax failed: {e}, using uniform weights")
             expert_weights = torch.ones_like(top_k_logits) / self.top_k
 
-        # 检查权重异常值
+        # 检查权重异常值（与MixLoRA一致）
         if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+            print("⚠️ NaN/Inf detected in expert_weights, using uniform weights")
             expert_weights = torch.ones_like(expert_weights) / self.top_k
+
+        # 确保权重和为1（数值稳定性）
+        weight_sums = expert_weights.sum(dim=-1, keepdim=True)
+        weight_sums = torch.clamp(weight_sums, min=1e-8)  # 避免除零
+        expert_weights = expert_weights / weight_sums
 
         # 1. 共享FFN计算（与MixLoRA一致）
         shared_output = self._compute_shared_ffn(hidden_states)
@@ -184,60 +204,163 @@ class SimplifiedMixLoRALayer(nn.Module):
             hidden_states, selected_experts, expert_weights
         )
 
-        # 3. 组合输出
-        final_output = shared_output + expert_output
+        # 3. 组合输出 - 数值稳定版本
+        try:
+            # 检查共享输出
+            if torch.isnan(shared_output).any() or torch.isinf(shared_output).any():
+                print("⚠️ NaN/Inf in shared_output, using zeros")
+                shared_output = torch.zeros_like(shared_output)
 
-        return final_output
+            # 检查专家输出
+            if torch.isnan(expert_output).any() or torch.isinf(expert_output).any():
+                print("⚠️ NaN/Inf in expert_output, using zeros")
+                expert_output = torch.zeros_like(expert_output)
+
+            # 限制输出范围
+            shared_output = torch.clamp(shared_output, min=-10.0, max=10.0)
+            expert_output = torch.clamp(expert_output, min=-5.0, max=5.0)
+
+            # 组合输出
+            final_output = shared_output + expert_output
+
+            # 限制最终输出范围（与MixLoRA一致）
+            final_output = torch.clamp(final_output, min=-15.0, max=15.0)
+
+            # 最终NaN/Inf检查
+            if torch.isnan(final_output).any() or torch.isinf(final_output).any():
+                print("⚠️ NaN/Inf detected in final output, using shared output only")
+                final_output = torch.clamp(shared_output, min=-10.0, max=10.0)
+
+            return final_output
+
+        except Exception as e:
+            print(f"⚠️ Final output computation failed: {e}, using input")
+            return torch.clamp(hidden_states, min=-5.0, max=5.0)
 
     def _compute_shared_ffn(self, hidden_states):
-        """计算共享FFN输出（与MixLoRA一致）"""
-        # 使用原始的共享FFN
-        gate_output = self.shared_ffn.act_fn(self.shared_ffn.gate_proj(hidden_states))
-        up_output = self.shared_ffn.up_proj(hidden_states)
-        shared_output = self.shared_ffn.down_proj(gate_output * up_output)
-        return shared_output
+        """计算共享FFN输出（与MixLoRA一致）- 数值稳定版本"""
+        try:
+            # 输入限制
+            hidden_states = torch.clamp(hidden_states, min=-5.0, max=5.0)
+
+            # 使用原始的共享FFN
+            gate_output = self.shared_ffn.act_fn(self.shared_ffn.gate_proj(hidden_states))
+            up_output = self.shared_ffn.up_proj(hidden_states)
+
+            # 限制中间结果
+            gate_output = torch.clamp(gate_output, min=-10.0, max=10.0)
+            up_output = torch.clamp(up_output, min=-10.0, max=10.0)
+
+            # 计算最终输出
+            combined = gate_output * up_output
+            combined = torch.clamp(combined, min=-15.0, max=15.0)
+            shared_output = self.shared_ffn.down_proj(combined)
+
+            # 限制最终输出
+            shared_output = torch.clamp(shared_output, min=-10.0, max=10.0)
+
+            # 检查NaN/Inf
+            if torch.isnan(shared_output).any() or torch.isinf(shared_output).any():
+                print("⚠️ NaN/Inf detected in shared_ffn output, using zeros")
+                shared_output = torch.zeros_like(shared_output)
+
+            return shared_output
+
+        except Exception as e:
+            print(f"⚠️ Shared FFN computation failed: {e}, using zeros")
+            return torch.zeros_like(hidden_states)
 
     def _compute_lora_experts(self, hidden_states, selected_experts, expert_weights):
-        """计算LoRA专家输出"""
+        """计算LoRA专家输出 - 数值稳定版本（与MixLoRA一致）"""
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
-        # 初始化专家输出
-        expert_output = torch.zeros_like(hidden_states)
+        try:
+            # 初始化专家输出
+            expert_output = torch.zeros_like(hidden_states)
 
-        # 重塑为[batch_size * seq_len, hidden_dim]以匹配路由器输出
-        hidden_flat = hidden_states.view(-1, hidden_dim)
-        expert_output_flat = expert_output.view(-1, hidden_dim)
+            # 重塑为[batch_size * seq_len, hidden_dim]以匹配路由器输出
+            hidden_flat = hidden_states.view(-1, hidden_dim)
+            expert_output_flat = expert_output.view(-1, hidden_dim)
 
-        # 为每个选中的专家计算LoRA输出
-        for expert_idx in range(self.num_experts):
-            # 找到使用当前专家的token位置
-            expert_mask = (selected_experts == expert_idx).any(dim=-1)  # [batch_size * seq_len]
+            # 为每个选中的专家计算LoRA输出
+            for expert_idx in range(self.num_experts):
+                try:
+                    # 找到使用当前专家的token位置
+                    expert_mask = (selected_experts == expert_idx).any(dim=-1)  # [batch_size * seq_len]
 
-            if expert_mask.any():
-                # 获取该专家的权重
-                expert_weight_mask = (selected_experts == expert_idx).float()  # [batch_size * seq_len, top_k]
-                weights = (expert_weights * expert_weight_mask).sum(dim=-1)  # [batch_size * seq_len]
+                    if expert_mask.any():
+                        # 获取该专家的权重
+                        expert_weight_mask = (selected_experts == expert_idx).float()  # [batch_size * seq_len, top_k]
+                        weights = (expert_weights * expert_weight_mask).sum(dim=-1)  # [batch_size * seq_len]
 
-                # 只对使用该专家的token进行计算
-                if expert_mask.any():
-                    # 计算LoRA专家输出
-                    expert = self.lora_experts[expert_idx]
+                        # 限制权重范围
+                        weights = torch.clamp(weights, min=0.0, max=1.0)
 
-                    # LoRA FFN计算 - 对所有token计算，然后只应用到相关位置
-                    gate_lora = expert.gate_proj_lora(hidden_states)
-                    up_lora = expert.up_proj_lora(hidden_states)
-                    down_lora = expert.down_proj_lora(self.shared_ffn.act_fn(gate_lora) * up_lora)
+                        # 检查权重是否有异常值
+                        if torch.isnan(weights).any() or torch.isinf(weights).any():
+                            print(f"⚠️ NaN/Inf in expert {expert_idx} weights, skipping")
+                            continue
 
-                    # 重塑并应用权重
-                    down_lora_flat = down_lora.view(-1, hidden_dim)
-                    weighted_output = down_lora_flat * weights.unsqueeze(-1)  # [batch_size * seq_len, hidden_dim]
+                        # 计算LoRA专家输出
+                        expert = self.lora_experts[expert_idx]
 
-                    # 累加到专家输出
-                    expert_output_flat += weighted_output
+                        # LoRA FFN计算 - 数值稳定版本
+                        gate_lora = expert.gate_proj_lora(hidden_states)
+                        up_lora = expert.up_proj_lora(hidden_states)
 
-        # 重塑回原始维度
-        expert_output = expert_output_flat.view(batch_size, seq_len, hidden_dim)
-        return expert_output
+                        # 检查中间结果
+                        if torch.isnan(gate_lora).any() or torch.isinf(gate_lora).any():
+                            print(f"⚠️ NaN/Inf in expert {expert_idx} gate_lora, skipping")
+                            continue
+                        if torch.isnan(up_lora).any() or torch.isinf(up_lora).any():
+                            print(f"⚠️ NaN/Inf in expert {expert_idx} up_lora, skipping")
+                            continue
+
+                        # 应用激活函数并限制范围
+                        activated_gate = self.shared_ffn.act_fn(gate_lora)
+                        activated_gate = torch.clamp(activated_gate, min=-10.0, max=10.0)
+                        up_lora = torch.clamp(up_lora, min=-10.0, max=10.0)
+
+                        # 计算down projection
+                        combined_lora = activated_gate * up_lora
+                        combined_lora = torch.clamp(combined_lora, min=-15.0, max=15.0)
+                        down_lora = expert.down_proj_lora(combined_lora)
+
+                        # 检查最终LoRA输出
+                        if torch.isnan(down_lora).any() or torch.isinf(down_lora).any():
+                            print(f"⚠️ NaN/Inf in expert {expert_idx} down_lora, skipping")
+                            continue
+
+                        # 重塑并应用权重
+                        down_lora_flat = down_lora.view(-1, hidden_dim)
+                        weighted_output = down_lora_flat * weights.unsqueeze(-1)  # [batch_size * seq_len, hidden_dim]
+
+                        # 限制加权输出
+                        weighted_output = torch.clamp(weighted_output, min=-5.0, max=5.0)
+
+                        # 累加到专家输出
+                        expert_output_flat += weighted_output
+
+                except Exception as e:
+                    print(f"⚠️ Expert {expert_idx} computation failed: {e}, skipping")
+                    continue
+
+            # 重塑回原始维度
+            expert_output = expert_output_flat.view(batch_size, seq_len, hidden_dim)
+
+            # 限制最终专家输出
+            expert_output = torch.clamp(expert_output, min=-10.0, max=10.0)
+
+            # 最终NaN/Inf检查
+            if torch.isnan(expert_output).any() or torch.isinf(expert_output).any():
+                print("⚠️ NaN/Inf detected in final expert output, using zeros")
+                expert_output = torch.zeros_like(expert_output)
+
+            return expert_output
+
+        except Exception as e:
+            print(f"⚠️ Expert computation failed: {e}, using zeros")
+            return torch.zeros_like(hidden_states)
 
     def get_router_probs_for_culture_loss(self):
         """获取路由概率用于文化损失计算"""
