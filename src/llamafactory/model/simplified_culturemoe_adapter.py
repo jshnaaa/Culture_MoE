@@ -177,27 +177,39 @@ class SimplifiedMixLoRALayer(nn.Module):
         # 初始化专家输出
         expert_output = torch.zeros_like(hidden_states)
 
+        # 重塑为[batch_size * seq_len, hidden_dim]以匹配路由器输出
+        hidden_flat = hidden_states.view(-1, hidden_dim)
+        expert_output_flat = expert_output.view(-1, hidden_dim)
+
         # 为每个选中的专家计算LoRA输出
         for expert_idx in range(self.num_experts):
-            # 找到使用当前专家的位置
-            expert_mask = (selected_experts == expert_idx).any(dim=-1)
+            # 找到使用当前专家的token位置
+            expert_mask = (selected_experts == expert_idx).any(dim=-1)  # [batch_size * seq_len]
 
             if expert_mask.any():
-                # 获取专家权重
-                expert_weight_mask = (selected_experts == expert_idx).float()
-                weights = (expert_weights * expert_weight_mask).sum(dim=-1, keepdim=True)
+                # 获取该专家的权重
+                expert_weight_mask = (selected_experts == expert_idx).float()  # [batch_size * seq_len, top_k]
+                weights = (expert_weights * expert_weight_mask).sum(dim=-1)  # [batch_size * seq_len]
 
-                # 计算LoRA专家输出
-                expert = self.lora_experts[expert_idx]
+                # 只对使用该专家的token进行计算
+                if expert_mask.any():
+                    # 计算LoRA专家输出
+                    expert = self.lora_experts[expert_idx]
 
-                # LoRA FFN计算
-                gate_lora = expert.gate_proj_lora(hidden_states)
-                up_lora = expert.up_proj_lora(hidden_states)
-                down_lora = expert.down_proj_lora(self.shared_ffn.act_fn(gate_lora) * up_lora)
+                    # LoRA FFN计算 - 对所有token计算，然后只应用到相关位置
+                    gate_lora = expert.gate_proj_lora(hidden_states)
+                    up_lora = expert.up_proj_lora(hidden_states)
+                    down_lora = expert.down_proj_lora(self.shared_ffn.act_fn(gate_lora) * up_lora)
 
-                # 应用权重
-                expert_output += down_lora * weights.unsqueeze(-1)
+                    # 重塑并应用权重
+                    down_lora_flat = down_lora.view(-1, hidden_dim)
+                    weighted_output = down_lora_flat * weights.unsqueeze(-1)  # [batch_size * seq_len, hidden_dim]
 
+                    # 累加到专家输出
+                    expert_output_flat += weighted_output
+
+        # 重塑回原始维度
+        expert_output = expert_output_flat.view(batch_size, seq_len, hidden_dim)
         return expert_output
 
     def get_router_probs_for_culture_loss(self):
