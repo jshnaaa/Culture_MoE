@@ -19,7 +19,7 @@ class SimplifiedCultureMoEConfig:
 
     # MoE配置
     num_routing_experts: int = 2  # 路由专家数量
-    top_k: int = 1  # Top-K路由，设为1减少计算
+    top_k: int = 2  # Top-K路由，设为2实现真正稀疏MoE
     aux_loss_coef: float = 0.001  # 辅助损失系数
 
     # 指定哪些层使用MoE (0-indexed) - None表示所有层都使用
