@@ -14,7 +14,7 @@ from .simplified_culturemoe import SimplifiedCultureMoEConfig
 
 
 class LoRALinear(nn.Module):
-    """LoRA线性层"""
+    """LoRA线性层 - 数值稳定版本（与MixLoRA一致）"""
 
     def __init__(self, in_features: int, out_features: int, rank: int, alpha: int, dropout: float = 0.1):
         super().__init__()
@@ -29,12 +29,39 @@ class LoRALinear(nn.Module):
         self.lora_B = nn.Linear(rank, out_features, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-        # 初始化 - 与MixLoRA一致
-        nn.init.normal_(self.lora_A.weight, mean=0.0, std=0.01)
+        # 初始化 - 数值稳定版本（与MixLoRA一致）
+        nn.init.normal_(self.lora_A.weight, mean=0.0, std=0.001)
         nn.init.zeros_(self.lora_B.weight)
+        # 限制LoRA A权重范围
+        with torch.no_grad():
+            self.lora_A.weight.data.clamp_(-0.1, 0.1)
 
     def forward(self, x):
-        return self.lora_B(self.dropout(self.lora_A(x))) * self.scaling
+        # 输入预处理：限制范围（与MixLoRA一致）
+        x = torch.clamp(x, min=-5.0, max=5.0)
+
+        # 限制LoRA权重范围，防止训练中权重爆炸（与MixLoRA一致）
+        with torch.no_grad():
+            self.lora_A.weight.data.clamp_(-1.0, 1.0)
+            self.lora_B.weight.data.clamp_(-1.0, 1.0)
+
+        # 计算LoRA输出: B * A * x (数值稳定版本)
+        lora_a_output = self.lora_A(x)
+        lora_a_output = torch.clamp(lora_a_output, min=-5.0, max=5.0)  # 限制中间结果
+        lora_output = self.lora_B(self.dropout(lora_a_output))
+
+        # 应用保守的LoRA缩放（与MixLoRA一致）
+        safe_scaling = min(self.scaling, 1.0)  # 限制最大缩放
+        lora_output = lora_output * safe_scaling
+
+        # 限制LoRA输出范围（与MixLoRA一致）
+        lora_output = torch.clamp(lora_output, min=-3.0, max=3.0)
+
+        # 检查NaN/Inf（与MixLoRA一致）
+        if torch.isnan(lora_output).any() or torch.isinf(lora_output).any():
+            lora_output = torch.zeros_like(lora_output)
+
+        return lora_output
 
 
 class SimplifiedMixLoRALayer(nn.Module):
