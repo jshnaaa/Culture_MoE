@@ -14,7 +14,7 @@ echo "======================================="
 BACKBONE=${1:-"qwen"}  # 默认使用qwen2.5-7B
 DATA_ID=${2:-"2"}
 NUM_MOE_EXPERTS=${3:-"4"}  # MoE专家数量
-USE_CULTURE_LOSS=${4:-"true"}
+USE_CULTURE_LOSS=${4:-"false"}
 NUM_GPUS=${5:-"2"}
 LORA_RANK=${6:-"16"}  # LoRA rank
 LORA_ALPHA=${7:-"32"}  # LoRA alpha
