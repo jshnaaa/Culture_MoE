@@ -644,7 +644,7 @@ def main():
 
         # MoE配置
         num_moe_experts=args.num_moe_experts,
-        moe_hidden_dim=base_model.config.hidden_size,
+        moe_hidden_dim=base_model.config.hidden_size,  # 将自动在模型初始化时设置
 
         # 文化损失配置
         use_culture_loss=use_culture_loss,
