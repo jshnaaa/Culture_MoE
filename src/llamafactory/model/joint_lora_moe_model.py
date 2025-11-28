@@ -23,8 +23,8 @@ class JointLoRAMoEConfig:
     """联合LoRA+MoE配置"""
 
     # LoRA配置
-    lora_rank: int = 16
-    lora_alpha: int = 32
+    lora_rank: int = 8
+    lora_alpha: int = 16
     lora_dropout: float = 0.1
     lora_target_modules: List[str] = None
 
@@ -68,19 +68,14 @@ class MoEExpert(nn.Module):
         for module in [self.gate_proj, self.up_proj, self.down_proj]:
             # 使用更小的标准差，防止权重过大
             nn.init.normal_(module.weight, mean=0.0, std=0.001)
-            # 限制权重范围
-            with torch.no_grad():
-                module.weight.data.clamp_(-0.1, 0.1)
+            # 移除权重限制以避免DDP问题
+            # with torch.no_grad():
+            #     module.weight.data.clamp_(-0.1, 0.1)
 
     def forward(self, x):
         """前向传播 - 数值稳定版本"""
         # 输入限制
         x = torch.clamp(x, min=-5.0, max=5.0)
-
-        # 限制权重范围（训练过程中防止权重爆炸）
-        with torch.no_grad():
-            for module in [self.gate_proj, self.up_proj, self.down_proj]:
-                module.weight.data.clamp_(-1.0, 1.0)
 
         gate_output = self.act_fn(self.gate_proj(x))
         up_output = self.up_proj(x)
@@ -115,8 +110,9 @@ class MoERouter(nn.Module):
 
         # 初始化权重 - 更保守的初始化
         nn.init.normal_(self.router.weight, mean=0.0, std=0.001)
-        with torch.no_grad():
-            self.router.weight.data.clamp_(-0.1, 0.1)
+        # 移除权重限制以避免DDP问题
+        # with torch.no_grad():
+        #     self.router.weight.data.clamp_(-0.1, 0.1)
 
     def forward(self, x, temperature: float = 1.0):
         """
@@ -186,10 +182,10 @@ class MoELayer(nn.Module):
         self.gate = nn.Linear(config.moe_hidden_dim, config.moe_hidden_dim, dtype=dtype)
         nn.init.normal_(self.gate.weight, mean=0.0, std=0.0001)  # 更小的标准差
         nn.init.constant_(self.gate.bias, -3.0)  # 更强地倾向于使用共享专家
-        # 限制初始权重
-        with torch.no_grad():
-            self.gate.weight.data.clamp_(-0.01, 0.01)
-            self.gate.bias.data.clamp_(-5.0, 0.0)
+        # 移除权重限制以避免DDP问题
+        # with torch.no_grad():
+        #     self.gate.weight.data.clamp_(-0.01, 0.01)
+        #     self.gate.bias.data.clamp_(-5.0, 0.0)
 
     def forward(self, hidden_states):
         """
@@ -221,10 +217,6 @@ class MoELayer(nn.Module):
             # 2. 路由决策（基于pooled representation）
             pooled = hidden_states.mean(dim=1)  # [B, H]
             pooled = torch.clamp(pooled, min=-5.0, max=5.0)
-
-            # 限制路由器权重
-            with torch.no_grad():
-                self.router.router.weight.data.clamp_(-1.0, 1.0)
 
             expert_weights, router_logits = self.router(pooled, temperature=2.0)  # 使用更高温度
 
@@ -261,11 +253,6 @@ class MoELayer(nn.Module):
             weighted_expert_output = torch.clamp(weighted_expert_output, min=-10.0, max=10.0)
 
             # 4. 门控融合（更保守的门控）
-            # 限制门控权重
-            with torch.no_grad():
-                self.gate.weight.data.clamp_(-0.1, 0.1)
-                self.gate.bias.data.clamp_(-5.0, 0.0)
-
             gate_input = torch.clamp(hidden_states, min=-3.0, max=3.0)
             gate_weights = torch.sigmoid(self.gate(gate_input))  # [B, L, H]
             gate_weights = torch.clamp(gate_weights, min=0.0, max=0.5)  # 限制门控强度
@@ -282,17 +269,23 @@ class MoELayer(nn.Module):
         except Exception as e:
             print(f"⚠️ MoE forward failed: {e}, using input passthrough")
             final_output = torch.clamp(hidden_states, min=-5.0, max=5.0)
-            expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype) / self.num_experts
+            # 确保expert_weights已定义，如果未定义则创建
+            if 'expert_weights' not in locals():
+                expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype) / self.num_experts
 
         # 5. 计算辅助损失（负载均衡）
         try:
-            uniform_dist = torch.ones_like(expert_weights) / self.num_experts
-            # 使用更稳定的损失计算
-            router_probs = F.softmax(router_logits, dim=-1)
-            aux_loss = F.mse_loss(router_probs, uniform_dist) * 0.01  # 使用MSE而不是KL散度
+            # 确保router_logits已定义
+            if 'router_logits' in locals() and router_logits is not None:
+                uniform_dist = torch.ones_like(expert_weights) / self.num_experts
+                # 使用更稳定的损失计算
+                router_probs = F.softmax(router_logits, dim=-1)
+                aux_loss = F.mse_loss(router_probs, uniform_dist) * 0.01  # 使用MSE而不是KL散度
 
-            # 检查数值稳定性
-            if torch.isnan(aux_loss) or torch.isinf(aux_loss):
+                # 检查数值稳定性
+                if torch.isnan(aux_loss) or torch.isinf(aux_loss):
+                    aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+            else:
                 aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
         except Exception as e:
             aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
@@ -464,8 +457,8 @@ class JointLoRAMoEModel(nn.Module):
                     print("⚠️ NaN/Inf detected in total loss, using lm_loss only")
                     loss = lm_loss
 
-                # 确保所有参数都参与损失计算（DDP要求）
-                loss = loss + self._get_regularization_loss()
+                # 注释掉正则化损失，避免DDP参数重复问题
+                # loss = loss + self._get_regularization_loss()
 
             except Exception as e:
                 print(f"⚠️ Loss computation failed: {e}, using zero loss")

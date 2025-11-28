@@ -16,8 +16,8 @@ DATA_ID=${2:-"2"}
 NUM_MOE_EXPERTS=${3:-"4"}  # MoE专家数量
 USE_CULTURE_LOSS=${4:-"false"}
 NUM_GPUS=${5:-"2"}
-LORA_RANK=${6:-"16"}  # LoRA rank
-LORA_ALPHA=${7:-"32"}  # LoRA alpha
+LORA_RANK=${6:-"8"}   # LoRA rank
+LORA_ALPHA=${7:-"16"} # LoRA alpha
 
 # 检查参数
 if [ "$#" -gt 7 ]; then

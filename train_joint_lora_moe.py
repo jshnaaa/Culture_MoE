@@ -249,26 +249,23 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
 
         # 梯度更新
         if (batch_idx + 1) % num_accumulation_steps == 0:
-            # 在多GPU模式下确保梯度同步完成
-            if hasattr(model, 'module'):  # DDP wrapped
-                torch.distributed.barrier()
-
             # 更保守的梯度裁剪
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
 
             optimizer.step()
             optimizer.zero_grad()
 
-            # 强制清理梯度缓存
-            for param in model.parameters():
-                if param.grad is not None:
-                    param.grad = None
+            # 不需要手动清理梯度，zero_grad()已经处理了
+            # for param in model.parameters():
+            #     if param.grad is not None:
+            #         param.grad = None
 
         # 更频繁的内存清理
         if (batch_idx + 1) % 2 == 0:  # 每2个batch清理一次
             torch.cuda.empty_cache()
-            if hasattr(model, 'module'):
-                torch.distributed.barrier()
+            # 移除barrier调用，避免与DDP冲突
+            # if hasattr(model, 'module'):
+            #     torch.distributed.barrier()
 
         # 检查内存使用并在必要时强制清理
         if torch.cuda.is_available():
@@ -525,9 +522,9 @@ def main():
                         help="Culture loss weight")
 
     # LoRA参数
-    parser.add_argument("--lora_rank", type=int, default=16,
+    parser.add_argument("--lora_rank", type=int, default=8,
                         help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=32,
+    parser.add_argument("--lora_alpha", type=int, default=16,
                         help="LoRA alpha")
     parser.add_argument("--lora_dropout", type=float, default=0.1,
                         help="LoRA dropout")
@@ -689,8 +686,11 @@ def main():
             gradient_as_bucket_view=True
         )
 
+        # 设置静态图以避免参数重复标记问题
+        model._set_static_graph()
+
         if is_main_process(rank):
-            print("✅ Model wrapped with DDP")
+            print("✅ Model wrapped with DDP with static graph")
 
     # 设置分层优化器
     if hasattr(model, 'module'):
