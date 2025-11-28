@@ -7,7 +7,6 @@
 echo "======================================="
 echo "联合训练：LoRA + MoE 端到端优化"
 echo "同时训练预训练LoRA适配器和新增MoE层"
-echo "针对48GB×2卡优化"
 echo "======================================="
 
 # 参数设置
@@ -22,12 +21,6 @@ LORA_ALPHA=${7:-"16"} # LoRA alpha
 # 检查参数
 if [ "$#" -gt 7 ]; then
     echo "❌ 参数过多！用法: $0 [backbone] [data_id] [num_moe_experts] [use_culture_loss] [num_gpus] [lora_rank] [lora_alpha]"
-    exit 1
-fi
-
-# 验证专家数参数
-if ! [[ "$NUM_MOE_EXPERTS" =~ ^[2-8]$ ]]; then
-    echo "❌ MoE专家数必须是2-8: $NUM_MOE_EXPERTS"
     exit 1
 fi
 
@@ -242,7 +235,6 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
     fi
 else
     echo "❌ 联合训练 LoRA + MoE 失败！退出码: $TRAINING_SUCCESS"
-    echo ""
     echo "故障排查："
     echo "1. 检查显存使用: nvidia-smi"
     echo "2. 查看详细日志: $OUTPUT_DIR/training.log"
@@ -255,6 +247,5 @@ echo "  配置文件: $OUTPUT_DIR/config.json"
 if [ $TRAINING_SUCCESS -eq 0 ]; then
     echo "  最佳模型: $OUTPUT_DIR/best_joint_model/"
 fi
-echo "======================================="
 
 exit $TRAINING_SUCCESS
