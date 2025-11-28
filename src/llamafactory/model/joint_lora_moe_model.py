@@ -379,9 +379,11 @@ class JointLoRAMoEModel(nn.Module):
                     bias=False,
                     dtype=hidden_states.dtype  # 确保dtype匹配
                 )
+                # 初始化权重
+                nn.init.normal_(self.hidden_proj.weight, mean=0.0, std=0.001)
+                self.hidden_proj = self.hidden_proj.to(hidden_states.device, hidden_states.dtype)
                 # 注册为模型参数，避免重复创建
                 self.add_module('hidden_proj', self.hidden_proj)
-                self.hidden_proj = self.hidden_proj.to(hidden_states.device, hidden_states.dtype)
             hidden_states = self.hidden_proj(hidden_states)
 
         # 3. MoE层处理
@@ -398,9 +400,11 @@ class JointLoRAMoEModel(nn.Module):
                     bias=False,
                     dtype=moe_output.dtype  # 确保dtype匹配
                 )
+                # 初始化权重
+                nn.init.normal_(self.hidden_proj_back.weight, mean=0.0, std=0.001)
+                self.hidden_proj_back = self.hidden_proj_back.to(moe_output.device, moe_output.dtype)
                 # 注册为模型参数，避免重复创建
                 self.add_module('hidden_proj_back', self.hidden_proj_back)
-                self.hidden_proj_back = self.hidden_proj_back.to(moe_output.device, moe_output.dtype)
             moe_output = self.hidden_proj_back(moe_output)
 
         # 使用基础模型的lm_head
@@ -415,9 +419,11 @@ class JointLoRAMoEModel(nn.Module):
                 self.temp_lm_head = nn.Linear(
                     moe_output.size(-1), vocab_size, bias=False, dtype=moe_output.dtype
                 )
+                # 初始化权重
+                nn.init.normal_(self.temp_lm_head.weight, mean=0.0, std=0.001)
+                self.temp_lm_head = self.temp_lm_head.to(moe_output.device, moe_output.dtype)
                 # 注册为模型参数，避免重复创建
                 self.add_module('temp_lm_head', self.temp_lm_head)
-                self.temp_lm_head = self.temp_lm_head.to(moe_output.device, moe_output.dtype)
             logits = self.temp_lm_head(moe_output)
 
         # 5. 计算损失 - 数值稳定版本
@@ -458,6 +464,9 @@ class JointLoRAMoEModel(nn.Module):
                     print("⚠️ NaN/Inf detected in total loss, using lm_loss only")
                     loss = lm_loss
 
+                # 确保所有参数都参与损失计算（DDP要求）
+                loss = loss + self._get_regularization_loss()
+
             except Exception as e:
                 print(f"⚠️ Loss computation failed: {e}, using zero loss")
                 loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype, requires_grad=True)
@@ -470,6 +479,19 @@ class JointLoRAMoEModel(nn.Module):
             'expert_weights': expert_weights,
             'moe_aux_loss': moe_aux_loss,
         })()
+
+    def _get_regularization_loss(self):
+        """
+        获取正则化损失，确保所有参数都参与损失计算（DDP要求）
+        """
+        reg_loss = torch.tensor(0.0, device=next(self.parameters()).device, dtype=torch.float16)
+
+        # 对所有可训练参数添加极小的L2正则化
+        for param in self.parameters():
+            if param.requires_grad:
+                reg_loss = reg_loss + 1e-8 * torch.sum(param * param)
+
+        return reg_loss
 
     def get_parameter_groups(self, base_lr: float, moe_lr: float):
         """
