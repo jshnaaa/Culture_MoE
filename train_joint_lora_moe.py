@@ -237,6 +237,11 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             print(f"  LM loss: {lm_loss.item()}, MoE loss: {moe_aux_loss.item()}, Culture loss: {culture_loss.item()}")
             continue
 
+        # 调试信息：显示实际损失值
+        if batch_idx < 5 or batch_idx % 50 == 0:  # 前5个batch和每50个batch
+            print(f"🔍 Batch {batch_idx} - Actual loss values:")
+            print(f"  Total: {total_batch_loss.item():.8f}, LM: {lm_loss.item():.8f}, MoE: {moe_aux_loss.item():.8f}")
+
         # 梯度累积
         total_batch_loss = total_batch_loss / num_accumulation_steps
         total_batch_loss.backward()
@@ -277,11 +282,11 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 if rank == 0:
                     print(f"⚠️ High memory usage ({memory_allocated:.1f}GB), forced cleanup")
 
-        # 更新进度条
+        # 更新进度条 - 增加显示精度
         postfix = {
-            'loss': f"{total_batch_loss.item() * num_accumulation_steps:.4f}",
-            'lm': f"{lm_loss.item():.4f}",
-            'moe': f"{moe_aux_loss.item():.4f}"
+            'loss': f"{total_batch_loss.item() * num_accumulation_steps:.6f}",
+            'lm': f"{lm_loss.item():.6f}",
+            'moe': f"{moe_aux_loss.item():.6f}"
         }
         if use_culture_loss:
             postfix['culture'] = f"{culture_loss.item():.4f}"

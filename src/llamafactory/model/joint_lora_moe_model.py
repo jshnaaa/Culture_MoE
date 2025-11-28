@@ -81,7 +81,7 @@ class MoEExpert(nn.Module):
     def forward(self, x):
         """前向传播 - 极度保守的数值稳定版本"""
         # 输入归一化
-        x = torch.clamp(x, min=-1.0, max=1.0)  # 更严格的输入限制
+        x = torch.clamp(x, min=-3.0, max=3.0)  # 合理的输入限制
 
         try:
             # 第一阶段：gate和up投影
@@ -118,7 +118,7 @@ class MoEExpert(nn.Module):
 
             # 最终投影
             output = self.down_proj(intermediate)
-            output = torch.clamp(output, min=-1.0, max=1.0)
+            output = torch.clamp(output, min=-3.0, max=3.0)
 
             # 最终检查
             if torch.isnan(output).any() or torch.isinf(output).any():
@@ -159,7 +159,7 @@ class MoERouter(nn.Module):
         """
         try:
             # 输入归一化和限制
-            x = torch.clamp(x, min=-1.0, max=1.0)
+            x = torch.clamp(x, min=-3.0, max=3.0)
             x = self.layer_norm(x)
 
             # 计算路由logits
@@ -250,8 +250,8 @@ class MoELayer(nn.Module):
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
         try:
-            # 输入预处理：极度保守的限制
-            hidden_states = torch.clamp(hidden_states, min=-1.0, max=1.0)
+            # 输入预处理：合理的限制
+            hidden_states = torch.clamp(hidden_states, min=-5.0, max=5.0)
 
             # 检查输入
             if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
@@ -263,7 +263,7 @@ class MoELayer(nn.Module):
             # 1. 路由决策（极简版）
             # 使用平均池化获取序列表示
             pooled = hidden_states.mean(dim=1)  # [B, H]
-            pooled = torch.clamp(pooled, min=-1.0, max=1.0)
+            pooled = torch.clamp(pooled, min=-3.0, max=3.0)
 
             # 路由计算
             expert_weights, router_logits = self.router(pooled, temperature=1.0)
@@ -300,8 +300,8 @@ class MoELayer(nn.Module):
                     weight = torch.clamp(weight, min=0.0, max=1.0)
                     final_output += weight * expert_output
 
-                # 限制输出范围
-                final_output = torch.clamp(final_output, min=-1.0, max=1.0)
+                # 限制输出范围 - 使用更合理的范围
+                final_output = torch.clamp(final_output, min=-5.0, max=5.0)
 
             # 4. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
@@ -484,9 +484,9 @@ class JointLoRAMoEModel(nn.Module):
                 # 检查lm_loss是否为NaN/Inf
                 if torch.isnan(lm_loss) or torch.isinf(lm_loss):
                     print("⚠️ NaN/Inf detected in lm_loss, using fallback loss")
-                    # 使用简单的MSE损失作为fallback，确保有梯度
+                    # 使用有意义大小的MSE损失作为fallback，确保有梯度
                     target_logits = torch.zeros_like(shift_logits)
-                    lm_loss = F.mse_loss(shift_logits, target_logits) * 0.001
+                    lm_loss = F.mse_loss(shift_logits, target_logits) * 10.0  # 增大fallback损失
 
                 # 限制辅助损失的影响
                 moe_aux_loss = torch.clamp(moe_aux_loss, min=0.0, max=1.0)
@@ -506,11 +506,11 @@ class JointLoRAMoEModel(nn.Module):
                 print(f"⚠️ Loss computation failed: {e}, using fallback loss")
                 # 使用模型输出的简单损失，确保有梯度连接
                 if logits is not None:
-                    # 使用logits的L2范数作为损失，确保梯度流
-                    loss = torch.mean(logits ** 2) * 1e-6
+                    # 使用logits的L2范数作为损失，确保梯度流，增大系数
+                    loss = torch.mean(logits ** 2) * 1.0  # 增大系数确保有意义的损失
                 else:
-                    # 最后的fallback：使用模型参数的小损失
-                    loss = sum(torch.mean(p ** 2) for p in self.parameters() if p.requires_grad) * 1e-8
+                    # 最后的fallback：使用模型参数的损失
+                    loss = sum(torch.mean(p ** 2) for p in self.parameters() if p.requires_grad) * 0.1
 
         # 6. 返回结果
         return type('Outputs', (), {
