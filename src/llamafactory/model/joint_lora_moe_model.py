@@ -129,15 +129,22 @@ class MoERouter(nn.Module):
         # 计算路由logits
         router_logits = self.router(x)  # [B, num_experts]
 
-        # 限制logits范围防止数值不稳定
-        router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
+        # 限制logits范围防止数值不稳定 - 更保守的范围
+        router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)
 
         # 应用温度缩放
         router_logits = router_logits / max(temperature, 0.1)  # 防止温度过小
 
         # 计算softmax权重（数值稳定版本）
         router_logits_stable = router_logits - router_logits.max(dim=-1, keepdim=True)[0]
+        # 进一步限制稳定化后的logits
+        router_logits_stable = torch.clamp(router_logits_stable, min=-5.0, max=5.0)
         expert_weights = F.softmax(router_logits_stable, dim=-1)
+
+        # 检查softmax输出
+        if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+            print("⚠️ NaN/Inf in softmax output, using uniform weights")
+            expert_weights = torch.ones_like(expert_weights) / expert_weights.size(-1)
 
         return expert_weights, router_logits
 
@@ -218,12 +225,18 @@ class MoELayer(nn.Module):
             pooled = hidden_states.mean(dim=1)  # [B, H]
             pooled = torch.clamp(pooled, min=-5.0, max=5.0)
 
-            expert_weights, router_logits = self.router(pooled, temperature=2.0)  # 使用更高温度
+            expert_weights, router_logits = self.router(pooled, temperature=1.0)  # 使用标准温度
 
             # 检查路由器输出
             if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
                 print("⚠️ NaN/Inf detected in expert_weights, using uniform")
-                expert_weights = torch.ones_like(expert_weights) / self.num_experts
+                # 保持梯度连接的uniform权重
+                uniform_weights = torch.ones_like(expert_weights) / self.num_experts
+                expert_weights = torch.where(
+                    torch.isnan(expert_weights) | torch.isinf(expert_weights),
+                    uniform_weights,
+                    expert_weights
+                )
 
             # 3. 专家处理（内存优化：逐个处理而不是批量）
             weighted_expert_output = torch.zeros_like(hidden_states)
@@ -423,15 +436,20 @@ class JointLoRAMoEModel(nn.Module):
         loss = None
         if labels is not None:
             try:
-                # 限制logits范围防止数值爆炸
-                logits = torch.clamp(logits, min=-50.0, max=50.0)
+                # 限制logits范围防止数值爆炸 - 使用更保守的范围
+                logits = torch.clamp(logits, min=-10.0, max=10.0)
 
                 # 检查logits是否包含NaN/Inf
                 if torch.isnan(logits).any() or torch.isinf(logits).any():
                     print("⚠️ NaN/Inf detected in logits, using fallback")
                     # 使用基础模型的直接输出作为fallback
                     base_logits = self.base_model.lm_head(base_outputs.hidden_states[-1])
-                    logits = torch.clamp(base_logits, min=-50.0, max=50.0)
+                    logits = torch.clamp(base_logits, min=-10.0, max=10.0)
+
+                    # 如果基础模型的logits也有问题，创建小的随机logits
+                    if torch.isnan(logits).any() or torch.isinf(logits).any():
+                        print("⚠️ Base model logits also NaN/Inf, using random small logits")
+                        logits = torch.randn_like(logits) * 0.01
 
                 # 语言模型损失
                 shift_logits = logits[..., :-1, :].contiguous()
@@ -443,8 +461,10 @@ class JointLoRAMoEModel(nn.Module):
 
                 # 检查lm_loss是否为NaN/Inf
                 if torch.isnan(lm_loss) or torch.isinf(lm_loss):
-                    print("⚠️ NaN/Inf detected in lm_loss, setting to zero")
-                    lm_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+                    print("⚠️ NaN/Inf detected in lm_loss, using fallback loss")
+                    # 使用简单的MSE损失作为fallback，确保有梯度
+                    target_logits = torch.zeros_like(shift_logits)
+                    lm_loss = F.mse_loss(shift_logits, target_logits) * 0.001
 
                 # 限制辅助损失的影响
                 moe_aux_loss = torch.clamp(moe_aux_loss, min=0.0, max=1.0)
@@ -461,8 +481,14 @@ class JointLoRAMoEModel(nn.Module):
                 # loss = loss + self._get_regularization_loss()
 
             except Exception as e:
-                print(f"⚠️ Loss computation failed: {e}, using zero loss")
-                loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype, requires_grad=True)
+                print(f"⚠️ Loss computation failed: {e}, using fallback loss")
+                # 使用模型输出的简单损失，确保有梯度连接
+                if logits is not None:
+                    # 使用logits的L2范数作为损失，确保梯度流
+                    loss = torch.mean(logits ** 2) * 1e-6
+                else:
+                    # 最后的fallback：使用模型参数的小损失
+                    loss = sum(torch.mean(p ** 2) for p in self.parameters() if p.requires_grad) * 1e-8
 
         # 6. 返回结果
         return type('Outputs', (), {

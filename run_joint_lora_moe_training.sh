@@ -109,7 +109,7 @@ echo ""
 # 内存优化的训练参数
 BATCH_SIZE=1              # 最小batch size
 GRADIENT_ACCUMULATION=8   # 梯度累积
-LEARNING_RATE_BASE=5e-5   # 基础模型LoRA学习率
+LEARNING_RATE_BASE=1e-4   # 基础模型LoRA学习率
 LEARNING_RATE_MOE=1e-4    # MoE组件学习率
 NUM_EPOCHS=5              # 训练轮数
 MAX_SEQ_LEN=512          # 序列长度
