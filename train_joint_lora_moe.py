@@ -253,18 +253,32 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             if hasattr(model, 'module'):  # DDP wrapped
                 torch.distributed.barrier()
 
-            # 梯度裁剪防止梯度爆炸
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # 更保守的梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
 
             optimizer.step()
             optimizer.zero_grad()
 
-        # 定期清理GPU缓存
-        cache_clear_interval = (num_accumulation_steps * 5) if hasattr(model, 'module') else (num_accumulation_steps * 10)
-        if (batch_idx + 1) % cache_clear_interval == 0:
+            # 强制清理梯度缓存
+            for param in model.parameters():
+                if param.grad is not None:
+                    param.grad = None
+
+        # 更频繁的内存清理
+        if (batch_idx + 1) % 2 == 0:  # 每2个batch清理一次
             torch.cuda.empty_cache()
             if hasattr(model, 'module'):
                 torch.distributed.barrier()
+
+        # 检查内存使用并在必要时强制清理
+        if torch.cuda.is_available():
+            memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+            if memory_allocated > 40:  # 如果超过40GB，强制清理
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+                if rank == 0:
+                    print(f"⚠️ High memory usage ({memory_allocated:.1f}GB), forced cleanup")
 
         # 更新进度条
         postfix = {

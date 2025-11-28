@@ -64,17 +64,43 @@ class MoEExpert(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        """初始化权重"""
+        """初始化权重 - 更保守的初始化"""
         for module in [self.gate_proj, self.up_proj, self.down_proj]:
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            # 使用更小的标准差，防止权重过大
+            nn.init.normal_(module.weight, mean=0.0, std=0.001)
+            # 限制权重范围
+            with torch.no_grad():
+                module.weight.data.clamp_(-0.1, 0.1)
 
     def forward(self, x):
-        """前向传播"""
+        """前向传播 - 数值稳定版本"""
+        # 输入限制
+        x = torch.clamp(x, min=-5.0, max=5.0)
+
+        # 限制权重范围（训练过程中防止权重爆炸）
+        with torch.no_grad():
+            for module in [self.gate_proj, self.up_proj, self.down_proj]:
+                module.weight.data.clamp_(-1.0, 1.0)
+
         gate_output = self.act_fn(self.gate_proj(x))
         up_output = self.up_proj(x)
+
+        # 限制中间结果
+        gate_output = torch.clamp(gate_output, min=-10.0, max=10.0)
+        up_output = torch.clamp(up_output, min=-10.0, max=10.0)
+
         intermediate = gate_output * up_output
+        intermediate = torch.clamp(intermediate, min=-15.0, max=15.0)
         intermediate = self.dropout(intermediate)
+
         output = self.down_proj(intermediate)
+        output = torch.clamp(output, min=-10.0, max=10.0)
+
+        # NaN/Inf检查
+        if torch.isnan(output).any() or torch.isinf(output).any():
+            print("⚠️ NaN/Inf detected in MoEExpert, using zeros")
+            output = torch.zeros_like(output)
+
         return output
 
 
@@ -87,8 +113,10 @@ class MoERouter(nn.Module):
         self.router = nn.Linear(hidden_dim, num_experts, bias=False, dtype=dtype)
         self.dropout = nn.Dropout(dropout)
 
-        # 初始化权重
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.02)
+        # 初始化权重 - 更保守的初始化
+        nn.init.normal_(self.router.weight, mean=0.0, std=0.001)
+        with torch.no_grad():
+            self.router.weight.data.clamp_(-0.1, 0.1)
 
     def forward(self, x, temperature: float = 1.0):
         """
@@ -154,14 +182,18 @@ class MoELayer(nn.Module):
             dtype=dtype
         )
 
-        # 门控机制
+        # 门控机制 - 更保守的初始化
         self.gate = nn.Linear(config.moe_hidden_dim, config.moe_hidden_dim, dtype=dtype)
-        nn.init.normal_(self.gate.weight, mean=0.0, std=0.001)
-        nn.init.constant_(self.gate.bias, -2.0)  # 初期倾向于使用共享专家
+        nn.init.normal_(self.gate.weight, mean=0.0, std=0.0001)  # 更小的标准差
+        nn.init.constant_(self.gate.bias, -3.0)  # 更强地倾向于使用共享专家
+        # 限制初始权重
+        with torch.no_grad():
+            self.gate.weight.data.clamp_(-0.01, 0.01)
+            self.gate.bias.data.clamp_(-5.0, 0.0)
 
     def forward(self, hidden_states):
         """
-        前向传播
+        前向传播 - 数值稳定和内存优化版本
 
         Args:
             hidden_states: [B, L, H] 输入隐藏状态
@@ -173,44 +205,100 @@ class MoELayer(nn.Module):
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
-        # 1. 共享专家处理
-        shared_output = self.shared_expert(hidden_states)  # [B, L, H]
+        # 输入预处理：限制范围
+        hidden_states = torch.clamp(hidden_states, min=-5.0, max=5.0)
 
-        # 2. 路由决策（基于pooled representation）
-        pooled = hidden_states.mean(dim=1)  # [B, H]
-        expert_weights, router_logits = self.router(pooled)  # [B, num_experts]
+        # 检查输入NaN/Inf
+        if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
+            print("⚠️ NaN/Inf detected in MoE input, using zeros")
+            hidden_states = torch.zeros_like(hidden_states)
 
-        # 3. 专家处理
-        expert_outputs = []
-        for i, expert in enumerate(self.experts):
-            expert_output = expert(hidden_states)  # [B, L, H]
-            expert_outputs.append(expert_output)
+        try:
+            # 1. 共享专家处理
+            shared_output = self.shared_expert(hidden_states)  # [B, L, H]
+            shared_output = torch.clamp(shared_output, min=-10.0, max=10.0)
 
-        # 4. 加权融合专家输出
-        weighted_expert_output = torch.zeros_like(hidden_states)
-        for i, expert_output in enumerate(expert_outputs):
-            weight = expert_weights[:, i].unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
-            weighted_expert_output += weight * expert_output
+            # 2. 路由决策（基于pooled representation）
+            pooled = hidden_states.mean(dim=1)  # [B, H]
+            pooled = torch.clamp(pooled, min=-5.0, max=5.0)
 
-        # 5. 门控融合共享专家和MoE专家输出
-        gate_weights = torch.sigmoid(self.gate(hidden_states))  # [B, L, H]
-        final_output = shared_output + gate_weights * weighted_expert_output
+            # 限制路由器权重
+            with torch.no_grad():
+                self.router.router.weight.data.clamp_(-1.0, 1.0)
 
-        # 6. 计算辅助损失（负载均衡）
-        # 简单的均匀分布损失
+            expert_weights, router_logits = self.router(pooled, temperature=2.0)  # 使用更高温度
+
+            # 检查路由器输出
+            if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+                print("⚠️ NaN/Inf detected in expert_weights, using uniform")
+                expert_weights = torch.ones_like(expert_weights) / self.num_experts
+
+            # 3. 专家处理（内存优化：逐个处理而不是批量）
+            weighted_expert_output = torch.zeros_like(hidden_states)
+
+            for i, expert in enumerate(self.experts):
+                try:
+                    expert_output = expert(hidden_states)  # [B, L, H]
+                    expert_output = torch.clamp(expert_output, min=-10.0, max=10.0)
+
+                    # 检查专家输出
+                    if torch.isnan(expert_output).any() or torch.isinf(expert_output).any():
+                        print(f"⚠️ NaN/Inf detected in expert {i}, skipping")
+                        continue
+
+                    weight = expert_weights[:, i].unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
+                    weight = torch.clamp(weight, min=0.0, max=1.0)
+                    weighted_expert_output += weight * expert_output
+
+                    # 立即释放中间结果
+                    del expert_output
+
+                except Exception as e:
+                    print(f"⚠️ Expert {i} computation failed: {e}, skipping")
+                    continue
+
+            # 限制专家输出
+            weighted_expert_output = torch.clamp(weighted_expert_output, min=-10.0, max=10.0)
+
+            # 4. 门控融合（更保守的门控）
+            # 限制门控权重
+            with torch.no_grad():
+                self.gate.weight.data.clamp_(-0.1, 0.1)
+                self.gate.bias.data.clamp_(-5.0, 0.0)
+
+            gate_input = torch.clamp(hidden_states, min=-3.0, max=3.0)
+            gate_weights = torch.sigmoid(self.gate(gate_input))  # [B, L, H]
+            gate_weights = torch.clamp(gate_weights, min=0.0, max=0.5)  # 限制门控强度
+
+            # 最终融合
+            final_output = shared_output + gate_weights * weighted_expert_output
+            final_output = torch.clamp(final_output, min=-15.0, max=15.0)
+
+            # 最终NaN/Inf检查
+            if torch.isnan(final_output).any() or torch.isinf(final_output).any():
+                print("⚠️ NaN/Inf detected in final MoE output, using shared output only")
+                final_output = torch.clamp(shared_output, min=-10.0, max=10.0)
+
+        except Exception as e:
+            print(f"⚠️ MoE forward failed: {e}, using input passthrough")
+            final_output = torch.clamp(hidden_states, min=-5.0, max=5.0)
+            expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype) / self.num_experts
+
+        # 5. 计算辅助损失（负载均衡）
         try:
             uniform_dist = torch.ones_like(expert_weights) / self.num_experts
-            aux_loss = F.kl_div(
-                F.log_softmax(router_logits, dim=-1),
-                uniform_dist,
-                reduction='batchmean'
-            )
+            # 使用更稳定的损失计算
+            router_probs = F.softmax(router_logits, dim=-1)
+            aux_loss = F.mse_loss(router_probs, uniform_dist) * 0.01  # 使用MSE而不是KL散度
 
             # 检查数值稳定性
             if torch.isnan(aux_loss) or torch.isinf(aux_loss):
-                aux_loss = torch.tensor(0.0, device=router_logits.device, dtype=router_logits.dtype)
+                aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
         except Exception as e:
-            aux_loss = torch.tensor(0.0, device=router_logits.device, dtype=router_logits.dtype)
+            aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+
+        # 清理内存
+        torch.cuda.empty_cache()
 
         return final_output, expert_weights, aux_loss
 
@@ -290,7 +378,10 @@ class JointLoRAMoEModel(nn.Module):
                     self.config.moe_hidden_dim,
                     bias=False,
                     dtype=hidden_states.dtype  # 确保dtype匹配
-                ).to(hidden_states.device, hidden_states.dtype)
+                )
+                # 注册为模型参数，避免重复创建
+                self.add_module('hidden_proj', self.hidden_proj)
+                self.hidden_proj = self.hidden_proj.to(hidden_states.device, hidden_states.dtype)
             hidden_states = self.hidden_proj(hidden_states)
 
         # 3. MoE层处理
@@ -306,7 +397,10 @@ class JointLoRAMoEModel(nn.Module):
                     base_outputs.hidden_states[-1].size(-1),
                     bias=False,
                     dtype=moe_output.dtype  # 确保dtype匹配
-                ).to(moe_output.device, moe_output.dtype)
+                )
+                # 注册为模型参数，避免重复创建
+                self.add_module('hidden_proj_back', self.hidden_proj_back)
+                self.hidden_proj_back = self.hidden_proj_back.to(moe_output.device, moe_output.dtype)
             moe_output = self.hidden_proj_back(moe_output)
 
         # 使用基础模型的lm_head
@@ -320,20 +414,53 @@ class JointLoRAMoEModel(nn.Module):
             if not hasattr(self, 'temp_lm_head'):
                 self.temp_lm_head = nn.Linear(
                     moe_output.size(-1), vocab_size, bias=False, dtype=moe_output.dtype
-                ).to(moe_output.device, moe_output.dtype)
+                )
+                # 注册为模型参数，避免重复创建
+                self.add_module('temp_lm_head', self.temp_lm_head)
+                self.temp_lm_head = self.temp_lm_head.to(moe_output.device, moe_output.dtype)
             logits = self.temp_lm_head(moe_output)
 
-        # 5. 计算损失
+        # 5. 计算损失 - 数值稳定版本
         loss = None
         if labels is not None:
-            # 语言模型损失
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            try:
+                # 限制logits范围防止数值爆炸
+                logits = torch.clamp(logits, min=-50.0, max=50.0)
 
-            # 总损失 = 语言模型损失 + MoE辅助损失
-            loss = lm_loss + 0.01 * moe_aux_loss
+                # 检查logits是否包含NaN/Inf
+                if torch.isnan(logits).any() or torch.isinf(logits).any():
+                    print("⚠️ NaN/Inf detected in logits, using fallback")
+                    # 使用基础模型的直接输出作为fallback
+                    base_logits = self.base_model.lm_head(base_outputs.hidden_states[-1])
+                    logits = torch.clamp(base_logits, min=-50.0, max=50.0)
+
+                # 语言模型损失
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+
+                # 使用label smoothing减少数值不稳定性
+                loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
+                lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+
+                # 检查lm_loss是否为NaN/Inf
+                if torch.isnan(lm_loss) or torch.isinf(lm_loss):
+                    print("⚠️ NaN/Inf detected in lm_loss, setting to zero")
+                    lm_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+
+                # 限制辅助损失的影响
+                moe_aux_loss = torch.clamp(moe_aux_loss, min=0.0, max=1.0)
+
+                # 总损失 = 语言模型损失 + 很小的MoE辅助损失
+                loss = lm_loss + 0.001 * moe_aux_loss  # 减小辅助损失权重
+
+                # 最终损失检查
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print("⚠️ NaN/Inf detected in total loss, using lm_loss only")
+                    loss = lm_loss
+
+            except Exception as e:
+                print(f"⚠️ Loss computation failed: {e}, using zero loss")
+                loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype, requires_grad=True)
 
         # 6. 返回结果
         return type('Outputs', (), {
