@@ -297,22 +297,32 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             #     if param.grad is not None:
             #         param.grad = None
 
-        # 更频繁的内存清理
-        if (batch_idx + 1) % 2 == 0:  # 每2个batch清理一次
+        # 积极的内存清理
+        if (batch_idx + 1) % 1 == 0:  # 每个batch都清理
             torch.cuda.empty_cache()
-            # 移除barrier调用，避免与DDP冲突
-            # if hasattr(model, 'module'):
-            #     torch.distributed.barrier()
 
-        # 检查内存使用并在必要时强制清理
+        # 检查内存使用并提前清理
         if torch.cuda.is_available():
             memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-            if memory_allocated > 40:  # 如果超过40GB，强制清理
+            if memory_allocated > 35:  # 降低阈值，提前清理
                 torch.cuda.empty_cache()
                 import gc
                 gc.collect()
+                torch.cuda.empty_cache()  # 再次清理
                 if rank == 0:
                     print(f"⚠️ High memory usage ({memory_allocated:.1f}GB), forced cleanup")
+
+        # 如果内存仍然过高，暂停一下
+        if torch.cuda.is_available():
+            memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+            if memory_allocated > 42:  # 接近限制时暂停
+                if rank == 0:
+                    print(f"⚠️ Critical memory usage ({memory_allocated:.1f}GB), pausing...")
+                import time
+                time.sleep(1)
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
 
         # 更新进度条 - 增加显示精度
         postfix = {

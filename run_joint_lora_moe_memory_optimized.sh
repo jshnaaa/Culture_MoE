@@ -1,22 +1,22 @@
 #!/bin/bash
 
-# 联合训练脚本：同时训练预训练LoRA适配器 + 新增MoE处理层
-# 实现端到端的LoRA+MoE联合优化训练
-# 针对48GB×2卡优化
+# 联合LoRA+MoE训练脚本 - 内存优化版本
+# 针对48GB×2卡的极限内存优化
+# 大幅减少模型参数以避免OOM
 
 echo "======================================="
-echo "联合训练：LoRA + MoE 端到端优化"
-echo "同时训练预训练LoRA适配器和新增MoE层"
+echo "联合LoRA+MoE训练 - 内存优化版本"
+echo "极限内存优化，针对48GB×2卡"
 echo "======================================="
 
-# 参数设置
-BACKBONE=${1:-"llama"}  # 默认使用qwen2.5-7B
+# 参数设置 - 内存优化
+BACKBONE=${1:-"llama"}  # 默认使用llama
 DATA_ID=${2:-"2"}
-NUM_MOE_EXPERTS=${3:-"2"}  # MoE专家数量（从4减到2以节省内存）
+NUM_MOE_EXPERTS=${3:-"2"}  # 仅2个专家
 USE_CULTURE_LOSS=${4:-"false"}
 NUM_GPUS=${5:-"2"}
-LORA_RANK=${6:-"4"}   # LoRA rank（从8减到4以节省内存）
-LORA_ALPHA=${7:-"8"}  # LoRA alpha（从16减到8以节省内存）
+LORA_RANK=${6:-"2"}   # 极小的LoRA rank
+LORA_ALPHA=${7:-"4"}  # 极小的LoRA alpha
 
 # 检查参数
 if [ "$#" -gt 7 ]; then
@@ -28,11 +28,9 @@ fi
 if [ "$BACKBONE" = "llama" ]; then
     BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="llama"
-    TOTAL_LAYERS=32
 elif [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="qwen"
-    TOTAL_LAYERS=28
 else
     echo "❌ 不支持的backbone: $BACKBONE (支持: llama, qwen)"
     exit 1
@@ -85,29 +83,28 @@ fi
 
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="/root/autodl-fs/joint_lora_moe/${MODEL_NAME}_${DATASET_TAG}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/joint_lora_moe_memory_optimized/${MODEL_NAME}_${DATASET_TAG}_${TIMESTAMP}"
 
 echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
 echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
-echo "  总层数: $TOTAL_LAYERS"
-echo "  训练模式: 联合训练 (LoRA + MoE)"
+echo "  训练模式: 联合LoRA+MoE (内存优化)"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
-echo "  文化损失: $USE_CULTURE_LOSS"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
+echo "  文化损失: $USE_CULTURE_LOSS"
 echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
 echo ""
 
-# 内存优化的训练参数
+# 极限内存优化的训练参数
 BATCH_SIZE=1              # 最小batch size
-GRADIENT_ACCUMULATION=16  # 增加梯度累积以补偿小batch size
-LEARNING_RATE_BASE=5e-5   # 降低基础模型LoRA学习率
-LEARNING_RATE_MOE=5e-5    # 降低MoE组件学习率
-NUM_EPOCHS=5              # 训练轮数
-MAX_SEQ_LEN=384          # 减少序列长度以节省内存
+GRADIENT_ACCUMULATION=32  # 大幅增加梯度累积
+LEARNING_RATE_BASE=2e-5   # 更低的基础学习率
+LEARNING_RATE_MOE=2e-5    # 更低的MoE学习率
+NUM_EPOCHS=3              # 减少训练轮数
+MAX_SEQ_LEN=256          # 大幅减少序列长度
 
-echo "训练参数:"
+echo "训练参数 (内存优化):"
 echo "  Batch Size: $BATCH_SIZE (per GPU)"
 echo "  梯度累积: $GRADIENT_ACCUMULATION"
 echo "  有效Batch Size: $((BATCH_SIZE * GRADIENT_ACCUMULATION * NUM_GPUS))"
@@ -126,8 +123,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
     "model_config": {
         "backbone": "$BACKBONE",
         "base_model": "$BASE_MODEL",
-        "model_name": "$MODEL_NAME",
-        "total_layers": $TOTAL_LAYERS
+        "model_name": "$MODEL_NAME"
     },
     "data_config": {
         "data_id": "$DATA_ID",
@@ -136,11 +132,11 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "max_seq_length": $MAX_SEQ_LEN
     },
     "training_config": {
-        "training_mode": "joint_lora_moe",
+        "training_mode": "joint_lora_moe_memory_optimized",
         "moe_experts": $NUM_MOE_EXPERTS,
-        "use_culture_loss": $USE_CULTURE_LOSS,
         "lora_rank": $LORA_RANK,
         "lora_alpha": $LORA_ALPHA,
+        "use_culture_loss": $USE_CULTURE_LOSS,
         "num_epochs": $NUM_EPOCHS,
         "batch_size": $BATCH_SIZE,
         "gradient_accumulation_steps": $GRADIENT_ACCUMULATION,
@@ -153,61 +149,62 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 }
 EOF
 
-# 设置内存优化环境变量
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128
+# 设置极限内存优化环境变量
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:64,roundup_power2_divisions:8
 export CUDA_LAUNCH_BLOCKING=0
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
 export TORCH_USE_CUDA_DSA=1
+export NCCL_P2P_DISABLE=1  # 禁用P2P以节省内存
 
-echo "开始联合训练 LoRA + MoE..."
+echo "开始联合训练 LoRA + MoE (内存优化版本)..."
 
 # 训练命令
 TRAINING_SUCCESS=0
 
 if [ "$NUM_GPUS" -eq 1 ]; then
     # 单卡训练
-    python train_joint_lora_moe.py \
-        --base_model_path "$BASE_MODEL" \
-        --train_file "$TRAIN_FILE" \
-        --output_dir "$OUTPUT_DIR" \
-        --num_epochs $NUM_EPOCHS \
-        --batch_size $BATCH_SIZE \
-        --gradient_accumulation_steps $GRADIENT_ACCUMULATION \
-        --learning_rate_base $LEARNING_RATE_BASE \
-        --learning_rate_moe $LEARNING_RATE_MOE \
-        --max_length $MAX_SEQ_LEN \
-        --backbone $BACKBONE \
-        --num_moe_experts $NUM_MOE_EXPERTS \
-        --use_culture_loss $USE_CULTURE_LOSS \
-        --lora_rank $LORA_RANK \
-        --lora_alpha $LORA_ALPHA \
-        --eval_interval 1 \
-        --memory_efficient \
+    python train_joint_lora_moe.py \\
+        --base_model_path "$BASE_MODEL" \\
+        --train_file "$TRAIN_FILE" \\
+        --output_dir "$OUTPUT_DIR" \\
+        --num_epochs $NUM_EPOCHS \\
+        --batch_size $BATCH_SIZE \\
+        --gradient_accumulation_steps $GRADIENT_ACCUMULATION \\
+        --learning_rate_base $LEARNING_RATE_BASE \\
+        --learning_rate_moe $LEARNING_RATE_MOE \\
+        --max_length $MAX_SEQ_LEN \\
+        --backbone $BACKBONE \\
+        --num_moe_experts $NUM_MOE_EXPERTS \\
+        --lora_rank $LORA_RANK \\
+        --lora_alpha $LORA_ALPHA \\
+        --eval_interval 1 \\
+        --memory_efficient \\
+        $([ "$USE_CULTURE_LOSS" = "true" ] && echo "--use_culture_loss") \\
         2>&1 | tee "$OUTPUT_DIR/training.log"
 else
     # 多卡训练
     export CUDA_VISIBLE_DEVICES=0,1
-    torchrun \
-        --nproc_per_node=$NUM_GPUS \
-        --master_port=29500 \
-        train_joint_lora_moe.py \
-        --base_model_path "$BASE_MODEL" \
-        --train_file "$TRAIN_FILE" \
-        --output_dir "$OUTPUT_DIR" \
-        --num_epochs $NUM_EPOCHS \
-        --batch_size $BATCH_SIZE \
-        --gradient_accumulation_steps $GRADIENT_ACCUMULATION \
-        --learning_rate_base $LEARNING_RATE_BASE \
-        --learning_rate_moe $LEARNING_RATE_MOE \
-        --max_length $MAX_SEQ_LEN \
-        --backbone $BACKBONE \
-        --num_moe_experts $NUM_MOE_EXPERTS \
-        --use_culture_loss $USE_CULTURE_LOSS \
-        --lora_rank $LORA_RANK \
-        --lora_alpha $LORA_ALPHA \
-        --eval_interval 1 \
-        --memory_efficient \
+    torchrun \\
+        --nproc_per_node=$NUM_GPUS \\
+        --master_port=29502 \\
+        train_joint_lora_moe.py \\
+        --base_model_path "$BASE_MODEL" \\
+        --train_file "$TRAIN_FILE" \\
+        --output_dir "$OUTPUT_DIR" \\
+        --num_epochs $NUM_EPOCHS \\
+        --batch_size $BATCH_SIZE \\
+        --gradient_accumulation_steps $GRADIENT_ACCUMULATION \\
+        --learning_rate_base $LEARNING_RATE_BASE \\
+        --learning_rate_moe $LEARNING_RATE_MOE \\
+        --max_length $MAX_SEQ_LEN \\
+        --backbone $BACKBONE \\
+        --num_moe_experts $NUM_MOE_EXPERTS \\
+        --lora_rank $LORA_RANK \\
+        --lora_alpha $LORA_ALPHA \\
+        --eval_interval 1 \\
+        --memory_efficient \\
+        $([ "$USE_CULTURE_LOSS" = "true" ] && echo "--use_culture_loss") \\
         2>&1 | tee "$OUTPUT_DIR/training.log"
 fi
 
@@ -216,29 +213,30 @@ TRAINING_SUCCESS=$?
 # 检查训练结果
 echo "======================================="
 if [ $TRAINING_SUCCESS -eq 0 ]; then
-    echo "✅ 联合训练 LoRA + MoE 成功！"
+    echo "✅ 联合LoRA+MoE训练 (内存优化版本) 成功！"
 
     # 检查最佳模型
-    BEST_MODEL="$OUTPUT_DIR/best_joint_model"
+    BEST_MODEL="$OUTPUT_DIR/best_joint_lora_moe"
     if [ -d "$BEST_MODEL" ]; then
         echo "✅ 最佳模型已保存: $BEST_MODEL"
 
         echo ""
         echo "🎉 训练完成！模型特点:"
-        echo "  - 联合训练: 同时优化预训练LoRA + 新增MoE层"
-        echo "  - LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
+        echo "  - 训练模式: 联合LoRA+MoE (内存优化)"
         echo "  - MoE专家数: $NUM_MOE_EXPERTS"
-        echo "  - 分层学习率: Base LoRA=$LEARNING_RATE_BASE, MoE=$LEARNING_RATE_MOE"
+        echo "  - LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
         echo "  - 文化损失: $USE_CULTURE_LOSS"
         echo "  - 序列长度: $MAX_SEQ_LEN"
+        echo "  - 内存优化: 极限优化版本"
     else
         echo "⚠️  训练完成但未找到最佳模型"
     fi
 else
-    echo "❌ 联合训练 LoRA + MoE 失败！退出码: $TRAINING_SUCCESS"
+    echo "❌ 联合LoRA+MoE训练 (内存优化版本) 失败！退出码: $TRAINING_SUCCESS"
     echo "故障排查："
     echo "1. 检查显存使用: nvidia-smi"
     echo "2. 查看详细日志: $OUTPUT_DIR/training.log"
+    echo "3. 考虑进一步减少参数: LoRA rank, 专家数, 序列长度"
 fi
 
 echo ""
@@ -246,7 +244,7 @@ echo "文件位置:"
 echo "  训练日志: $OUTPUT_DIR/training.log"
 echo "  配置文件: $OUTPUT_DIR/config.json"
 if [ $TRAINING_SUCCESS -eq 0 ]; then
-    echo "  最佳模型: $OUTPUT_DIR/best_joint_model/"
+    echo "  最佳模型: $OUTPUT_DIR/best_joint_lora_moe/"
 fi
 
 exit $TRAINING_SUCCESS

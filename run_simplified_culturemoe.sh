@@ -11,7 +11,7 @@ echo "针对48GB×2卡优化"
 echo "======================================="
 
 # 参数设置
-BACKBONE=${1:-"qwen"}  # 默认使用qwen2.5-7B
+BACKBONE=${1:-"llama"}  # 默认使用qwen2.5-7B
 DATA_ID=${2:-"2"}
 NUM_ROUTING_EXPERTS=${3:-"2"}  # 减少到2个路由专家
 USE_CULTURE_LOSS=${4:-"true"}

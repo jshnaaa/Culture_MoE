@@ -41,25 +41,19 @@ class OnlyMoEConfig:
 class LoRAFFNExpert(nn.Module):
     """LoRA FFN专家 - 数值稳定版本"""
 
-    def __init__(self, original_mlp, lora_rank: int, lora_alpha: int, lora_dropout: float = 0.1):
+    def __init__(self, hidden_size: int, intermediate_size: int, act_fn, lora_rank: int, lora_alpha: int, lora_dropout: float = 0.1, dtype: torch.dtype = torch.float16):
         super().__init__()
 
-        # 保存原始MLP的维度和激活函数
-        self.hidden_size = original_mlp.gate_proj.in_features
-        self.intermediate_size = original_mlp.gate_proj.out_features
-        self.act_fn = original_mlp.act_fn
-
-        # 获取设备和数据类型
-        self.device = original_mlp.gate_proj.weight.device
-        self.dtype = original_mlp.gate_proj.weight.dtype
+        # 保存维度和激活函数
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.act_fn = act_fn
+        self.dtype = dtype
 
         # LoRA适配器
         self.gate_proj_lora = self._create_lora_layer(self.hidden_size, self.intermediate_size, lora_rank, lora_alpha, lora_dropout)
         self.up_proj_lora = self._create_lora_layer(self.hidden_size, self.intermediate_size, lora_rank, lora_alpha, lora_dropout)
         self.down_proj_lora = self._create_lora_layer(self.intermediate_size, self.hidden_size, lora_rank, lora_alpha, lora_dropout)
-
-        # 移动到正确设备 - 使用to()方法确保所有子模块都移动
-        self.to(device=self.device, dtype=self.dtype)
 
     def _create_lora_layer(self, in_features: int, out_features: int, rank: int, alpha: int, dropout: float):
         """创建LoRA层"""
@@ -200,26 +194,48 @@ class MoEFFNLayer(nn.Module):
         self.num_experts = config.num_moe_experts
         self.top_k = config.top_k
 
-        # 保存原始MLP（冻结，用于共享计算）
-        self.shared_mlp = original_mlp
-        for param in self.shared_mlp.parameters():
-            param.requires_grad = False
-
         # 获取维度信息
         self.hidden_size = original_mlp.gate_proj.in_features
+        self.intermediate_size = original_mlp.gate_proj.out_features
         self.device = original_mlp.gate_proj.weight.device
         self.dtype = original_mlp.gate_proj.weight.dtype
+        self.act_fn = original_mlp.act_fn
+
+        # 保存原始MLP权重的副本（避免参数共享冲突）
+        with torch.no_grad():
+            self.shared_gate_weight = original_mlp.gate_proj.weight.clone().detach()
+            self.shared_up_weight = original_mlp.up_proj.weight.clone().detach()
+            self.shared_down_weight = original_mlp.down_proj.weight.clone().detach()
+
+            # 处理bias（如果存在）
+            if hasattr(original_mlp.gate_proj, 'bias') and original_mlp.gate_proj.bias is not None:
+                self.shared_gate_bias = original_mlp.gate_proj.bias.clone().detach()
+            else:
+                self.shared_gate_bias = None
+
+            if hasattr(original_mlp.up_proj, 'bias') and original_mlp.up_proj.bias is not None:
+                self.shared_up_bias = original_mlp.up_proj.bias.clone().detach()
+            else:
+                self.shared_up_bias = None
+
+            if hasattr(original_mlp.down_proj, 'bias') and original_mlp.down_proj.bias is not None:
+                self.shared_down_bias = original_mlp.down_proj.bias.clone().detach()
+            else:
+                self.shared_down_bias = None
 
         # 创建路由器
         self.router = MoERouter(self.hidden_size, self.num_experts, self.dtype)
 
-        # 创建LoRA专家
+        # 创建LoRA专家（传入维度信息而不是原始MLP）
         self.lora_experts = nn.ModuleList([
             LoRAFFNExpert(
-                original_mlp,
+                self.hidden_size,
+                self.intermediate_size,
+                self.act_fn,
                 config.lora_rank,
                 config.lora_alpha,
-                config.lora_dropout
+                config.lora_dropout,
+                self.dtype
             ) for _ in range(self.num_experts)
         ])
 
@@ -290,10 +306,14 @@ class MoEFFNLayer(nn.Module):
         """计算共享FFN输出"""
         try:
             with torch.no_grad():
-                gate_out = self.shared_mlp.act_fn(self.shared_mlp.gate_proj(hidden_states))
-                up_out = self.shared_mlp.up_proj(hidden_states)
+                # 使用复制的权重进行计算，避免参数共享
+                gate_out = F.linear(hidden_states, self.shared_gate_weight, self.shared_gate_bias)
+                gate_out = self.act_fn(gate_out)
+
+                up_out = F.linear(hidden_states, self.shared_up_weight, self.shared_up_bias)
                 intermediate = gate_out * up_out
-                output = self.shared_mlp.down_proj(intermediate)
+
+                output = F.linear(intermediate, self.shared_down_weight, self.shared_down_bias)
                 output = torch.clamp(output, min=-10.0, max=10.0)
                 return output
         except Exception as e:
@@ -401,7 +421,13 @@ class OnlyMoEModel(nn.Module):
             if layer_idx < len(self.layers):
                 original_mlp = self.layers[layer_idx].mlp
                 moe_layer = MoEFFNLayer(original_mlp, self.config)
+
+                # 完全替换MLP，确保原始MLP不再是模型的一部分
                 self.layers[layer_idx].mlp = moe_layer
+
+                # 显式删除对原始MLP的引用，确保它不在计算图中
+                del original_mlp
+
                 print(f"✅ Replaced layer {layer_idx} FFN with MoE")
             else:
                 print(f"⚠️ Layer {layer_idx} does not exist, skipping")

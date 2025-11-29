@@ -561,19 +561,27 @@ def main():
     # 确保所有参数在正确设备上（在DDP包装前）
     torch.cuda.empty_cache()
 
+    # 强制垃圾回收以清理可能的旧引用
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
     # 使用DDP包装模型（仅在多GPU时）
     if world_size > 1:
         model = DDP(
             model,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=True,
+            find_unused_parameters=False,  # 改为False，因为我们确保所有参数都会被使用
             broadcast_buffers=False,
             gradient_as_bucket_view=True
         )
 
+        # 设置静态图以避免参数重复标记问题
+        model._set_static_graph()
+
         if is_main_process(rank):
-            print("✅ Model wrapped with DDP")
+            print("✅ Model wrapped with DDP with static graph")
 
     # 设置优化器
     trainable_params = [p for p in model.parameters() if p.requires_grad]

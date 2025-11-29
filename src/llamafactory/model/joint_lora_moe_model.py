@@ -54,8 +54,8 @@ class MoEExpert(nn.Module):
 
     def __init__(self, hidden_dim: int, intermediate_dim: int, dropout: float = 0.1, dtype: torch.dtype = torch.float16):
         super().__init__()
-        # 使用更小的中间维度避免数值爆炸
-        safe_intermediate_dim = min(intermediate_dim, hidden_dim * 2)
+        # 大幅减少中间维度以节省内存
+        safe_intermediate_dim = min(intermediate_dim, hidden_dim // 2)  # 从*2改为//2，大幅减少内存
 
         self.gate_proj = nn.Linear(hidden_dim, safe_intermediate_dim, bias=True, dtype=dtype)  # 添加bias
         self.up_proj = nn.Linear(hidden_dim, safe_intermediate_dim, bias=True, dtype=dtype)
@@ -290,28 +290,31 @@ class MoELayer(nn.Module):
 
             # 3. 专家输出混合（极简版）
             if valid_experts == 0:
-                print("⚠️ All experts failed, using minimal transformation")
-                # 使用一个简单的线性变换确保有梯度连接
-                if not hasattr(self, 'fallback_transform'):
-                    self.fallback_transform = nn.Linear(
-                        hidden_states.size(-1), hidden_states.size(-1),
-                        bias=False, dtype=hidden_states.dtype
-                    )
-                    # 初始化为接近单位矩阵
-                    nn.init.eye_(self.fallback_transform.weight)
-                    self.fallback_transform = self.fallback_transform.to(hidden_states.device)
-                    self.add_module('fallback_transform', self.fallback_transform)
-                final_output = self.fallback_transform(hidden_states)
+                print("⚠️ All experts failed, using passthrough")
+                # 直接返回输入，确保数值稳定
+                final_output = hidden_states
             else:
-                # 简单的加权平均
+                # 简单的加权平均，但加强数值稳定性
                 final_output = torch.zeros_like(hidden_states)
+                total_weight = 0.0
+
                 for i, expert_output in enumerate(expert_outputs):
                     weight = expert_weights[:, i].unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
                     weight = torch.clamp(weight, min=0.0, max=1.0)
-                    final_output += weight * expert_output
 
-                # 限制输出范围 - 使用更合理的范围
-                final_output = torch.clamp(final_output, min=-5.0, max=5.0)
+                    # 限制专家输出范围
+                    expert_output = torch.clamp(expert_output, min=-3.0, max=3.0)
+
+                    final_output += weight * expert_output
+                    total_weight += weight.mean().item()
+
+                # 如果总权重太小，说明专家输出有问题，使用输入
+                if total_weight < 0.01:
+                    print("⚠️ Expert weights too small, using passthrough")
+                    final_output = hidden_states
+                else:
+                    # 限制最终输出范围
+                    final_output = torch.clamp(final_output, min=-3.0, max=3.0)
 
             # 4. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
@@ -487,29 +490,31 @@ class JointLoRAMoEModel(nn.Module):
         loss = None
         if labels is not None:
             try:
+                # 预先限制MoE输出范围，防止logits爆炸
+                moe_output = torch.clamp(moe_output, min=-3.0, max=3.0)
+
                 # 检查logits是否包含NaN/Inf
                 if torch.isnan(logits).any() or torch.isinf(logits).any():
-                    print("⚠️ NaN/Inf detected in logits, using MoE output with clamping")
-                    # 使用经过MoE的输出，但加强数值稳定性
-                    clamped_moe_output = torch.clamp(moe_output, min=-5.0, max=5.0)
+                    print("⚠️ NaN/Inf detected in logits, recomputing with clamped MoE output")
+                    # 使用经过严格限制的MoE输出重新计算
                     if hasattr(self.base_model, 'lm_head'):
-                        logits = self.base_model.lm_head(clamped_moe_output)
+                        logits = self.base_model.lm_head(moe_output)
                     elif hasattr(self.base_model, 'base_model') and hasattr(self.base_model.base_model, 'lm_head'):
-                        logits = self.base_model.base_model.lm_head(clamped_moe_output)
+                        logits = self.base_model.base_model.lm_head(moe_output)
                     else:
                         # 使用临时lm_head
                         if not hasattr(self, 'temp_lm_head'):
                             vocab_size = self.base_model.config.vocab_size
                             self.temp_lm_head = nn.Linear(
-                                clamped_moe_output.size(-1), vocab_size, bias=False, dtype=clamped_moe_output.dtype
+                                moe_output.size(-1), vocab_size, bias=False, dtype=moe_output.dtype
                             )
-                            nn.init.normal_(self.temp_lm_head.weight, mean=0.0, std=0.02)
-                            self.temp_lm_head = self.temp_lm_head.to(clamped_moe_output.device, clamped_moe_output.dtype)
+                            nn.init.normal_(self.temp_lm_head.weight, mean=0.0, std=0.01)  # 更小的初始化
+                            self.temp_lm_head = self.temp_lm_head.to(moe_output.device, moe_output.dtype)
                             self.add_module('temp_lm_head', self.temp_lm_head)
-                        logits = self.temp_lm_head(clamped_moe_output)
+                        logits = self.temp_lm_head(moe_output)
 
-                # 温和的logits范围限制 - 不要过于严格
-                logits = torch.clamp(logits, min=-50.0, max=50.0)
+                # 严格的logits范围限制，防止inf loss
+                logits = torch.clamp(logits, min=-20.0, max=20.0)
 
                 # 语言模型损失
                 shift_logits = logits[..., :-1, :].contiguous()
