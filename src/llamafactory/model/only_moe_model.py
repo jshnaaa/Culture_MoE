@@ -379,6 +379,10 @@ class OnlyMoEModel(nn.Module):
 
     def _get_model_layers(self):
         """获取模型层"""
+        # 检查base_model是否存在
+        if not hasattr(self, 'base_model') or self.base_model is None:
+            raise RuntimeError("OnlyMoEModel: base_model not properly initialized in _get_model_layers")
+
         # 处理DDP包装的模型
         model_to_modify = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
@@ -404,6 +408,9 @@ class OnlyMoEModel(nn.Module):
 
     def _freeze_non_moe_parameters(self):
         """冻结非MoE参数"""
+        if not hasattr(self, 'base_model') or self.base_model is None:
+            raise RuntimeError("OnlyMoEModel: base_model not properly initialized in _freeze_non_moe_parameters")
+
         model_to_freeze = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
         for name, param in model_to_freeze.named_parameters():
@@ -416,6 +423,10 @@ class OnlyMoEModel(nn.Module):
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         """前向传播"""
+        # 检查base_model是否存在
+        if not hasattr(self, 'base_model') or self.base_model is None:
+            raise RuntimeError("OnlyMoEModel: base_model not properly initialized")
+
         # 基础模型前向传播
         outputs = self.base_model(
             input_ids=input_ids,
@@ -480,6 +491,9 @@ class OnlyMoEModel(nn.Module):
 
     def save_model(self, save_path: str):
         """保存MoE权重"""
+        if not hasattr(self, 'base_model') or self.base_model is None:
+            raise RuntimeError("OnlyMoEModel: base_model not properly initialized, cannot save model")
+
         import os
 
         # 创建目录
@@ -520,6 +534,10 @@ class OnlyMoEModel(nn.Module):
 
     def print_trainable_parameters(self):
         """打印可训练参数统计"""
+        if not hasattr(self, 'base_model') or self.base_model is None:
+            print("⚠️ OnlyMoEModel: base_model not properly initialized, cannot print parameters")
+            return
+
         total_params = 0
         trainable_params = 0
         moe_params = 0
@@ -543,11 +561,7 @@ class OnlyMoEModel(nn.Module):
 
     def generate(self, *args, **kwargs):
         """生成方法 - 委托给基础模型"""
+        if not hasattr(self, 'base_model') or self.base_model is None:
+            raise RuntimeError("OnlyMoEModel: base_model not properly initialized")
         return self.base_model.generate(*args, **kwargs)
 
-    def __getattr__(self, name):
-        """委托其他属性访问给基础模型"""
-        try:
-            return super().__getattribute__(name)
-        except AttributeError:
-            return getattr(self.base_model, name)
