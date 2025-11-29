@@ -194,11 +194,13 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             input_tokens = tokenizer(input_part, add_special_tokens=False, truncation=False)['input_ids']
             input_length = len(input_tokens)
 
-            # 我们还需要加上连接符"\n"的token数量
+            # 注意：input_part就是数据集中的full_input，连接output的"\n"应该被mask
+            # 我们需要加上连接符"\n"的token数量，因为这个\n也属于输入部分
             separator_tokens = tokenizer("\n", add_special_tokens=False, truncation=False)['input_ids']
             separator_length = len(separator_tokens)
 
-            # 实际需要mask的长度应该包括separator
+            # 实际需要mask的长度：input_part + 连接符"\n"
+            # 这样只有pure output部分会用于计算loss
             actual_input_length = input_length + separator_length
 
             # 计算完整文本的长度以验证 - 与数据集格式完全一致
@@ -255,6 +257,25 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 print(f"  decoded_input_part: {repr(tokenizer.decode(input_tokens, skip_special_tokens=True))}")
                 print(f"  decoded_full_text: {repr(tokenizer.decode(full_tokens, skip_special_tokens=True))}")
                 print(f"  decoded_actual_input_ids: {repr(tokenizer.decode(actual_input_ids, skip_special_tokens=True))}")
+
+                # 分析特殊token
+                print(f"  tokenizer.pad_token_id: {tokenizer.pad_token_id}")
+                print(f"  tokenizer.eos_token_id: {tokenizer.eos_token_id}")
+                print(f"  tokenizer.bos_token_id: {getattr(tokenizer, 'bos_token_id', None)}")
+
+                # 分析labels中的非-100 token
+                non_masked_labels = actual_labels[actual_labels != -100]
+                if len(non_masked_labels) > 0:
+                    print(f"  non_masked_labels: {non_masked_labels.tolist()}")
+                    print(f"  decoded_non_masked: {repr(tokenizer.decode(non_masked_labels, skip_special_tokens=False))}")
+
+                    # 单独解码每个token
+                    for idx, token_id in enumerate(non_masked_labels[:10]):  # 只看前10个
+                        try:
+                            decoded_token = tokenizer.decode([token_id], skip_special_tokens=False)
+                            print(f"    token_{idx}: {token_id} -> {repr(decoded_token)}")
+                        except:
+                            print(f"    token_{idx}: {token_id} -> <decode_error>")
 
                 if valid_labels == 0:
                     print(f"  ⚠️ WARNING: No valid labels for training!")
