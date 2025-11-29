@@ -183,29 +183,40 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             input_text = batch['input'][i] if isinstance(batch['input'], list) else batch['input']
             output_text = batch['output'][i] if isinstance(batch['output'], list) else batch['output']
 
-            # 构建input部分（需要mask的部分）- 与数据集格式保持一致
+            # 构建input部分（需要mask的部分）- 与数据集格式完全保持一致
+            # 数据集中的full_input就是需要mask的部分
             if input_text:
-                input_part = f"{instruction}\n{input_text}\n"  # 保持与数据集一致的格式
+                input_part = f"{instruction}\n{input_text}"  # 这是数据集中的full_input
             else:
-                input_part = f"{instruction}\n"
+                input_part = instruction  # 这是数据集中的full_input
 
             # 计算input部分的token长度 - 使用与数据集相同的tokenization方式
             input_tokens = tokenizer(input_part, add_special_tokens=False, truncation=False)['input_ids']
             input_length = len(input_tokens)
 
-            # 计算完整文本的长度以验证
+            # 我们还需要加上连接符"\n"的token数量
+            separator_tokens = tokenizer("\n", add_special_tokens=False, truncation=False)['input_ids']
+            separator_length = len(separator_tokens)
+
+            # 实际需要mask的长度应该包括separator
+            actual_input_length = input_length + separator_length
+
+            # 计算完整文本的长度以验证 - 与数据集格式完全一致
+            # 数据集构建逻辑：full_input = f"{instruction}\n{input_text}"，然后 full_text = f"{full_input}\n{output_text}"
             if input_text:
-                full_text = f"{instruction}\n{input_text}\n{output_text}"
+                full_input = f"{instruction}\n{input_text}"
+                full_text = f"{full_input}\n{output_text}"  # instruction\ninput_text\noutput_text
             else:
-                full_text = f"{instruction}\n{output_text}"
+                full_input = instruction
+                full_text = f"{full_input}\n{output_text}"  # instruction\noutput_text
 
             full_tokens = tokenizer(full_text, add_special_tokens=False, truncation=False)['input_ids']
             full_length = len(full_tokens)
 
-            # 更安全的masking策略
-            if input_length < labels.shape[1]:
+            # 更安全的masking策略 - 使用实际的input长度
+            if actual_input_length < labels.shape[1]:
                 # 确保至少保留一些output tokens用于训练
-                max_mask_length = min(input_length, labels.shape[1] - 5)  # 至少保留5个token用于output
+                max_mask_length = min(actual_input_length, labels.shape[1] - 5)  # 至少保留5个token用于output
                 labels[i, :max_mask_length] = -100
             else:
                 # 如果input太长，保留最后10个token用于训练
@@ -216,11 +227,35 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 valid_labels = (labels[i] != -100).sum().item()
                 total_labels = labels.shape[1]
                 print(f"🔍 Batch {batch_idx}, Sample {i}:")
-                print(f"  input_length={input_length}, full_length={full_length}, seq_len={labels.shape[1]}")
+                print(f"  input_length={input_length}, separator_length={separator_length}, actual_input_length={actual_input_length}")
+                print(f"  full_length={full_length}, seq_len={labels.shape[1]}")
                 print(f"  valid_labels={valid_labels}/{total_labels}")
-                print(f"  instruction: {instruction[:50]}...")
-                print(f"  input_text: {input_text[:30]}...")
-                print(f"  output: {output_text}")
+                print(f"  instruction: {repr(instruction)}")
+                print(f"  input_text: {repr(input_text)}")
+                print(f"  output: {repr(output_text)}")
+                print(f"  input_part: {repr(input_part)}")
+                print(f"  full_text: {repr(full_text)}")
+
+                # 检查tokenization结果
+                print(f"  input_tokens: {input_tokens}")
+                print(f"  separator_tokens: {separator_tokens}")
+                print(f"  full_tokens: {full_tokens}")
+
+                # 检查实际的input_ids和labels
+                actual_input_ids = input_ids[i]
+                actual_labels = labels[i]
+                print(f"  actual_input_ids: {actual_input_ids.tolist()}")
+                print(f"  actual_labels: {actual_labels.tolist()}")
+
+                # 检查mask范围
+                max_mask_length = min(actual_input_length, labels.shape[1] - 5) if actual_input_length < labels.shape[1] else labels.shape[1] - 10
+                print(f"  max_mask_length: {max_mask_length}")
+
+                # 检查tokenizer解码
+                print(f"  decoded_input_part: {repr(tokenizer.decode(input_tokens, skip_special_tokens=True))}")
+                print(f"  decoded_full_text: {repr(tokenizer.decode(full_tokens, skip_special_tokens=True))}")
+                print(f"  decoded_actual_input_ids: {repr(tokenizer.decode(actual_input_ids, skip_special_tokens=True))}")
+
                 if valid_labels == 0:
                     print(f"  ⚠️ WARNING: No valid labels for training!")
 
