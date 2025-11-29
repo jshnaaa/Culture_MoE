@@ -181,20 +181,48 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         for i in range(labels.shape[0]):
             instruction = batch['instruction'][i] if isinstance(batch['instruction'], list) else batch['instruction']
             input_text = batch['input'][i] if isinstance(batch['input'], list) else batch['input']
+            output_text = batch['output'][i] if isinstance(batch['output'], list) else batch['output']
 
-            # 构建input部分（需要mask的部分）
+            # 构建input部分（需要mask的部分）- 与数据集格式保持一致
             if input_text:
-                input_part = f"{instruction}\n{input_text}\n"
+                input_part = f"{instruction}\n{input_text}\n"  # 保持与数据集一致的格式
             else:
                 input_part = f"{instruction}\n"
 
-            # 计算input部分的token长度
-            input_tokens = tokenizer(input_part, add_special_tokens=False)['input_ids']
+            # 计算input部分的token长度 - 使用与数据集相同的tokenization方式
+            input_tokens = tokenizer(input_part, add_special_tokens=False, truncation=False)['input_ids']
             input_length = len(input_tokens)
 
-            # Mask掉input部分，只保留output部分用于loss计算
+            # 计算完整文本的长度以验证
+            if input_text:
+                full_text = f"{instruction}\n{input_text}\n{output_text}"
+            else:
+                full_text = f"{instruction}\n{output_text}"
+
+            full_tokens = tokenizer(full_text, add_special_tokens=False, truncation=False)['input_ids']
+            full_length = len(full_tokens)
+
+            # 更安全的masking策略
             if input_length < labels.shape[1]:
-                labels[i, :input_length] = -100
+                # 确保至少保留一些output tokens用于训练
+                max_mask_length = min(input_length, labels.shape[1] - 5)  # 至少保留5个token用于output
+                labels[i, :max_mask_length] = -100
+            else:
+                # 如果input太长，保留最后10个token用于训练
+                labels[i, :-10] = -100
+
+            # 调试信息：检查labels masking
+            if batch_idx < 3 and i == 0:  # 前3个batch的第一个样本
+                valid_labels = (labels[i] != -100).sum().item()
+                total_labels = labels.shape[1]
+                print(f"🔍 Batch {batch_idx}, Sample {i}:")
+                print(f"  input_length={input_length}, full_length={full_length}, seq_len={labels.shape[1]}")
+                print(f"  valid_labels={valid_labels}/{total_labels}")
+                print(f"  instruction: {instruction[:50]}...")
+                print(f"  input_text: {input_text[:30]}...")
+                print(f"  output: {output_text}")
+                if valid_labels == 0:
+                    print(f"  ⚠️ WARNING: No valid labels for training!")
 
         # 获取文化标签
         culture_labels = None
@@ -241,6 +269,10 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         if batch_idx < 5 or batch_idx % 50 == 0:  # 前5个batch和每50个batch
             print(f"🔍 Batch {batch_idx} - Actual loss values:")
             print(f"  Total: {total_batch_loss.item():.8f}, LM: {lm_loss.item():.8f}, MoE: {moe_aux_loss.item():.8f}")
+            if expert_weights is not None:
+                print(f"  Expert weights: {expert_weights.mean(dim=0).detach().cpu().numpy()}")
+            else:
+                print(f"  Expert weights: None")
 
         # 梯度累积
         total_batch_loss = total_batch_loss / num_accumulation_steps
@@ -331,16 +363,22 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
                 instruction = batch['instruction'][i] if isinstance(batch['instruction'], list) else batch['instruction']
                 input_text = batch['input'][i] if isinstance(batch['input'], list) else batch['input']
 
+                # 构建input部分（需要mask的部分）- 与数据集格式保持一致
                 if input_text:
-                    input_part = f"{instruction}\n{input_text}\n"
+                    input_part = f"{instruction}\n{input_text}\n"  # 保持与数据集一致的格式
                 else:
                     input_part = f"{instruction}\n"
 
-                input_tokens = tokenizer(input_part, add_special_tokens=False)['input_ids']
+                # 计算input部分的token长度
+                input_tokens = tokenizer(input_part, add_special_tokens=False, truncation=False)['input_ids']
                 input_length = len(input_tokens)
 
+                # 更安全的masking策略
                 if input_length < labels.shape[1]:
-                    labels[i, :input_length] = -100
+                    max_mask_length = min(input_length, labels.shape[1] - 5)  # 至少保留5个token
+                    labels[i, :max_mask_length] = -100
+                else:
+                    labels[i, :-10] = -100  # 保留最后10个token
 
             # 获取文化标签
             culture_labels = None

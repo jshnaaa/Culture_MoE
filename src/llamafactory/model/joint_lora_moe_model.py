@@ -477,6 +477,12 @@ class JointLoRAMoEModel(nn.Module):
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
 
+                # 调试信息：检查labels
+                valid_labels = (shift_labels.view(-1) != -100).sum().item()
+                total_labels = shift_labels.numel()
+                if valid_labels == 0:
+                    print(f"⚠️ No valid labels found! All {total_labels} labels are masked (-100)")
+
                 # 使用label smoothing减少数值不稳定性
                 loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
                 lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))

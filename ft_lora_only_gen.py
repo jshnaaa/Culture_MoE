@@ -199,11 +199,11 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     Returns:
         生成的文本
     """
-    # 构建输入
+    # 构建输入 - 与训练时格式保持一致
     if input_text:
-        full_input = f"{instruction}\n{input_text}"
+        full_input = f"{instruction}\n{input_text}\n"
     else:
-        full_input = instruction
+        full_input = f"{instruction}\n"
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
