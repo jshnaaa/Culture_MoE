@@ -547,12 +547,33 @@ class JointLoRAMoEModel(nn.Module):
                 if shift_valid == 0:
                     print(f"⚠️ No valid labels found after shift! All {total_labels} labels are masked (-100)")
 
-                # 使用label smoothing减少数值不稳定性
-                loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
-                lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                # 暂时移除label smoothing，使用Float32计算loss
+                # loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
+                loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.0)
+
+                # 调试：在计算loss前检查输入
+                print(f"🔍 Before CrossEntropyLoss:")
+                print(f"  shift_logits.shape: {shift_logits.shape}")
+                print(f"  shift_labels.shape: {shift_labels.shape}")
+                print(f"  shift_logits contains NaN: {torch.isnan(shift_logits).any()}")
+                print(f"  shift_logits contains Inf: {torch.isinf(shift_logits).any()}")
+                print(f"  shift_labels min: {shift_labels.min().item()}, max: {shift_labels.max().item()}")
+
+                # 使用Float32精度计算loss以避免数值问题
+                shift_logits_f32 = shift_logits.float()
+                lm_loss = loss_fct(shift_logits_f32.view(-1, shift_logits_f32.size(-1)), shift_labels.view(-1))
+                lm_loss = lm_loss.to(dtype=torch.float16)  # 转回float16
+
+                print(f"🔍 After CrossEntropyLoss:")
+                print(f"  lm_loss: {lm_loss.item()}")
+                print(f"  lm_loss.dtype: {lm_loss.dtype}")
 
                 # 检查lm_loss是否为NaN/Inf
-                if torch.isnan(lm_loss) or torch.isinf(lm_loss):
+                is_nan = torch.isnan(lm_loss)
+                is_inf = torch.isinf(lm_loss)
+                print(f"🔍 NaN/Inf check: isnan={is_nan}, isinf={is_inf}")
+
+                if is_nan or is_inf:
                     print("⚠️ NaN/Inf detected in lm_loss, using fallback loss")
                     # 使用模型参数的L2损失作为fallback，确保梯度连接
                     param_loss = torch.tensor(0.0, device=shift_logits.device, dtype=shift_logits.dtype)
