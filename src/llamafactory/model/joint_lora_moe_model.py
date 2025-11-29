@@ -520,11 +520,32 @@ class JointLoRAMoEModel(nn.Module):
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
 
-                # 调试信息：检查labels
-                valid_labels = (shift_labels.view(-1) != -100).sum().item()
+                # 详细调试信息：检查shift前后的labels
+                original_valid = (labels.view(-1) != -100).sum().item()
+                shift_valid = (shift_labels.view(-1) != -100).sum().item()
                 total_labels = shift_labels.numel()
-                if valid_labels == 0:
-                    print(f"⚠️ No valid labels found! All {total_labels} labels are masked (-100)")
+
+                print(f"🔍 Labels shift analysis:")
+                print(f"  Original labels valid: {original_valid}/{labels.numel()}")
+                print(f"  Shifted labels valid: {shift_valid}/{total_labels}")
+
+                # 检查第一个样本的labels变化
+                if labels.shape[0] > 0:
+                    sample_original = labels[0]
+                    sample_shifted = shift_labels[0]
+                    orig_valid_pos = (sample_original != -100).nonzero().flatten()
+                    shift_valid_pos = (sample_shifted != -100).nonzero().flatten()
+
+                    print(f"  Sample 0 original valid positions: {orig_valid_pos.tolist()}")
+                    print(f"  Sample 0 shifted valid positions: {shift_valid_pos.tolist()}")
+
+                    if len(orig_valid_pos) > 0:
+                        print(f"  Sample 0 original valid tokens: {sample_original[orig_valid_pos].tolist()}")
+                    if len(shift_valid_pos) > 0:
+                        print(f"  Sample 0 shifted valid tokens: {sample_shifted[shift_valid_pos].tolist()}")
+
+                if shift_valid == 0:
+                    print(f"⚠️ No valid labels found after shift! All {total_labels} labels are masked (-100)")
 
                 # 使用label smoothing减少数值不稳定性
                 loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
