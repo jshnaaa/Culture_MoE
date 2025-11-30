@@ -647,10 +647,10 @@ class JointLoRAMoEModel(nn.Module):
 
         # 使用基础模型的lm_head
         if hasattr(self.base_model, 'lm_head'):
-            print(f"🔧 Using base_model.lm_head")
+            # print(f"🔧 Using base_model.lm_head")  # 注释掉，与tokenizer问题无关
             logits = self.base_model.lm_head(moe_output)
         elif hasattr(self.base_model, 'base_model') and hasattr(self.base_model.base_model, 'lm_head'):
-            print(f"🔧 Using base_model.base_model.lm_head")
+            # print(f"🔧 Using base_model.base_model.lm_head")  # 注释掉，与tokenizer问题无关
             logits = self.base_model.base_model.lm_head(moe_output)
         else:
             print(f"🔧 Creating temporary lm_head")
@@ -706,14 +706,14 @@ class JointLoRAMoEModel(nn.Module):
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
 
-                # 详细调试信息：检查shift前后的labels
-                original_valid = (labels.view(-1) != -100).sum().item()
-                shift_valid = (shift_labels.view(-1) != -100).sum().item()
-                total_labels = shift_labels.numel()
+                # 详细调试信息：检查shift前后的labels - 注释掉，与tokenizer问题无关
+                # original_valid = (labels.view(-1) != -100).sum().item()
+                # shift_valid = (shift_labels.view(-1) != -100).sum().item()
+                # total_labels = shift_labels.numel()
 
-                print(f"🔍 Labels shift analysis:")
-                print(f"  Original labels valid: {original_valid}/{labels.numel()}")
-                print(f"  Shifted labels valid: {shift_valid}/{total_labels}")
+                # print(f"🔍 Labels shift analysis:")
+                # print(f"  Original labels valid: {original_valid}/{labels.numel()}")
+                # print(f"  Shifted labels valid: {shift_valid}/{total_labels}")
 
                 # 检查第一个样本的labels变化
                 if labels.shape[0] > 0:
@@ -978,11 +978,11 @@ class JointLoRAMoEModel(nn.Module):
                 # 获取最后一个位置的logits
                 next_token_logits = outputs.logits[:, -1, :]  # [batch_size, vocab_size]
 
-                # 关键调试：检查前几步的logits
-                if step < 3:
-                    max_logit = next_token_logits.max().item()
-                    min_logit = next_token_logits.min().item()
-                    print(f"🔍 Step {step} - Logits range: max={max_logit:.3f}, min={min_logit:.3f}")
+                # 关键调试：检查前几步的logits - 注释掉，与tokenizer问题无关
+                # if step < 3:
+                #     max_logit = next_token_logits.max().item()
+                #     min_logit = next_token_logits.min().item()
+                #     print(f"🔍 Step {step} - Logits range: max={max_logit:.3f}, min={min_logit:.3f}")
 
                 # 生成下一个token
                 if do_sample:
@@ -995,9 +995,9 @@ class JointLoRAMoEModel(nn.Module):
                     # 贪心解码
                     next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
 
-                # 关键调试：前几步的token
-                if step < 3:
-                    print(f"🔍 Step {step} - Token: {next_token_id.item()}")
+                # 关键调试：前几步的token - 注释掉，与tokenizer问题无关
+                # if step < 3:
+                #     print(f"🔍 Step {step} - Token: {next_token_id.item()}")
 
                 # 改进的重复检测和处理
                 current_token = next_token_id.item()

@@ -726,42 +726,49 @@ def main():
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.base_model_path, trust_remote_code=True)
 
-    # 🔧 修复Llama 3.1 tokenizer配置问题 - 强制修复版本
+    # 🔧 修复Llama 3.1 tokenizer配置问题 - 使用官方padding token
     print(f"🔧 原始tokenizer状态: pad_token='{tokenizer.pad_token}', pad_token_id={tokenizer.pad_token_id}")
 
-    # 强制检查和修复pad_token配置，不管当前状态如何
+    # 强制检查和修复pad_token配置，使用Llama 3.1官方的padding token
     if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id == 128009:
-        # Llama 3.1: 强制修复pad_token配置
-        print(f"🔧 检测到Llama 3.1模型，强制修复pad_token配置...")
+        # Llama 3.1: 使用官方的finetune_right_pad_id
+        print(f"🔧 检测到Llama 3.1模型，查找官方padding token...")
 
-        # 查找真正的<unk> token
-        if hasattr(tokenizer, 'unk_token') and tokenizer.unk_token is not None:
-            # 使用真正的<unk> token
-            tokenizer.pad_token = tokenizer.unk_token
-            tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.unk_token)
-            print(f"🔧 Llama 3.1: 使用真正的<unk> token: '{tokenizer.unk_token}' (id={tokenizer.pad_token_id})")
-        else:
-            # 如果没有<unk>，使用一个安全的低频token
-            candidate_tokens = ['~', '`', '|', '^', '§', '¶']
-            chosen_pad_token = None
+        # 查找Llama 3.1官方的padding token
+        official_pad_token = "<|finetune_right_pad_id|>"
+        try:
+            pad_token_id = tokenizer.convert_tokens_to_ids(official_pad_token)
 
-            for token in candidate_tokens:
+            # 检查这个token是否存在且有效
+            if pad_token_id != tokenizer.unk_token_id and pad_token_id is not None:
+                tokenizer.pad_token = official_pad_token
+                tokenizer.pad_token_id = pad_token_id
+                print(f"✅ Llama 3.1: 使用官方padding token: '{official_pad_token}' (id={pad_token_id})")
+            else:
+                raise ValueError("Official pad token not found or invalid")
+
+        except Exception as e:
+            print(f"⚠️ 无法找到官方padding token '{official_pad_token}': {e}")
+            print(f"🔧 使用安全的低频字符作为fallback...")
+
+            # 使用安全的低频字符作为fallback
+            safe_tokens = ['~', '`', '|', '^', '§', '¶', '†', '‡']
+            found_safe_token = False
+            for safe_token in safe_tokens:
                 try:
-                    token_id = tokenizer.convert_tokens_to_ids(token)
-                    if token_id != tokenizer.unk_token_id and token_id != 128009:  # 确保不是unk或eot
-                        chosen_pad_token = token
-                        tokenizer.pad_token = token
-                        tokenizer.pad_token_id = token_id
-                        print(f"🔧 Llama 3.1: 使用安全token '{token}' (id={token_id}) 作为padding")
+                    safe_token_id = tokenizer.convert_tokens_to_ids(safe_token)
+                    if safe_token_id != tokenizer.unk_token_id and safe_token_id != 128009:
+                        tokenizer.pad_token = safe_token
+                        tokenizer.pad_token_id = safe_token_id
+                        print(f"🔧 Llama 3.1: 使用安全字符 '{safe_token}' (id={safe_token_id}) 作为padding")
+                        found_safe_token = True
                         break
                 except:
                     continue
 
-            if chosen_pad_token is None:
-                # 最后的fallback：使用eos_token，但这不是最优选择
-                tokenizer.pad_token = tokenizer.eos_token
-                tokenizer.pad_token_id = tokenizer.eos_token_id
-                print(f"🔧 Llama 3.1: fallback到eos_token作为padding: '{tokenizer.eos_token}' (id={tokenizer.pad_token_id})")
+            if not found_safe_token:
+                print(f"⚠️ 无法找到合适的padding token，将导致训练问题")
+
     elif tokenizer.pad_token is None:
         # 其他模型的标准配置
         tokenizer.pad_token = tokenizer.eos_token
@@ -769,22 +776,32 @@ def main():
     else:
         # 对于已经有pad_token但可能配置错误的情况，也要检查
         if tokenizer.pad_token_id == 128009:
-            print(f"🔧 检测到错误的pad_token配置，强制修复...")
-            # 使用一个安全的低频token
-            candidate_tokens = ['~', '`', '|', '^', '§', '¶']
-            chosen_pad_token = None
+            print(f"🔧 检测到错误的pad_token配置(使用了<|eot_id|>)，强制修复...")
 
-            for token in candidate_tokens:
+            # 对于Llama 3.1，优先尝试官方padding token
+            if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id == 128009:
+                official_pad_token = "<|finetune_right_pad_id|>"
                 try:
-                    token_id = tokenizer.convert_tokens_to_ids(token)
-                    if token_id != tokenizer.unk_token_id and token_id != 128009:
-                        chosen_pad_token = token
-                        tokenizer.pad_token = token
-                        tokenizer.pad_token_id = token_id
-                        print(f"🔧 强制修复: 使用安全token '{token}' (id={token_id}) 作为padding")
-                        break
+                    pad_token_id = tokenizer.convert_tokens_to_ids(official_pad_token)
+                    if pad_token_id != tokenizer.unk_token_id and pad_token_id != 128009:
+                        tokenizer.pad_token = official_pad_token
+                        tokenizer.pad_token_id = pad_token_id
+                        print(f"✅ 强制修复: 使用官方padding token '{official_pad_token}' (id={pad_token_id})")
+                    else:
+                        raise ValueError("Official pad token invalid")
                 except:
-                    continue
+                    # 如果官方token不可用，使用安全字符
+                    safe_tokens = ['~', '`', '|', '^', '§', '¶']
+                    for safe_token in safe_tokens:
+                        try:
+                            safe_token_id = tokenizer.convert_tokens_to_ids(safe_token)
+                            if safe_token_id != tokenizer.unk_token_id and safe_token_id != 128009:
+                                tokenizer.pad_token = safe_token
+                                tokenizer.pad_token_id = safe_token_id
+                                print(f"🔧 强制修复: 使用安全字符 '{safe_token}' (id={safe_token_id}) 作为padding")
+                                break
+                        except:
+                            continue
 
     tokenizer.padding_side = "right"
 
