@@ -853,6 +853,10 @@ class JointLoRAMoEModel(nn.Module):
             if attention_mask is None:
                 attention_mask = torch.ones_like(current_ids)
 
+            # 重复检测计数器
+            repeated_count = 0
+            max_repeated_allowed = 3  # 允许最多3次重复后切换策略
+
             for step in range(max_new_tokens):
                 # 使用我们的forward方法（包含MoE层）
                 outputs = self.forward(
@@ -860,8 +864,26 @@ class JointLoRAMoEModel(nn.Module):
                     attention_mask=attention_mask
                 )
 
+                # 调试：检查MoE输出
+                if step < 3:
+                    expert_weights = getattr(outputs, 'expert_weights', None)
+                    if expert_weights is not None:
+                        print(f"🔍 Step {step} - Expert weights: {expert_weights[0].detach().cpu().numpy()}")
+                    else:
+                        print(f"🔍 Step {step} - No expert weights found")
+
                 # 获取最后一个位置的logits
                 next_token_logits = outputs.logits[:, -1, :]  # [batch_size, vocab_size]
+
+                # 调试：检查logits分布
+                if step < 3:  # 只在前3步打印
+                    top_values, top_indices = torch.topk(next_token_logits[0], k=5)
+                    print(f"🔍 Step {step} - Top 5 logits: values={top_values.tolist()}, indices={top_indices.tolist()}")
+
+                    # 检查是否存在异常高的logits
+                    max_logit = next_token_logits.max().item()
+                    min_logit = next_token_logits.min().item()
+                    print(f"🔍 Step {step} - Logits range: max={max_logit:.3f}, min={min_logit:.3f}")
 
                 # 生成下一个token
                 if do_sample:
@@ -873,6 +895,52 @@ class JointLoRAMoEModel(nn.Module):
                 else:
                     # 贪心解码
                     next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+
+                # 调试：打印生成的token
+                if step < 3:
+                    print(f"🔍 Step {step} - Generated token ID: {next_token_id.item()}")
+
+                # 检查重复token问题
+                if step > 0:
+                    last_token = current_ids[:, -1]
+                    if (next_token_id.squeeze() == last_token).all():
+                        repeated_count += 1
+                        print(f"⚠️ Step {step} - Detected repeated token {next_token_id.item()} (count: {repeated_count})")
+
+                        if repeated_count >= max_repeated_allowed:
+                            print(f"🚨 Too many repetitions, switching to base model generation")
+                            # 切换到基础模型生成剩余部分
+                            try:
+                                remaining_tokens = max_new_tokens - step
+                                base_outputs = self.base_model.generate(
+                                    current_ids,
+                                    attention_mask=attention_mask,
+                                    max_new_tokens=remaining_tokens,
+                                    do_sample=do_sample,
+                                    temperature=temperature,
+                                    pad_token_id=pad_token_id,
+                                    eos_token_id=eos_token_id,
+                                    repetition_penalty=1.1  # 添加重复惩罚
+                                )
+                                return base_outputs
+                            except Exception as e:
+                                print(f"⚠️ Base model generation failed: {e}, continuing with penalty")
+
+                        # 对重复的token应用惩罚
+                        next_token_logits[:, next_token_id.squeeze()] -= 10.0  # 大幅降低重复token的概率
+
+                        # 重新生成
+                        if do_sample:
+                            if temperature > 0:
+                                next_token_logits = next_token_logits / temperature
+                            probs = torch.softmax(next_token_logits, dim=-1)
+                            next_token_id = torch.multinomial(probs, num_samples=1)
+                        else:
+                            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+
+                        print(f"🔍 Step {step} - New token after penalty: {next_token_id.item()}")
+                    else:
+                        repeated_count = 0  # 重置重复计数器
 
                 # 添加新token
                 current_ids = torch.cat([current_ids, next_token_id], dim=-1)
