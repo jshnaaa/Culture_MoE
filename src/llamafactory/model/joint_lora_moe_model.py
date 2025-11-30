@@ -212,10 +212,10 @@ class MoERouter(nn.Module):
             # 检查logits
             if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
                 print("⚠️ NaN/Inf in router logits, using uniform")
-                # 创建有梯度连接的uniform权重和logits
-                expert_weights = torch.ones(x.size(0), self.num_experts, device=x.device, dtype=x.dtype, requires_grad=True) / self.num_experts
+                # 创建有梯度连接的uniform权重和logits，使用Float32
+                expert_weights = torch.ones(x.size(0), self.num_experts, device=x.device, dtype=torch.float32, requires_grad=True) / self.num_experts
                 # 使用小的随机logits而不是零，确保有梯度连接
-                router_logits = torch.randn(x.size(0), self.num_experts, device=x.device, dtype=x.dtype, requires_grad=True) * 0.01
+                router_logits = torch.randn(x.size(0), self.num_experts, device=x.device, dtype=torch.float32, requires_grad=True) * 0.01
                 return expert_weights, router_logits
 
             # 温度缩放
@@ -248,9 +248,10 @@ class MoERouter(nn.Module):
 
         except Exception as e:
             print(f"⚠️ Router forward failed: {e}")
-            # 创建有梯度连接的fallback
-            expert_weights = torch.ones(x.size(0), self.num_experts, device=x.device, dtype=x.dtype, requires_grad=True) / self.num_experts
-            router_logits = torch.randn(x.size(0), self.num_experts, device=x.device, dtype=x.dtype, requires_grad=True) * 0.01
+            # 创建有梯度连接的fallback，确保使用正确的dtype
+            original_dtype = x.dtype if hasattr(x, 'dtype') else torch.float16
+            expert_weights = torch.ones(x.size(0), self.num_experts, device=x.device, dtype=torch.float32, requires_grad=True) / self.num_experts
+            router_logits = torch.randn(x.size(0), self.num_experts, device=x.device, dtype=torch.float32, requires_grad=True) * 0.01
             return expert_weights, router_logits
 
 
@@ -317,6 +318,12 @@ class MoELayer(nn.Module):
 
             # 路由计算
             expert_weights, router_logits = self.router(pooled, temperature=1.0)
+
+            # 确保expert_weights与hidden_states的dtype匹配，用于后续计算
+            if expert_weights.dtype != hidden_states.dtype:
+                expert_weights = expert_weights.to(hidden_states.dtype)
+            if router_logits.dtype != hidden_states.dtype:
+                router_logits = router_logits.to(hidden_states.dtype)
 
             # 2. 专家计算（极简版）
             expert_outputs = []
@@ -386,6 +393,10 @@ class MoELayer(nn.Module):
                 # 组合辅助损失
                 aux_loss = balance_loss * 0.01 + router_reg_loss * 0.001
 
+                # 确保aux_loss与hidden_states的dtype匹配
+                if aux_loss.dtype != hidden_states.dtype:
+                    aux_loss = aux_loss.to(hidden_states.dtype)
+
                 # 确保aux_loss有梯度连接
                 if not aux_loss.requires_grad:
                     print("⚠️ aux_loss lacks gradient, adding parameter connection")
@@ -393,7 +404,7 @@ class MoELayer(nn.Module):
                     param_connection = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
                     for param in self.router.parameters():
                         if param.requires_grad:
-                            param_connection = param_connection + torch.sum(param * param) * 1e-10
+                            param_connection = param_connection + torch.sum(param * param).to(hidden_states.dtype) * 1e-10
                             break
                     aux_loss = aux_loss + param_connection
 
@@ -403,7 +414,7 @@ class MoELayer(nn.Module):
                     aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
                     for param in self.router.parameters():
                         if param.requires_grad:
-                            aux_loss = aux_loss + torch.sum(param * param) * 1e-8
+                            aux_loss = aux_loss + torch.sum(param * param).to(hidden_states.dtype) * 1e-8
                             break
 
             except Exception as e:
@@ -412,7 +423,7 @@ class MoELayer(nn.Module):
                 aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
                 for param in self.router.parameters():
                     if param.requires_grad:
-                        aux_loss = aux_loss + torch.sum(param * param) * 1e-8
+                        aux_loss = aux_loss + torch.sum(param * param).to(hidden_states.dtype) * 1e-8
                         break
 
             return final_output, expert_weights, aux_loss
