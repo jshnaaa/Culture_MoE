@@ -141,8 +141,8 @@ class MoERouter(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(hidden_dim, dtype=dtype)  # 输入归一化
 
-        # 更合理的初始化
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.02)  # 较小但不过分的初始化
+        # 极度保守的初始化，防止训练过程中发散
+        nn.init.normal_(self.router.weight, mean=0.0, std=0.001)  # 极小的初始化
         nn.init.constant_(self.router.bias, 0.0)
 
     def forward(self, x, temperature: float = 1.0):
@@ -162,8 +162,12 @@ class MoERouter(nn.Module):
             x = torch.clamp(x, min=-3.0, max=3.0)
             x = self.layer_norm(x)
 
-            # 计算路由logits
-            router_logits = self.router(x)  # [B, num_experts]
+            # 计算路由logits，预先限制输入范围
+            x_clamped = torch.clamp(x, min=-1.0, max=1.0)  # 严格限制输入
+            router_logits = self.router(x_clamped)  # [B, num_experts]
+
+            # 立即限制logits范围，防止发散
+            router_logits = torch.clamp(router_logits, min=-2.0, max=2.0)
 
             # 检查logits
             if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
@@ -171,9 +175,6 @@ class MoERouter(nn.Module):
                 expert_weights = torch.ones(x.size(0), self.num_experts, device=x.device, dtype=x.dtype) / self.num_experts
                 router_logits = torch.zeros_like(expert_weights)
                 return expert_weights, router_logits
-
-            # 更严格的logits限制，防止NaN/Inf
-            router_logits = torch.clamp(router_logits, min=-3.0, max=3.0)
 
             # 温度缩放
             safe_temperature = max(temperature, 0.5)  # 允许较小的温度

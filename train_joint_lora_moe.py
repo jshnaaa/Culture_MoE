@@ -400,8 +400,24 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
 
         # 梯度更新
         if (batch_idx + 1) % num_accumulation_steps == 0:
-            # 更保守的梯度裁剪
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+            # 分别对不同组件进行梯度裁剪
+            # 对MoE路由器使用更严格的梯度裁剪
+            moe_params = []
+            other_params = []
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    if 'moe_layer.router' in name:
+                        moe_params.append(param)
+                    else:
+                        other_params.append(param)
+
+            # 极严格的路由器梯度裁剪
+            if moe_params:
+                torch.nn.utils.clip_grad_norm_(moe_params, max_norm=0.1)
+
+            # 其他参数使用正常梯度裁剪
+            if other_params:
+                torch.nn.utils.clip_grad_norm_(other_params, max_norm=0.5)
 
             optimizer.step()
             optimizer.zero_grad()
