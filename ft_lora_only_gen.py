@@ -162,9 +162,23 @@ class CultureLLMNewFormatDataset(Dataset):
         # 4. 掩码输入部分（设为-100，不计算损失）
         labels[:input_length] = -100
 
-        # 5. 计算有效的训练token数量
+        # 5. 🔧 关键修复：掩码所有padding token，不管它们在哪个位置
+        # 确保padding token不被当作训练目标
+        padding_mask = (input_ids == pad_token_id)
+        labels[padding_mask] = -100
+
+        # 6. 计算有效的训练token数量
         valid_labels = (labels != -100).sum().item()
         total_tokens = (input_ids != self.tokenizer.pad_token_id).sum().item()
+
+        # 7. 🔧 最终验证：确保padding token被正确掩码
+        remaining_pad_tokens = (labels == pad_token_id).sum().item()
+        if remaining_pad_tokens > 0:
+            print(f"⚠️ 警告: 样本{idx}中仍有{remaining_pad_tokens}个padding token未被掩码!")
+            # 强制掩码剩余的padding token
+            labels[labels == pad_token_id] = -100
+            valid_labels = (labels != -100).sum().item()
+            print(f"   强制掩码后有效标签数: {valid_labels}")
 
         # 🔍 详细的labels调试信息（前5个样本）
         if idx < 5:
@@ -186,6 +200,9 @@ class CultureLLMNewFormatDataset(Dataset):
             else:
                 pad_in_labels = 0
 
+            # 检查新的padding token在labels中的数量
+            new_pad_in_labels = (labels == pad_token_id).sum().item()
+
             # 统计所有非-100的token
             non_mask_indices = (labels != -100).nonzero(as_tuple=True)[0]
 
@@ -193,7 +210,8 @@ class CultureLLMNewFormatDataset(Dataset):
             print(f"    总序列长度: {len(labels)}")
             print(f"    有效标签数: {valid_labels}")
             print(f"    <|eot_id|>(128009)数量: {eot_in_labels}")
-            print(f"    padding token数量: {pad_in_labels}")
+            print(f"    旧padding token数量: {pad_in_labels}")
+            print(f"    新padding token({pad_token_id})数量: {new_pad_in_labels}")
 
             if valid_labels > 10:
                 print(f"  ⚠️ 标签数过多({valid_labels})，可能仍有padding问题")
@@ -282,6 +300,11 @@ class CultureLLMNewFormatDataset(Dataset):
             elif actual_pad_token_id is None:
                 print(f"  🚨 发现问题: pad_token_id is None!")
                 print(f"    tokenizer配置可能没有正确应用")
+            elif new_pad_in_labels > 0:
+                print(f"  🚨 发现问题: {new_pad_in_labels}个padding token({pad_token_id})仍在训练标签中!")
+                print(f"    padding token应该被掩码为-100，不应该出现在有效标签中")
+            elif valid_labels > 10:
+                print(f"  🚨 发现问题: 有效标签数过多({valid_labels})，可能有其他token被错误包含")
 
         return {
             'input_ids': input_ids,
