@@ -726,25 +726,65 @@ def main():
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.base_model_path, trust_remote_code=True)
 
-    # 🔧 修复Llama 3.1 tokenizer配置问题
-    if tokenizer.pad_token is None:
-        # 检查是否是Llama 3.1 (eos_token_id是128009)
-        if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id == 128009:
-            # Llama 3.1: 查找真正的<unk> token
-            if hasattr(tokenizer, 'unk_token') and tokenizer.unk_token is not None:
-                # 使用真正的<unk> token
-                tokenizer.pad_token = tokenizer.unk_token
-                tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.unk_token)
-                print(f"🔧 Llama 3.1: 使用真正的<unk> token: '{tokenizer.unk_token}' (id={tokenizer.pad_token_id})")
-            else:
-                # 如果没有<unk>，使用eos_token作为padding（避免添加新token）
+    # 🔧 修复Llama 3.1 tokenizer配置问题 - 强制修复版本
+    print(f"🔧 原始tokenizer状态: pad_token='{tokenizer.pad_token}', pad_token_id={tokenizer.pad_token_id}")
+
+    # 强制检查和修复pad_token配置，不管当前状态如何
+    if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id == 128009:
+        # Llama 3.1: 强制修复pad_token配置
+        print(f"🔧 检测到Llama 3.1模型，强制修复pad_token配置...")
+
+        # 查找真正的<unk> token
+        if hasattr(tokenizer, 'unk_token') and tokenizer.unk_token is not None:
+            # 使用真正的<unk> token
+            tokenizer.pad_token = tokenizer.unk_token
+            tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.unk_token)
+            print(f"🔧 Llama 3.1: 使用真正的<unk> token: '{tokenizer.unk_token}' (id={tokenizer.pad_token_id})")
+        else:
+            # 如果没有<unk>，使用一个安全的低频token
+            candidate_tokens = ['~', '`', '|', '^', '§', '¶']
+            chosen_pad_token = None
+
+            for token in candidate_tokens:
+                try:
+                    token_id = tokenizer.convert_tokens_to_ids(token)
+                    if token_id != tokenizer.unk_token_id and token_id != 128009:  # 确保不是unk或eot
+                        chosen_pad_token = token
+                        tokenizer.pad_token = token
+                        tokenizer.pad_token_id = token_id
+                        print(f"🔧 Llama 3.1: 使用安全token '{token}' (id={token_id}) 作为padding")
+                        break
+                except:
+                    continue
+
+            if chosen_pad_token is None:
+                # 最后的fallback：使用eos_token，但这不是最优选择
                 tokenizer.pad_token = tokenizer.eos_token
                 tokenizer.pad_token_id = tokenizer.eos_token_id
-                print(f"🔧 Llama 3.1: 使用eos_token作为padding: '{tokenizer.eos_token}' (id={tokenizer.pad_token_id})")
-        else:
-            # 其他模型：使用标准配置
-            tokenizer.pad_token = tokenizer.eos_token
-            print(f"🔧 标准配置: pad_token = eos_token")
+                print(f"🔧 Llama 3.1: fallback到eos_token作为padding: '{tokenizer.eos_token}' (id={tokenizer.pad_token_id})")
+    elif tokenizer.pad_token is None:
+        # 其他模型的标准配置
+        tokenizer.pad_token = tokenizer.eos_token
+        print(f"🔧 标准配置: pad_token = eos_token")
+    else:
+        # 对于已经有pad_token但可能配置错误的情况，也要检查
+        if tokenizer.pad_token_id == 128009:
+            print(f"🔧 检测到错误的pad_token配置，强制修复...")
+            # 使用一个安全的低频token
+            candidate_tokens = ['~', '`', '|', '^', '§', '¶']
+            chosen_pad_token = None
+
+            for token in candidate_tokens:
+                try:
+                    token_id = tokenizer.convert_tokens_to_ids(token)
+                    if token_id != tokenizer.unk_token_id and token_id != 128009:
+                        chosen_pad_token = token
+                        tokenizer.pad_token = token
+                        tokenizer.pad_token_id = token_id
+                        print(f"🔧 强制修复: 使用安全token '{token}' (id={token_id}) 作为padding")
+                        break
+                except:
+                    continue
 
     tokenizer.padding_side = "right"
 
