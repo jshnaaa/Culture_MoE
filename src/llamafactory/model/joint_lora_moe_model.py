@@ -120,10 +120,10 @@ class MoEExpert(nn.Module):
     def forward(self, x):
         """前向传播 - 修复版本，减少过度限制"""
         # 添加调试信息：检查模型模式和输入
-        print(f"    🔍 Expert mode: training={self.training}")
-        input_mean = x.mean().item()
-        input_std = x.std().item()
-        print(f"    🔍 input: mean={input_mean:.6f}, std={input_std:.6f}")
+        # print(f"    🔍 Expert mode: training={self.training}")  # 注释掉详细调试
+        # input_mean = x.mean().item()
+        # input_std = x.std().item()
+        # print(f"    🔍 input: mean={input_mean:.6f}, std={input_std:.6f}")  # 注释掉详细调试
 
         # 移除过度严格的输入限制，只做基本的NaN/Inf检查
         if torch.isnan(x).any() or torch.isinf(x).any():
@@ -402,8 +402,8 @@ class MoELayer(nn.Module):
 
             # 添加调试信息：检查专家权重
             weights_mean = expert_weights.mean(dim=0)
-            print(f"🔍 Expert weights: {weights_mean.detach().cpu().numpy()}")
-            print(f"🔍 Expert weights sum: {expert_weights.sum(dim=1).mean().item():.6f}")
+            # print(f"🔍 Expert weights: {weights_mean.detach().cpu().numpy()}")  # 注释掉详细调试
+            # print(f"🔍 Expert weights sum: {expert_weights.sum(dim=1).mean().item():.6f}")  # 注释掉详细调试
 
             # 2. 专家计算（极简版）
             expert_outputs = []
@@ -418,7 +418,7 @@ class MoELayer(nn.Module):
                     expert_std = expert_output.std().item()
                     expert_min = expert_output.min().item()
                     expert_max = expert_output.max().item()
-                    print(f"🔍 Expert {i}: mean={expert_mean:.6f}, std={expert_std:.6f}, range=[{expert_min:.3f}, {expert_max:.3f}]")
+                    # print(f"🔍 Expert {i}: mean={expert_mean:.6f}, std={expert_std:.6f}, range=[{expert_min:.3f}, {expert_max:.3f}]")  # 注释掉详细调试
 
                     # 检查专家输出
                     if not (torch.isnan(expert_output).any() or torch.isinf(expert_output).any()):

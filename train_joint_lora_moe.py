@@ -217,30 +217,27 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             return_dict=True
         )
 
-        # 🔍 添加labels调试信息（前3个batch）
+        # 📋 Labels调试信息（前3个batch）
         if batch_idx < 3:
-            print(f"\n🔍 Batch {batch_idx} Labels调试:")
-            # 检查第一个样本的labels
             first_sample_labels = labels[0]
             non_mask_positions = (first_sample_labels != -100).nonzero(as_tuple=True)[0]
+            valid_count = len(non_mask_positions)
 
-            print(f"  📋 第一个样本labels (前20个): {first_sample_labels[:20].tolist()}")
-            print(f"  🎯 有效训练标签数: {len(non_mask_positions)}")
+            print(f"📋 Batch {batch_idx} Labels: 有效标签数={valid_count}")
 
-            if len(non_mask_positions) > 0:
-                print(f"  🎯 训练标签位置: {non_mask_positions[:10].tolist()}")
-                # 显示前几个训练标签
-                for i, pos in enumerate(non_mask_positions[:3]):
+            if valid_count > 0 and valid_count <= 10:  # 只有当标签数合理时才显示详情
+                for i, pos in enumerate(non_mask_positions[:3]):  # 只显示前3个
                     pos_idx = pos.item()
                     label_val = first_sample_labels[pos_idx].item()
                     try:
                         token_text = tokenizer.decode([label_val], skip_special_tokens=True)
-                        print(f"    位置{pos_idx}: label={label_val}, 文本={repr(token_text)}")
+                        print(f"  位置{pos_idx}: {label_val}='{token_text}'")
                     except:
-                        print(f"    位置{pos_idx}: label={label_val}, 解码失败")
+                        print(f"  位置{pos_idx}: {label_val}=(解码失败)")
+            elif valid_count > 10:
+                print(f"  ⚠️ 标签数过多，可能仍有padding问题")
             else:
-                print(f"  ❌ 第一个样本没有训练标签!")
-                print(f"  📋 所有labels是否都是-100: {(first_sample_labels == -100).all().item()}")
+                print(f"  ❌ 没有有效训练标签")
 
         # 简化的logits检查（仅在前3个batch）
         if batch_idx < 3:
@@ -289,14 +286,13 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             print(f"  LM loss: {lm_loss.item()}, MoE loss: {moe_aux_loss.item()}, Culture loss: {culture_loss.item()}")
             continue
 
-        # 调试信息：显示实际损失值
+        # 显示关键训练信息
         if batch_idx < 5 or batch_idx % 50 == 0:  # 前5个batch和每50个batch
-            print(f"🔍 Batch {batch_idx} - Actual loss values:")
-            print(f"  Total: {total_batch_loss.item():.8f}, LM: {lm_loss.item():.8f}, MoE: {moe_aux_loss.item():.8f}")
+            print(f"📊 Batch {batch_idx} - Loss: Total={total_batch_loss.item():.4f}, LM={lm_loss.item():.4f}, MoE={moe_aux_loss.item():.6f}")
             if expert_weights is not None:
-                print(f"  Expert weights: {expert_weights.mean(dim=0).detach().cpu().numpy()}")
-            else:
-                print(f"  Expert weights: None")
+                expert_avg = expert_weights.mean(dim=0).detach().cpu().numpy()
+                expert_str = ", ".join([f"E{i}={w:.3f}" for i, w in enumerate(expert_avg)])
+                print(f"📊 Expert weights: [{expert_str}]")
 
         # 梯度累积
         total_batch_loss = total_batch_loss / num_accumulation_steps
@@ -541,20 +537,14 @@ def generate_and_evaluate_answers_joint(
         with open(epoch_answers_file, 'w', encoding='utf-8') as f:
             json.dump(generated_data, f, indent=2, ensure_ascii=False)
 
-    # 打印前五条生成的答案
+    # 打印前三条生成的答案（简化版）
     if rank == 0:
-        print("\n📋 前五条生成的答案:")
-        print("-" * 100)
-        for idx in range(min(5, len(generated_data))):
+        print("\n📋 生成答案样例:")
+        for idx in range(min(3, len(generated_data))):
             item = generated_data[idx]
-            print(f"\n样本 {idx + 1}:")
-            print(f"  Instruction: {item['instruction'][:80]}...")
-            print(f"  Input: {item['input']}")
-            print(f"  True Output: {item['true_output']}")
-            print(f"  Generated Text: {item['generated_text']}")
-            print(f"  Predicted Answer: {item['predicted_answer']}")
-            print(f"  Correct: {'✅' if item['correct'] else '❌'}")
-        print("\n" + "-" * 100)
+            correct_mark = '✅' if item['correct'] else '❌'
+            print(f"  样本{idx+1}: 真实={item['true_output']}, 预测={item['predicted_answer']}, 生成='{item['generated_text'][:20]}...' {correct_mark}")
+        print()
 
     return {
         'accuracy': accuracy,

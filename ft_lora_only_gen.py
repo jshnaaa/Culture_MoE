@@ -171,151 +171,34 @@ class CultureLLMNewFormatDataset(Dataset):
         valid_labels = (labels != -100).sum().item()
         total_tokens = (input_ids != self.tokenizer.pad_token_id).sum().item()
 
-        # 🔍 详细调试信息（只为前5个样本）
-        if idx < 5:
-            print(f"\n🔍 样本 {idx} Tokenizer诊断调试:")
-            print(f"  Full input: {repr(input_with_newline)}")
-            print(f"  Full text: {repr(full_text)}")
+        # 🔍 关键验证信息（只为前2个样本）
+        if idx < 2:
+            print(f"\n📋 样本 {idx} - 有效标签数: {valid_labels}")
 
-            # 🔧 关键诊断：Tokenizer配置检查
-            print(f"\n  📋 Tokenizer配置诊断:")
-            print(f"    pad_token: {repr(self.tokenizer.pad_token)}")
-            print(f"    pad_token_id: {self.tokenizer.pad_token_id}")
-            print(f"    eos_token: {repr(self.tokenizer.eos_token)}")
-            print(f"    eos_token_id: {self.tokenizer.eos_token_id}")
-
-            # 检查特殊token
+            # 只检查关键问题
             eot_token_id = 128009  # <|eot_id|>
-            pad_token_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+            actual_pad_token_id = self.tokenizer.pad_token_id or 0
 
-            print(f"    实际使用的pad_token_id: {pad_token_id}")
-            print(f"    <|eot_id|>的token_id: {eot_token_id}")
-
-            # ⚠️ 关键检查：pad_token_id是否等于eot_token_id
-            if pad_token_id == eot_token_id:
-                print(f"  🚨 发现问题: pad_token_id == <|eot_id|> ({pad_token_id})")
-                print(f"    这会导致padding区域填充<|eot_id|>而不是真正的padding token!")
-
-            # 序列结构分析
-            old_input_length = len(encoded_input['input_ids'][0])
-            new_input_length = input_length
-
-            print(f"\n  📊 序列结构分析:")
-            print(f"    错误计算 input_length: {old_input_length}")
-            print(f"    正确计算 input_length: {new_input_length}")
-            print(f"    Total sequence length: {len(input_ids)}")
-            print(f"    Non-pad tokens: {total_tokens}")
-            print(f"    Valid labels (训练目标): {valid_labels}")
-
-            # 分析整个序列中的特殊token分布
-            eot_in_sequence = (input_ids == eot_token_id).sum().item()
-            pad_in_sequence = (input_ids == pad_token_id).sum().item()
+            # 检查是否仍有padding问题
             eot_in_labels = (labels == eot_token_id).sum().item()
-            pad_in_labels = (labels == pad_token_id).sum().item()
+            pad_in_labels = (labels == actual_pad_token_id).sum().item()
 
-            print(f"\n  🔍 特殊token分布:")
-            print(f"    整个序列中<|eot_id|>数量: {eot_in_sequence}")
-            print(f"    整个序列中padding数量: {pad_in_sequence}")
-            print(f"    训练标签中<|eot_id|>数量: {eot_in_labels}")
-            print(f"    训练标签中padding数量: {pad_in_labels}")
-
-            # 分析<|eot_id|>位置
-            eot_positions = (input_ids == eot_token_id).nonzero(as_tuple=True)[0]
-            if len(eot_positions) > 0:
-                print(f"    <|eot_id|>在序列中的位置: {eot_positions.tolist()}")
-                print(f"    当前input_length: {input_length}")
-
-                # 检查是否有连续的<|eot_id|>
-                if len(eot_positions) > 1:
-                    consecutive_eot = []
-                    for i in range(len(eot_positions) - 1):
-                        if eot_positions[i+1] - eot_positions[i] == 1:
-                            consecutive_eot.append((eot_positions[i].item(), eot_positions[i+1].item()))
-
-                    if consecutive_eot:
-                        print(f"    ⚠️ 发现连续<|eot_id|>: {consecutive_eot}")
-                        print(f"    这通常表示padding区域被<|eot_id|>填充!")
-
-            # 问题诊断
-            if pad_token_id == eot_token_id and eot_in_sequence > 5:
-                print(f"  🚨 根本问题: Tokenizer将<|eot_id|>用作padding token!")
-                print(f"    解决方案: 需要正确设置pad_token")
+            if valid_labels > 10:
+                print(f"  ⚠️ 标签数过多({valid_labels})，可能仍有padding问题")
             elif eot_in_labels > 1:
-                print(f"  ⚠️ 问题: 训练标签包含多个<|eot_id|>")
-            else:
-                print(f"  ✅ 特殊token处理正常")
-
-            print(f"  📊 训练目标比例: {valid_labels/total_tokens:.1%}")
-
-            # 🔍 序列结构分析
-            print(f"\n  📋 序列结构分析:")
-            print(f"    完整序列长度: {len(input_ids)}")
-            print(f"    非padding长度: {total_tokens}")
-            print(f"    输入部分长度: {input_length}")
-            print(f"    输出部分长度: {valid_labels}")
-            print(f"    Padding长度: {len(input_ids) - total_tokens}")
-
-            # 🔍 关键位置的tokens
-            print(f"\n  🎯 关键位置tokens:")
-            print(f"    input_length位置 {input_length}: {input_ids[input_length].item()} -> {repr(self.tokenizer.decode([input_ids[input_length].item()], skip_special_tokens=True))}")
-            print(f"    input_length-1位置 {input_length-1}: {input_ids[input_length-1].item()} -> {repr(self.tokenizer.decode([input_ids[input_length-1].item()], skip_special_tokens=True))}")
-
-            # 找到训练标签
-            non_mask_indices = (labels != -100).nonzero(as_tuple=True)[0]
-            if len(non_mask_indices) > 0:
-                print(f"\n  🎯 训练标签详情:")
-                print(f"    训练标签位置: {non_mask_indices[:10].tolist()}")
-
-                # 检查训练标签的token类型
-                eot_count = 0
-                padding_count = 0
-                output_count = 0
-                for i, train_idx in enumerate(non_mask_indices[:10]):
-                    idx_val = train_idx.item()
-                    token_id = labels[idx_val].item()
-                    if token_id == eot_token_id:
-                        eot_count += 1
-                    elif token_id == pad_token_id:
-                        padding_count += 1
-                    else:
-                        output_count += 1
-
-                print(f"    前10个训练标签分析:")
-                print(f"      <|eot_id|>数量: {eot_count}")
-                print(f"      padding数量: {padding_count}")
-                print(f"      输出内容数量: {output_count}")
-
-                # 打印前几个训练标签详情
-                print(f"    前5个训练标签详情:")
-                for i, train_idx in enumerate(non_mask_indices[:5]):
-                    idx_val = train_idx.item()
-                    token_id = labels[idx_val].item()
-
-                    token_type = "输出内容"
-                    if token_id == eot_token_id:
-                        token_type = "<|eot_id|>"
-                    elif token_id == pad_token_id:
-                        token_type = "padding"
-
+                print(f"  ⚠️ 训练标签包含{eot_in_labels}个<|eot_id|>")
+            elif valid_labels <= 5:
+                print(f"  ✅ 标签数正常({valid_labels})")
+                # 显示前几个标签内容
+                non_mask_indices = (labels != -100).nonzero(as_tuple=True)[0]
+                for i, pos in enumerate(non_mask_indices[:3]):
+                    pos_idx = pos.item()
+                    token_id = labels[pos_idx].item()
                     try:
                         token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
-                        print(f"      位置{idx_val}: token_id={token_id}, 文本={repr(token_text)}, 类型={token_type}")
+                        print(f"    位置{pos_idx}: {token_id}='{token_text}'")
                     except:
-                        print(f"      位置{idx_val}: token_id={token_id}, 解码失败, 类型={token_type}")
-            else:
-                print(f"  ❌ 没有找到任何训练标签!")
-
-            # 最终验证
-            if valid_labels == 0:
-                print("  ❌ 致命错误: 没有有效训练标签!")
-            elif padding_in_labels > 0:
-                print(f"  ❌ 错误: 训练标签包含{padding_in_labels}个padding tokens")
-            elif eot_in_labels > 1:
-                print(f"  ⚠️ 警告: 训练标签包含{eot_in_labels}个<|eot_id|>，可能过多")
-            elif valid_labels > 50:
-                print(f"  ⚠️ 警告: 有效训练标签过多 ({valid_labels})")
-            else:
-                print("  ✅ 训练标签设置正确")
+                        print(f"    位置{pos_idx}: {token_id}=(解码失败)")
 
         return {
             'input_ids': input_ids,
@@ -422,19 +305,19 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     with torch.no_grad():
         # 检查模型类型，确定使用哪种generate方法
         model_class_name = model.__class__.__name__
-        print(f"🔍 Model class: {model_class_name}")
+        # print(f"🔍 Model class: {model_class_name}")  # 注释掉详细调试
 
         if 'JointLoRAMoE' in model_class_name or hasattr(model, 'moe_layer'):
             # 使用联合模型的自定义generate方法，确保通过MoE层
-            print(f"🔍 Using custom joint model generate method")
-            print(f"🔍 Input shape: {inputs['input_ids'].shape}")
-            print(f"🔍 Input tokens: {inputs['input_ids'][0].tolist()}")
+            # print(f"🔍 Using custom joint model generate method")  # 注释掉详细调试
+            # print(f"🔍 Input shape: {inputs['input_ids'].shape}")  # 注释掉详细调试
+            # print(f"🔍 Input tokens: {inputs['input_ids'][0].tolist()}")  # 注释掉详细调试
 
             # 检查模型是否真的是联合模型
-            if hasattr(model, 'base_model') and hasattr(model, 'moe_layer'):
-                print(f"🔍 Confirmed: Model has both base_model and moe_layer")
-            else:
-                print(f"⚠️ Warning: Model structure unexpected")
+            # if hasattr(model, 'base_model') and hasattr(model, 'moe_layer'):
+            #     print(f"🔍 Confirmed: Model has both base_model and moe_layer")
+            # else:
+            #     print(f"⚠️ Warning: Model structure unexpected")
 
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
@@ -447,7 +330,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             )
         else:
             # 回退到标准generate方法
-            print(f"🔍 Using standard model generate method")
+            # print(f"🔍 Using standard model generate method")  # 注释掉详细调试
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
@@ -462,24 +345,26 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
     generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
-    # 添加调试信息
-    print(f"🔍 Generated token IDs: {generated_ids.tolist()}")
-    print(f"🔍 Generated text: {repr(generated_text)}")
-    print(f"🔍 Generated text length: {len(generated_text)}")
+    # 简化的生成信息（只显示结果）
+    if len(generated_text.strip()) == 0:
+        print(f"⚠️ Empty generation")
+    # print(f"🔍 Generated token IDs: {generated_ids.tolist()}")  # 注释掉详细调试
+    # print(f"🔍 Generated text: {repr(generated_text)}")  # 注释掉详细调试
+    # print(f"🔍 Generated text length: {len(generated_text)}")  # 注释掉详细调试
 
     # 检查生成的token是否在合理范围内
-    vocab_size = tokenizer.vocab_size
-    valid_tokens = [tid for tid in generated_ids.tolist() if 0 <= tid < vocab_size]
-    print(f"🔍 Valid tokens: {len(valid_tokens)}/{len(generated_ids)}")
+    # vocab_size = tokenizer.vocab_size
+    # valid_tokens = [tid for tid in generated_ids.tolist() if 0 <= tid < vocab_size]
+    # print(f"🔍 Valid tokens: {len(valid_tokens)}/{len(generated_ids)}")  # 注释掉详细调试
 
-    if len(generated_ids) > 0:
+    # if len(generated_ids) > 0:
         # 检查前几个生成的token
-        for i, token_id in enumerate(generated_ids[:5].tolist()):
-            try:
-                token_text = tokenizer.decode([token_id], skip_special_tokens=True)
-                print(f"🔍 Token {i}: {token_id} -> {repr(token_text)}")
-            except Exception as e:
-                print(f"🔍 Token {i}: {token_id} -> ERROR: {e}")
+        # for i, token_id in enumerate(generated_ids[:5].tolist()):
+        #     try:
+        #         token_text = tokenizer.decode([token_id], skip_special_tokens=True)
+        #         print(f"🔍 Token {i}: {token_id} -> {repr(token_text)}")
+        #     except Exception as e:
+        #         print(f"🔍 Token {i}: {token_id} -> ERROR: {e}")  # 注释掉详细调试
 
     return generated_text
 
