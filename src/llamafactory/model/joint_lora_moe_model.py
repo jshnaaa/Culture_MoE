@@ -62,24 +62,38 @@ class MoEExpert(nn.Module):
         self.down_proj = nn.Linear(safe_intermediate_dim, hidden_dim, bias=True, dtype=dtype)
         self.act_fn = nn.GELU()  # 使用更稳定的GELU而不是SiLU
         self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(safe_intermediate_dim, dtype=dtype)  # 添加LayerNorm
+        # 暂时移除LayerNorm，可能导致数值不稳定
+        # self.layer_norm = nn.LayerNorm(safe_intermediate_dim, dtype=dtype)
 
         # 保守的初始化
         self._init_weights()
 
     def _init_weights(self):
-        """极度保守的权重初始化"""
-        # 使用更合理的初始化
-        for module in [self.gate_proj, self.up_proj]:
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            nn.init.constant_(module.bias, 0.0)
+        """修复权重初始化 - 使用更大的初始化确保信号传播"""
+        # 使用更大的标准差，确保有效的信号传播
+        gate_up_std = 0.05  # 比原来的0.02大2.5倍
+        down_std = 0.02     # 比原来的0.01大2倍
 
-        # down_proj使用稍小的初始化
-        nn.init.normal_(self.down_proj.weight, mean=0.0, std=0.01)
-        nn.init.constant_(self.down_proj.bias, 0.0)
+        for module in [self.gate_proj, self.up_proj]:
+            nn.init.normal_(module.weight, mean=0.0, std=gate_up_std)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0.0)
+
+        # down_proj使用稍小但仍然有效的初始化
+        nn.init.normal_(self.down_proj.weight, mean=0.0, std=down_std)
+        if self.down_proj.bias is not None:
+            nn.init.constant_(self.down_proj.bias, 0.0)
+
+        print(f"🔧 Expert initialized: gate/up_std={gate_up_std:.4f}, down_std={down_std:.4f}")
 
     def forward(self, x):
         """前向传播 - 修复版本，减少过度限制"""
+        # 添加调试信息：检查模型模式和输入
+        print(f"    🔍 Expert mode: training={self.training}")
+        input_mean = x.mean().item()
+        input_std = x.std().item()
+        print(f"    🔍 input: mean={input_mean:.6f}, std={input_std:.6f}")
+
         # 移除过度严格的输入限制，只做基本的NaN/Inf检查
         if torch.isnan(x).any() or torch.isinf(x).any():
             return torch.zeros_like(x)
@@ -88,6 +102,14 @@ class MoEExpert(nn.Module):
             # 第一阶段：gate和up投影
             gate_output = self.gate_proj(x)
             up_output = self.up_proj(x)
+
+            # 添加调试信息：检查投影层输出
+            gate_mean = gate_output.mean().item()
+            gate_std = gate_output.std().item()
+            up_mean = up_output.mean().item()
+            up_std = up_output.std().item()
+            print(f"    🔍 gate_proj: mean={gate_mean:.6f}, std={gate_std:.6f}")
+            print(f"    🔍 up_proj: mean={up_mean:.6f}, std={up_std:.6f}")
 
             # 检查第一阶段输出
             if torch.isnan(gate_output).any() or torch.isinf(gate_output).any():
@@ -98,6 +120,11 @@ class MoEExpert(nn.Module):
             # 激活函数 - 移除激活前的限制
             gate_activated = self.act_fn(gate_output)
 
+            # 添加调试信息：检查激活后的输出
+            gate_act_mean = gate_activated.mean().item()
+            gate_act_std = gate_activated.std().item()
+            print(f"    🔍 gate_activated: mean={gate_act_mean:.6f}, std={gate_act_std:.6f}")
+
             # 检查激活后的输出
             if torch.isnan(gate_activated).any() or torch.isinf(gate_activated).any():
                 return torch.zeros_like(x)
@@ -105,14 +132,24 @@ class MoEExpert(nn.Module):
             # 元素乘法 - 移除过度限制
             intermediate = gate_activated * up_output
 
-            # LayerNorm稳定化
-            intermediate = self.layer_norm(intermediate)
+            # 添加调试信息：检查元素乘法后的输出
+            inter_mean = intermediate.mean().item()
+            inter_std = intermediate.std().item()
+            print(f"    🔍 intermediate: mean={inter_mean:.6f}, std={inter_std:.6f}")
 
-            # Dropout
+            # 暂时移除LayerNorm稳定化，可能是导致零输出的原因
+            # intermediate = self.layer_norm(intermediate)
+
+            # Dropout - 在推理时不应该有影响
             intermediate = self.dropout(intermediate)
 
             # 最终投影 - 移除输出限制，让模型自由表达
             output = self.down_proj(intermediate)
+
+            # 添加调试信息：检查最终输出
+            output_mean = output.mean().item()
+            output_std = output.std().item()
+            print(f"    🔍 final_output: mean={output_mean:.6f}, std={output_std:.6f}")
 
             # 最终检查 - 只检查NaN/Inf，不限制数值范围
             if torch.isnan(output).any() or torch.isinf(output).any():
