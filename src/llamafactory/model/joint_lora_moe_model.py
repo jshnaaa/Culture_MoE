@@ -137,8 +137,8 @@ class MoEExpert(nn.Module):
             # 添加调试信息：检查投影层权重
             gate_weight_has_nan = torch.isnan(self.gate_proj.weight).any() or torch.isinf(self.gate_proj.weight).any()
             up_weight_has_nan = torch.isnan(self.up_proj.weight).any() or torch.isinf(self.up_proj.weight).any()
-            print(f"    🔍 gate_proj weight NaN: {gate_weight_has_nan}")
-            print(f"    🔍 up_proj weight NaN: {up_weight_has_nan}")
+            # print(f"    🔍 gate_proj weight NaN: {gate_weight_has_nan}")
+            # print(f"    🔍 up_proj weight NaN: {up_weight_has_nan}")
 
             if gate_weight_has_nan or up_weight_has_nan:
                 print("    ⚠️ Expert weights contain NaN, reinitializing...")
@@ -150,8 +150,8 @@ class MoEExpert(nn.Module):
             gate_std = gate_output.std().item()
             up_mean = up_output.mean().item()
             up_std = up_output.std().item()
-            print(f"    🔍 gate_proj: mean={gate_mean:.6f}, std={gate_std:.6f}")
-            print(f"    🔍 up_proj: mean={up_mean:.6f}, std={up_std:.6f}")
+            # print(f"    🔍 gate_proj: mean={gate_mean:.6f}, std={gate_std:.6f}")
+            # print(f"    🔍 up_proj: mean={up_mean:.6f}, std={up_std:.6f}")
 
             # 检查第一阶段输出 - 如果是NaN，强制重新初始化
             if torch.isnan(gate_output).any() or torch.isinf(gate_output).any():
@@ -169,7 +169,7 @@ class MoEExpert(nn.Module):
             # 添加调试信息：检查激活后的输出
             gate_act_mean = gate_activated.mean().item()
             gate_act_std = gate_activated.std().item()
-            print(f"    🔍 gate_activated: mean={gate_act_mean:.6f}, std={gate_act_std:.6f}")
+            # print(f"    🔍 gate_activated: mean={gate_act_mean:.6f}, std={gate_act_std:.6f}")
 
             # 检查激活后的输出
             if torch.isnan(gate_activated).any() or torch.isinf(gate_activated).any():
@@ -181,7 +181,7 @@ class MoEExpert(nn.Module):
             # 添加调试信息：检查元素乘法后的输出
             inter_mean = intermediate.mean().item()
             inter_std = intermediate.std().item()
-            print(f"    🔍 intermediate: mean={inter_mean:.6f}, std={inter_std:.6f}")
+            # print(f"    🔍 intermediate: mean={inter_mean:.6f}, std={inter_std:.6f}")
 
             # 暂时移除LayerNorm稳定化，可能是导致零输出的原因
             # intermediate = self.layer_norm(intermediate)
@@ -195,7 +195,7 @@ class MoEExpert(nn.Module):
             # 添加调试信息：检查最终输出
             output_mean = output.mean().item()
             output_std = output.std().item()
-            print(f"    🔍 final_output: mean={output_mean:.6f}, std={output_std:.6f}")
+            # print(f"    🔍 final_output: mean={output_mean:.6f}, std={output_std:.6f}")
 
             # 最终检查 - 只检查NaN/Inf，不限制数值范围
             if torch.isnan(output).any() or torch.isinf(output).any():
