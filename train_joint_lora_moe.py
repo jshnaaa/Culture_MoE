@@ -325,36 +325,16 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
 
         # 梯度更新
         if (batch_idx + 1) % num_accumulation_steps == 0:
-            # 分层梯度处理：对MoE路由器使用超严格处理
-            moe_router_params = []
-            other_params = []
-
+            # 简化的梯度处理（Float32路由器不需要特殊处理）
+            # 检查和清理任何NaN/Inf梯度
             for name, param in model.named_parameters():
                 if param.requires_grad and param.grad is not None:
-                    # 检查和清理NaN/Inf梯度
                     if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
                         print(f"⚠️ Cleaning NaN/Inf gradient in {name}")
                         param.grad.zero_()
 
-                    # 分类参数
-                    if 'moe_layer.router' in name:
-                        moe_router_params.append(param)
-                    else:
-                        other_params.append(param)
-
-            # 超严格的路由器梯度裁剪
-            if moe_router_params:
-                torch.nn.utils.clip_grad_norm_(moe_router_params, max_norm=0.001)  # 极小的梯度裁剪
-
-                # 额外的路由器梯度检查
-                for name, param in model.named_parameters():
-                    if 'moe_layer.router' in name and param.grad is not None:
-                        # 进一步限制梯度值
-                        param.grad.data.clamp_(-0.001, 0.001)
-
-            # 其他参数使用正常梯度裁剪
-            if other_params:
-                torch.nn.utils.clip_grad_norm_(other_params, max_norm=1.0)
+            # 统一的梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             optimizer.step()
             optimizer.zero_grad()

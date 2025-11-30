@@ -139,8 +139,9 @@ class MoERouter(nn.Module):
         self.num_experts = num_experts
         self.hidden_dim = hidden_dim
 
-        # 极简设计：只用一个线性层，避免所有可能的数值不稳定源
-        self.router = nn.Linear(hidden_dim, num_experts, bias=True, dtype=dtype)
+        # 根本性解决方案：路由器强制使用Float32，避免Float16精度问题
+        # 这是唯一能彻底解决NaN/Inf问题的方法
+        self.router = nn.Linear(hidden_dim, num_experts, bias=True, dtype=torch.float32)
 
         # 极保守的初始化 - 确保输出接近uniform
         with torch.no_grad():
@@ -149,12 +150,9 @@ class MoERouter(nn.Module):
             # 偏置设置为小的负值，softmax后趋向uniform
             nn.init.constant_(self.router.bias, -1.0)
 
-        # 权重保护参数 - 进一步降低限制
-        self.max_weight_value = 0.01  # 超极严格的权重限制
-        self.max_bias_value = 0.5     # 降低偏置限制
-
-        # 添加权重稳定化机制
-        self.weight_decay_factor = 0.999  # 每次更新后轻微衰减权重
+        # Float32路由器的合理权重限制
+        self.max_weight_value = 0.1   # 恢复合理的权重限制
+        self.max_bias_value = 1.0     # 恢复合理的偏置限制
 
     def forward(self, x, temperature: float = 1.0):
         """
@@ -171,9 +169,9 @@ class MoERouter(nn.Module):
         batch_size = x.size(0)
 
         try:
-            # 1. 超激进的权重保护和稳定化
+            # 1. 简化的权重保护（Float32下应该不再需要）
             with torch.no_grad():
-                # 检查并修复NaN/Inf（优先级最高）
+                # 检查并修复NaN/Inf（Float32下极少发生）
                 weight_has_nan = torch.isnan(self.router.weight).any() or torch.isinf(self.router.weight).any()
                 bias_has_nan = torch.isnan(self.router.bias).any() or torch.isinf(self.router.bias).any()
 
@@ -183,54 +181,47 @@ class MoERouter(nn.Module):
 
                 if bias_has_nan:
                     print("⚠️ Resetting router bias due to NaN/Inf")
-                    nn.init.constant_(self.router.bias, -0.5)  # 使用更保守的初值
+                    nn.init.constant_(self.router.bias, -1.0)
 
-                # 权重衰减稳定化（防止累积误差）
-                self.router.weight.data *= self.weight_decay_factor
-                self.router.bias.data *= self.weight_decay_factor
-
-                # 超严格限制权重值
+                # 合理的权重限制（Float32下不需要过于严格）
                 self.router.weight.data.clamp_(-self.max_weight_value, self.max_weight_value)
                 self.router.bias.data.clamp_(-self.max_bias_value, self.max_bias_value)
 
-                # 额外的安全检查：如果权重范数过大，进一步缩放
-                weight_norm = torch.norm(self.router.weight)
-                if weight_norm > 0.05:  # 超严格的范数限制
-                    self.router.weight.data *= (0.05 / weight_norm)
-
-                bias_norm = torch.norm(self.router.bias)
-                if bias_norm > 0.3:
-                    self.router.bias.data *= (0.3 / bias_norm)
-
-            # 2. 输入预处理：极保守的范围限制
+            # 2. 输入预处理和dtype转换
             x_safe = torch.clamp(x, min=-1.0, max=1.0)
 
-            # 3. 路由计算
-            router_logits = self.router(x_safe)  # [B, num_experts]
+            # 转换为Float32进行路由计算，确保数值稳定
+            x_float32 = x_safe.float()
 
-            # 4. 立即限制logits范围
-            router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)
+            # 3. 路由计算（在Float32精度下）
+            router_logits = self.router(x_float32)  # [B, num_experts] in Float32
 
-            # 5. 极稳定的softmax计算
-            # 使用稳定的温度
-            safe_temperature = torch.clamp(torch.tensor(temperature, device=x.device), min=0.5, max=2.0)
+            # 4. 限制logits范围（在Float32下更安全）
+            router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
 
-            # 温度缩放
+            # 5. 在Float32精度下进行稳定的softmax计算
+            safe_temperature = torch.clamp(torch.tensor(temperature, device=x.device, dtype=torch.float32), min=0.5, max=2.0)
+
+            # 温度缩放（Float32精度）
             scaled_logits = router_logits / safe_temperature
 
-            # 数值稳定的softmax
+            # 数值稳定的softmax（Float32精度）
             max_logits = torch.max(scaled_logits, dim=-1, keepdim=True)[0]
             shifted_logits = scaled_logits - max_logits
 
-            # 严格限制指数输入
-            safe_logits = torch.clamp(shifted_logits, min=-10.0, max=0.0)
+            # Float32下的指数计算更稳定
+            safe_logits = torch.clamp(shifted_logits, min=-20.0, max=0.0)
 
-            # 计算expert权重
+            # 计算expert权重（Float32精度）
             exp_logits = torch.exp(safe_logits)
             weight_sum = torch.sum(exp_logits, dim=-1, keepdim=True) + 1e-8
-            expert_weights = exp_logits / weight_sum
+            expert_weights_f32 = exp_logits / weight_sum
 
-            # 6. 最终检查
+            # 6. 转换回原始dtype，但保持梯度连接
+            expert_weights = expert_weights_f32.to(x.dtype)
+            router_logits = router_logits.to(x.dtype)
+
+            # 7. 最终检查（现在应该极少触发）
             if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
                 print("⚠️ Fallback to uniform weights")
                 expert_weights = torch.full((batch_size, self.num_experts),
