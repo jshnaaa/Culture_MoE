@@ -217,33 +217,33 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             return_dict=True
         )
 
-        # 📋 Labels调试信息（前3个batch）
-        if batch_idx < 3:
-            first_sample_labels = labels[0]
-            non_mask_positions = (first_sample_labels != -100).nonzero(as_tuple=True)[0]
-            valid_count = len(non_mask_positions)
+        # 📋 Labels调试信息（前3个batch）- 注释掉，专注tokenizer问题
+        # if batch_idx < 3:
+        #     first_sample_labels = labels[0]
+        #     non_mask_positions = (first_sample_labels != -100).nonzero(as_tuple=True)[0]
+        #     valid_count = len(non_mask_positions)
 
-            print(f"📋 Batch {batch_idx} Labels: 有效标签数={valid_count}")
+        #     print(f"📋 Batch {batch_idx} Labels: 有效标签数={valid_count}")
 
-            if valid_count > 0 and valid_count <= 10:  # 只有当标签数合理时才显示详情
-                for i, pos in enumerate(non_mask_positions[:3]):  # 只显示前3个
-                    pos_idx = pos.item()
-                    label_val = first_sample_labels[pos_idx].item()
-                    try:
-                        token_text = tokenizer.decode([label_val], skip_special_tokens=True)
-                        print(f"  位置{pos_idx}: {label_val}='{token_text}'")
-                    except:
-                        print(f"  位置{pos_idx}: {label_val}=(解码失败)")
-            elif valid_count > 10:
-                print(f"  ⚠️ 标签数过多，可能仍有padding问题")
-            else:
-                print(f"  ❌ 没有有效训练标签")
+        #     if valid_count > 0 and valid_count <= 10:  # 只有当标签数合理时才显示详情
+        #         for i, pos in enumerate(non_mask_positions[:3]):  # 只显示前3个
+        #             pos_idx = pos.item()
+        #             label_val = first_sample_labels[pos_idx].item()
+        #             try:
+        #                 token_text = tokenizer.decode([label_val], skip_special_tokens=True)
+        #                 print(f"  位置{pos_idx}: {label_val}='{token_text}'")
+        #             except:
+        #                 print(f"  位置{pos_idx}: {label_val}=(解码失败)")
+        #     elif valid_count > 10:
+        #         print(f"  ⚠️ 标签数过多，可能仍有padding问题")
+        #     else:
+        #         print(f"  ❌ 没有有效训练标签")
 
-        # 简化的logits检查（仅在前3个batch）
-        if batch_idx < 3:
-            logits = outputs.logits
-            if torch.isnan(logits).any() or torch.isinf(logits).any():
-                print(f"⚠️ Batch {batch_idx} - Invalid logits detected")
+        # 简化的logits检查（仅在前3个batch）- 注释掉，专注tokenizer问题
+        # if batch_idx < 3:
+        #     logits = outputs.logits
+        #     if torch.isnan(logits).any() or torch.isinf(logits).any():
+        #         print(f"⚠️ Batch {batch_idx} - Invalid logits detected")
 
         # 获取各种损失
         lm_loss = outputs.loss  # 语言模型损失
@@ -255,12 +255,12 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             # 使用requires_grad=True的零张量确保梯度连接
             moe_aux_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
 
-        # 简化的MoE检查（仅在前3个batch）
-        if batch_idx < 3:
-            if torch.isnan(moe_aux_loss).any() or torch.isinf(moe_aux_loss).any():
-                print(f"⚠️ Batch {batch_idx} - Invalid MoE aux loss")
-            if expert_weights is not None and (torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any()):
-                print(f"⚠️ Batch {batch_idx} - Invalid expert weights")
+        # 简化的MoE检查（仅在前3个batch）- 注释掉，专注tokenizer问题
+        # if batch_idx < 3:
+        #     if torch.isnan(moe_aux_loss).any() or torch.isinf(moe_aux_loss).any():
+        #         print(f"⚠️ Batch {batch_idx} - Invalid MoE aux loss")
+        #     if expert_weights is not None and (torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any()):
+        #         print(f"⚠️ Batch {batch_idx} - Invalid expert weights")
 
         # 计算文化损失 - 确保有梯度连接
         if use_culture_loss and culture_labels is not None and expert_weights is not None:
@@ -275,10 +275,10 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         # 总损失
         total_batch_loss = lm_loss + moe_aux_loss + culture_loss
 
-        # 简化的梯度检查（仅在前3个batch）
-        if batch_idx < 3:
-            if not total_batch_loss.requires_grad:
-                print(f"⚠️ Batch {batch_idx} - Total loss missing gradients")
+        # 简化的梯度检查（仅在前3个batch）- 注释掉，专注tokenizer问题
+        # if batch_idx < 3:
+        #     if not total_batch_loss.requires_grad:
+        #         print(f"⚠️ Batch {batch_idx} - Total loss missing gradients")
 
         # 检查 NaN/Inf loss
         if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
@@ -286,13 +286,13 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             print(f"  LM loss: {lm_loss.item()}, MoE loss: {moe_aux_loss.item()}, Culture loss: {culture_loss.item()}")
             continue
 
-        # 显示关键训练信息
-        if batch_idx < 5 or batch_idx % 50 == 0:  # 前5个batch和每50个batch
-            print(f"📊 Batch {batch_idx} - Loss: Total={total_batch_loss.item():.4f}, LM={lm_loss.item():.4f}, MoE={moe_aux_loss.item():.6f}")
-            if expert_weights is not None:
-                expert_avg = expert_weights.mean(dim=0).detach().cpu().numpy()
-                expert_str = ", ".join([f"E{i}={w:.3f}" for i, w in enumerate(expert_avg)])
-                print(f"📊 Expert weights: [{expert_str}]")
+        # 显示关键训练信息 - 注释掉，专注tokenizer问题
+        # if batch_idx < 5 or batch_idx % 50 == 0:  # 前5个batch和每50个batch
+        #     print(f"📊 Batch {batch_idx} - Loss: Total={total_batch_loss.item():.4f}, LM={lm_loss.item():.4f}, MoE={moe_aux_loss.item():.6f}")
+        #     if expert_weights is not None:
+        #         expert_avg = expert_weights.mean(dim=0).detach().cpu().numpy()
+        #         expert_str = ", ".join([f"E{i}={w:.3f}" for i, w in enumerate(expert_avg)])
+        #         print(f"📊 Expert weights: [{expert_str}]")
 
         # 梯度累积
         total_batch_loss = total_batch_loss / num_accumulation_steps
@@ -758,6 +758,30 @@ def main():
     print(f"  是否为None: {tokenizer.pad_token_id is None}")
 
     print("✅ Tokenizer loaded")
+
+    # 🚨 训练前最终tokenizer验证
+    print(f"\n🚨 训练前最终tokenizer验证:")
+    print(f"  pad_token: {repr(tokenizer.pad_token)}")
+    print(f"  pad_token_id: {tokenizer.pad_token_id}")
+    print(f"  eos_token: {repr(tokenizer.eos_token)}")
+    print(f"  eos_token_id: {tokenizer.eos_token_id}")
+
+    # 测试tokenizer实际行为
+    test_text = "Hello world"
+    test_encoded = tokenizer(test_text, max_length=10, padding='max_length', truncation=True, return_tensors='pt')
+    test_input_ids = test_encoded['input_ids'][0]
+    print(f"  测试序列: {test_input_ids.tolist()}")
+
+    # 检查padding token在实际序列中的表现
+    padding_positions = (test_input_ids == tokenizer.pad_token_id).nonzero(as_tuple=True)[0]
+    if len(padding_positions) > 0:
+        pad_token_id = tokenizer.pad_token_id
+        pad_token_text = tokenizer.decode([pad_token_id], skip_special_tokens=True)
+        print(f"  padding token {pad_token_id} 解码为: '{pad_token_text}'")
+
+        if pad_token_text.strip() not in ['', '<pad>', '<unk>']:
+            print(f"  🚨 严重警告: padding token解码为有意义字符'{pad_token_text}'!")
+            print(f"  这会导致训练标签包含大量无意义字符!")
 
     # 加载数据
     print("\nLoading and processing data...")

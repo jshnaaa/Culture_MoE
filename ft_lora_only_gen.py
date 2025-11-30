@@ -197,6 +197,26 @@ class CultureLLMNewFormatDataset(Dataset):
 
             if valid_labels > 10:
                 print(f"  ⚠️ 标签数过多({valid_labels})，可能仍有padding问题")
+                print(f"  🚨 CRITICAL: tokenizer修复失效！")
+                print(f"  当前pad_token_id: {self.tokenizer.pad_token_id}")
+                print(f"  当前pad_token: {repr(self.tokenizer.pad_token)}")
+
+                # 强制检查实际使用的pad_token_id
+                if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
+                    actual_pad_text = self.tokenizer.decode([self.tokenizer.pad_token_id], skip_special_tokens=True)
+                    print(f"  实际pad_token解码: '{actual_pad_text}'")
+
+                # 检查input_ids中实际的token分布
+                unique_tokens, counts = torch.unique(input_ids, return_counts=True)
+                print(f"  🔍 input_ids中的token分布 (前10个):")
+                for i in range(min(10, len(unique_tokens))):
+                    token_id = unique_tokens[i].item()
+                    count = counts[i].item()
+                    try:
+                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+                        print(f"    token_id={token_id}('{token_text}'): {count}次")
+                    except:
+                        print(f"    token_id={token_id}(解码失败): {count}次")
 
                 # 显示labels的分布情况
                 unique_tokens = {}
