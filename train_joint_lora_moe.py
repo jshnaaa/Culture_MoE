@@ -368,20 +368,32 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                     else:
                         other_params.append(param)
 
-            # 极严格的路由器梯度裁剪
+            # 极严格的路由器梯度裁剪和权重保护
             if moe_params:
-                # 调试：检查路由器梯度
-                # for name, param in model.named_parameters():
-                #     if 'moe_layer.router' in name and param.grad is not None:
-                #         grad_norm = param.grad.norm().item()
-                #         param_norm = param.norm().item()
-                #         print(f"🔍 Router Grad - {name}: grad_norm={grad_norm:.6f}, param_norm={param_norm:.6f}")
-                #         if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                #             print(f"⚠️ NaN/Inf gradient in {name}!")
-                #         if torch.isnan(param).any() or torch.isinf(param).any():
-                #             print(f"⚠️ NaN/Inf parameter in {name}!")
+                # 预先检查和清理NaN/Inf梯度
+                for name, param in model.named_parameters():
+                    if 'moe_layer.router' in name and param.grad is not None:
+                        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                            print(f"⚠️ Cleaning NaN/Inf gradient in {name}")
+                            param.grad.zero_()  # 清零有问题的梯度
 
-                torch.nn.utils.clip_grad_norm_(moe_params, max_norm=0.1)
+                # 极严格的梯度裁剪
+                torch.nn.utils.clip_grad_norm_(moe_params, max_norm=0.05)  # 进一步降低到0.05
+
+                # 权重更新后立即检查和修复
+                for name, param in model.named_parameters():
+                    if 'moe_layer.router' in name:
+                        with torch.no_grad():
+                            # 检查权重是否超出安全范围
+                            if torch.isnan(param).any() or torch.isinf(param).any():
+                                print(f"⚠️ Post-update NaN/Inf in {name}, resetting")
+                                if 'weight' in name:
+                                    torch.nn.init.normal_(param, mean=0.0, std=0.0001)
+                                elif 'bias' in name:
+                                    torch.nn.init.constant_(param, 0.0)
+                            else:
+                                # 即使没有NaN/Inf，也要限制权重范围防止溢出
+                                param.clamp_(-1.0, 1.0)  # 严格限制权重范围
 
             # 其他参数使用正常梯度裁剪
             if other_params:

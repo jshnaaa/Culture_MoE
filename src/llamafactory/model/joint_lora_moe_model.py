@@ -137,9 +137,10 @@ class MoERouter(nn.Module):
     def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1, dtype: torch.dtype = torch.float16):
         super().__init__()
         self.num_experts = num_experts
-        self.router = nn.Linear(hidden_dim, num_experts, bias=True, dtype=dtype)  # 添加bias
+        # 使用Float32进行路由器计算，避免Float16溢出
+        self.router = nn.Linear(hidden_dim, num_experts, bias=True, dtype=torch.float32)
         self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(hidden_dim, dtype=dtype, eps=1e-6)  # 增大eps防止数值问题
+        self.layer_norm = nn.LayerNorm(hidden_dim, dtype=torch.float32, eps=1e-6)  # 也使用Float32
 
         # 极度保守的初始化，防止训练过程中发散
         nn.init.normal_(self.router.weight, mean=0.0, std=0.0001)  # 更极小的初始化
@@ -161,16 +162,14 @@ class MoERouter(nn.Module):
             router_logits: [B, num_experts] 原始logits
         """
         try:
+            # 输入转换为Float32进行路由器计算
+            x = x.to(torch.float32)
+
             # 输入归一化和限制
             x = torch.clamp(x, min=-3.0, max=3.0)
 
-            # 暂时禁用LayerNorm，直接使用clamp后的输入
-            # x = self.layer_norm(x)  # 禁用LayerNorm，因为可能导致数值不稳定
-
-            # 手动标准化，更加保守
-            x_mean = x.mean(dim=-1, keepdim=True)
-            x_std = x.std(dim=-1, keepdim=True) + 1e-6
-            x = (x - x_mean) / x_std
+            # 使用LayerNorm进行归一化（现在使用Float32，更稳定）
+            x = self.layer_norm(x)
             x = torch.clamp(x, min=-2.0, max=2.0)  # 标准化后再次限制
 
             # 调试：检查归一化后的输入
@@ -242,6 +241,9 @@ class MoERouter(nn.Module):
             weight_sum = expert_weights.sum(dim=-1, keepdim=True) + 1e-8
             expert_weights = expert_weights / weight_sum
 
+            # 转换回原始dtype（通常是Float16）但保持梯度连接
+            # 注意：这里不能直接.to(dtype)，因为会断开梯度
+            # 让PyTorch自动处理类型转换
             return expert_weights, router_logits
 
         except Exception as e:
