@@ -138,13 +138,8 @@ class CultureLLMNewFormatDataset(Dataset):
         # 获取正确的pad_token_id
         pad_token_id = self.tokenizer.pad_token_id
         if pad_token_id is None:
-            # 如果没有设置pad_token，检查是否是Llama 3.1
-            if hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id == 128009:
-                # Llama 3.1: 使用<unk> (token_id=0) 作为padding
-                pad_token_id = 0
-            else:
-                # 其他模型：使用eos_token作为pad_token
-                pad_token_id = self.tokenizer.eos_token_id
+            # 如果没有设置pad_token，使用默认的eos_token
+            pad_token_id = self.tokenizer.eos_token_id
 
         # 🔧 验证：确保input_length不会超出完整序列的非padding部分
         total_non_pad = (input_ids != pad_token_id).sum().item()
@@ -714,10 +709,17 @@ def main():
     if tokenizer.pad_token is None:
         # 检查是否是Llama 3.1 (eos_token_id是128009)
         if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id == 128009:
-            # Llama 3.1: 使用<unk> (token_id=0) 作为padding token，而不是<|eot_id|>
-            tokenizer.pad_token = tokenizer.unk_token  # <unk>
-            tokenizer.pad_token_id = 0  # <unk>的token_id通常是0
-            print(f"🔧 Llama 3.1 detected: 设置pad_token = <unk> (id=0)")
+            # Llama 3.1: 查找真正的<unk> token
+            if hasattr(tokenizer, 'unk_token') and tokenizer.unk_token is not None:
+                # 使用真正的<unk> token
+                tokenizer.pad_token = tokenizer.unk_token
+                tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.unk_token)
+                print(f"🔧 Llama 3.1: 使用真正的<unk> token: '{tokenizer.unk_token}' (id={tokenizer.pad_token_id})")
+            else:
+                # 如果没有<unk>，创建一个专用的padding token
+                # 使用一个不常见的token作为padding
+                tokenizer.add_special_tokens({'pad_token': '<pad>'})
+                print(f"🔧 Llama 3.1: 创建专用padding token: '<pad>' (id={tokenizer.pad_token_id})")
         else:
             # 其他模型：使用标准配置
             tokenizer.pad_token = tokenizer.eos_token
@@ -740,25 +742,34 @@ def main():
         print(f"🚨 严重错误: pad_token_id仍然是128009 (<|eot_id|>)!")
         print(f"   强制修复tokenizer配置...")
 
-        # 强制设置正确的pad_token_id
-        tokenizer.pad_token_id = 0  # 强制使用<unk>
-        tokenizer.pad_token = tokenizer.unk_token or '<unk>'
-
+        # 创建专用padding token
+        tokenizer.add_special_tokens({'pad_token': '<pad>'})
         print(f"   修复后pad_token_id: {tokenizer.pad_token_id}")
         print(f"   修复后pad_token: {repr(tokenizer.pad_token)}")
 
     elif tokenizer.pad_token_id is None:
         print(f"🚨 错误: pad_token_id is None!")
-        print(f"   强制设置pad_token_id为0...")
+        print(f"   强制设置专用padding token...")
 
-        tokenizer.pad_token_id = 0
-        tokenizer.pad_token = tokenizer.unk_token or '<unk>'
-
+        tokenizer.add_special_tokens({'pad_token': '<pad>'})
         print(f"   设置后pad_token_id: {tokenizer.pad_token_id}")
         print(f"   设置后pad_token: {repr(tokenizer.pad_token)}")
 
     elif tokenizer.pad_token_id == 0:
-        print(f"✅ 正确: pad_token_id = 0 (<unk>)，符合Llama 3.1标准配置")
+        # 检查token_id=0对应的实际字符
+        token_0_text = tokenizer.decode([0], skip_special_tokens=True)
+        print(f"⚠️ pad_token_id = 0，对应字符: '{token_0_text}'")
+
+        if token_0_text.strip() not in ['<unk>', '']:  # 如果不是真正的<unk>
+            print(f"🚨 问题: token_id=0 不是真正的<unk>，而是'{token_0_text}'!")
+            print(f"   这会导致padding区域填充'{token_0_text}'字符")
+            print(f"   强制创建专用padding token...")
+
+            tokenizer.add_special_tokens({'pad_token': '<pad>'})
+            print(f"   修复后pad_token_id: {tokenizer.pad_token_id}")
+            print(f"   修复后pad_token: {repr(tokenizer.pad_token)}")
+        else:
+            print(f"✅ 正确: pad_token_id = 0 是真正的<unk>")
     else:
         print(f"✅ 正确: pad_token_id ({tokenizer.pad_token_id}) != 128009")
 
