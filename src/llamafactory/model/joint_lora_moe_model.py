@@ -148,12 +148,27 @@ class MoERouter(nn.Module):
         self.batch_norm = nn.BatchNorm1d(hidden_dim // 4, dtype=dtype, eps=1e-3, momentum=0.1)
 
         # 保守但一致的初始化
-        # 输入投影：标准正交初始化
-        nn.init.orthogonal_(self.input_proj.weight, gain=0.5)
+        # 输入投影：需要先转换为Float32进行正交初始化，再转回目标dtype
+        with torch.no_grad():
+            if dtype == torch.float16:
+                # 临时转换为Float32进行初始化
+                temp_weight = self.input_proj.weight.float()
+                nn.init.orthogonal_(temp_weight, gain=0.5)
+                self.input_proj.weight.data = temp_weight.to(dtype)
+            else:
+                nn.init.orthogonal_(self.input_proj.weight, gain=0.5)
 
-        # 路由器：Xavier uniform初始化，确保输出范围合理
-        nn.init.xavier_uniform_(self.router.weight, gain=0.1)
-        nn.init.constant_(self.router.bias, 0.0)
+        # 路由器：Xavier uniform初始化
+        with torch.no_grad():
+            if dtype == torch.float16:
+                # 临时转换为Float32进行初始化
+                temp_weight = self.router.weight.float()
+                nn.init.xavier_uniform_(temp_weight, gain=0.1)
+                self.router.weight.data = temp_weight.to(dtype)
+            else:
+                nn.init.xavier_uniform_(self.router.weight, gain=0.1)
+
+            nn.init.constant_(self.router.bias, 0.0)
 
         # 移除复杂的EMA机制，改用简单的权重裁剪
         self.max_weight_norm = 1.0
@@ -207,7 +222,12 @@ class MoERouter(nn.Module):
                 # 检查并修复NaN/Inf
                 if torch.isnan(self.router.weight).any() or torch.isinf(self.router.weight).any():
                     print("⚠️ Resetting router weights due to NaN/Inf")
-                    nn.init.xavier_uniform_(self.router.weight, gain=0.1)
+                    if self.router.weight.dtype == torch.float16:
+                        temp_weight = torch.empty_like(self.router.weight, dtype=torch.float32)
+                        nn.init.xavier_uniform_(temp_weight, gain=0.1)
+                        self.router.weight.data = temp_weight.to(self.router.weight.dtype)
+                    else:
+                        nn.init.xavier_uniform_(self.router.weight, gain=0.1)
 
                 if torch.isnan(self.router.bias).any() or torch.isinf(self.router.bias).any():
                     print("⚠️ Resetting router bias due to NaN/Inf")
