@@ -199,25 +199,46 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     Returns:
         生成的文本
     """
-    # 构建输入 - 与训练时格式保持一致
+    # 构建输入 - 与训练时格式完全保持一致
+    # 训练时的格式：full_input = f"{instruction}\n{input_text}"，然后添加\n{output}
+    # 所以生成时应该给模型：full_input + \n，让它生成output
     if input_text:
-        full_input = f"{instruction}\n{input_text}\n"
+        full_input = f"{instruction}\n{input_text}\n"  # 与训练时的full_text开头一致
     else:
-        full_input = f"{instruction}\n"
+        full_input = f"{instruction}\n"  # 与训练时的full_text开头一致
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            do_sample=False,  # 贪婪解码
-            num_beams=1,      # 禁用 beam search
-            repetition_penalty=1.0
-        )
+        # 检查模型类型，确定使用哪种generate方法
+        model_class_name = model.__class__.__name__
+        print(f"🔍 Model class: {model_class_name}")
+
+        if 'JointLoRAMoE' in model_class_name or hasattr(model, 'moe_layer'):
+            # 使用联合模型的自定义generate方法，确保通过MoE层
+            print(f"🔍 Using custom joint model generate method")
+            outputs = model.generate(
+                input_ids=inputs['input_ids'],
+                attention_mask=inputs.get('attention_mask'),
+                max_new_tokens=max_new_tokens,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                do_sample=False,
+                temperature=0.7
+            )
+        else:
+            # 回退到标准generate方法
+            print(f"🔍 Using standard model generate method")
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                do_sample=False,  # 贪婪解码
+                num_beams=1,      # 禁用 beam search
+                repetition_penalty=1.0
+            )
 
     # 解码
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
