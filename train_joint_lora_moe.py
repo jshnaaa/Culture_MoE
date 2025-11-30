@@ -257,25 +257,11 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             return_dict=True
         )
 
-        # 调试：检查模型输出的logits
-        if batch_idx < 1:  # 只在第一个batch显示
+        # 简化的logits检查（仅在前3个batch）
+        if batch_idx < 3:
             logits = outputs.logits
-            print(f"🔍 Batch {batch_idx} - Logits analysis:")
-            print(f"  logits.shape: {logits.shape}")
-            print(f"  logits contains NaN: {torch.isnan(logits).any()}")
-            print(f"  logits contains Inf: {torch.isinf(logits).any()}")
-            # print(f"  logits.min: {logits.min().item():.6f}")
-            # print(f"  logits.max: {logits.max().item():.6f}")
-
-            # 检查特定位置的logits（答案位置）
-            # for i in range(min(2, logits.shape[0])):  # 前2个样本
-            #     sample_labels = labels[i]
-            #     valid_positions = (sample_labels != -100).nonzero().flatten()
-            #     if len(valid_positions) > 0:
-            #         answer_pos = valid_positions[0].item()  # 第一个有效答案位置
-            #         answer_logits = logits[i, answer_pos]
-            #         print(f"  Sample {i}, pos {answer_pos} logits: min={answer_logits.min().item():.6f}, max={answer_logits.max().item():.6f}")
-            #         print(f"  Answer token {sample_labels[answer_pos].item()}: logit={answer_logits[sample_labels[answer_pos]].item():.6f}")
+            if torch.isnan(logits).any() or torch.isinf(logits).any():
+                print(f"⚠️ Batch {batch_idx} - Invalid logits detected")
 
         # 获取各种损失
         lm_loss = outputs.loss  # 语言模型损失
@@ -287,25 +273,12 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             # 使用requires_grad=True的零张量确保梯度连接
             moe_aux_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
 
-        # 调试：检查MoE相关输出
-        if batch_idx < 3:  # 只在前3个batch显示详细调试信息
-            print(f"🔍 Batch {batch_idx} - MoE analysis:")
-            print(f"  lm_loss: {lm_loss.item() if lm_loss is not None else 'None'}")
-            print(f"  moe_aux_loss: {moe_aux_loss.item() if moe_aux_loss is not None else 'None'}")
-            print(f"  moe_aux_loss.requires_grad: {moe_aux_loss.requires_grad if moe_aux_loss is not None else 'None'}")
-            if expert_weights is not None:
-                print(f"  expert_weights.shape: {expert_weights.shape}")
-                print(f"  expert_weights[0]: {expert_weights[0].tolist()}")
-                print(f"  expert_weights contains NaN: {torch.isnan(expert_weights).any()}")
-                print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
-
-            # 检查hidden_states（MoE输出）
-            # if hasattr(outputs, 'hidden_states') and outputs.hidden_states is not None:
-            #     hidden_states = outputs.hidden_states
-            #     print(f"  hidden_states.min: {hidden_states.min().item():.6f}")
-            #     print(f"  hidden_states.max: {hidden_states.max().item():.6f}")
-            #     print(f"  hidden_states contains NaN: {torch.isnan(hidden_states).any()}")
-            #     print(f"  hidden_states contains Inf: {torch.isinf(hidden_states).any()}")  # MoE辅助损失
+        # 简化的MoE检查（仅在前3个batch）
+        if batch_idx < 3:
+            if torch.isnan(moe_aux_loss).any() or torch.isinf(moe_aux_loss).any():
+                print(f"⚠️ Batch {batch_idx} - Invalid MoE aux loss")
+            if expert_weights is not None and (torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any()):
+                print(f"⚠️ Batch {batch_idx} - Invalid expert weights")
 
         # 计算文化损失 - 确保有梯度连接
         if use_culture_loss and culture_labels is not None and expert_weights is not None:
@@ -320,15 +293,10 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         # 总损失
         total_batch_loss = lm_loss + moe_aux_loss + culture_loss
 
-        # 调试：检查梯度连接
+        # 简化的梯度检查（仅在前3个batch）
         if batch_idx < 3:
-            print(f"🔍 Batch {batch_idx} - Gradient check:")
-            print(f"  lm_loss.requires_grad: {lm_loss.requires_grad}")
-            print(f"  moe_aux_loss.requires_grad: {moe_aux_loss.requires_grad}")
-            print(f"  culture_loss.requires_grad: {culture_loss.requires_grad}")
-            print(f"  total_batch_loss.requires_grad: {total_batch_loss.requires_grad}")
-            print(f"  lm_loss.dtype: {lm_loss.dtype}")
-            print(f"  total_batch_loss.dtype: {total_batch_loss.dtype}")
+            if not total_batch_loss.requires_grad:
+                print(f"⚠️ Batch {batch_idx} - Total loss missing gradients")
 
         # 检查 NaN/Inf loss
         if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
