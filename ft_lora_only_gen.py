@@ -221,8 +221,8 @@ class CultureLLMNewFormatDataset(Dataset):
                 print(f"  🚨 问题: input_length({input_length})过大，几乎占满整个序列!")
                 print(f"    这会导致几乎没有训练目标")
 
-            continue  # 跳过后续的详细调试，专注于掩码问题
-
+        # 只对前5个样本进行详细调试
+        if idx < 5:
             # 检查tokenizer配置
             eot_token_id = 128009  # <|eot_id|>
             actual_pad_token_id = self.tokenizer.pad_token_id
