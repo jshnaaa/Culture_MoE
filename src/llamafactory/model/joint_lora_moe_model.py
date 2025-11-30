@@ -525,6 +525,10 @@ class JointLoRAMoEModel(nn.Module):
         # 3. MoE层处理
         moe_output, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
 
+        # 关键调试：检查MoE输出是否为零
+        moe_range = f"min={moe_output.min().item():.3f}, max={moe_output.max().item():.3f}"
+        print(f"🔧 MoE: {moe_range}, std={moe_output.std().item():.6f}")
+
         # 4. 语言模型头
         # 需要确保moe_output的维度与原始hidden_states一致
         if hasattr(self, 'hidden_proj') and moe_output.size(-1) != base_outputs.hidden_states[-1].size(-1):
@@ -545,22 +549,30 @@ class JointLoRAMoEModel(nn.Module):
 
         # 使用基础模型的lm_head
         if hasattr(self.base_model, 'lm_head'):
+            print(f"🔧 Using base_model.lm_head")
             logits = self.base_model.lm_head(moe_output)
         elif hasattr(self.base_model, 'base_model') and hasattr(self.base_model.base_model, 'lm_head'):
+            print(f"🔧 Using base_model.base_model.lm_head")
             logits = self.base_model.base_model.lm_head(moe_output)
         else:
-            # 创建临时的lm_head
+            print(f"🔧 Creating temporary lm_head")
+            # 创建临时的lm_head，但使用合理的初始化
             vocab_size = self.base_model.config.vocab_size
             if not hasattr(self, 'temp_lm_head'):
                 self.temp_lm_head = nn.Linear(
                     moe_output.size(-1), vocab_size, bias=False, dtype=moe_output.dtype
                 )
-                # 初始化权重
-                nn.init.normal_(self.temp_lm_head.weight, mean=0.0, std=0.001)
+                # 使用更合理的初始化，避免全零logits
+                nn.init.normal_(self.temp_lm_head.weight, mean=0.0, std=0.02)  # 增大std
                 self.temp_lm_head = self.temp_lm_head.to(moe_output.device, moe_output.dtype)
                 # 注册为模型参数，避免重复创建
                 self.add_module('temp_lm_head', self.temp_lm_head)
+                print(f"🔧 Temp lm_head created with std=0.02")
             logits = self.temp_lm_head(moe_output)
+
+        # 关键调试：检查最终logits
+        logits_range = f"min={logits.min().item():.3f}, max={logits.max().item():.3f}"
+        print(f"🔧 Logits: {logits_range}")
 
         # 5. 计算损失 - 数值稳定版本
         loss = None
@@ -864,23 +876,11 @@ class JointLoRAMoEModel(nn.Module):
                     attention_mask=attention_mask
                 )
 
-                # 调试：检查MoE输出
-                if step < 3:
-                    expert_weights = getattr(outputs, 'expert_weights', None)
-                    if expert_weights is not None:
-                        print(f"🔍 Step {step} - Expert weights: {expert_weights[0].detach().cpu().numpy()}")
-                    else:
-                        print(f"🔍 Step {step} - No expert weights found")
-
                 # 获取最后一个位置的logits
                 next_token_logits = outputs.logits[:, -1, :]  # [batch_size, vocab_size]
 
-                # 调试：检查logits分布
-                if step < 3:  # 只在前3步打印
-                    top_values, top_indices = torch.topk(next_token_logits[0], k=5)
-                    print(f"🔍 Step {step} - Top 5 logits: values={top_values.tolist()}, indices={top_indices.tolist()}")
-
-                    # 检查是否存在异常高的logits
+                # 关键调试：检查前几步的logits
+                if step < 3:
                     max_logit = next_token_logits.max().item()
                     min_logit = next_token_logits.min().item()
                     print(f"🔍 Step {step} - Logits range: max={max_logit:.3f}, min={min_logit:.3f}")
@@ -896,19 +896,19 @@ class JointLoRAMoEModel(nn.Module):
                     # 贪心解码
                     next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
 
-                # 调试：打印生成的token
+                # 关键调试：前几步的token
                 if step < 3:
-                    print(f"🔍 Step {step} - Generated token ID: {next_token_id.item()}")
+                    print(f"🔍 Step {step} - Token: {next_token_id.item()}")
 
                 # 检查重复token问题
                 if step > 0:
                     last_token = current_ids[:, -1]
                     if (next_token_id.squeeze() == last_token).all():
                         repeated_count += 1
-                        print(f"⚠️ Step {step} - Detected repeated token {next_token_id.item()} (count: {repeated_count})")
+                        print(f"⚠️ Repeat {next_token_id.item()} (#{repeated_count})")
 
                         if repeated_count >= max_repeated_allowed:
-                            print(f"🚨 Too many repetitions, switching to base model generation")
+                            print(f"🚨 Switching to base model")
                             # 切换到基础模型生成剩余部分
                             try:
                                 remaining_tokens = max_new_tokens - step
@@ -938,7 +938,7 @@ class JointLoRAMoEModel(nn.Module):
                         else:
                             next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
 
-                        print(f"🔍 Step {step} - New token after penalty: {next_token_id.item()}")
+                        print(f"🔍 New token: {next_token_id.item()}")
                     else:
                         repeated_count = 0  # 重置重复计数器
 
