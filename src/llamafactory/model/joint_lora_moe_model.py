@@ -172,8 +172,8 @@ class MoERouter(nn.Module):
                 router_logits = torch.zeros_like(expert_weights)
                 return expert_weights, router_logits
 
-            # 温和的logits限制 - 不要过于严格
-            router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)
+            # 更严格的logits限制，防止NaN/Inf
+            router_logits = torch.clamp(router_logits, min=-3.0, max=3.0)
 
             # 温度缩放
             safe_temperature = max(temperature, 0.5)  # 允许较小的温度
