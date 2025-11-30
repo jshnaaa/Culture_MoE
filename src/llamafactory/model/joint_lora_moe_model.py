@@ -140,8 +140,10 @@ class MoERouter(nn.Module):
         self.hidden_dim = hidden_dim
 
         # 根本性解决方案：路由器强制使用Float32，避免Float16精度问题
-        # 这是唯一能彻底解决NaN/Inf问题的方法
+        # 完全忽略传入的dtype参数，强制使用Float32
         self.router = nn.Linear(hidden_dim, num_experts, bias=True, dtype=torch.float32)
+
+        print(f"🔧 MoERouter initialized with Float32, router dtype: {self.router.weight.dtype}")
 
         # 极保守的初始化 - 确保输出接近uniform
         with torch.no_grad():
@@ -192,6 +194,9 @@ class MoERouter(nn.Module):
 
             # 转换为Float32进行路由计算，确保数值稳定
             x_float32 = x_safe.float()
+
+            # 调试信息：检查dtype匹配
+            # print(f"🔧 Router debug: input dtype={x_float32.dtype}, router weight dtype={self.router.weight.dtype}")
 
             # 3. 路由计算（在Float32精度下）
             router_logits = self.router(x_float32)  # [B, num_experts] in Float32
@@ -261,12 +266,12 @@ class MoELayer(nn.Module):
         self.hidden_dim = config.moe_hidden_dim
         self.dtype = dtype
 
-        # 创建路由器
+        # 创建路由器 - 强制使用Float32以确保数值稳定
         self.router = MoERouter(
             hidden_dim=config.moe_hidden_dim,
             num_experts=config.num_moe_experts,
             dropout=config.dropout,
-            dtype=dtype
+            dtype=torch.float32  # 强制Float32，忽略传入的dtype
         )
 
         # 创建专家
@@ -312,7 +317,7 @@ class MoELayer(nn.Module):
             pooled = hidden_states.mean(dim=1)  # [B, H]
             pooled = torch.clamp(pooled, min=-3.0, max=3.0)
 
-            # 路由计算
+            # 路由计算 - 注意：路由器使用Float32，需要确保输入兼容
             expert_weights, router_logits = self.router(pooled, temperature=1.0)
 
             # 2. 专家计算（极简版）
@@ -456,8 +461,15 @@ class JointLoRAMoEModel(nn.Module):
         # 2. 添加MoE层（传递正确的dtype）
         self.moe_layer = MoELayer(config, dtype=dtype)
 
-        # 3. 确保MoE层在正确设备上
-        self.moe_layer = self.moe_layer.to(device=device, dtype=dtype)
+        # 3. 确保MoE层在正确设备上，但保持路由器为Float32
+        self.moe_layer = self.moe_layer.to(device=device)
+
+        # 专家层可以转换为指定dtype，但路由器保持Float32
+        for expert in self.moe_layer.experts:
+            expert = expert.to(dtype=dtype)
+
+        # 确保路由器保持Float32
+        self.moe_layer.router = self.moe_layer.router.to(device=device, dtype=torch.float32)
 
         logging.info(f"Joint LoRA+MoE model initialized with {config.num_moe_experts} experts")
 
