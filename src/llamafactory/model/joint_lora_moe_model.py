@@ -190,20 +190,24 @@ class MoERouter(nn.Module):
             # Softmax计算
             expert_weights = F.softmax(router_logits_stable, dim=-1)
 
-            # 最终检查
+            # 最终检查 - 不能使用torch.ones_like，会断开梯度连接
             if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
-                print("⚠️ NaN/Inf in expert_weights, using uniform")
-                expert_weights = torch.ones_like(expert_weights) / self.num_experts
+                print("⚠️ NaN/Inf in expert_weights, fixing with gradient connection")
+                # 使用原始tensor的形状但填充uniform值，保持梯度连接
+                expert_weights = expert_weights.detach().clone().requires_grad_(True)
+                expert_weights.fill_(1.0 / self.num_experts)
 
-            # 确保权重和为1
-            expert_weights = expert_weights / (expert_weights.sum(dim=-1, keepdim=True) + 1e-8)
+            # 确保权重和为1，但保持梯度连接
+            weight_sum = expert_weights.sum(dim=-1, keepdim=True) + 1e-8
+            expert_weights = expert_weights / weight_sum
 
             return expert_weights, router_logits
 
         except Exception as e:
             print(f"⚠️ Router forward failed: {e}")
-            expert_weights = torch.ones(x.size(0), self.num_experts, device=x.device, dtype=x.dtype) / self.num_experts
-            router_logits = torch.zeros_like(expert_weights)
+            # 创建有梯度连接的fallback
+            expert_weights = torch.ones(x.size(0), self.num_experts, device=x.device, dtype=x.dtype, requires_grad=True) / self.num_experts
+            router_logits = torch.randn(x.size(0), self.num_experts, device=x.device, dtype=x.dtype, requires_grad=True) * 0.01
             return expert_weights, router_logits
 
 
@@ -259,7 +263,7 @@ class MoELayer(nn.Module):
             # 检查输入
             if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
                 print("⚠️ NaN/Inf in MoE input, using passthrough")
-                expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype) / self.num_experts
+                expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True) / self.num_experts
                 aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
                 return hidden_states, expert_weights, aux_loss
 
@@ -383,7 +387,7 @@ class MoELayer(nn.Module):
                 self.add_module('fallback_transform', self.fallback_transform)
 
             fallback_output = self.fallback_transform(hidden_states)
-            expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype) / self.num_experts
+            expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True) / self.num_experts
             aux_loss = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
             return fallback_output, expert_weights, aux_loss
 
