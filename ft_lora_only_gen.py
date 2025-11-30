@@ -716,10 +716,10 @@ def main():
                 tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.unk_token)
                 print(f"🔧 Llama 3.1: 使用真正的<unk> token: '{tokenizer.unk_token}' (id={tokenizer.pad_token_id})")
             else:
-                # 如果没有<unk>，创建一个专用的padding token
-                # 使用一个不常见的token作为padding
-                tokenizer.add_special_tokens({'pad_token': '<pad>'})
-                print(f"🔧 Llama 3.1: 创建专用padding token: '<pad>' (id={tokenizer.pad_token_id})")
+                # 如果没有<unk>，使用eos_token作为padding（避免添加新token）
+                tokenizer.pad_token = tokenizer.eos_token
+                tokenizer.pad_token_id = tokenizer.eos_token_id
+                print(f"🔧 Llama 3.1: 使用eos_token作为padding: '{tokenizer.eos_token}' (id={tokenizer.pad_token_id})")
         else:
             # 其他模型：使用标准配置
             tokenizer.pad_token = tokenizer.eos_token
@@ -742,8 +742,9 @@ def main():
         print(f"🚨 严重错误: pad_token_id仍然是128009 (<|eot_id|>)!")
         print(f"   强制修复tokenizer配置...")
 
-        # 创建专用padding token
-        tokenizer.add_special_tokens({'pad_token': '<pad>'})
+        # 使用eos_token作为padding（避免添加新token）
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
         print(f"   修复后pad_token_id: {tokenizer.pad_token_id}")
         print(f"   修复后pad_token: {repr(tokenizer.pad_token)}")
 
@@ -751,7 +752,8 @@ def main():
         print(f"🚨 错误: pad_token_id is None!")
         print(f"   强制设置专用padding token...")
 
-        tokenizer.add_special_tokens({'pad_token': '<pad>'})
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
         print(f"   设置后pad_token_id: {tokenizer.pad_token_id}")
         print(f"   设置后pad_token: {repr(tokenizer.pad_token)}")
 
@@ -765,9 +767,30 @@ def main():
             print(f"   这会导致padding区域填充'{token_0_text}'字符")
             print(f"   强制创建专用padding token...")
 
-            tokenizer.add_special_tokens({'pad_token': '<pad>'})
+            # 使用一个现有的低频token作为padding，避免添加新token
+            # 找一个不常用的标点符号token
+            candidate_tokens = ['~', '`', '|', '^']
+            chosen_pad_token = None
+
+            for token in candidate_tokens:
+                try:
+                    token_id = tokenizer.convert_tokens_to_ids(token)
+                    if token_id != tokenizer.unk_token_id:  # 确保不是unk
+                        chosen_pad_token = token
+                        tokenizer.pad_token = token
+                        tokenizer.pad_token_id = token_id
+                        break
+                except:
+                    continue
+
+            if chosen_pad_token is None:
+                # 如果找不到合适的token，使用eos_token
+                tokenizer.pad_token = tokenizer.eos_token
+                tokenizer.pad_token_id = tokenizer.eos_token_id
+                chosen_pad_token = tokenizer.eos_token
+
             print(f"   修复后pad_token_id: {tokenizer.pad_token_id}")
-            print(f"   修复后pad_token: {repr(tokenizer.pad_token)}")
+            print(f"   修复后pad_token: {repr(chosen_pad_token)}")
         else:
             print(f"✅ 正确: pad_token_id = 0 是真正的<unk>")
     else:
