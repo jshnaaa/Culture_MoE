@@ -738,24 +738,24 @@ class JointLoRAMoEModel(nn.Module):
                 loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.0)
 
                 # 调试：在计算loss前检查输入
-                print(f"🔍 Before CrossEntropyLoss:")
-                print(f"  shift_logits.shape: {shift_logits.shape}")
-                print(f"  shift_labels.shape: {shift_labels.shape}")
-                print(f"  shift_logits contains NaN: {torch.isnan(shift_logits).any()}")
-                print(f"  shift_logits contains Inf: {torch.isinf(shift_logits).any()}")
-                print(f"  shift_labels min: {shift_labels.min().item()}, max: {shift_labels.max().item()}")
+                # print(f"🔍 Before CrossEntropyLoss:")
+                # print(f"  shift_logits.shape: {shift_logits.shape}")
+                # print(f"  shift_labels.shape: {shift_labels.shape}")
+                # print(f"  shift_logits contains NaN: {torch.isnan(shift_logits).any()}")
+                # print(f"  shift_logits contains Inf: {torch.isinf(shift_logits).any()}")
+                # print(f"  shift_labels min: {shift_labels.min().item()}, max: {shift_labels.max().item()}")
 
                 # 直接使用Float16计算，但移除label smoothing避免数值问题
                 lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
-                print(f"🔍 After CrossEntropyLoss:")
-                print(f"  lm_loss: {lm_loss.item()}")
-                print(f"  lm_loss.dtype: {lm_loss.dtype}")
+                # print(f"🔍 After CrossEntropyLoss:")
+                # print(f"  lm_loss: {lm_loss.item()}")
+                # print(f"  lm_loss.dtype: {lm_loss.dtype}")
 
                 # 检查lm_loss是否为NaN/Inf
                 is_nan = torch.isnan(lm_loss)
                 is_inf = torch.isinf(lm_loss)
-                print(f"🔍 NaN/Inf check: isnan={is_nan}, isinf={is_inf}")
+                # print(f"🔍 NaN/Inf check: isnan={is_nan}, isinf={is_inf}")
 
                 if is_nan or is_inf:
                     print("⚠️ NaN/Inf detected in lm_loss, using fallback loss")
