@@ -54,8 +54,8 @@ class MoEExpert(nn.Module):
 
     def __init__(self, hidden_dim: int, intermediate_dim: int, dropout: float = 0.1, dtype: torch.dtype = torch.float16):
         super().__init__()
-        # 大幅减少中间维度以节省内存
-        safe_intermediate_dim = min(intermediate_dim, hidden_dim // 2)  # 从*2改为//2，大幅减少内存
+        # 修复：恢复合理的中间维度，确保专家有足够的表达能力
+        safe_intermediate_dim = min(intermediate_dim, hidden_dim * 2)  # 恢复为合理的大小
 
         self.gate_proj = nn.Linear(hidden_dim, safe_intermediate_dim, bias=True, dtype=dtype)  # 添加bias
         self.up_proj = nn.Linear(hidden_dim, safe_intermediate_dim, bias=True, dtype=dtype)
@@ -79,9 +79,10 @@ class MoEExpert(nn.Module):
         nn.init.constant_(self.down_proj.bias, 0.0)
 
     def forward(self, x):
-        """前向传播 - 极度保守的数值稳定版本"""
-        # 输入归一化
-        x = torch.clamp(x, min=-3.0, max=3.0)  # 合理的输入限制
+        """前向传播 - 修复版本，减少过度限制"""
+        # 移除过度严格的输入限制，只做基本的NaN/Inf检查
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            return torch.zeros_like(x)
 
         try:
             # 第一阶段：gate和up投影
@@ -94,21 +95,15 @@ class MoEExpert(nn.Module):
             if torch.isnan(up_output).any() or torch.isinf(up_output).any():
                 return torch.zeros_like(x)
 
-            # 温和的范围限制
-            gate_output = torch.clamp(gate_output, min=-10.0, max=10.0)
-            up_output = torch.clamp(up_output, min=-10.0, max=10.0)
-
-            # 激活函数
+            # 激活函数 - 移除激活前的限制
             gate_activated = self.act_fn(gate_output)
-            gate_activated = torch.clamp(gate_activated, min=-5.0, max=5.0)
 
             # 检查激活后的输出
             if torch.isnan(gate_activated).any() or torch.isinf(gate_activated).any():
                 return torch.zeros_like(x)
 
-            # 元素乘法
+            # 元素乘法 - 移除过度限制
             intermediate = gate_activated * up_output
-            intermediate = torch.clamp(intermediate, min=-10.0, max=10.0)
 
             # LayerNorm稳定化
             intermediate = self.layer_norm(intermediate)
@@ -116,11 +111,10 @@ class MoEExpert(nn.Module):
             # Dropout
             intermediate = self.dropout(intermediate)
 
-            # 最终投影
+            # 最终投影 - 移除输出限制，让模型自由表达
             output = self.down_proj(intermediate)
-            output = torch.clamp(output, min=-10.0, max=10.0)
 
-            # 最终检查
+            # 最终检查 - 只检查NaN/Inf，不限制数值范围
             if torch.isnan(output).any() or torch.isinf(output).any():
                 return torch.zeros_like(x)
 
@@ -302,10 +296,7 @@ class MoELayer(nn.Module):
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
         try:
-            # 输入预处理：合理的限制
-            hidden_states = torch.clamp(hidden_states, min=-5.0, max=5.0)
-
-            # 检查输入
+            # 移除过度严格的输入限制，只检查NaN/Inf
             if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
                 print("⚠️ NaN/Inf in MoE input, using passthrough")
                 expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True) / self.num_experts
@@ -315,10 +306,15 @@ class MoELayer(nn.Module):
             # 1. 路由决策（极简版）
             # 使用平均池化获取序列表示
             pooled = hidden_states.mean(dim=1)  # [B, H]
-            pooled = torch.clamp(pooled, min=-3.0, max=3.0)
+            # 移除pooled的数值限制
 
             # 路由计算 - 注意：路由器使用Float32，需要确保输入兼容
             expert_weights, router_logits = self.router(pooled, temperature=1.0)
+
+            # 添加调试信息：检查专家权重
+            weights_mean = expert_weights.mean(dim=0)
+            print(f"🔍 Expert weights: {weights_mean.detach().cpu().numpy()}")
+            print(f"🔍 Expert weights sum: {expert_weights.sum(dim=1).mean().item():.6f}")
 
             # 2. 专家计算（极简版）
             expert_outputs = []
@@ -327,6 +323,13 @@ class MoELayer(nn.Module):
             for i, expert in enumerate(self.experts):
                 try:
                     expert_output = expert(hidden_states)  # [B, L, H]
+
+                    # 添加调试信息：检查每个专家的输出
+                    expert_mean = expert_output.mean().item()
+                    expert_std = expert_output.std().item()
+                    expert_min = expert_output.min().item()
+                    expert_max = expert_output.max().item()
+                    print(f"🔍 Expert {i}: mean={expert_mean:.6f}, std={expert_std:.6f}, range=[{expert_min:.3f}, {expert_max:.3f}]")
 
                     # 检查专家输出
                     if not (torch.isnan(expert_output).any() or torch.isinf(expert_output).any()):
@@ -354,19 +357,25 @@ class MoELayer(nn.Module):
                     weight = expert_weights[:, i].unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
                     weight = torch.clamp(weight, min=0.0, max=1.0)
 
-                    # 限制专家输出范围
-                    expert_output = torch.clamp(expert_output, min=-3.0, max=3.0)
+                    # 移除专家输出的数值限制，让专家自由表达
+                    # expert_output = torch.clamp(expert_output, min=-3.0, max=3.0)
 
                     final_output += weight * expert_output
                     total_weight += weight.mean().item()
 
-                # 如果总权重太小，说明专家输出有问题，使用输入
-                if total_weight < 0.01:
+                # 降低总权重阈值，避免过早使用passthrough
+                if total_weight < 0.001:  # 从0.01降到0.001
                     print("⚠️ Expert weights too small, using passthrough")
                     final_output = hidden_states
                 else:
-                    # 限制最终输出范围
-                    final_output = torch.clamp(final_output, min=-3.0, max=3.0)
+                    # 移除最终输出的数值限制
+                    # final_output = torch.clamp(final_output, min=-3.0, max=3.0)
+                    # 添加调试信息：检查混合后的输出
+                    final_mean = final_output.mean().item()
+                    final_std = final_output.std().item()
+                    final_min = final_output.min().item()
+                    final_max = final_output.max().item()
+                    print(f"🔍 Mixed output: mean={final_mean:.6f}, std={final_std:.6f}, range=[{final_min:.3f}, {final_max:.3f}], total_weight={total_weight:.6f}")
 
             # 4. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
