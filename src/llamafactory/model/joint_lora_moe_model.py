@@ -257,7 +257,7 @@ class MoELayer(nn.Module):
             if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
                 print("⚠️ NaN/Inf in MoE input, using passthrough")
                 expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype) / self.num_experts
-                aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+                aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
                 return hidden_states, expert_weights, aux_loss
 
             # 1. 路由决策（极简版）
@@ -318,9 +318,9 @@ class MoELayer(nn.Module):
 
             # 4. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
-                print("⚠️ Final MoE output invalid, using shared FFN only")
-                # 使用共享FFN输出，它仍然基于输入但有梯度连接
-                final_output = shared_output
+                print("⚠️ Final MoE output invalid, using input passthrough with gradient connection")
+                # 使用输入passthrough，确保梯度连接
+                final_output = hidden_states
 
             # 5. MoE辅助损失 - 增强版本
             try:
@@ -336,12 +336,12 @@ class MoELayer(nn.Module):
                     aux_loss = (balance_loss * 0.01 + router_reg_loss * 0.001).to(dtype=hidden_states.dtype)
 
                     if torch.isnan(aux_loss) or torch.isinf(aux_loss):
-                        aux_loss = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype)
+                        aux_loss = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
                 else:
-                    aux_loss = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype)
+                    aux_loss = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
             except Exception as e:
                 print(f"⚠️ Aux loss computation failed: {e}")
-                aux_loss = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype)
+                aux_loss = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
 
             return final_output, expert_weights, aux_loss
 
@@ -359,7 +359,7 @@ class MoELayer(nn.Module):
 
             fallback_output = self.fallback_transform(hidden_states)
             expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype) / self.num_experts
-            aux_loss = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype)
+            aux_loss = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
             return fallback_output, expert_weights, aux_loss
 
 
@@ -536,13 +536,13 @@ class JointLoRAMoEModel(nn.Module):
                     orig_valid_pos = (sample_original != -100).nonzero().flatten()
                     shift_valid_pos = (sample_shifted != -100).nonzero().flatten()
 
-                    print(f"  Sample 0 original valid positions: {orig_valid_pos.tolist()}")
-                    print(f"  Sample 0 shifted valid positions: {shift_valid_pos.tolist()}")
+                    # print(f"  Sample 0 original valid positions: {orig_valid_pos.tolist()}")
+                    # print(f"  Sample 0 shifted valid positions: {shift_valid_pos.tolist()}")
 
-                    if len(orig_valid_pos) > 0:
-                        print(f"  Sample 0 original valid tokens: {sample_original[orig_valid_pos].tolist()}")
-                    if len(shift_valid_pos) > 0:
-                        print(f"  Sample 0 shifted valid tokens: {sample_shifted[shift_valid_pos].tolist()}")
+                    # if len(orig_valid_pos) > 0:
+                    #     print(f"  Sample 0 original valid tokens: {sample_original[orig_valid_pos].tolist()}")
+                    # if len(shift_valid_pos) > 0:
+                    #     print(f"  Sample 0 shifted valid tokens: {sample_shifted[shift_valid_pos].tolist()}")
 
                 if shift_valid == 0:
                     print(f"⚠️ No valid labels found after shift! All {total_labels} labels are masked (-100)")
@@ -574,11 +574,11 @@ class JointLoRAMoEModel(nn.Module):
                 if is_nan or is_inf:
                     print("⚠️ NaN/Inf detected in lm_loss, using fallback loss")
                     # 使用模型参数的L2损失作为fallback，确保梯度连接
-                    param_loss = torch.tensor(0.0, device=shift_logits.device, dtype=shift_logits.dtype)
+                    param_loss = torch.tensor(0.0, device=shift_logits.device, dtype=shift_logits.dtype, requires_grad=True)
                     param_count = 0
                     for param in self.parameters():
                         if param.requires_grad:
-                            param_loss += torch.sum(param * param)
+                            param_loss = param_loss + torch.sum(param * param)
                             param_count += 1
                     if param_count > 0:
                         lm_loss = param_loss / param_count * 0.001  # 小的正则化损失
@@ -602,16 +602,18 @@ class JointLoRAMoEModel(nn.Module):
             except Exception as e:
                 print(f"⚠️ Loss computation failed: {e}, using fallback loss")
                 # 使用模型参数的L2损失作为fallback，确保梯度连接
-                param_loss = torch.tensor(0.0, device=input_ids.device, dtype=torch.float16)
+                # 动态获取设备上第一个参数的dtype，避免硬编码
+                first_param = next(self.parameters())
+                param_loss = torch.tensor(0.0, device=first_param.device, dtype=first_param.dtype, requires_grad=True)
                 param_count = 0
                 for param in self.parameters():
                     if param.requires_grad:
-                        param_loss += torch.sum(param * param)
+                        param_loss = param_loss + torch.sum(param * param)
                         param_count += 1
                 if param_count > 0:
                     loss = param_loss / param_count * 0.01
                 else:
-                    loss = torch.tensor(1.0, device=input_ids.device, dtype=torch.float16, requires_grad=True)
+                    loss = torch.tensor(1.0, device=first_param.device, dtype=first_param.dtype, requires_grad=True)
 
         # 6. 返回结果
         return type('Outputs', (), {
@@ -626,7 +628,8 @@ class JointLoRAMoEModel(nn.Module):
         """
         获取正则化损失，确保所有参数都参与损失计算（DDP要求）
         """
-        reg_loss = torch.tensor(0.0, device=next(self.parameters()).device, dtype=torch.float16)
+        first_param = next(self.parameters())
+        reg_loss = torch.tensor(0.0, device=first_param.device, dtype=first_param.dtype, requires_grad=True)
 
         # 对所有可训练参数添加极小的L2正则化
         for param in self.parameters():
