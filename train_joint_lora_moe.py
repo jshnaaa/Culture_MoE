@@ -377,8 +377,8 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                             print(f"⚠️ Cleaning NaN/Inf gradient in {name}")
                             param.grad.zero_()  # 清零有问题的梯度
 
-                # 极严格的梯度裁剪
-                torch.nn.utils.clip_grad_norm_(moe_params, max_norm=0.05)  # 进一步降低到0.05
+                # 超极严格的梯度裁剪
+                torch.nn.utils.clip_grad_norm_(moe_params, max_norm=0.01)  # 进一步降低到0.01
 
                 # 权重更新后立即检查和修复
                 for name, param in model.named_parameters():
@@ -392,8 +392,8 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                                 elif 'bias' in name:
                                     torch.nn.init.constant_(param, 0.0)
                             else:
-                                # 即使没有NaN/Inf，也要限制权重范围防止溢出
-                                param.clamp_(-1.0, 1.0)  # 严格限制权重范围
+                                # 更严格的权重范围限制
+                                param.clamp_(-0.1, 0.1)  # 极严格限制权重范围
 
             # 其他参数使用正常梯度裁剪
             if other_params:

@@ -146,8 +146,13 @@ class MoERouter(nn.Module):
         nn.init.normal_(self.router.weight, mean=0.0, std=0.0001)  # 更极小的初始化
         nn.init.constant_(self.router.bias, 0.0)
 
-        # 调试：打印初始化后的权重范围
-        # print(f"🔍 Router Init - weight range: [{self.router.weight.min().item():.8f}, {self.router.weight.max().item():.8f}]")
+        # 权重稳定化：保存初始权重作为稳定基准
+        self.register_buffer('stable_weight', self.router.weight.data.clone())
+        self.register_buffer('stable_bias', self.router.bias.data.clone())
+
+        # 权重稳定化参数
+        self.weight_ema_decay = 0.999  # EMA衰减率
+        self.weight_check_interval = 0  # 权重检查计数器
 
     def forward(self, x, temperature: float = 1.0):
         """
@@ -162,6 +167,11 @@ class MoERouter(nn.Module):
             router_logits: [B, num_experts] 原始logits
         """
         try:
+            # 权重稳定化检查（每10次调用检查一次）
+            self.weight_check_interval += 1
+            if self.weight_check_interval % 10 == 0:
+                self._stabilize_weights()
+
             # 输入归一化和限制，保持原始dtype
             x = torch.clamp(x, min=-3.0, max=3.0)
 
@@ -250,6 +260,40 @@ class MoERouter(nn.Module):
             expert_weights = torch.ones(x.size(0), self.num_experts, device=x.device, dtype=original_dtype, requires_grad=True) / self.num_experts
             router_logits = torch.randn(x.size(0), self.num_experts, device=x.device, dtype=original_dtype, requires_grad=True) * 0.01
             return expert_weights, router_logits
+
+    def _stabilize_weights(self):
+        """权重稳定化方法"""
+        with torch.no_grad():
+            # 检查权重是否超出安全范围
+            weight_norm = torch.norm(self.router.weight)
+            bias_norm = torch.norm(self.router.bias)
+
+            # 如果权重范数过大，进行稳定化
+            if weight_norm > 1.0 or bias_norm > 1.0:
+                print(f"⚠️ Router weights getting large (w_norm={weight_norm:.6f}, b_norm={bias_norm:.6f}), stabilizing")
+
+                # 使用EMA稳定化
+                self.router.weight.data = (
+                    self.weight_ema_decay * self.router.weight.data +
+                    (1 - self.weight_ema_decay) * self.stable_weight
+                )
+                self.router.bias.data = (
+                    self.weight_ema_decay * self.router.bias.data +
+                    (1 - self.weight_ema_decay) * self.stable_bias
+                )
+
+                # 严格限制权重范围
+                self.router.weight.data.clamp_(-0.1, 0.1)
+                self.router.bias.data.clamp_(-0.1, 0.1)
+
+            # 检查并修复NaN/Inf权重
+            if torch.isnan(self.router.weight).any() or torch.isinf(self.router.weight).any():
+                print("⚠️ Router weight NaN/Inf detected, resetting to stable state")
+                self.router.weight.data = self.stable_weight.clone()
+
+            if torch.isnan(self.router.bias).any() or torch.isinf(self.router.bias).any():
+                print("⚠️ Router bias NaN/Inf detected, resetting to stable state")
+                self.router.bias.data = self.stable_bias.clone()
 
 
 class MoELayer(nn.Module):
