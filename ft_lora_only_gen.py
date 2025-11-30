@@ -85,6 +85,13 @@ class CultureLLMNewFormatDataset(Dataset):
         output_text = item.get('output', '')
         label = item.get('label', '')
 
+        # 🔍 关键调试：检查原始output_text内容
+        if idx < 5:
+            print(f"\n🔍 样本{idx} 原始数据:")
+            print(f"  output_text: {repr(output_text)}")
+            print(f"  output_text类型: {type(output_text)}")
+            print(f"  output_text长度: {len(str(output_text))}")
+
         # 构建完整的输入和输出
         # 格式：instruction + input → output
         if input_text:
@@ -95,6 +102,12 @@ class CultureLLMNewFormatDataset(Dataset):
         # 完整的文本（用于语言建模）
         # 这样模型会学习：给定 instruction + input，生成 output
         full_text = f"{full_input}\n{output_text}"
+
+        # 🔍 关键调试：检查构建后的full_text
+        if idx < 5:
+            print(f"  构建的full_text末尾: {repr(full_text[-50:])}")
+            print(f"  full_input末尾: {repr(full_input[-30:])}")
+            print(f"  期望的输出部分: {repr(output_text)}")
 
         # 🔧 关键修复：正确的标签掩码和tokenizer一致性
         # 1. 先tokenize完整文本（统一使用add_special_tokens=True）
@@ -109,6 +122,26 @@ class CultureLLMNewFormatDataset(Dataset):
 
         input_ids = encoded['input_ids'].squeeze(0)
         attention_mask = encoded['attention_mask'].squeeze(0)
+
+        # 🔍 关键调试：检查tokenization结果
+        if idx < 5:
+            print(f"  🔍 Tokenization结果:")
+            print(f"    input_ids长度: {len(input_ids)}")
+
+            # 解码完整序列看看实际内容
+            full_decoded = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+            print(f"    完整解码内容: {repr(full_decoded)}")
+
+            # 检查最后10个token（应该包含output部分）
+            last_tokens = input_ids[-15:].tolist()
+            print(f"    最后15个token_ids: {last_tokens}")
+            for i, token_id in enumerate(last_tokens):
+                if token_id != self.tokenizer.pad_token_id:  # 跳过padding token
+                    try:
+                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+                        print(f"      token_{len(input_ids)-15+i}: {token_id}='{token_text}'")
+                    except:
+                        print(f"      token_{len(input_ids)-15+i}: {token_id}=(解码失败)")
 
         # 2. 正确计算input_length - 确保tokenizer参数一致！
         input_with_newline = f"{full_input}\n"
