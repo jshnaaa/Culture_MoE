@@ -519,11 +519,11 @@ def generate_and_evaluate_answers_joint(
         true_output = sample['output']
         label = sample['label']
 
-        # 生成答案（使用基础模型进行推理）
+        # 生成答案（使用完整的联合模型，包含MoE层）
         # 处理DDP包装的模型
-        base_model = model.module if hasattr(model, 'module') else model
+        full_model = model.module if hasattr(model, 'module') else model
         generated_text = generate_answer(
-            base_model, tokenizer, instruction, input_text, device
+            full_model, tokenizer, instruction, input_text, device
         )
 
         # 提取答案

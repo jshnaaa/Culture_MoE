@@ -388,16 +388,11 @@ class MoELayer(nn.Module):
                 # 组合辅助损失
                 aux_loss = balance_loss * 0.01 + router_reg_loss * 0.001
 
-                # 确保aux_loss有梯度连接
+                # 推理模式下不需要梯度连接，直接返回数值
                 if not aux_loss.requires_grad:
-                    print("⚠️ aux_loss lacks gradient, adding parameter connection")
-                    # 添加一个极小的参数依赖项确保梯度连接
-                    param_connection = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
-                    for param in self.router.parameters():
-                        if param.requires_grad:
-                            param_connection = param_connection + torch.sum(param * param) * 1e-10
-                            break
-                    aux_loss = aux_loss + param_connection
+                    # 在推理模式下(torch.no_grad)，这是正常现象
+                    # 不需要打印警告或添加参数连接
+                    pass
 
                 # 最终数值检查
                 if torch.isnan(aux_loss) or torch.isinf(aux_loss):
@@ -832,23 +827,64 @@ class JointLoRAMoEModel(nn.Module):
         print(f"  - Config: {config_path}")
 
     def generate(self, input_ids, attention_mask=None, max_new_tokens=150,
-                 do_sample=True, temperature=0.7, **kwargs):
-        """生成方法"""
-        # 注意：这里需要使用完整的forward流程，而不是直接调用base_model.generate
-        # 因为我们需要经过MoE层处理
+                 do_sample=False, temperature=0.7, pad_token_id=None, eos_token_id=None, **kwargs):
+        """
+        改进的生成方法 - 确保使用MoE层
 
-        # 为了简化，我们先实现一个基本版本
-        # 在实际使用中，可能需要实现更复杂的生成逻辑
+        Args:
+            input_ids: 输入token ids
+            attention_mask: 注意力掩码
+            max_new_tokens: 最大生成token数
+            do_sample: 是否采样
+            temperature: 温度
+            pad_token_id: padding token id
+            eos_token_id: 结束token id
+
+        Returns:
+            生成的token ids
+        """
+        # 由于我们需要经过MoE层，不能直接使用base_model.generate
+        # 需要实现自定义的生成循环
+
         with torch.no_grad():
-            # 获取当前输出
-            outputs = self.forward(input_ids=input_ids, attention_mask=attention_mask)
-            logits = outputs.logits
+            batch_size = input_ids.size(0)
+            current_ids = input_ids.clone()
 
-            # 简单的贪心解码（可以后续扩展为更复杂的采样）
-            next_token_logits = logits[:, -1, :]
-            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            if attention_mask is None:
+                attention_mask = torch.ones_like(current_ids)
 
-            # 这里返回简单的结果，实际应该实现完整的生成循环
-            generated_ids = torch.cat([input_ids, next_token_id], dim=-1)
+            for step in range(max_new_tokens):
+                # 使用我们的forward方法（包含MoE层）
+                outputs = self.forward(
+                    input_ids=current_ids,
+                    attention_mask=attention_mask
+                )
 
-            return generated_ids
+                # 获取最后一个位置的logits
+                next_token_logits = outputs.logits[:, -1, :]  # [batch_size, vocab_size]
+
+                # 生成下一个token
+                if do_sample:
+                    # 采样生成
+                    if temperature > 0:
+                        next_token_logits = next_token_logits / temperature
+                    probs = torch.softmax(next_token_logits, dim=-1)
+                    next_token_id = torch.multinomial(probs, num_samples=1)
+                else:
+                    # 贪心解码
+                    next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+
+                # 添加新token
+                current_ids = torch.cat([current_ids, next_token_id], dim=-1)
+
+                # 更新attention_mask
+                attention_mask = torch.cat([
+                    attention_mask,
+                    torch.ones((batch_size, 1), device=attention_mask.device, dtype=attention_mask.dtype)
+                ], dim=-1)
+
+                # 检查是否生成了结束token
+                if eos_token_id is not None and (next_token_id == eos_token_id).any():
+                    break
+
+            return current_ids
