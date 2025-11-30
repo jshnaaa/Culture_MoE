@@ -100,7 +100,7 @@ echo ""
 BATCH_SIZE=1              # 最小batch size
 GRADIENT_ACCUMULATION=32  # 大幅增加梯度累积
 LEARNING_RATE_BASE=2e-5   # 更低的基础学习率
-LEARNING_RATE_MOE=5e-5    # 极简路由器使用保守学习率
+LEARNING_RATE_MOE=1e-5    # 进一步降低MoE学习率防止NaN
 NUM_EPOCHS=3              # 减少训练轮数
 MAX_SEQ_LEN=256          # 大幅减少序列长度
 

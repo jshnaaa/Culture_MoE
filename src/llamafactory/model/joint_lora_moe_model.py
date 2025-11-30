@@ -149,9 +149,12 @@ class MoERouter(nn.Module):
             # 偏置设置为小的负值，softmax后趋向uniform
             nn.init.constant_(self.router.bias, -1.0)
 
-        # 权重保护参数
-        self.max_weight_value = 0.1  # 极严格的权重限制
-        self.max_bias_value = 1.0
+        # 权重保护参数 - 进一步降低限制
+        self.max_weight_value = 0.01  # 超极严格的权重限制
+        self.max_bias_value = 0.5     # 降低偏置限制
+
+        # 添加权重稳定化机制
+        self.weight_decay_factor = 0.999  # 每次更新后轻微衰减权重
 
     def forward(self, x, temperature: float = 1.0):
         """
@@ -168,20 +171,36 @@ class MoERouter(nn.Module):
         batch_size = x.size(0)
 
         try:
-            # 1. 极保守的权重保护（每次前向传播都检查）
+            # 1. 超激进的权重保护和稳定化
             with torch.no_grad():
-                # 严格限制权重值
-                self.router.weight.data.clamp_(-self.max_weight_value, self.max_weight_value)
-                self.router.bias.data.clamp_(-self.max_bias_value, self.max_bias_value)
+                # 检查并修复NaN/Inf（优先级最高）
+                weight_has_nan = torch.isnan(self.router.weight).any() or torch.isinf(self.router.weight).any()
+                bias_has_nan = torch.isnan(self.router.bias).any() or torch.isinf(self.router.bias).any()
 
-                # 检查并修复NaN/Inf
-                if torch.isnan(self.router.weight).any() or torch.isinf(self.router.weight).any():
+                if weight_has_nan:
                     print("⚠️ Resetting router weights due to NaN/Inf")
                     nn.init.constant_(self.router.weight, 0.0)
 
-                if torch.isnan(self.router.bias).any() or torch.isinf(self.router.bias).any():
+                if bias_has_nan:
                     print("⚠️ Resetting router bias due to NaN/Inf")
-                    nn.init.constant_(self.router.bias, -1.0)
+                    nn.init.constant_(self.router.bias, -0.5)  # 使用更保守的初值
+
+                # 权重衰减稳定化（防止累积误差）
+                self.router.weight.data *= self.weight_decay_factor
+                self.router.bias.data *= self.weight_decay_factor
+
+                # 超严格限制权重值
+                self.router.weight.data.clamp_(-self.max_weight_value, self.max_weight_value)
+                self.router.bias.data.clamp_(-self.max_bias_value, self.max_bias_value)
+
+                # 额外的安全检查：如果权重范数过大，进一步缩放
+                weight_norm = torch.norm(self.router.weight)
+                if weight_norm > 0.05:  # 超严格的范数限制
+                    self.router.weight.data *= (0.05 / weight_norm)
+
+                bias_norm = torch.norm(self.router.bias)
+                if bias_norm > 0.3:
+                    self.router.bias.data *= (0.3 / bias_norm)
 
             # 2. 输入预处理：极保守的范围限制
             x_safe = torch.clamp(x, min=-1.0, max=1.0)
