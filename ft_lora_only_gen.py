@@ -143,9 +143,14 @@ class CultureLLMNewFormatDataset(Dataset):
 
         # 🔧 验证：确保input_length不会超出完整序列的非padding部分
         total_non_pad = (input_ids != pad_token_id).sum().item()
-        if input_length >= total_non_pad:
-            # 如果输入部分已经占满了非padding部分，至少保留1个token给输出
-            input_length = max(0, total_non_pad - 1)
+
+        # 🔧 关键修复：确保至少保留3-5个token作为训练目标
+        min_output_tokens = 5  # 至少保留5个token作为输出
+        max_allowed_input_length = max(0, total_non_pad - min_output_tokens)
+
+        if input_length >= max_allowed_input_length:
+            print(f"⚠️ 样本{idx}: input_length({input_length})过大，调整为{max_allowed_input_length}")
+            input_length = max_allowed_input_length
 
         # 🔧 额外验证：检查是否正确识别了<|eot_id|>
         eot_token_id = 128009  # Llama的<|eot_id|>
@@ -154,7 +159,10 @@ class CultureLLMNewFormatDataset(Dataset):
             first_eot_pos = eot_positions[0].item()
             # 如果输入部分超过了第一个<|eot_id|>位置，需要调整
             if input_length > first_eot_pos:
-                input_length = first_eot_pos
+                # 但仍要确保有足够的输出token
+                adjusted_input_length = max(0, min(first_eot_pos, total_non_pad - min_output_tokens))
+                print(f"⚠️ 样本{idx}: 遇到<|eot_id|>，调整input_length从{input_length}到{adjusted_input_length}")
+                input_length = adjusted_input_length
 
         # 3. 创建正确的标签
         labels = input_ids.clone()
@@ -183,6 +191,37 @@ class CultureLLMNewFormatDataset(Dataset):
         # 🔍 详细的labels调试信息（前5个样本）
         if idx < 5:
             print(f"\n📋 样本 {idx} - 有效标签数: {valid_labels}")
+            print(f"  🔧 掩码分析:")
+            print(f"    原始文本: '{full_text[:100]}...'")
+            print(f"    输入部分: '{full_input[:100]}...'")
+            print(f"    输出部分: '{output_text}'")
+            print(f"    计算的input_length: {input_length}")
+            print(f"    总序列长度: {len(input_ids)}")
+            print(f"    实际非padding长度: {(input_ids != pad_token_id).sum().item()}")
+
+            # 检查掩码的具体位置
+            mask_positions = (labels == -100).nonzero(as_tuple=True)[0]
+            valid_positions = (labels != -100).nonzero(as_tuple=True)[0]
+            print(f"    掩码位置数: {len(mask_positions)}")
+            print(f"    有效位置数: {len(valid_positions)}")
+
+            if len(valid_positions) > 0:
+                print(f"    有效位置范围: {valid_positions[0].item()} - {valid_positions[-1].item()}")
+                # 显示前几个有效token
+                for i, pos in enumerate(valid_positions[:3]):
+                    token_id = input_ids[pos].item()
+                    try:
+                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+                        print(f"      位置{pos.item()}: {token_id}='{token_text}'")
+                    except:
+                        print(f"      位置{pos.item()}: {token_id}=(解码失败)")
+
+            # 检查是否input_length计算有问题
+            if input_length >= len(input_ids) - 5:  # 如果输入长度几乎占满整个序列
+                print(f"  🚨 问题: input_length({input_length})过大，几乎占满整个序列!")
+                print(f"    这会导致几乎没有训练目标")
+
+            continue  # 跳过后续的详细调试，专注于掩码问题
 
             # 检查tokenizer配置
             eot_token_id = 128009  # <|eot_id|>
