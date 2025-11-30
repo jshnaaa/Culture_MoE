@@ -333,14 +333,16 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             moe_aux_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
 
         # 调试：检查MoE相关输出
-        if batch_idx < 3:
+        if batch_idx < 3 or batch_idx % 10 == 0:  # 前3个batch和每10个batch
             print(f"🔍 Batch {batch_idx} - MoE analysis:")
             print(f"  lm_loss: {lm_loss.item() if lm_loss is not None else 'None'}")
             print(f"  moe_aux_loss: {moe_aux_loss.item() if moe_aux_loss is not None else 'None'}")
+            print(f"  moe_aux_loss.requires_grad: {moe_aux_loss.requires_grad if moe_aux_loss is not None else 'None'}")
             if expert_weights is not None:
                 print(f"  expert_weights.shape: {expert_weights.shape}")
                 print(f"  expert_weights[0]: {expert_weights[0].tolist()}")
                 print(f"  expert_weights contains NaN: {torch.isnan(expert_weights).any()}")
+                print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
 
             # 检查hidden_states（MoE输出）
             if hasattr(outputs, 'hidden_states') and outputs.hidden_states is not None:
