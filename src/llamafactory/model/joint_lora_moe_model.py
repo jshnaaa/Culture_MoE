@@ -464,7 +464,7 @@ class MoELayer(nn.Module):
                     final_std = final_output.std().item()
                     final_min = final_output.min().item()
                     final_max = final_output.max().item()
-                    # print(f"🔍 Mixed output: mean={final_mean:.6f}, std={final_std:.6f}, range=[{final_min:.3f}, {final_max:.3f}], total_weight={total_weight:.6f}")
+                    print(f"🔍 Mixed output: mean={final_mean:.6f}, std={final_std:.6f}, range=[{final_min:.3f}, {final_max:.3f}], total_weight={total_weight:.6f}")
 
             # 4. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
@@ -625,7 +625,7 @@ class JointLoRAMoEModel(nn.Module):
 
         # 关键调试：检查MoE输出是否为零
         moe_range = f"min={moe_output.min().item():.3f}, max={moe_output.max().item():.3f}"
-        # print(f"🔧 MoE: {moe_range}, std={moe_output.std().item():.6f}")
+        print(f"🔧 MoE: {moe_range}, std={moe_output.std().item():.6f}")
 
         # 4. 语言模型头
         # 需要确保moe_output的维度与原始hidden_states一致
@@ -670,7 +670,7 @@ class JointLoRAMoEModel(nn.Module):
 
         # 关键调试：检查最终logits
         logits_range = f"min={logits.min().item():.3f}, max={logits.max().item():.3f}"
-        # print(f"🔧 Logits: {logits_range}")
+        print(f"🔧 Logits: {logits_range}")
 
         # 5. 计算损失 - 数值稳定版本
         loss = None

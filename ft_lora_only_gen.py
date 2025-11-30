@@ -166,8 +166,8 @@ class CultureLLMNewFormatDataset(Dataset):
         valid_labels = (labels != -100).sum().item()
         total_tokens = (input_ids != self.tokenizer.pad_token_id).sum().item()
 
-        # 🔍 详细的labels调试信息（前2个样本）
-        if idx < 2:
+        # 🔍 详细的labels调试信息（前5个样本）
+        if idx < 5:
             print(f"\n📋 样本 {idx} - 有效标签数: {valid_labels}")
 
             # 检查tokenizer配置
