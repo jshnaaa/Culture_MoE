@@ -69,22 +69,53 @@ class MoEExpert(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        """修复权重初始化 - 使用更大的初始化确保信号传播"""
-        # 使用更大的标准差，确保有效的信号传播
-        gate_up_std = 0.05  # 比原来的0.02大2.5倍
-        down_std = 0.02     # 比原来的0.01大2倍
+        """修复权重初始化 - 防NaN版本"""
+        # 使用安全的初始化，防止NaN
+        gate_up_std = 0.02  # 回到保守但安全的初始化
+        down_std = 0.01
 
-        for module in [self.gate_proj, self.up_proj]:
-            nn.init.normal_(module.weight, mean=0.0, std=gate_up_std)
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0.0)
+        try:
+            for module in [self.gate_proj, self.up_proj]:
+                # 清零权重和偏置，防止NaN残留
+                with torch.no_grad():
+                    module.weight.zero_()
+                    if module.bias is not None:
+                        module.bias.zero_()
 
-        # down_proj使用稍小但仍然有效的初始化
-        nn.init.normal_(self.down_proj.weight, mean=0.0, std=down_std)
-        if self.down_proj.bias is not None:
-            nn.init.constant_(self.down_proj.bias, 0.0)
+                # 安全的正态分布初始化
+                nn.init.normal_(module.weight, mean=0.0, std=gate_up_std)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
 
-        print(f"🔧 Expert initialized: gate/up_std={gate_up_std:.4f}, down_std={down_std:.4f}")
+                # 检查初始化后是否有NaN
+                if torch.isnan(module.weight).any() or torch.isinf(module.weight).any():
+                    print(f"    ⚠️ NaN detected in {module.__class__.__name__} after init, using zeros")
+                    module.weight.zero_()
+
+            # down_proj安全初始化
+            with torch.no_grad():
+                self.down_proj.weight.zero_()
+                if self.down_proj.bias is not None:
+                    self.down_proj.bias.zero_()
+
+            nn.init.normal_(self.down_proj.weight, mean=0.0, std=down_std)
+            if self.down_proj.bias is not None:
+                nn.init.constant_(self.down_proj.bias, 0.0)
+
+            if torch.isnan(self.down_proj.weight).any() or torch.isinf(self.down_proj.weight).any():
+                print("    ⚠️ NaN detected in down_proj after init, using zeros")
+                self.down_proj.weight.zero_()
+
+            print(f"🔧 Expert safely initialized: gate/up_std={gate_up_std:.4f}, down_std={down_std:.4f}")
+
+        except Exception as e:
+            print(f"⚠️ Weight initialization failed: {e}")
+            # 最后的安全措施：全部置零
+            with torch.no_grad():
+                for module in [self.gate_proj, self.up_proj, self.down_proj]:
+                    module.weight.zero_()
+                    if module.bias is not None:
+                        module.bias.zero_()
 
     def forward(self, x):
         """前向传播 - 修复版本，减少过度限制"""
@@ -103,6 +134,17 @@ class MoEExpert(nn.Module):
             gate_output = self.gate_proj(x)
             up_output = self.up_proj(x)
 
+            # 添加调试信息：检查投影层权重
+            gate_weight_has_nan = torch.isnan(self.gate_proj.weight).any() or torch.isinf(self.gate_proj.weight).any()
+            up_weight_has_nan = torch.isnan(self.up_proj.weight).any() or torch.isinf(self.up_proj.weight).any()
+            print(f"    🔍 gate_proj weight NaN: {gate_weight_has_nan}")
+            print(f"    🔍 up_proj weight NaN: {up_weight_has_nan}")
+
+            if gate_weight_has_nan or up_weight_has_nan:
+                print("    ⚠️ Expert weights contain NaN, reinitializing...")
+                self._init_weights()
+                return torch.zeros_like(x)
+
             # 添加调试信息：检查投影层输出
             gate_mean = gate_output.mean().item()
             gate_std = gate_output.std().item()
@@ -111,10 +153,14 @@ class MoEExpert(nn.Module):
             print(f"    🔍 gate_proj: mean={gate_mean:.6f}, std={gate_std:.6f}")
             print(f"    🔍 up_proj: mean={up_mean:.6f}, std={up_std:.6f}")
 
-            # 检查第一阶段输出
+            # 检查第一阶段输出 - 如果是NaN，强制重新初始化
             if torch.isnan(gate_output).any() or torch.isinf(gate_output).any():
+                print("    ⚠️ gate_proj output is NaN, reinitializing weights...")
+                self._init_weights()
                 return torch.zeros_like(x)
             if torch.isnan(up_output).any() or torch.isinf(up_output).any():
+                print("    ⚠️ up_proj output is NaN, reinitializing weights...")
+                self._init_weights()
                 return torch.zeros_like(x)
 
             # 激活函数 - 移除激活前的限制
@@ -314,6 +360,12 @@ class MoELayer(nn.Module):
                 dtype=dtype
             ) for _ in range(config.num_moe_experts)
         ])
+
+        # 强制重新初始化所有专家权重，确保没有NaN
+        print("🔧 Force reinitializing all experts to prevent NaN...")
+        for i, expert in enumerate(self.experts):
+            expert._init_weights()
+            print(f"🔧 Expert {i} reinitialized")
 
         # 简化：移除复杂的门控和共享专家机制，只保留基本的专家混合
         # 不使用共享专家和门控，避免额外的复杂性
