@@ -100,8 +100,9 @@ class CultureLLMNewFormatDataset(Dataset):
             full_input = instruction
 
         # 完整的文本（用于语言建模）
+        # 🔧 修复：使用空格分隔而不是换行符，避免tokenizer自动格式化
         # 这样模型会学习：给定 instruction + input，生成 output
-        full_text = f"{full_input}\n{output_text}"
+        full_text = f"{full_input} {output_text}"
 
         # 🔍 关键调试：检查构建后的full_text
         if idx < 5:
@@ -144,9 +145,10 @@ class CultureLLMNewFormatDataset(Dataset):
                         print(f"      token_{len(input_ids)-15+i}: {token_id}=(解码失败)")
 
         # 2. 正确计算input_length - 确保tokenizer参数一致！
-        input_with_newline = f"{full_input}\n"
+        # 🔧 修复：使用空格分隔，与full_text格式保持一致
+        input_with_space = f"{full_input} "
         encoded_input = self.tokenizer(
-            input_with_newline,
+            input_with_space,
             max_length=self.max_length,
             truncation=True,
             padding='max_length',
@@ -157,7 +159,7 @@ class CultureLLMNewFormatDataset(Dataset):
         # ✅ 关键修复：正确计算input_length，避免padding污染
         # 方法：直接tokenize输入部分，不使用padding，然后计算实际长度
         encoded_input_no_pad = self.tokenizer(
-            input_with_newline,
+            input_with_space,
             truncation=True,
             return_tensors='pt',
             add_special_tokens=True,
@@ -470,12 +472,13 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
         生成的文本
     """
     # 构建输入 - 与训练时格式完全保持一致
-    # 训练时的格式：full_input = f"{instruction}\n{input_text}"，然后添加\n{output}
-    # 所以生成时应该给模型：full_input + \n，让它生成output
+    # 🔧 修复：训练时的格式改为：full_input + " " + output，所以生成时也用空格
+    # 训练时的格式：full_input = f"{instruction}\n{input_text}"，然后添加 {output}
+    # 所以生成时应该给模型：full_input + " "，让它生成output
     if input_text:
-        full_input = f"{instruction}\n{input_text}\n"  # 与训练时的full_text开头一致
+        full_input = f"{instruction}\n{input_text} "  # 与训练时的full_text开头一致
     else:
-        full_input = f"{instruction}\n"  # 与训练时的full_text开头一致
+        full_input = f"{instruction} "  # 与训练时的full_text开头一致
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
