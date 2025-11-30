@@ -706,29 +706,29 @@ class JointLoRAMoEModel(nn.Module):
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
 
-                # 详细调试信息：检查shift前后的labels - 注释掉，与tokenizer问题无关
-                # original_valid = (labels.view(-1) != -100).sum().item()
-                # shift_valid = (shift_labels.view(-1) != -100).sum().item()
-                # total_labels = shift_labels.numel()
+                # 计算shift后的有效标签数量（用于检查是否有训练目标）
+                shift_valid = (shift_labels.view(-1) != -100).sum().item()
+                total_labels = shift_labels.numel()
 
+                # 详细调试信息已注释掉，只保留必要的变量定义
                 # print(f"🔍 Labels shift analysis:")
                 # print(f"  Original labels valid: {original_valid}/{labels.numel()}")
                 # print(f"  Shifted labels valid: {shift_valid}/{total_labels}")
 
-                # 检查第一个样本的labels变化
-                if labels.shape[0] > 0:
-                    sample_original = labels[0]
-                    sample_shifted = shift_labels[0]
-                    orig_valid_pos = (sample_original != -100).nonzero().flatten()
-                    shift_valid_pos = (sample_shifted != -100).nonzero().flatten()
+                # 检查第一个样本的labels变化（注释掉详细输出）
+                # if labels.shape[0] > 0:
+                #     sample_original = labels[0]
+                #     sample_shifted = shift_labels[0]
+                #     orig_valid_pos = (sample_original != -100).nonzero().flatten()
+                #     shift_valid_pos = (sample_shifted != -100).nonzero().flatten()
 
-                    # print(f"  Sample 0 original valid positions: {orig_valid_pos.tolist()}")
-                    # print(f"  Sample 0 shifted valid positions: {shift_valid_pos.tolist()}")
+                #     print(f"  Sample 0 original valid positions: {orig_valid_pos.tolist()}")
+                #     print(f"  Sample 0 shifted valid positions: {shift_valid_pos.tolist()}")
 
-                    # if len(orig_valid_pos) > 0:
-                    #     print(f"  Sample 0 original valid tokens: {sample_original[orig_valid_pos].tolist()}")
-                    # if len(shift_valid_pos) > 0:
-                    #     print(f"  Sample 0 shifted valid tokens: {sample_shifted[shift_valid_pos].tolist()}")
+                #     if len(orig_valid_pos) > 0:
+                #         print(f"  Sample 0 original valid tokens: {sample_original[orig_valid_pos].tolist()}")
+                #     if len(shift_valid_pos) > 0:
+                #         print(f"  Sample 0 shifted valid tokens: {sample_shifted[shift_valid_pos].tolist()}")
 
                 if shift_valid == 0:
                     print(f"⚠️ No valid labels found after shift! All {total_labels} labels are masked (-100)")
