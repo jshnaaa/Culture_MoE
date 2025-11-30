@@ -669,9 +669,38 @@ def main():
     # 加载tokenizer
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.base_model_path, trust_remote_code=True)
+
+    # 🔧 修复Llama 3.1 tokenizer配置问题
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        # 检查是否是Llama 3.1 (eos_token_id是128009)
+        if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id == 128009:
+            # Llama 3.1: 使用<unk> (token_id=0) 作为padding token，而不是<|eot_id|>
+            tokenizer.pad_token = tokenizer.unk_token  # <unk>
+            tokenizer.pad_token_id = 0  # <unk>的token_id通常是0
+            print(f"🔧 Llama 3.1 detected: 设置pad_token = <unk> (id=0)")
+        else:
+            # 其他模型：使用标准配置
+            tokenizer.pad_token = tokenizer.eos_token
+            print(f"🔧 标准配置: pad_token = eos_token")
+
     tokenizer.padding_side = "right"
+
+    # 验证tokenizer配置
+    print(f"✅ Tokenizer配置:")
+    print(f"  pad_token: {repr(tokenizer.pad_token)}")
+    print(f"  pad_token_id: {tokenizer.pad_token_id}")
+    print(f"  eos_token: {repr(tokenizer.eos_token)}")
+    print(f"  eos_token_id: {tokenizer.eos_token_id}")
+
+    # 关键检查：确保pad_token_id不是<|eot_id|>
+    if tokenizer.pad_token_id == 128009:
+        print(f"❌ 错误: pad_token_id仍然是128009 (<|eot_id|>)!")
+        print(f"   这会导致padding区域填充<|eot_id|>，造成训练标签中大量128009 tokens")
+    elif tokenizer.pad_token_id == 0:
+        print(f"✅ 正确: pad_token_id = 0 (<unk>)，符合Llama 3.1标准配置")
+    else:
+        print(f"✅ 正确: pad_token_id ({tokenizer.pad_token_id}) != 128009")
+
     print("✅ Tokenizer loaded")
 
     # 加载数据

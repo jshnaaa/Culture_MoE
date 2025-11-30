@@ -138,8 +138,13 @@ class CultureLLMNewFormatDataset(Dataset):
         # 获取正确的pad_token_id
         pad_token_id = self.tokenizer.pad_token_id
         if pad_token_id is None:
-            # 如果没有设置pad_token，使用eos_token作为pad_token
-            pad_token_id = self.tokenizer.eos_token_id
+            # 如果没有设置pad_token，检查是否是Llama 3.1
+            if hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id == 128009:
+                # Llama 3.1: 使用<unk> (token_id=0) 作为padding
+                pad_token_id = 0
+            else:
+                # 其他模型：使用eos_token作为pad_token
+                pad_token_id = self.tokenizer.eos_token_id
 
         # 🔧 验证：确保input_length不会超出完整序列的非padding部分
         total_non_pad = (input_ids != pad_token_id).sum().item()
@@ -168,43 +173,77 @@ class CultureLLMNewFormatDataset(Dataset):
 
         # 🔍 详细调试信息（只为前5个样本）
         if idx < 5:
-            print(f"\n🔍 样本 {idx} Padding污染修复调试:")
+            print(f"\n🔍 样本 {idx} Tokenizer诊断调试:")
             print(f"  Full input: {repr(input_with_newline)}")
             print(f"  Full text: {repr(full_text)}")
 
-            # 关键修复对比
-            old_input_length = len(encoded_input['input_ids'][0])  # 错误：包含padding
-            new_input_length = input_length  # 正确：排除padding
+            # 🔧 关键诊断：Tokenizer配置检查
+            print(f"\n  📋 Tokenizer配置诊断:")
+            print(f"    pad_token: {repr(self.tokenizer.pad_token)}")
+            print(f"    pad_token_id: {self.tokenizer.pad_token_id}")
+            print(f"    eos_token: {repr(self.tokenizer.eos_token)}")
+            print(f"    eos_token_id: {self.tokenizer.eos_token_id}")
 
-            print(f"  ❌ 错误计算 input_length: {old_input_length} (包含padding)")
-            print(f"  ✅ 正确计算 input_length: {new_input_length} (真实长度)")
-            print(f"  Total sequence length: {len(input_ids)}")
-            print(f"  Non-pad tokens: {total_tokens}")
-            print(f"  Valid labels (训练目标): {valid_labels}")
-
-            # 🔧 Llama特殊token分析
+            # 检查特殊token
             eot_token_id = 128009  # <|eot_id|>
             pad_token_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
 
-            eot_in_labels = (labels == eot_token_id).sum().item()
-            padding_in_labels = (labels == pad_token_id).sum().item()
+            print(f"    实际使用的pad_token_id: {pad_token_id}")
+            print(f"    <|eot_id|>的token_id: {eot_token_id}")
 
-            print(f"  🔍 特殊token分析:")
+            # ⚠️ 关键检查：pad_token_id是否等于eot_token_id
+            if pad_token_id == eot_token_id:
+                print(f"  🚨 发现问题: pad_token_id == <|eot_id|> ({pad_token_id})")
+                print(f"    这会导致padding区域填充<|eot_id|>而不是真正的padding token!")
+
+            # 序列结构分析
+            old_input_length = len(encoded_input['input_ids'][0])
+            new_input_length = input_length
+
+            print(f"\n  📊 序列结构分析:")
+            print(f"    错误计算 input_length: {old_input_length}")
+            print(f"    正确计算 input_length: {new_input_length}")
+            print(f"    Total sequence length: {len(input_ids)}")
+            print(f"    Non-pad tokens: {total_tokens}")
+            print(f"    Valid labels (训练目标): {valid_labels}")
+
+            # 分析整个序列中的特殊token分布
+            eot_in_sequence = (input_ids == eot_token_id).sum().item()
+            pad_in_sequence = (input_ids == pad_token_id).sum().item()
+            eot_in_labels = (labels == eot_token_id).sum().item()
+            pad_in_labels = (labels == pad_token_id).sum().item()
+
+            print(f"\n  🔍 特殊token分布:")
+            print(f"    整个序列中<|eot_id|>数量: {eot_in_sequence}")
+            print(f"    整个序列中padding数量: {pad_in_sequence}")
             print(f"    训练标签中<|eot_id|>数量: {eot_in_labels}")
-            print(f"    训练标签中padding数量: {padding_in_labels}")
+            print(f"    训练标签中padding数量: {pad_in_labels}")
 
             # 分析<|eot_id|>位置
             eot_positions = (input_ids == eot_token_id).nonzero(as_tuple=True)[0]
             if len(eot_positions) > 0:
                 print(f"    <|eot_id|>在序列中的位置: {eot_positions.tolist()}")
-                print(f"    input_length: {input_length}")
+                print(f"    当前input_length: {input_length}")
 
-            if padding_in_labels > 0:
-                print(f"  ❌ 警告: 训练标签包含padding tokens!")
+                # 检查是否有连续的<|eot_id|>
+                if len(eot_positions) > 1:
+                    consecutive_eot = []
+                    for i in range(len(eot_positions) - 1):
+                        if eot_positions[i+1] - eot_positions[i] == 1:
+                            consecutive_eot.append((eot_positions[i].item(), eot_positions[i+1].item()))
+
+                    if consecutive_eot:
+                        print(f"    ⚠️ 发现连续<|eot_id|>: {consecutive_eot}")
+                        print(f"    这通常表示padding区域被<|eot_id|>填充!")
+
+            # 问题诊断
+            if pad_token_id == eot_token_id and eot_in_sequence > 5:
+                print(f"  🚨 根本问题: Tokenizer将<|eot_id|>用作padding token!")
+                print(f"    解决方案: 需要正确设置pad_token")
             elif eot_in_labels > 1:
-                print(f"  ⚠️ 警告: 训练标签包含多个<|eot_id|>!")
+                print(f"  ⚠️ 问题: 训练标签包含多个<|eot_id|>")
             else:
-                print(f"  ✅ 训练标签设置合理")
+                print(f"  ✅ 特殊token处理正常")
 
             print(f"  📊 训练目标比例: {valid_labels/total_tokens:.1%}")
 
@@ -717,9 +756,38 @@ def main():
     # 加载 tokenizer
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.base_model_path, trust_remote_code=True)
+
+    # 🔧 修复Llama 3.1 tokenizer配置问题
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        # 检查是否是Llama 3.1 (eos_token_id是128009)
+        if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id == 128009:
+            # Llama 3.1: 使用<unk> (token_id=0) 作为padding token，而不是<|eot_id|>
+            tokenizer.pad_token = tokenizer.unk_token  # <unk>
+            tokenizer.pad_token_id = 0  # <unk>的token_id通常是0
+            print(f"🔧 Llama 3.1 detected: 设置pad_token = <unk> (id=0)")
+        else:
+            # 其他模型：使用标准配置
+            tokenizer.pad_token = tokenizer.eos_token
+            print(f"🔧 标准配置: pad_token = eos_token")
+
     tokenizer.padding_side = "right"
+
+    # 验证tokenizer配置
+    print(f"✅ Tokenizer配置:")
+    print(f"  pad_token: {repr(tokenizer.pad_token)}")
+    print(f"  pad_token_id: {tokenizer.pad_token_id}")
+    print(f"  eos_token: {repr(tokenizer.eos_token)}")
+    print(f"  eos_token_id: {tokenizer.eos_token_id}")
+
+    # 关键检查：确保pad_token_id不是<|eot_id|>
+    if tokenizer.pad_token_id == 128009:
+        print(f"❌ 错误: pad_token_id仍然是128009 (<|eot_id|>)!")
+        print(f"   这会导致padding区域填充<|eot_id|>，造成训练标签中大量128009 tokens")
+    elif tokenizer.pad_token_id == 0:
+        print(f"✅ 正确: pad_token_id = 0 (<unk>)，符合Llama 3.1标准配置")
+    else:
+        print(f"✅ 正确: pad_token_id ({tokenizer.pad_token_id}) != 128009")
+
     print("✅ Tokenizer loaded")
 
     # 加载数据
