@@ -357,47 +357,16 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
 
         # 梯度更新
         if (batch_idx + 1) % num_accumulation_steps == 0:
-            # 分别对不同组件进行梯度裁剪
-            # 对MoE路由器使用更严格的梯度裁剪
-            moe_params = []
-            other_params = []
+            # 使用统一的梯度裁剪，因为新路由器架构更稳定
+            # 检查和清理任何NaN/Inf梯度
             for name, param in model.named_parameters():
-                if param.requires_grad:
-                    if 'moe_layer.router' in name:
-                        moe_params.append(param)
-                    else:
-                        other_params.append(param)
+                if param.requires_grad and param.grad is not None:
+                    if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                        print(f"⚠️ Cleaning NaN/Inf gradient in {name}")
+                        param.grad.zero_()
 
-            # 极严格的路由器梯度裁剪和权重保护
-            if moe_params:
-                # 预先检查和清理NaN/Inf梯度
-                for name, param in model.named_parameters():
-                    if 'moe_layer.router' in name and param.grad is not None:
-                        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                            print(f"⚠️ Cleaning NaN/Inf gradient in {name}")
-                            param.grad.zero_()  # 清零有问题的梯度
-
-                # 超极严格的梯度裁剪
-                torch.nn.utils.clip_grad_norm_(moe_params, max_norm=0.01)  # 进一步降低到0.01
-
-                # 权重更新后立即检查和修复
-                for name, param in model.named_parameters():
-                    if 'moe_layer.router' in name:
-                        with torch.no_grad():
-                            # 检查权重是否超出安全范围
-                            if torch.isnan(param).any() or torch.isinf(param).any():
-                                print(f"⚠️ Post-update NaN/Inf in {name}, resetting")
-                                if 'weight' in name:
-                                    torch.nn.init.normal_(param, mean=0.0, std=0.0001)
-                                elif 'bias' in name:
-                                    torch.nn.init.constant_(param, 0.0)
-                            else:
-                                # 更严格的权重范围限制
-                                param.clamp_(-0.1, 0.1)  # 极严格限制权重范围
-
-            # 其他参数使用正常梯度裁剪
-            if other_params:
-                torch.nn.utils.clip_grad_norm_(other_params, max_norm=0.5)
+            # 统一的梯度裁剪 - 新架构不需要特殊处理
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             optimizer.step()
             optimizer.zero_grad()

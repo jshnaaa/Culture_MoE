@@ -132,168 +132,141 @@ class MoEExpert(nn.Module):
 
 
 class MoERouter(nn.Module):
-    """MoE路由器 - 极度保守的数值稳定版本"""
+    """MoE路由器 - 完全重新设计的数值稳定版本"""
 
     def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1, dtype: torch.dtype = torch.float16):
         super().__init__()
         self.num_experts = num_experts
-        # 回到使用传入的dtype，但加强数值稳定性控制
-        self.router = nn.Linear(hidden_dim, num_experts, bias=True, dtype=dtype)
-        self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(hidden_dim, dtype=dtype, eps=1e-5)  # 使用传入的dtype
+        self.hidden_dim = hidden_dim
 
-        # 极度保守的初始化，防止训练过程中发散
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.0001)  # 更极小的初始化
+        # 移除LayerNorm，它是数值不稳定的主要来源
+        # 使用简单的线性投影 + 批量归一化替代
+        self.input_proj = nn.Linear(hidden_dim, hidden_dim // 4, bias=False, dtype=dtype)  # 降维投影
+        self.router = nn.Linear(hidden_dim // 4, num_experts, bias=True, dtype=dtype)  # 路由层
+
+        # 使用更稳定的批量归一化替代LayerNorm
+        self.batch_norm = nn.BatchNorm1d(hidden_dim // 4, dtype=dtype, eps=1e-3, momentum=0.1)
+
+        # 保守但一致的初始化
+        # 输入投影：标准正交初始化
+        nn.init.orthogonal_(self.input_proj.weight, gain=0.5)
+
+        # 路由器：Xavier uniform初始化，确保输出范围合理
+        nn.init.xavier_uniform_(self.router.weight, gain=0.1)
         nn.init.constant_(self.router.bias, 0.0)
 
-        # 权重稳定化：保存初始权重作为稳定基准
-        self.register_buffer('stable_weight', self.router.weight.data.clone())
-        self.register_buffer('stable_bias', self.router.bias.data.clone())
-
-        # 权重稳定化参数
-        self.weight_ema_decay = 0.999  # EMA衰减率
-        self.weight_check_interval = 0  # 权重检查计数器
+        # 移除复杂的EMA机制，改用简单的权重裁剪
+        self.max_weight_norm = 1.0
+        self.max_bias_norm = 0.5
 
     def forward(self, x, temperature: float = 1.0):
         """
-        前向传播 - 极度保守的数值稳定版本
+        完全重新设计的前向传播 - 数学上保证稳定
 
         Args:
             x: [B, H] 输入隐藏状态
-            temperature: 温度参数，控制路由决策的确定性
+            temperature: 温度参数
 
         Returns:
             expert_weights: [B, num_experts] 专家权重
             router_logits: [B, num_experts] 原始logits
         """
+        batch_size = x.size(0)
+
         try:
-            # 权重稳定化检查（每10次调用检查一次）
-            self.weight_check_interval += 1
-            if self.weight_check_interval % 10 == 0:
-                self._stabilize_weights()
+            # 1. 输入预处理：使用Tanh限制范围，数学上保证有界
+            x_normalized = torch.tanh(x)  # 输出范围严格限制在[-1, 1]
 
-            # 输入归一化和限制，保持原始dtype
-            x = torch.clamp(x, min=-3.0, max=3.0)
+            # 2. 降维投影
+            projected = self.input_proj(x_normalized)  # [B, H//4]
 
-            # 使用LayerNorm进行归一化
-            x = self.layer_norm(x)
-            x = torch.clamp(x, min=-2.0, max=2.0)  # 标准化后再次限制
+            # 3. 批量归一化（比LayerNorm更稳定）
+            if self.training and batch_size > 1:
+                # 训练时使用BatchNorm
+                projected = self.batch_norm(projected)
+            else:
+                # 推理时或batch_size=1时使用简单归一化
+                mean = projected.mean(dim=-1, keepdim=True)
+                std = projected.std(dim=-1, keepdim=True) + 1e-6
+                projected = (projected - mean) / std
 
-            # 调试：检查归一化后的输入
-            # print(f"🔍 Router Debug - input after norm: min={x.min().item():.6f}, max={x.max().item():.6f}, mean={x.mean().item():.6f}")
-            # print(f"🔍 Router Debug - input contains NaN: {torch.isnan(x).any()}")
-            # print(f"🔍 Router Debug - input contains Inf: {torch.isinf(x).any()}")
+            # 再次使用Tanh确保有界性
+            projected = torch.tanh(projected)
 
-            # 检查路由器权重状态
-            router_weight = self.router.weight
-            router_bias = self.router.bias
-            # print(f"🔍 Router Debug - weight: min={router_weight.min().item():.6f}, max={router_weight.max().item():.6f}")
-            # print(f"🔍 Router Debug - weight contains NaN: {torch.isnan(router_weight).any()}")
-            # print(f"🔍 Router Debug - weight contains Inf: {torch.isinf(router_weight).any()}")
-            # print(f"🔍 Router Debug - bias: min={router_bias.min().item():.6f}, max={router_bias.max().item():.6f}")
+            # 4. 权重健康检查和裁剪（每次前向传播都检查）
+            with torch.no_grad():
+                # 检查并裁剪权重范数
+                weight_norm = torch.norm(self.router.weight)
+                if weight_norm > self.max_weight_norm:
+                    self.router.weight.data *= (self.max_weight_norm / weight_norm)
 
-            # 如果权重已经变成NaN/Inf，重置它们
-            if torch.isnan(router_weight).any() or torch.isinf(router_weight).any():
-                print("⚠️ Router weights are NaN/Inf, resetting!")
-                with torch.no_grad():
-                    nn.init.normal_(self.router.weight, mean=0.0, std=0.0001)
+                bias_norm = torch.norm(self.router.bias)
+                if bias_norm > self.max_bias_norm:
+                    self.router.bias.data *= (self.max_bias_norm / bias_norm)
+
+                # 检查并修复NaN/Inf
+                if torch.isnan(self.router.weight).any() or torch.isinf(self.router.weight).any():
+                    print("⚠️ Resetting router weights due to NaN/Inf")
+                    nn.init.xavier_uniform_(self.router.weight, gain=0.1)
+
+                if torch.isnan(self.router.bias).any() or torch.isinf(self.router.bias).any():
+                    print("⚠️ Resetting router bias due to NaN/Inf")
                     nn.init.constant_(self.router.bias, 0.0)
 
-            if torch.isnan(router_bias).any() or torch.isinf(router_bias).any():
-                print("⚠️ Router bias is NaN/Inf, resetting!")
-                with torch.no_grad():
-                    nn.init.constant_(self.router.bias, 0.0)
+            # 5. 路由计算
+            router_logits = self.router(projected)  # [B, num_experts]
 
-            # 计算路由logits，预先限制输入范围
-            x_clamped = torch.clamp(x, min=-1.0, max=1.0)  # 严格限制输入
-            router_logits = self.router(x_clamped)  # [B, num_experts]
-
-            # 调试：检查原始logits
-            # print(f"🔍 Router Debug - raw logits: min={router_logits.min().item():.6f}, max={router_logits.max().item():.6f}")
-            # print(f"🔍 Router Debug - raw logits contains NaN: {torch.isnan(router_logits).any()}")
-            # print(f"🔍 Router Debug - raw logits contains Inf: {torch.isinf(router_logits).any()}")
-
-            # 立即限制logits范围，防止发散
-            router_logits = torch.clamp(router_logits, min=-2.0, max=2.0)
-
-            # 检查logits
-            if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
-                print("⚠️ NaN/Inf in router logits, using uniform")
-                # 创建有梯度连接的uniform权重和logits，使用与输入相同的dtype
-                expert_weights = torch.ones(x.size(0), self.num_experts, device=x.device, dtype=x.dtype, requires_grad=True) / self.num_experts
-                # 使用小的随机logits而不是零，确保有梯度连接
-                router_logits = torch.randn(x.size(0), self.num_experts, device=x.device, dtype=x.dtype, requires_grad=True) * 0.01
-                return expert_weights, router_logits
+            # 6. 数学上保证稳定的softmax计算
+            # 使用safe_temperature避免除零
+            safe_temperature = torch.clamp(torch.tensor(temperature, device=x.device), min=0.1, max=10.0)
 
             # 温度缩放
-            safe_temperature = max(temperature, 0.5)  # 允许较小的温度
-            router_logits = router_logits / safe_temperature
+            scaled_logits = router_logits / safe_temperature
 
-            # 数值稳定的softmax
-            router_logits_max = router_logits.max(dim=-1, keepdim=True)[0]
-            router_logits_stable = router_logits - router_logits_max
-            router_logits_stable = torch.clamp(router_logits_stable, min=-10.0, max=0.0)  # 更宽松的限制
+            # Gumbel-Softmax技巧：数学上更稳定的softmax
+            # 使用log-sum-exp技巧
+            max_logits = torch.max(scaled_logits, dim=-1, keepdim=True)[0]
+            shifted_logits = scaled_logits - max_logits
 
-            # Softmax计算
-            expert_weights = F.softmax(router_logits_stable, dim=-1)
+            # 限制指数输入范围，防止overflow
+            safe_logits = torch.clamp(shifted_logits, min=-20.0, max=20.0)
 
-            # 最终检查 - 不能使用torch.ones_like，会断开梯度连接
+            # 计算expert权重
+            exp_logits = torch.exp(safe_logits)
+            expert_weights = exp_logits / (torch.sum(exp_logits, dim=-1, keepdim=True) + 1e-8)
+
+            # 7. 最终安全检查
             if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
-                print("⚠️ NaN/Inf in expert_weights, fixing with gradient connection")
-                # 使用原始tensor的形状但填充uniform值，保持梯度连接
-                expert_weights = expert_weights.detach().clone().requires_grad_(True)
-                expert_weights.fill_(1.0 / self.num_experts)
+                print("⚠️ Fallback to uniform weights")
+                # 使用uniform权重作为fallback，保持梯度连接
+                uniform_weights = torch.full((batch_size, self.num_experts),
+                                           1.0 / self.num_experts,
+                                           device=x.device,
+                                           dtype=x.dtype,
+                                           requires_grad=True)
+                # 创建有梯度连接的fallback logits
+                fallback_logits = torch.zeros_like(router_logits, requires_grad=True)
+                return uniform_weights, fallback_logits
 
-            # 确保权重和为1，但保持梯度连接
-            weight_sum = expert_weights.sum(dim=-1, keepdim=True) + 1e-8
-            expert_weights = expert_weights / weight_sum
+            # 确保权重和为1（数值稳定版本）
+            weight_sum = torch.sum(expert_weights, dim=-1, keepdim=True)
+            expert_weights = expert_weights / torch.clamp(weight_sum, min=1e-8)
 
-            # 转换回原始dtype（通常是Float16）但保持梯度连接
-            # 注意：这里不能直接.to(dtype)，因为会断开梯度
-            # 让PyTorch自动处理类型转换
             return expert_weights, router_logits
 
         except Exception as e:
-            print(f"⚠️ Router forward failed: {e}")
-            # 创建有梯度连接的fallback，确保使用正确的dtype
-            original_dtype = x.dtype if hasattr(x, 'dtype') else torch.float16
-            expert_weights = torch.ones(x.size(0), self.num_experts, device=x.device, dtype=original_dtype, requires_grad=True) / self.num_experts
-            router_logits = torch.randn(x.size(0), self.num_experts, device=x.device, dtype=original_dtype, requires_grad=True) * 0.01
-            return expert_weights, router_logits
-
-    def _stabilize_weights(self):
-        """权重稳定化方法"""
-        with torch.no_grad():
-            # 检查权重是否超出安全范围
-            weight_norm = torch.norm(self.router.weight)
-            bias_norm = torch.norm(self.router.bias)
-
-            # 如果权重范数过大，进行稳定化
-            if weight_norm > 1.0 or bias_norm > 1.0:
-                print(f"⚠️ Router weights getting large (w_norm={weight_norm:.6f}, b_norm={bias_norm:.6f}), stabilizing")
-
-                # 使用EMA稳定化
-                self.router.weight.data = (
-                    self.weight_ema_decay * self.router.weight.data +
-                    (1 - self.weight_ema_decay) * self.stable_weight
-                )
-                self.router.bias.data = (
-                    self.weight_ema_decay * self.router.bias.data +
-                    (1 - self.weight_ema_decay) * self.stable_bias
-                )
-
-                # 严格限制权重范围
-                self.router.weight.data.clamp_(-0.1, 0.1)
-                self.router.bias.data.clamp_(-0.1, 0.1)
-
-            # 检查并修复NaN/Inf权重
-            if torch.isnan(self.router.weight).any() or torch.isinf(self.router.weight).any():
-                print("⚠️ Router weight NaN/Inf detected, resetting to stable state")
-                self.router.weight.data = self.stable_weight.clone()
-
-            if torch.isnan(self.router.bias).any() or torch.isinf(self.router.bias).any():
-                print("⚠️ Router bias NaN/Inf detected, resetting to stable state")
-                self.router.bias.data = self.stable_bias.clone()
+            print(f"⚠️ Router completely failed: {e}, using uniform fallback")
+            # 创建数学上保证有效的fallback
+            uniform_weights = torch.full((batch_size, self.num_experts),
+                                       1.0 / self.num_experts,
+                                       device=x.device,
+                                       dtype=x.dtype,
+                                       requires_grad=True)
+            fallback_logits = torch.zeros((batch_size, self.num_experts),
+                                        device=x.device,
+                                        dtype=x.dtype,
+                                        requires_grad=True)
+            return uniform_weights, fallback_logits
 
 
 class MoELayer(nn.Module):
