@@ -559,10 +559,8 @@ class JointLoRAMoEModel(nn.Module):
                 print(f"  shift_logits contains Inf: {torch.isinf(shift_logits).any()}")
                 print(f"  shift_labels min: {shift_labels.min().item()}, max: {shift_labels.max().item()}")
 
-                # 使用Float32精度计算loss以避免数值问题
-                shift_logits_f32 = shift_logits.float()
-                lm_loss = loss_fct(shift_logits_f32.view(-1, shift_logits_f32.size(-1)), shift_labels.view(-1))
-                lm_loss = lm_loss.to(dtype=torch.float16)  # 转回float16
+                # 直接使用Float16计算，但移除label smoothing避免数值问题
+                lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
                 print(f"🔍 After CrossEntropyLoss:")
                 print(f"  lm_loss: {lm_loss.item()}")

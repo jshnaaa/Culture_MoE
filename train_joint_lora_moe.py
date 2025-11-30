@@ -325,7 +325,12 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         # 获取各种损失
         lm_loss = outputs.loss  # 语言模型损失
         expert_weights = getattr(outputs, 'expert_weights', None)  # 专家权重
-        moe_aux_loss = getattr(outputs, 'moe_aux_loss', torch.tensor(0.0, device=device, dtype=torch.float16))
+
+        # 确保moe_aux_loss有梯度连接
+        moe_aux_loss = getattr(outputs, 'moe_aux_loss', None)
+        if moe_aux_loss is None:
+            # 使用requires_grad=True的零张量确保梯度连接
+            moe_aux_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
 
         # 调试：检查MoE相关输出
         if batch_idx < 3:
@@ -345,16 +350,28 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 print(f"  hidden_states contains NaN: {torch.isnan(hidden_states).any()}")
                 print(f"  hidden_states contains Inf: {torch.isinf(hidden_states).any()}")  # MoE辅助损失
 
-        # 计算文化损失
-        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+        # 计算文化损失 - 确保有梯度连接
         if use_culture_loss and culture_labels is not None and expert_weights is not None:
             culture_loss = compute_culture_loss(expert_weights, culture_labels, culture_loss_weight)
+        else:
+            # 使用requires_grad=True的零张量确保梯度连接
+            culture_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
 
-        # 将主损失转换为float16以保持一致性
-        lm_loss = lm_loss.to(dtype=torch.float16)
+        # 注意：不要转换lm_loss的dtype，这会断开梯度连接
+        # lm_loss = lm_loss.to(dtype=torch.float16)  # 这行代码会断开梯度！
 
         # 总损失
         total_batch_loss = lm_loss + moe_aux_loss + culture_loss
+
+        # 调试：检查梯度连接
+        if batch_idx < 3:
+            print(f"🔍 Batch {batch_idx} - Gradient check:")
+            print(f"  lm_loss.requires_grad: {lm_loss.requires_grad}")
+            print(f"  moe_aux_loss.requires_grad: {moe_aux_loss.requires_grad}")
+            print(f"  culture_loss.requires_grad: {culture_loss.requires_grad}")
+            print(f"  total_batch_loss.requires_grad: {total_batch_loss.requires_grad}")
+            print(f"  lm_loss.dtype: {lm_loss.dtype}")
+            print(f"  total_batch_loss.dtype: {total_batch_loss.dtype}")
 
         # 检查 NaN/Inf loss
         if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
