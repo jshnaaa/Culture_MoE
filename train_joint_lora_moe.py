@@ -177,66 +177,26 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         attention_mask = batch['attention_mask'].to(device)
         labels = batch['labels'].to(device)
 
-        # 正确处理labels masking - 只计算output部分的loss
-        for i in range(labels.shape[0]):
-            instruction = batch['instruction'][i] if isinstance(batch['instruction'], list) else batch['instruction']
-            input_text = batch['input'][i] if isinstance(batch['input'], list) else batch['input']
-            output_text = batch['output'][i] if isinstance(batch['output'], list) else batch['output']
-
-            # 构建input部分（需要mask的部分）- 与数据集格式完全保持一致
-            # 数据集中的full_input就是需要mask的部分
-            if input_text:
-                input_part = f"{instruction}\n{input_text}"  # 这是数据集中的full_input
-            else:
-                input_part = instruction  # 这是数据集中的full_input
-
-            # 计算input部分的token长度 - 使用与数据集相同的tokenization方式
-            input_tokens = tokenizer(input_part, add_special_tokens=False, truncation=False)['input_ids']
-            input_length = len(input_tokens)
-
-            # 注意：input_part就是数据集中的full_input，连接output的"\n"应该被mask
-            # 我们需要加上连接符"\n"的token数量，因为这个\n也属于输入部分
-            separator_tokens = tokenizer("\n", add_special_tokens=False, truncation=False)['input_ids']
-            separator_length = len(separator_tokens)
-
-            # 实际需要mask的长度：input_part + 连接符"\n"
-            # 这样只有pure output部分会用于计算loss
-            actual_input_length = input_length + separator_length
-
-            # 计算完整文本的长度以验证 - 与数据集格式完全一致
-            # 数据集构建逻辑：full_input = f"{instruction}\n{input_text}"，然后 full_text = f"{full_input}\n{output_text}"
-            if input_text:
-                full_input = f"{instruction}\n{input_text}"
-                full_text = f"{full_input}\n{output_text}"  # instruction\ninput_text\noutput_text
-            else:
-                full_input = instruction
-                full_text = f"{full_input}\n{output_text}"  # instruction\noutput_text
-
-            full_tokens = tokenizer(full_text, add_special_tokens=False, truncation=False)['input_ids']
-            full_length = len(full_tokens)
-
-            # 更安全的masking策略 - 使用实际的input长度
-            if actual_input_length < labels.shape[1]:
-                # 确保至少保留一些output tokens用于训练
-                max_mask_length = min(actual_input_length, labels.shape[1] - 5)  # 至少保留5个token用于output
-                labels[i, :max_mask_length] = -100
-            else:
-                # 如果input太长，保留最后10个token用于训练
-                labels[i, :-10] = -100
-
-            # 调试信息：检查labels masking
-            if batch_idx < 1 and i == 0:  # 只在第一个batch的第一个样本显示
+        # ✅ 标签掩码已在数据集级别正确处理，不需要在训练时重复处理
+        # 🔍 只添加调试信息来验证数据集的标签掩码是否正确
+        if batch_idx < 1:  # 只在第一个batch显示
+            for i in range(min(1, labels.shape[0])):  # 只检查第一个样本
                 valid_labels = (labels[i] != -100).sum().item()
                 total_labels = labels.shape[1]
-                print(f"🔍 Batch {batch_idx}, Sample {i}:")
-                print(f"  input_length={input_length}, actual_input_length={actual_input_length}")
-                print(f"  valid_labels={valid_labels}/{total_labels}")
-                # print(f"  instruction: {repr(instruction)}")
-                # print(f"  input_text: {repr(input_text)}")
-                # print(f"  output: {repr(output_text)}")
+                non_pad_labels = (labels[i] != tokenizer.pad_token_id).sum().item()
+
+                print(f"🔍 数据集标签掩码验证 - Batch {batch_idx}, Sample {i}:")
+                print(f"  总标签数: {total_labels}")
+                print(f"  有效训练标签数: {valid_labels}")
+                print(f"  非pad标签数: {non_pad_labels}")
+                print(f"  有效标签比例: {valid_labels/non_pad_labels:.1%}")
 
                 if valid_labels == 0:
-                    print(f"  ⚠️ WARNING: No valid labels for training!")
+                    print(f"  ❌ 警告: 没有有效的训练标签!")
+                elif valid_labels < 3:
+                    print(f"  ⚠️ 警告: 有效训练标签太少 ({valid_labels})")
+                else:
+                    print(f"  ✅ 有效训练标签数量合理")
 
         # 获取文化标签
         culture_labels = None
@@ -256,6 +216,31 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             labels=labels,
             return_dict=True
         )
+
+        # 🔍 添加labels调试信息（前3个batch）
+        if batch_idx < 3:
+            print(f"\n🔍 Batch {batch_idx} Labels调试:")
+            # 检查第一个样本的labels
+            first_sample_labels = labels[0]
+            non_mask_positions = (first_sample_labels != -100).nonzero(as_tuple=True)[0]
+
+            print(f"  📋 第一个样本labels (前20个): {first_sample_labels[:20].tolist()}")
+            print(f"  🎯 有效训练标签数: {len(non_mask_positions)}")
+
+            if len(non_mask_positions) > 0:
+                print(f"  🎯 训练标签位置: {non_mask_positions[:10].tolist()}")
+                # 显示前几个训练标签
+                for i, pos in enumerate(non_mask_positions[:3]):
+                    pos_idx = pos.item()
+                    label_val = first_sample_labels[pos_idx].item()
+                    try:
+                        token_text = tokenizer.decode([label_val], skip_special_tokens=True)
+                        print(f"    位置{pos_idx}: label={label_val}, 文本={repr(token_text)}")
+                    except:
+                        print(f"    位置{pos_idx}: label={label_val}, 解码失败")
+            else:
+                print(f"  ❌ 第一个样本没有训练标签!")
+                print(f"  📋 所有labels是否都是-100: {(first_sample_labels == -100).all().item()}")
 
         # 简化的logits检查（仅在前3个batch）
         if batch_idx < 3:

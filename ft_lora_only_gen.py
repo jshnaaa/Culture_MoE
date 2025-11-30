@@ -96,7 +96,8 @@ class CultureLLMNewFormatDataset(Dataset):
         # 这样模型会学习：给定 instruction + input，生成 output
         full_text = f"{full_input}\n{output_text}"
 
-        # Tokenize
+        # 🔧 关键修复：正确的标签掩码
+        # 1. 先tokenize完整文本
         encoded = self.tokenizer(
             full_text,
             max_length=self.max_length,
@@ -108,8 +109,71 @@ class CultureLLMNewFormatDataset(Dataset):
         input_ids = encoded['input_ids'].squeeze(0)
         attention_mask = encoded['attention_mask'].squeeze(0)
 
-        # 对于生成式模型，labels = input_ids（用于语言建模损失）
+        # 2. 正确计算input_length - 关键修复！
+        input_with_newline = f"{full_input}\n"
+        encoded_input = self.tokenizer(
+            input_with_newline,
+            max_length=self.max_length,
+            truncation=True,
+            padding='max_length',
+            return_tensors='pt'
+        )
+
+        # ✅ 修复：只计算非padding token的数量
+        input_length = (encoded_input['input_ids'][0] != self.tokenizer.pad_token_id).sum().item()
+
+        # 3. 创建正确的标签
         labels = input_ids.clone()
+
+        # 4. 掩码输入部分（设为-100，不计算损失）
+        labels[:input_length] = -100
+
+        # 5. 计算有效的训练token数量
+        valid_labels = (labels != -100).sum().item()
+        total_tokens = (input_ids != self.tokenizer.pad_token_id).sum().item()
+
+        # 🔍 调试信息（只为前5个样本）
+        if idx < 5:
+            print(f"\n🔍 样本 {idx} input_length修复调试:")
+            print(f"  Full input: {repr(input_with_newline)}")
+            print(f"  Full text: {repr(full_text)}")
+
+            # 关键修复对比
+            old_input_length = len(encoded_input['input_ids'][0])  # 错误的计算
+            new_input_length = input_length  # 正确的计算
+
+            print(f"  ❌ 错误计算 input_length: {old_input_length} (包含padding)")
+            print(f"  ✅ 正确计算 input_length: {new_input_length} (排除padding)")
+            print(f"  Total length: {len(input_ids)}")
+            print(f"  Non-pad tokens: {total_tokens}")
+            print(f"  Valid labels (训练目标): {valid_labels}")
+            print(f"  训练目标比例: {valid_labels/total_tokens:.1%}")
+
+            # 🔍 打印完整的input_ids和labels数组
+            print(f"  📋 完整的labels (前20个): {labels[:20].tolist()}")
+
+            # 找到labels中第一个非-100的值
+            non_mask_indices = (labels != -100).nonzero(as_tuple=True)[0]
+            if len(non_mask_indices) > 0:
+                first_train_idx = non_mask_indices[0].item()
+                first_train_token = labels[first_train_idx].item()
+                try:
+                    first_train_text = self.tokenizer.decode([first_train_token], skip_special_tokens=True)
+                    print(f"  🎯 第一个训练标签: 位置{first_train_idx}, token_id={first_train_token}, 文本={repr(first_train_text)}")
+                except:
+                    print(f"  🎯 第一个训练标签: 位置{first_train_idx}, token_id={first_train_token}, 解码失败")
+
+                # 打印所有训练标签
+                all_train_tokens = labels[labels != -100].tolist()
+                print(f"  🎯 所有训练标签token_ids: {all_train_tokens[:10]}...")  # 只显示前10个
+            else:
+                print(f"  ❌ 没有找到任何训练标签!")
+
+            # 验证修复效果
+            if valid_labels == 0:
+                print("  ❌ 仍然没有有效训练标签!")
+            else:
+                print("  ✅ 有有效训练标签")
 
         return {
             'input_ids': input_ids,
@@ -118,7 +182,10 @@ class CultureLLMNewFormatDataset(Dataset):
             'instruction': instruction,
             'input': input_text,
             'output': output_text,
-            'label': label
+            'label': label,
+            'valid_labels': valid_labels,
+            'total_tokens': total_tokens,
+            'input_length': input_length  # 添加调试信息
         }
 
 
