@@ -218,6 +218,15 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
         if 'JointLoRAMoE' in model_class_name or hasattr(model, 'moe_layer'):
             # 使用联合模型的自定义generate方法，确保通过MoE层
             print(f"🔍 Using custom joint model generate method")
+            print(f"🔍 Input shape: {inputs['input_ids'].shape}")
+            print(f"🔍 Input tokens: {inputs['input_ids'][0].tolist()}")
+
+            # 检查模型是否真的是联合模型
+            if hasattr(model, 'base_model') and hasattr(model, 'moe_layer'):
+                print(f"🔍 Confirmed: Model has both base_model and moe_layer")
+            else:
+                print(f"⚠️ Warning: Model structure unexpected")
+
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
@@ -243,6 +252,25 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     # 解码
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
     generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+    # 添加调试信息
+    print(f"🔍 Generated token IDs: {generated_ids.tolist()}")
+    print(f"🔍 Generated text: {repr(generated_text)}")
+    print(f"🔍 Generated text length: {len(generated_text)}")
+
+    # 检查生成的token是否在合理范围内
+    vocab_size = tokenizer.vocab_size
+    valid_tokens = [tid for tid in generated_ids.tolist() if 0 <= tid < vocab_size]
+    print(f"🔍 Valid tokens: {len(valid_tokens)}/{len(generated_ids)}")
+
+    if len(generated_ids) > 0:
+        # 检查前几个生成的token
+        for i, token_id in enumerate(generated_ids[:5].tolist()):
+            try:
+                token_text = tokenizer.decode([token_id], skip_special_tokens=True)
+                print(f"🔍 Token {i}: {token_id} -> {repr(token_text)}")
+            except Exception as e:
+                print(f"🔍 Token {i}: {token_id} -> ERROR: {e}")
 
     return generated_text
 
