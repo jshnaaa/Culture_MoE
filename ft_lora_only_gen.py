@@ -96,31 +96,65 @@ class CultureLLMNewFormatDataset(Dataset):
         # 这样模型会学习：给定 instruction + input，生成 output
         full_text = f"{full_input}\n{output_text}"
 
-        # 🔧 关键修复：正确的标签掩码
-        # 1. 先tokenize完整文本
+        # 🔧 关键修复：正确的标签掩码和tokenizer一致性
+        # 1. 先tokenize完整文本（统一使用add_special_tokens=True）
         encoded = self.tokenizer(
             full_text,
             max_length=self.max_length,
             truncation=True,
             padding='max_length',
-            return_tensors='pt'
+            return_tensors='pt',
+            add_special_tokens=True  # 明确指定
         )
 
         input_ids = encoded['input_ids'].squeeze(0)
         attention_mask = encoded['attention_mask'].squeeze(0)
 
-        # 2. 正确计算input_length - 关键修复！
+        # 2. 正确计算input_length - 确保tokenizer参数一致！
         input_with_newline = f"{full_input}\n"
         encoded_input = self.tokenizer(
             input_with_newline,
             max_length=self.max_length,
             truncation=True,
             padding='max_length',
-            return_tensors='pt'
+            return_tensors='pt',
+            add_special_tokens=True  # 与完整文本保持一致
         )
 
-        # ✅ 修复：只计算非padding token的数量
-        input_length = (encoded_input['input_ids'][0] != self.tokenizer.pad_token_id).sum().item()
+        # ✅ 关键修复：正确计算input_length，避免padding污染
+        # 方法：直接tokenize输入部分，不使用padding，然后计算实际长度
+        encoded_input_no_pad = self.tokenizer(
+            input_with_newline,
+            truncation=True,
+            return_tensors='pt',
+            add_special_tokens=True,
+            padding=False  # 不使用padding！
+        )
+
+        # 获取真实的输入长度（不包含padding）
+        input_length = len(encoded_input_no_pad['input_ids'][0])
+
+        # 🔧 Llama特殊token处理：正确识别padding token
+        # 获取正确的pad_token_id
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            # 如果没有设置pad_token，使用eos_token作为pad_token
+            pad_token_id = self.tokenizer.eos_token_id
+
+        # 🔧 验证：确保input_length不会超出完整序列的非padding部分
+        total_non_pad = (input_ids != pad_token_id).sum().item()
+        if input_length >= total_non_pad:
+            # 如果输入部分已经占满了非padding部分，至少保留1个token给输出
+            input_length = max(0, total_non_pad - 1)
+
+        # 🔧 额外验证：检查是否正确识别了<|eot_id|>
+        eot_token_id = 128009  # Llama的<|eot_id|>
+        eot_positions = (input_ids == eot_token_id).nonzero(as_tuple=True)[0]
+        if len(eot_positions) > 0:
+            first_eot_pos = eot_positions[0].item()
+            # 如果输入部分超过了第一个<|eot_id|>位置，需要调整
+            if input_length > first_eot_pos:
+                input_length = first_eot_pos
 
         # 3. 创建正确的标签
         labels = input_ids.clone()
@@ -132,48 +166,117 @@ class CultureLLMNewFormatDataset(Dataset):
         valid_labels = (labels != -100).sum().item()
         total_tokens = (input_ids != self.tokenizer.pad_token_id).sum().item()
 
-        # 🔍 调试信息（只为前5个样本）
+        # 🔍 详细调试信息（只为前5个样本）
         if idx < 5:
-            print(f"\n🔍 样本 {idx} input_length修复调试:")
+            print(f"\n🔍 样本 {idx} Padding污染修复调试:")
             print(f"  Full input: {repr(input_with_newline)}")
             print(f"  Full text: {repr(full_text)}")
 
             # 关键修复对比
-            old_input_length = len(encoded_input['input_ids'][0])  # 错误的计算
-            new_input_length = input_length  # 正确的计算
+            old_input_length = len(encoded_input['input_ids'][0])  # 错误：包含padding
+            new_input_length = input_length  # 正确：排除padding
 
             print(f"  ❌ 错误计算 input_length: {old_input_length} (包含padding)")
-            print(f"  ✅ 正确计算 input_length: {new_input_length} (排除padding)")
-            print(f"  Total length: {len(input_ids)}")
+            print(f"  ✅ 正确计算 input_length: {new_input_length} (真实长度)")
+            print(f"  Total sequence length: {len(input_ids)}")
             print(f"  Non-pad tokens: {total_tokens}")
             print(f"  Valid labels (训练目标): {valid_labels}")
-            print(f"  训练目标比例: {valid_labels/total_tokens:.1%}")
 
-            # 🔍 打印完整的input_ids和labels数组
-            print(f"  📋 完整的labels (前20个): {labels[:20].tolist()}")
+            # 🔧 Llama特殊token分析
+            eot_token_id = 128009  # <|eot_id|>
+            pad_token_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
 
-            # 找到labels中第一个非-100的值
+            eot_in_labels = (labels == eot_token_id).sum().item()
+            padding_in_labels = (labels == pad_token_id).sum().item()
+
+            print(f"  🔍 特殊token分析:")
+            print(f"    训练标签中<|eot_id|>数量: {eot_in_labels}")
+            print(f"    训练标签中padding数量: {padding_in_labels}")
+
+            # 分析<|eot_id|>位置
+            eot_positions = (input_ids == eot_token_id).nonzero(as_tuple=True)[0]
+            if len(eot_positions) > 0:
+                print(f"    <|eot_id|>在序列中的位置: {eot_positions.tolist()}")
+                print(f"    input_length: {input_length}")
+
+            if padding_in_labels > 0:
+                print(f"  ❌ 警告: 训练标签包含padding tokens!")
+            elif eot_in_labels > 1:
+                print(f"  ⚠️ 警告: 训练标签包含多个<|eot_id|>!")
+            else:
+                print(f"  ✅ 训练标签设置合理")
+
+            print(f"  📊 训练目标比例: {valid_labels/total_tokens:.1%}")
+
+            # 🔍 序列结构分析
+            print(f"\n  📋 序列结构分析:")
+            print(f"    完整序列长度: {len(input_ids)}")
+            print(f"    非padding长度: {total_tokens}")
+            print(f"    输入部分长度: {input_length}")
+            print(f"    输出部分长度: {valid_labels}")
+            print(f"    Padding长度: {len(input_ids) - total_tokens}")
+
+            # 🔍 关键位置的tokens
+            print(f"\n  🎯 关键位置tokens:")
+            print(f"    input_length位置 {input_length}: {input_ids[input_length].item()} -> {repr(self.tokenizer.decode([input_ids[input_length].item()], skip_special_tokens=True))}")
+            print(f"    input_length-1位置 {input_length-1}: {input_ids[input_length-1].item()} -> {repr(self.tokenizer.decode([input_ids[input_length-1].item()], skip_special_tokens=True))}")
+
+            # 找到训练标签
             non_mask_indices = (labels != -100).nonzero(as_tuple=True)[0]
             if len(non_mask_indices) > 0:
-                first_train_idx = non_mask_indices[0].item()
-                first_train_token = labels[first_train_idx].item()
-                try:
-                    first_train_text = self.tokenizer.decode([first_train_token], skip_special_tokens=True)
-                    print(f"  🎯 第一个训练标签: 位置{first_train_idx}, token_id={first_train_token}, 文本={repr(first_train_text)}")
-                except:
-                    print(f"  🎯 第一个训练标签: 位置{first_train_idx}, token_id={first_train_token}, 解码失败")
+                print(f"\n  🎯 训练标签详情:")
+                print(f"    训练标签位置: {non_mask_indices[:10].tolist()}")
 
-                # 打印所有训练标签
-                all_train_tokens = labels[labels != -100].tolist()
-                print(f"  🎯 所有训练标签token_ids: {all_train_tokens[:10]}...")  # 只显示前10个
+                # 检查训练标签的token类型
+                eot_count = 0
+                padding_count = 0
+                output_count = 0
+                for i, train_idx in enumerate(non_mask_indices[:10]):
+                    idx_val = train_idx.item()
+                    token_id = labels[idx_val].item()
+                    if token_id == eot_token_id:
+                        eot_count += 1
+                    elif token_id == pad_token_id:
+                        padding_count += 1
+                    else:
+                        output_count += 1
+
+                print(f"    前10个训练标签分析:")
+                print(f"      <|eot_id|>数量: {eot_count}")
+                print(f"      padding数量: {padding_count}")
+                print(f"      输出内容数量: {output_count}")
+
+                # 打印前几个训练标签详情
+                print(f"    前5个训练标签详情:")
+                for i, train_idx in enumerate(non_mask_indices[:5]):
+                    idx_val = train_idx.item()
+                    token_id = labels[idx_val].item()
+
+                    token_type = "输出内容"
+                    if token_id == eot_token_id:
+                        token_type = "<|eot_id|>"
+                    elif token_id == pad_token_id:
+                        token_type = "padding"
+
+                    try:
+                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+                        print(f"      位置{idx_val}: token_id={token_id}, 文本={repr(token_text)}, 类型={token_type}")
+                    except:
+                        print(f"      位置{idx_val}: token_id={token_id}, 解码失败, 类型={token_type}")
             else:
                 print(f"  ❌ 没有找到任何训练标签!")
 
-            # 验证修复效果
+            # 最终验证
             if valid_labels == 0:
-                print("  ❌ 仍然没有有效训练标签!")
+                print("  ❌ 致命错误: 没有有效训练标签!")
+            elif padding_in_labels > 0:
+                print(f"  ❌ 错误: 训练标签包含{padding_in_labels}个padding tokens")
+            elif eot_in_labels > 1:
+                print(f"  ⚠️ 警告: 训练标签包含{eot_in_labels}个<|eot_id|>，可能过多")
+            elif valid_labels > 50:
+                print(f"  ⚠️ 警告: 有效训练标签过多 ({valid_labels})")
             else:
-                print("  ✅ 有有效训练标签")
+                print("  ✅ 训练标签设置正确")
 
         return {
             'input_ids': input_ids,
