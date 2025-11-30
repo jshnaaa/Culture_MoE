@@ -676,20 +676,47 @@ def main():
     tokenizer.padding_side = "right"
 
     # 验证tokenizer配置
-    print(f"✅ Tokenizer配置:")
+    print(f"✅ Tokenizer配置验证:")
     print(f"  pad_token: {repr(tokenizer.pad_token)}")
     print(f"  pad_token_id: {tokenizer.pad_token_id}")
     print(f"  eos_token: {repr(tokenizer.eos_token)}")
     print(f"  eos_token_id: {tokenizer.eos_token_id}")
+    print(f"  unk_token: {repr(tokenizer.unk_token)}")
+    if hasattr(tokenizer, 'unk_token_id'):
+        print(f"  unk_token_id: {tokenizer.unk_token_id}")
 
-    # 关键检查：确保pad_token_id不是<|eot_id|>
+    # 🚨 强制验证和修复
     if tokenizer.pad_token_id == 128009:
-        print(f"❌ 错误: pad_token_id仍然是128009 (<|eot_id|>)!")
-        print(f"   这会导致padding区域填充<|eot_id|>，造成训练标签中大量128009 tokens")
+        print(f"🚨 严重错误: pad_token_id仍然是128009 (<|eot_id|>)!")
+        print(f"   强制修复tokenizer配置...")
+
+        # 强制设置正确的pad_token_id
+        tokenizer.pad_token_id = 0  # 强制使用<unk>
+        tokenizer.pad_token = tokenizer.unk_token or '<unk>'
+
+        print(f"   修复后pad_token_id: {tokenizer.pad_token_id}")
+        print(f"   修复后pad_token: {repr(tokenizer.pad_token)}")
+
+    elif tokenizer.pad_token_id is None:
+        print(f"🚨 错误: pad_token_id is None!")
+        print(f"   强制设置pad_token_id为0...")
+
+        tokenizer.pad_token_id = 0
+        tokenizer.pad_token = tokenizer.unk_token or '<unk>'
+
+        print(f"   设置后pad_token_id: {tokenizer.pad_token_id}")
+        print(f"   设置后pad_token: {repr(tokenizer.pad_token)}")
+
     elif tokenizer.pad_token_id == 0:
         print(f"✅ 正确: pad_token_id = 0 (<unk>)，符合Llama 3.1标准配置")
     else:
         print(f"✅ 正确: pad_token_id ({tokenizer.pad_token_id}) != 128009")
+
+    # 最终验证
+    print(f"\n🔧 最终tokenizer状态:")
+    print(f"  pad_token_id: {tokenizer.pad_token_id}")
+    print(f"  是否等于<|eot_id|>: {tokenizer.pad_token_id == 128009}")
+    print(f"  是否为None: {tokenizer.pad_token_id is None}")
 
     print("✅ Tokenizer loaded")
 
