@@ -67,25 +67,28 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     device = next(model.parameters()).device
 
     # 根据输出类型构建不同的 prompt
+    # 🔧 格式统一：基础部分使用空格分隔，避免tokenizer自动格式化
+    base_input = f"{instruction}\n{input_text} " if input_text else f"{instruction} "
+
     if output_type == "text":
         # 文本类型（如 yes/no/neutral）
         if num_classes == 3:
-            full_input = f"{instruction}\n{input_text}\n\nPlease answer with ONLY ONE WORD from: yes, no, neutral.\nYour answer:"
+            full_input = f"{base_input}\n\nPlease answer with ONLY ONE WORD from: yes, no, neutral.\nYour answer:"
         else:
-            full_input = f"{instruction}\n{input_text}\n\nYour answer:"
+            full_input = f"{base_input}\n\nYour answer:"
     elif output_type == "bool":
         # 布尔类型（TRUE/FALSE）
         # 检查 input 是否已包含提示语
         if "true" in input_text.lower() and "false" in input_text.lower():
-            full_input = f"{instruction}\n{input_text}"
+            full_input = base_input.rstrip()  # 移除末尾空格，直接使用
         else:
-            full_input = f"{instruction}\n{input_text}\n\nPlease answer with ONLY ONE WORD: TRUE or FALSE.\nYour answer:"
+            full_input = f"{base_input}\n\nPlease answer with ONLY ONE WORD: TRUE or FALSE.\nYour answer:"
     else:
         # 数字类型（默认）
         if num_classes <= 10:
-            full_input = f"{instruction}\n{input_text}\n\nPlease answer with ONLY ONE NUMBER (1 to {num_classes}).\nYour answer:"
+            full_input = f"{base_input}\n\nPlease answer with ONLY ONE NUMBER (1 to {num_classes}).\nYour answer:"
         else:
-            full_input = f"{instruction}\n{input_text}\n\nYour answer:"
+            full_input = f"{base_input}\n\nYour answer:"
 
     # Tokenize
     inputs = tokenizer(

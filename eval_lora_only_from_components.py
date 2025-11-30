@@ -120,12 +120,13 @@ def create_natural_prompt(instruction: str, input_text: str, num_classes: int):
     创建符合数据集格式的自然prompt（避免过度约束）
     """
     # 直接使用数据集的原始格式，只在末尾添加轻微提示
+    # 🔧 格式统一：使用空格分隔，与训练格式一致
     if input_text and input_text.strip():
-        # 如果有input_text，按原格式组合
-        full_prompt = f"{instruction}{input_text}"
+        # 如果有input_text，按原格式组合，末尾加空格等待答案
+        full_prompt = f"{instruction}{input_text} "
     else:
-        # 如果没有input_text，直接使用instruction
-        full_prompt = instruction
+        # 如果没有input_text，直接使用instruction，末尾加空格等待答案
+        full_prompt = f"{instruction} "
 
     # 确保prompt以适当的格式结束
     if not full_prompt.rstrip().endswith((':', '：')):

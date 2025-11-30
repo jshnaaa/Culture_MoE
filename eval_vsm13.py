@@ -324,8 +324,12 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     Returns:
         生成的文本
     """
-    # 构建完整的输入
-    full_input = f"{instruction}\n{input_text}"
+    # 构建完整的输入 - 与训练时格式保持一致
+    # 🔧 格式统一：使用空格分隔，避免tokenizer自动格式化
+    if input_text:
+        full_input = f"{instruction}\n{input_text} "
+    else:
+        full_input = f"{instruction} "
 
     # Tokenize
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)

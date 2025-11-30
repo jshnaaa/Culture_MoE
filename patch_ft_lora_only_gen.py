@@ -40,11 +40,12 @@ def patch_generate_answer_function():
     Returns:
         生成的文本
     """
-    # 构建输入
+    # 构建输入 - 与训练时格式保持一致
+    # 🔧 格式统一：使用空格分隔，避免tokenizer自动格式化
     if input_text:
-        full_content = f"{instruction}\\n{input_text}"
+        full_content = f"{instruction}\\n{input_text} "
     else:
-        full_content = instruction
+        full_content = f"{instruction} "
 
     # 🔧 修复1: 使用LLaMA3聊天模板格式
     if hasattr(tokenizer, 'chat_template') and tokenizer.chat_template:

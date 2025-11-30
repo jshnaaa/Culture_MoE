@@ -574,8 +574,9 @@ class CultureMoENewFormatDataset(Dataset):
             full_input_mask = instruction_mask
 
         # 完整的文本（用于语言建模）
-        full_text = f"{full_input}{output_text}"
-        full_text_mask = f"{full_input_mask}{output_text}"
+        # 🔧 格式统一：使用空格分隔，避免tokenizer自动格式化
+        full_text = f"{full_input} {output_text}"
+        full_text_mask = f"{full_input_mask} {output_text}"
 
         # Tokenize for MOE experts (instruction)
         encoded = self.tokenizer(
@@ -770,11 +771,12 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     else:
         actual_model = model
 
-    # 构建输入
+    # 构建输入 - 与训练时格式保持一致
+    # 🔧 格式统一：使用空格分隔，与训练格式一致
     if input_text:
-        full_input = f"{instruction}{input_text}"
+        full_input = f"{instruction}{input_text} "  # 训练时是 instruction+input+" "+output，生成时给 instruction+input+" "
     else:
-        full_input = instruction
+        full_input = f"{instruction} "  # 训练时是 instruction+" "+output，生成时给 instruction+" "
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
