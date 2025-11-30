@@ -139,11 +139,14 @@ class MoERouter(nn.Module):
         self.num_experts = num_experts
         self.router = nn.Linear(hidden_dim, num_experts, bias=True, dtype=dtype)  # 添加bias
         self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(hidden_dim, dtype=dtype)  # 输入归一化
+        self.layer_norm = nn.LayerNorm(hidden_dim, dtype=dtype, eps=1e-6)  # 增大eps防止数值问题
 
         # 极度保守的初始化，防止训练过程中发散
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.001)  # 极小的初始化
+        nn.init.normal_(self.router.weight, mean=0.0, std=0.0001)  # 更极小的初始化
         nn.init.constant_(self.router.bias, 0.0)
+
+        # 调试：打印初始化后的权重范围
+        # print(f"🔍 Router Init - weight range: [{self.router.weight.min().item():.8f}, {self.router.weight.max().item():.8f}]")
 
     def forward(self, x, temperature: float = 1.0):
         """
@@ -160,11 +163,49 @@ class MoERouter(nn.Module):
         try:
             # 输入归一化和限制
             x = torch.clamp(x, min=-3.0, max=3.0)
-            x = self.layer_norm(x)
+
+            # 暂时禁用LayerNorm，直接使用clamp后的输入
+            # x = self.layer_norm(x)  # 禁用LayerNorm，因为可能导致数值不稳定
+
+            # 手动标准化，更加保守
+            x_mean = x.mean(dim=-1, keepdim=True)
+            x_std = x.std(dim=-1, keepdim=True) + 1e-6
+            x = (x - x_mean) / x_std
+            x = torch.clamp(x, min=-2.0, max=2.0)  # 标准化后再次限制
+
+            # 调试：检查归一化后的输入
+            # print(f"🔍 Router Debug - input after norm: min={x.min().item():.6f}, max={x.max().item():.6f}, mean={x.mean().item():.6f}")
+            # print(f"🔍 Router Debug - input contains NaN: {torch.isnan(x).any()}")
+            # print(f"🔍 Router Debug - input contains Inf: {torch.isinf(x).any()}")
+
+            # 检查路由器权重状态
+            router_weight = self.router.weight
+            router_bias = self.router.bias
+            # print(f"🔍 Router Debug - weight: min={router_weight.min().item():.6f}, max={router_weight.max().item():.6f}")
+            # print(f"🔍 Router Debug - weight contains NaN: {torch.isnan(router_weight).any()}")
+            # print(f"🔍 Router Debug - weight contains Inf: {torch.isinf(router_weight).any()}")
+            # print(f"🔍 Router Debug - bias: min={router_bias.min().item():.6f}, max={router_bias.max().item():.6f}")
+
+            # 如果权重已经变成NaN/Inf，重置它们
+            if torch.isnan(router_weight).any() or torch.isinf(router_weight).any():
+                print("⚠️ Router weights are NaN/Inf, resetting!")
+                with torch.no_grad():
+                    nn.init.normal_(self.router.weight, mean=0.0, std=0.0001)
+                    nn.init.constant_(self.router.bias, 0.0)
+
+            if torch.isnan(router_bias).any() or torch.isinf(router_bias).any():
+                print("⚠️ Router bias is NaN/Inf, resetting!")
+                with torch.no_grad():
+                    nn.init.constant_(self.router.bias, 0.0)
 
             # 计算路由logits，预先限制输入范围
             x_clamped = torch.clamp(x, min=-1.0, max=1.0)  # 严格限制输入
             router_logits = self.router(x_clamped)  # [B, num_experts]
+
+            # 调试：检查原始logits
+            # print(f"🔍 Router Debug - raw logits: min={router_logits.min().item():.6f}, max={router_logits.max().item():.6f}")
+            # print(f"🔍 Router Debug - raw logits contains NaN: {torch.isnan(router_logits).any()}")
+            # print(f"🔍 Router Debug - raw logits contains Inf: {torch.isinf(router_logits).any()}")
 
             # 立即限制logits范围，防止发散
             router_logits = torch.clamp(router_logits, min=-2.0, max=2.0)

@@ -225,57 +225,15 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 labels[i, :-10] = -100
 
             # 调试信息：检查labels masking
-            if batch_idx < 3 and i == 0:  # 前3个batch的第一个样本
+            if batch_idx < 1 and i == 0:  # 只在第一个batch的第一个样本显示
                 valid_labels = (labels[i] != -100).sum().item()
                 total_labels = labels.shape[1]
                 print(f"🔍 Batch {batch_idx}, Sample {i}:")
-                print(f"  input_length={input_length}, separator_length={separator_length}, actual_input_length={actual_input_length}")
-                print(f"  full_length={full_length}, seq_len={labels.shape[1]}")
+                print(f"  input_length={input_length}, actual_input_length={actual_input_length}")
                 print(f"  valid_labels={valid_labels}/{total_labels}")
-                print(f"  instruction: {repr(instruction)}")
-                print(f"  input_text: {repr(input_text)}")
-                print(f"  output: {repr(output_text)}")
-                print(f"  input_part: {repr(input_part)}")
-                print(f"  full_text: {repr(full_text)}")
-
-                # 检查tokenization结果
-                print(f"  input_tokens: {input_tokens}")
-                print(f"  separator_tokens: {separator_tokens}")
-                print(f"  full_tokens: {full_tokens}")
-
-                # 检查实际的input_ids和labels
-                actual_input_ids = input_ids[i]
-                actual_labels = labels[i]
-                print(f"  actual_input_ids: {actual_input_ids.tolist()}")
-                print(f"  actual_labels: {actual_labels.tolist()}")
-
-                # 检查mask范围
-                max_mask_length = min(actual_input_length, labels.shape[1] - 5) if actual_input_length < labels.shape[1] else labels.shape[1] - 10
-                print(f"  max_mask_length: {max_mask_length}")
-
-                # 检查tokenizer解码
-                print(f"  decoded_input_part: {repr(tokenizer.decode(input_tokens, skip_special_tokens=True))}")
-                print(f"  decoded_full_text: {repr(tokenizer.decode(full_tokens, skip_special_tokens=True))}")
-                print(f"  decoded_actual_input_ids: {repr(tokenizer.decode(actual_input_ids, skip_special_tokens=True))}")
-
-                # 分析特殊token
-                print(f"  tokenizer.pad_token_id: {tokenizer.pad_token_id}")
-                print(f"  tokenizer.eos_token_id: {tokenizer.eos_token_id}")
-                print(f"  tokenizer.bos_token_id: {getattr(tokenizer, 'bos_token_id', None)}")
-
-                # 分析labels中的非-100 token
-                non_masked_labels = actual_labels[actual_labels != -100]
-                if len(non_masked_labels) > 0:
-                    print(f"  non_masked_labels: {non_masked_labels.tolist()}")
-                    print(f"  decoded_non_masked: {repr(tokenizer.decode(non_masked_labels, skip_special_tokens=False))}")
-
-                    # 单独解码每个token
-                    for idx, token_id in enumerate(non_masked_labels[:10]):  # 只看前10个
-                        try:
-                            decoded_token = tokenizer.decode([token_id], skip_special_tokens=False)
-                            print(f"    token_{idx}: {token_id} -> {repr(decoded_token)}")
-                        except:
-                            print(f"    token_{idx}: {token_id} -> <decode_error>")
+                # print(f"  instruction: {repr(instruction)}")
+                # print(f"  input_text: {repr(input_text)}")
+                # print(f"  output: {repr(output_text)}")
 
                 if valid_labels == 0:
                     print(f"  ⚠️ WARNING: No valid labels for training!")
@@ -300,27 +258,24 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         )
 
         # 调试：检查模型输出的logits
-        if batch_idx < 3:  # 前3个batch
+        if batch_idx < 1:  # 只在第一个batch显示
             logits = outputs.logits
             print(f"🔍 Batch {batch_idx} - Logits analysis:")
             print(f"  logits.shape: {logits.shape}")
-            print(f"  logits.dtype: {logits.dtype}")
-            print(f"  logits.min: {logits.min().item():.6f}")
-            print(f"  logits.max: {logits.max().item():.6f}")
-            print(f"  logits.mean: {logits.mean().item():.6f}")
-            print(f"  logits.std: {logits.std().item():.6f}")
             print(f"  logits contains NaN: {torch.isnan(logits).any()}")
             print(f"  logits contains Inf: {torch.isinf(logits).any()}")
+            # print(f"  logits.min: {logits.min().item():.6f}")
+            # print(f"  logits.max: {logits.max().item():.6f}")
 
             # 检查特定位置的logits（答案位置）
-            for i in range(min(2, logits.shape[0])):  # 前2个样本
-                sample_labels = labels[i]
-                valid_positions = (sample_labels != -100).nonzero().flatten()
-                if len(valid_positions) > 0:
-                    answer_pos = valid_positions[0].item()  # 第一个有效答案位置
-                    answer_logits = logits[i, answer_pos]
-                    print(f"  Sample {i}, pos {answer_pos} logits: min={answer_logits.min().item():.6f}, max={answer_logits.max().item():.6f}")
-                    print(f"  Answer token {sample_labels[answer_pos].item()}: logit={answer_logits[sample_labels[answer_pos]].item():.6f}")
+            # for i in range(min(2, logits.shape[0])):  # 前2个样本
+            #     sample_labels = labels[i]
+            #     valid_positions = (sample_labels != -100).nonzero().flatten()
+            #     if len(valid_positions) > 0:
+            #         answer_pos = valid_positions[0].item()  # 第一个有效答案位置
+            #         answer_logits = logits[i, answer_pos]
+            #         print(f"  Sample {i}, pos {answer_pos} logits: min={answer_logits.min().item():.6f}, max={answer_logits.max().item():.6f}")
+            #         print(f"  Answer token {sample_labels[answer_pos].item()}: logit={answer_logits[sample_labels[answer_pos]].item():.6f}")
 
         # 获取各种损失
         lm_loss = outputs.loss  # 语言模型损失
@@ -333,7 +288,7 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             moe_aux_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
 
         # 调试：检查MoE相关输出
-        if batch_idx < 3 or batch_idx % 10 == 0:  # 前3个batch和每10个batch
+        if batch_idx < 3:  # 只在前3个batch显示详细调试信息
             print(f"🔍 Batch {batch_idx} - MoE analysis:")
             print(f"  lm_loss: {lm_loss.item() if lm_loss is not None else 'None'}")
             print(f"  moe_aux_loss: {moe_aux_loss.item() if moe_aux_loss is not None else 'None'}")
@@ -345,12 +300,12 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
 
             # 检查hidden_states（MoE输出）
-            if hasattr(outputs, 'hidden_states') and outputs.hidden_states is not None:
-                hidden_states = outputs.hidden_states
-                print(f"  hidden_states.min: {hidden_states.min().item():.6f}")
-                print(f"  hidden_states.max: {hidden_states.max().item():.6f}")
-                print(f"  hidden_states contains NaN: {torch.isnan(hidden_states).any()}")
-                print(f"  hidden_states contains Inf: {torch.isinf(hidden_states).any()}")  # MoE辅助损失
+            # if hasattr(outputs, 'hidden_states') and outputs.hidden_states is not None:
+            #     hidden_states = outputs.hidden_states
+            #     print(f"  hidden_states.min: {hidden_states.min().item():.6f}")
+            #     print(f"  hidden_states.max: {hidden_states.max().item():.6f}")
+            #     print(f"  hidden_states contains NaN: {torch.isnan(hidden_states).any()}")
+            #     print(f"  hidden_states contains Inf: {torch.isinf(hidden_states).any()}")  # MoE辅助损失
 
         # 计算文化损失 - 确保有梯度连接
         if use_culture_loss and culture_labels is not None and expert_weights is not None:
@@ -415,6 +370,17 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
 
             # 极严格的路由器梯度裁剪
             if moe_params:
+                # 调试：检查路由器梯度
+                # for name, param in model.named_parameters():
+                #     if 'moe_layer.router' in name and param.grad is not None:
+                #         grad_norm = param.grad.norm().item()
+                #         param_norm = param.norm().item()
+                #         print(f"🔍 Router Grad - {name}: grad_norm={grad_norm:.6f}, param_norm={param_norm:.6f}")
+                #         if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                #             print(f"⚠️ NaN/Inf gradient in {name}!")
+                #         if torch.isnan(param).any() or torch.isinf(param).any():
+                #             print(f"⚠️ NaN/Inf parameter in {name}!")
+
                 torch.nn.utils.clip_grad_norm_(moe_params, max_norm=0.1)
 
             # 其他参数使用正常梯度裁剪
