@@ -965,7 +965,8 @@ class JointLoRAMoEModel(nn.Module):
 
             # 重复检测计数器
             repeated_count = 0
-            max_repeated_allowed = 3  # 允许最多3次重复后切换策略
+            max_repeated_allowed = 2  # 减少到2次，更早介入
+            last_few_tokens = []  # 跟踪最近几个token
 
             for step in range(max_new_tokens):
                 # 使用我们的forward方法（包含MoE层）
@@ -998,47 +999,53 @@ class JointLoRAMoEModel(nn.Module):
                 if step < 3:
                     print(f"🔍 Step {step} - Token: {next_token_id.item()}")
 
-                # 检查重复token问题
+                # 改进的重复检测和处理
+                current_token = next_token_id.item()
+                last_few_tokens.append(current_token)
+                if len(last_few_tokens) > 5:  # 只保留最近5个token
+                    last_few_tokens.pop(0)
+
+                # 检查是否与前一个token重复
                 if step > 0:
-                    last_token = current_ids[:, -1]
-                    if (next_token_id.squeeze() == last_token).all():
+                    last_token = current_ids[:, -1].item()
+                    if current_token == last_token:
                         repeated_count += 1
-                        print(f"⚠️ Repeat {next_token_id.item()} (#{repeated_count})")
+                        print(f"⚠️ Repeat {current_token} (#{repeated_count})")
 
+                        # 不切换到base model，而是使用更强的惩罚策略
                         if repeated_count >= max_repeated_allowed:
-                            print(f"🚨 Switching to base model")
-                            # 切换到基础模型生成剩余部分
-                            try:
-                                remaining_tokens = max_new_tokens - step
-                                base_outputs = self.base_model.generate(
-                                    current_ids,
-                                    attention_mask=attention_mask,
-                                    max_new_tokens=remaining_tokens,
-                                    do_sample=do_sample,
-                                    temperature=temperature,
-                                    pad_token_id=pad_token_id,
-                                    eos_token_id=eos_token_id,
-                                    repetition_penalty=1.1  # 添加重复惩罚
-                                )
-                                return base_outputs
-                            except Exception as e:
-                                print(f"⚠️ Base model generation failed: {e}, continuing with penalty")
+                            print(f"🚨 Too many repeats, applying diversity boost")
 
-                        # 对重复的token应用惩罚
-                        next_token_logits[:, next_token_id.squeeze()] -= 10.0  # 大幅降低重复token的概率
+                            # 惩罚最近出现的所有token
+                            for token in set(last_few_tokens):
+                                next_token_logits[:, token] -= 15.0
 
-                        # 重新生成
-                        if do_sample:
-                            if temperature > 0:
-                                next_token_logits = next_token_logits / temperature
+                            # 强制增加多样性 - 使用更高的温度
+                            diversity_temp = max(temperature, 1.2) if temperature > 0 else 1.2
+                            next_token_logits = next_token_logits / diversity_temp
                             probs = torch.softmax(next_token_logits, dim=-1)
                             next_token_id = torch.multinomial(probs, num_samples=1)
-                        else:
-                            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+                            current_token = next_token_id.item()
 
-                        print(f"🔍 New token: {next_token_id.item()}")
+                            print(f"🔍 Diversity token: {current_token}")
+                            repeated_count = 0  # 重置计数器
+
+                        else:
+                            # 轻度惩罚重复token
+                            next_token_logits[:, current_token] -= 8.0
+
+                            # 重新生成
+                            if do_sample and temperature > 0:
+                                next_token_logits = next_token_logits / temperature
+                                probs = torch.softmax(next_token_logits, dim=-1)
+                                next_token_id = torch.multinomial(probs, num_samples=1)
+                            else:
+                                next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+
+                            current_token = next_token_id.item()
+                            print(f"🔍 New token: {current_token}")
                     else:
-                        repeated_count = 0  # 重置重复计数器
+                        repeated_count = 0  # 重置计数器
 
                 # 添加新token
                 current_ids = torch.cat([current_ids, next_token_id], dim=-1)
