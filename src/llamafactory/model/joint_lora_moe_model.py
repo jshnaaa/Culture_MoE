@@ -197,11 +197,11 @@ class MoEExpert(nn.Module):
             output = self.down_proj(intermediate)
 
             # 🔧 输出缩放补偿：匹配基础LoRA的输出范围
-            # 基础LoRA范围约[-19,+29]，std=2.53
-            # 当前MoE范围约[-0.16,+0.14]，std=0.022
-            # 标准差比率: 2.53/0.022 ≈ 115x，范围比率: 48/0.3 = 160x
-            # 使用保守的100x缩放，确保数值稳定
-            output = output * 100.0  # 缩放输出，匹配基础LoRA范围
+            # 实际观察：基础LoRA范围约[-37,+48]，std=2.17
+            # MoE原始范围约[-0.16,+0.14]，std=0.022
+            # 100倍缩放导致输出爆炸到[-1300,+1400]，需要大幅降低
+            # 使用保守的15倍缩放，目标范围约[-2.4,+2.1]
+            output = output * 15.0  # 适度缩放输出，避免数值爆炸
 
             # 添加调试信息：检查最终输出
             output_mean = output.mean().item()
@@ -468,8 +468,8 @@ class MoELayer(nn.Module):
                     print("⚠️ Expert weights too small, using passthrough")
                     final_output = hidden_states
                 else:
-                    # 🔧 调整最终输出限制，匹配基础LoRA的输出范围[-19, +29]
-                    final_output = torch.clamp(final_output, min=-50.0, max=50.0)
+                    # 🔧 调整最终输出限制，匹配基础LoRA的实际范围[-37, +48]
+                    final_output = torch.clamp(final_output, min=-60.0, max=60.0)
                     # 添加调试信息：检查混合后的输出
                     # final_mean = final_output.mean().item()
                     # final_std = final_output.std().item()
@@ -721,9 +721,9 @@ class JointLoRAMoEModel(nn.Module):
         loss = None
         if labels is not None:
             try:
-                # 🔧 调整MoE输出限制，匹配基础LoRA的输出范围[-19, +29]
+                # 🔧 调整MoE输出限制，匹配基础LoRA的实际范围[-37, +48]
                 # 允许MoE输出达到与基础LoRA相同的动态范围
-                moe_output = torch.clamp(moe_output, min=-50.0, max=50.0)
+                moe_output = torch.clamp(moe_output, min=-60.0, max=60.0)
 
                 # 检查logits是否包含NaN/Inf
                 if torch.isnan(logits).any() or torch.isinf(logits).any():
