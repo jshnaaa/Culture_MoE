@@ -624,8 +624,15 @@ class JointLoRAMoEModel(nn.Module):
         moe_output, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
 
         # 关键调试：检查MoE输出是否为零
-        # moe_range = f"min={moe_output.min().item():.3f}, max={moe_output.max().item():.3f}"
-        # print(f"🔧 MoE: {moe_range}, std={moe_output.std().item():.6f}")
+        moe_range = f"min={moe_output.min().item():.3f}, max={moe_output.max().item():.3f}"
+        moe_std = moe_output.std().item()
+        print(f"🔧 MoE输出: {moe_range}, std={moe_std:.6f}")
+
+        # 检查MoE输出是否异常
+        if moe_std < 1e-6:
+            print(f"⚠️ 警告: MoE输出几乎为零 (std={moe_std:.8f})!")
+        elif moe_std > 100:
+            print(f"⚠️ 警告: MoE输出过大 (std={moe_std:.6f})!")
 
         # 4. 语言模型头
         # 需要确保moe_output的维度与原始hidden_states一致
@@ -669,8 +676,17 @@ class JointLoRAMoEModel(nn.Module):
             logits = self.temp_lm_head(moe_output)
 
         # 关键调试：检查最终logits
-        # logits_range = f"min={logits.min().item():.3f}, max={logits.max().item():.3f}"
-        # print(f"🔧 Logits: {logits_range}")
+        logits_range = f"min={logits.min().item():.3f}, max={logits.max().item():.3f}"
+        logits_std = logits.std().item()
+        print(f"🔧 最终Logits: {logits_range}, std={logits_std:.6f}")
+
+        # 检查logits是否异常
+        if logits_std < 1e-6:
+            print(f"⚠️ 警告: Logits几乎为零 (std={logits_std:.8f})!")
+        elif torch.isnan(logits).any():
+            print(f"⚠️ 警告: Logits包含NaN!")
+        elif torch.isinf(logits).any():
+            print(f"⚠️ 警告: Logits包含Inf!")
 
         # 5. 计算损失 - 数值稳定版本
         loss = None
