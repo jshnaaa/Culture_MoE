@@ -70,9 +70,9 @@ class MoEExpert(nn.Module):
 
     def _init_weights(self):
         """修复权重初始化 - 防NaN版本"""
-        # 使用极度保守的初始化，防止NaN
-        gate_up_std = 0.001  # 大幅降低初始化方差，防止训练初期NaN
-        down_std = 0.0001    # 更小的下游投影初始化
+        # 🔧 输入归一化后，可以使用更合理的初始化
+        gate_up_std = 0.02   # 恢复合理的初始化，因为输入已归一化到[-1,1]
+        down_std = 0.01      # 恢复合理的下游投影初始化
 
         try:
             for module in [self.gate_proj, self.up_proj]:
@@ -125,14 +125,17 @@ class MoEExpert(nn.Module):
         # input_std = x.std().item()
         # print(f"    🔍 input: mean={input_mean:.6f}, std={input_std:.6f}")  # 注释掉详细调试
 
-        # 移除过度严格的输入限制，只做基本的NaN/Inf检查
+        # 🔧 关键修复：输入归一化，防止Float16溢出
         if torch.isnan(x).any() or torch.isinf(x).any():
             return torch.zeros_like(x)
 
+        # 强制输入归一化到安全范围 [-1, 1]
+        x_normalized = torch.tanh(x / 10.0)  # 除以10后tanh，将[-37,49]映射到接近[-1,1]
+
         try:
-            # 第一阶段：gate和up投影
-            gate_output = self.gate_proj(x)
-            up_output = self.up_proj(x)
+            # 第一阶段：gate和up投影 - 使用归一化输入
+            gate_output = self.gate_proj(x_normalized)
+            up_output = self.up_proj(x_normalized)
 
             # 添加调试信息：检查投影层权重
             gate_weight_has_nan = torch.isnan(self.gate_proj.weight).any() or torch.isinf(self.gate_proj.weight).any()
@@ -266,8 +269,8 @@ class MoERouter(nn.Module):
                 self.router.weight.data.clamp_(-self.max_weight_value, self.max_weight_value)
                 self.router.bias.data.clamp_(-self.max_bias_value, self.max_bias_value)
 
-            # 2. 输入预处理和dtype转换
-            x_safe = torch.clamp(x, min=-1.0, max=1.0)
+            # 2. 输入预处理和dtype转换 - 使用与专家相同的归一化
+            x_safe = torch.tanh(x / 10.0)  # 与专家网络保持一致的归一化
 
             # 转换为Float32进行路由计算，确保数值稳定
             x_float32 = x_safe.float()
@@ -637,29 +640,20 @@ class JointLoRAMoEModel(nn.Module):
                 self.add_module('hidden_proj', self.hidden_proj)
             hidden_states = self.hidden_proj(hidden_states)
 
-        # 3. MoE层处理 - 临时禁用，测试基础LoRA
-        # moe_output, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
+        # 3. MoE层处理 - 重新启用，使用修复后的归一化输入
+        print("🔧 重新启用MoE层，使用输入归一化修复")
+        moe_output, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
 
-        # 🔧 临时禁用MoE，直接使用基础模型输出
-        print("🔧 临时禁用MoE层，测试基础LoRA是否正常工作")
-        moe_output = hidden_states  # 直接passthrough
-
-        # 创建虚拟的专家权重和辅助损失
-        batch_size = hidden_states.size(0)
-        expert_weights = torch.ones(batch_size, self.config.num_moe_experts,
-                                  device=hidden_states.device, dtype=hidden_states.dtype) / self.config.num_moe_experts
-        moe_aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
-
-        # 关键调试：检查基础LoRA输出（MoE禁用时）
+        # 关键调试：检查修复后的MoE输出
         moe_range = f"min={moe_output.min().item():.3f}, max={moe_output.max().item():.3f}"
         moe_std = moe_output.std().item()
-        print(f"🔧 基础LoRA输出: {moe_range}, std={moe_std:.6f}")
+        print(f"🔧 修复后MoE输出: {moe_range}, std={moe_std:.6f}")
 
-        # 检查基础LoRA输出是否正常
-        if moe_std < 0.1:
-            print(f"⚠️ 警告: 基础LoRA输出变化很小 (std={moe_std:.6f})!")
+        # 检查MoE输出是否正常
+        if moe_std < 1e-6:
+            print(f"⚠️ 警告: MoE输出几乎为零 (std={moe_std:.8f})!")
         elif moe_std > 100:
-            print(f"⚠️ 警告: 基础LoRA输出过大 (std={moe_std:.6f})!")
+            print(f"⚠️ 警告: MoE输出过大 (std={moe_std:.6f})!")
 
         # 4. 语言模型头
         # 需要确保moe_output的维度与原始hidden_states一致
@@ -719,8 +713,9 @@ class JointLoRAMoEModel(nn.Module):
         loss = None
         if labels is not None:
             try:
-                # 🔧 暂时移除MoE输出限制，因为MoE已禁用
-                # moe_output = torch.clamp(moe_output, min=-3.0, max=3.0)
+                # 🔧 恢复MoE输出限制，但使用更合理的范围
+                # 由于MoE现在使用归一化输入，输出应该更稳定，但仍需要一些限制
+                moe_output = torch.clamp(moe_output, min=-10.0, max=10.0)
 
                 # 检查logits是否包含NaN/Inf
                 if torch.isnan(logits).any() or torch.isinf(logits).any():
