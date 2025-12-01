@@ -195,28 +195,18 @@ class CultureLLMNewFormatDataset(Dataset):
             # 如果没有设置pad_token，使用默认的eos_token
             pad_token_id = self.tokenizer.eos_token_id
 
-        # 🔧 验证：确保input_length不会超出完整序列的非padding部分
+        # 🔧 新的精确计算方法不需要调整，因为我们已经精确定位到"### Answer: "后面
+        # 旧的调整逻辑会破坏我们精确计算的结果，所以删除
+        # 验证：确保input_length合理
         total_non_pad = (input_ids != pad_token_id).sum().item()
 
-        # 🔧 关键修复：确保至少保留3-5个token作为训练目标
-        min_output_tokens = 5  # 至少保留5个token作为输出
-        max_allowed_input_length = max(0, total_non_pad - min_output_tokens)
+        if idx < 5:
+            print(f"  🔧 验证: 总非padding长度={total_non_pad}, 精确input_length={input_length}")
+            if input_length >= total_non_pad:
+                print(f"  ⚠️ 警告: input_length >= 总长度，这会导致没有训练目标")
 
-        if input_length >= max_allowed_input_length:
-            # print(f"⚠️ 样本{idx}: input_length({input_length})过大，调整为{max_allowed_input_length}")  # 注释掉噪音日志
-            input_length = max_allowed_input_length
-
-        # 🔧 额外验证：检查是否正确识别了<|eot_id|>
-        eot_token_id = 128009  # Llama的<|eot_id|>
-        eot_positions = (input_ids == eot_token_id).nonzero(as_tuple=True)[0]
-        if len(eot_positions) > 0:
-            first_eot_pos = eot_positions[0].item()
-            # 如果输入部分超过了第一个<|eot_id|>位置，需要调整
-            if input_length > first_eot_pos:
-                # 但仍要确保有足够的输出token
-                adjusted_input_length = max(0, min(first_eot_pos, total_non_pad - min_output_tokens))
-                print(f"⚠️ 样本{idx}: 遇到<|eot_id|>，调整input_length从{input_length}到{adjusted_input_length}")
-                input_length = adjusted_input_length
+        # 🔧 删除eot_id调整逻辑，因为我们的精确计算已经处理了这个问题
+        # 新的方法直接定位到"### Answer: "后面，不需要额外调整
 
         # 3. 创建正确的标签
         labels = input_ids.clone()
@@ -249,7 +239,7 @@ class CultureLLMNewFormatDataset(Dataset):
             print(f"    原始文本: '{full_text[:100]}...'")
             print(f"    输入部分: '{full_input[:100]}...'")
             print(f"    输出部分: '{output_text}'")
-            print(f"    计算的input_length: {input_length}")
+            print(f"    精确计算的input_length: {input_length}")
             print(f"    总序列长度: {len(input_ids)}")
             print(f"    实际非padding长度: {(input_ids != pad_token_id).sum().item()}")
 
@@ -279,22 +269,15 @@ class CultureLLMNewFormatDataset(Dataset):
         if idx < 5:
             # 检查tokenizer配置
             eot_token_id = 128009  # <|eot_id|>
-            actual_pad_token_id = self.tokenizer.pad_token_id
 
             print(f"  🔧 Tokenizer状态:")
             print(f"    pad_token: {repr(self.tokenizer.pad_token)}")
-            print(f"    pad_token_id: {actual_pad_token_id}")
+            print(f"    pad_token_id: {pad_token_id}")
             print(f"    eos_token_id: {self.tokenizer.eos_token_id}")
 
             # 分析labels中的token分布
             eot_in_labels = (labels == eot_token_id).sum().item()
-            if actual_pad_token_id is not None:
-                pad_in_labels = (labels == actual_pad_token_id).sum().item()
-            else:
-                pad_in_labels = 0
-
-            # 检查新的padding token在labels中的数量
-            new_pad_in_labels = (labels == pad_token_id).sum().item()
+            pad_in_labels = (labels == pad_token_id).sum().item()
 
             # 统计所有非-100的token
             non_mask_indices = (labels != -100).nonzero(as_tuple=True)[0]
@@ -303,8 +286,7 @@ class CultureLLMNewFormatDataset(Dataset):
             print(f"    总序列长度: {len(labels)}")
             print(f"    有效标签数: {valid_labels}")
             print(f"    <|eot_id|>(128009)数量: {eot_in_labels}")
-            print(f"    旧padding token数量: {pad_in_labels}")
-            print(f"    新padding token({pad_token_id})数量: {new_pad_in_labels}")
+            print(f"    padding token({pad_token_id})数量: {pad_in_labels}")
 
             if valid_labels > 10:
                 print(f"  ⚠️ 标签数过多({valid_labels})，可能仍有padding问题")
@@ -380,21 +362,15 @@ class CultureLLMNewFormatDataset(Dataset):
                     except:
                         print(f"    位置{pos_idx}: {token_id}=(解码失败)")
 
-            # 检查input_length计算是否正确
-            print(f"  🔧 Input length计算:")
-            print(f"    计算的input_length: {input_length}")
-            print(f"    序列总长度: {len(input_ids)}")
-            print(f"    非padding长度: {(input_ids != (actual_pad_token_id or 0)).sum().item()}")
-
-            # 检查是否pad_token_id配置错误导致问题
-            if actual_pad_token_id == eot_token_id:
-                print(f"  🚨 发现问题: pad_token_id == <|eot_id|> ({actual_pad_token_id})")
+            # 🔧 简化的问题检查
+            if pad_token_id == eot_token_id:
+                print(f"  🚨 发现问题: pad_token_id == <|eot_id|> ({pad_token_id})")
                 print(f"    这会导致padding区域填充<|eot_id|>，造成大量有效标签!")
-            elif actual_pad_token_id is None:
+            elif pad_token_id is None:
                 print(f"  🚨 发现问题: pad_token_id is None!")
                 print(f"    tokenizer配置可能没有正确应用")
-            elif new_pad_in_labels > 0:
-                print(f"  🚨 发现问题: {new_pad_in_labels}个padding token({pad_token_id})仍在训练标签中!")
+            elif pad_in_labels > 0:
+                print(f"  🚨 发现问题: {pad_in_labels}个padding token({pad_token_id})仍在训练标签中!")
                 print(f"    padding token应该被掩码为-100，不应该出现在有效标签中")
             elif valid_labels > 10:
                 print(f"  🚨 发现问题: 有效标签数过多({valid_labels})，可能有其他token被错误包含")
