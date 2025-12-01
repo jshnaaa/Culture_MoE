@@ -85,17 +85,23 @@ class CultureLLMNewFormatDataset(Dataset):
         output_text = item.get('output', '')
         label = item.get('label', '')
 
-        # 🔧 关键修复：移除instruction中的"### Answer:"部分
-        if "### Answer:" in instruction:
-            instruction = instruction.split("### Answer:")[0].strip()
+        # 🔧 修复：保留instruction中的"### Answer:"，这是给模型的提示
+        # 我们要让模型看到"### Answer:"，但不学习它，只学习后面的答案
 
         # 🔍 关键调试：检查原始output_text内容
         if idx < 5:
             print(f"\n🔍 样本{idx} 原始数据:")
-            print(f"  清理后的instruction末尾: {repr(instruction[-50:])}")
+            print(f"  完整instruction: {repr(instruction[-100:])}")
             print(f"  output_text: {repr(output_text)}")
             print(f"  output_text类型: {type(output_text)}")
             print(f"  output_text长度: {len(str(output_text))}")
+
+            # 检查"### Answer:"的位置
+            if "### Answer:" in instruction:
+                answer_pos = instruction.find("### Answer:")
+                print(f"  '### Answer:'位置: {answer_pos}")
+                print(f"  '### Answer:'前内容末尾: {repr(instruction[answer_pos-20:answer_pos])}")
+                print(f"  '### Answer:'后内容: {repr(instruction[answer_pos:answer_pos+20])}")
 
         # 构建完整的输入和输出
         # 格式：instruction + input → output
@@ -150,22 +156,21 @@ class CultureLLMNewFormatDataset(Dataset):
                     except:
                         print(f"      token_{len(input_ids)-15+i}: {token_id}=(解码失败)")
 
-        # 2. 正确计算input_length - 确保tokenizer参数一致！
-        # 🔧 修复：使用空格分隔，与full_text格式保持一致，避免双空格
-        input_with_space = f"{full_input.rstrip()} "
-        encoded_input = self.tokenizer(
-            input_with_space,
-            max_length=self.max_length,
-            truncation=True,
-            padding='max_length',
-            return_tensors='pt',
-            add_special_tokens=True  # 与完整文本保持一致
-        )
+        # 2. 🔧 关键修复：精确计算input_length，只让模型学习答案部分
+        # 我们需要找到"### Answer:"之后空格的位置，让模型从那里开始学习
 
-        # ✅ 关键修复：正确计算input_length，避免padding污染
-        # 方法：直接tokenize输入部分，不使用padding，然后计算实际长度
+        # 构建到"### Answer: "为止的部分（包含最后的空格）
+        if "### Answer:" in full_text:
+            # 找到"### Answer:"的位置，然后添加": "
+            answer_pos = full_text.find("### Answer:")
+            input_until_answer_prompt = full_text[:answer_pos + len("### Answer: ")]
+        else:
+            # 如果没有"### Answer:"，使用原来的逻辑
+            input_until_answer_prompt = f"{full_input.rstrip()} "
+
+        # 计算这个部分的token长度
         encoded_input_no_pad = self.tokenizer(
-            f"{full_input.rstrip()} ",
+            input_until_answer_prompt,
             truncation=True,
             return_tensors='pt',
             add_special_tokens=True,
@@ -174,6 +179,14 @@ class CultureLLMNewFormatDataset(Dataset):
 
         # 获取真实的输入长度（不包含padding）
         input_length = len(encoded_input_no_pad['input_ids'][0])
+
+        # 🔍 调试：检查input_length计算
+        if idx < 5:
+            print(f"  🔧 Input length计算:")
+            print(f"    input_until_answer_prompt: {repr(input_until_answer_prompt)}")
+            print(f"    计算出的input_length: {input_length}")
+            print(f"    应该掩码的部分: 0 到 {input_length-1}")
+            print(f"    应该学习的部分: {input_length} 开始")
 
         # 🔧 Llama特殊token处理：正确识别padding token
         # 获取正确的pad_token_id
@@ -482,15 +495,22 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     # 训练时的格式：full_input = f"{instruction}\n{input_text}"，然后添加 {output}
     # 所以生成时应该给模型：full_input + " "，让它生成output
 
-    # 🔧 修复：移除instruction中的"### Answer:"部分，与训练时保持一致
-    if "### Answer:" in instruction:
-        instruction = instruction.split("### Answer:")[0].strip()
+    # 🔧 修复：保留instruction中的"### Answer:"，这是给模型的生成提示
+    # 生成时需要给模型完整的提示，让它知道在"### Answer: "后面生成答案
 
     if input_text:
         full_input = f"{instruction}\n{input_text}"
-        full_input = f"{full_input.rstrip()} "  # 避免双空格
     else:
-        full_input = f"{instruction.rstrip()} "  # 避免双空格
+        full_input = instruction
+
+    # 确保以"### Answer: "结尾，给模型明确的生成提示
+    if not full_input.endswith("### Answer: "):
+        if "### Answer:" in full_input:
+            # 如果已经有"### Answer:"但格式不对，修正它
+            full_input = full_input.split("### Answer:")[0].strip() + " ### Answer: "
+        else:
+            # 如果没有，添加提示
+            full_input = f"{full_input.rstrip()} ### Answer: "
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
