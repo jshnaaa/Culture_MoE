@@ -70,9 +70,9 @@ class MoEExpert(nn.Module):
 
     def _init_weights(self):
         """修复权重初始化 - 防NaN版本"""
-        # 使用安全的初始化，防止NaN
-        gate_up_std = 0.02  # 回到保守但安全的初始化
-        down_std = 0.01
+        # 使用极度保守的初始化，防止NaN
+        gate_up_std = 0.001  # 大幅降低初始化方差，防止训练初期NaN
+        down_std = 0.0001    # 更小的下游投影初始化
 
         try:
             for module in [self.gate_proj, self.up_proj]:
@@ -141,7 +141,7 @@ class MoEExpert(nn.Module):
             # print(f"    🔍 up_proj weight NaN: {up_weight_has_nan}")
 
             if gate_weight_has_nan or up_weight_has_nan:
-                # print("    ⚠️ Expert weights contain NaN, reinitializing...")  # 注释掉频繁警告
+                print("    🚨 专家权重包含NaN，重新初始化并返回零输出!")
                 self._init_weights()
                 return torch.zeros_like(x)
 
@@ -229,9 +229,9 @@ class MoERouter(nn.Module):
             # 偏置设置为小的负值，softmax后趋向uniform
             nn.init.constant_(self.router.bias, -1.0)
 
-        # Float32路由器的合理权重限制
-        self.max_weight_value = 0.1   # 恢复合理的权重限制
-        self.max_bias_value = 1.0     # 恢复合理的偏置限制
+        # Float32路由器的保守权重限制
+        self.max_weight_value = 0.01   # 更保守的权重限制，防止专家权重爆炸
+        self.max_bias_value = 0.1      # 更保守的偏置限制
 
     def forward(self, x, temperature: float = 1.0):
         """
@@ -425,7 +425,7 @@ class MoELayer(nn.Module):
                         expert_outputs.append(expert_output)
                         valid_experts += 1
                     else:
-                        print(f"⚠️ Expert {i} output invalid, using zeros")
+                        print(f"🚨 专家{i}输出无效(NaN/Inf)，使用零输出!")
                         expert_outputs.append(torch.zeros_like(hidden_states))
 
                 except Exception as e:
@@ -434,7 +434,7 @@ class MoELayer(nn.Module):
 
             # 3. 专家输出混合（极简版）
             if valid_experts == 0:
-                print("⚠️ All experts failed, using passthrough")
+                print("🚨 所有专家都失效，使用输入passthrough!")
                 # 直接返回输入，确保数值稳定
                 final_output = hidden_states
             else:

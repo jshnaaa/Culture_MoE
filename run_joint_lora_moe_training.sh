@@ -103,7 +103,7 @@ echo ""
 BATCH_SIZE=1              # 最小batch size
 GRADIENT_ACCUMULATION=16  # 增加梯度累积以补偿小batch size
 LEARNING_RATE_BASE=5e-5   # 降低基础模型LoRA学习率
-LEARNING_RATE_MOE=1e-4    # 重新设计的MoE组件可以使用更高学习率
+LEARNING_RATE_MOE=1e-5    # 大幅降低MoE学习率，防止权重NaN
 NUM_EPOCHS=5              # 训练轮数
 MAX_SEQ_LEN=384          # 减少序列长度以节省内存
 
