@@ -196,12 +196,12 @@ class MoEExpert(nn.Module):
             # 最终投影 - 移除输出限制，让模型自由表达
             output = self.down_proj(intermediate)
 
-            # 🔧 输出缩放补偿：匹配基础LoRA的输出范围
-            # 实际观察：基础LoRA范围约[-37,+48]，std=2.17
-            # MoE原始范围约[-0.16,+0.14]，std=0.022
-            # 100倍缩放导致输出爆炸到[-1300,+1400]，需要大幅降低
-            # 使用保守的15倍缩放，目标范围约[-2.4,+2.1]
-            output = output * 15.0  # 适度缩放输出，避免数值爆炸
+            # 🔧 增量架构：MoE作为基础LoRA的小幅调整
+            # MoE应该产生小的增量调整，而不是替代基础LoRA
+            # 目标：MoE增量约为基础LoRA输出的5-10%
+            # 基础LoRA std≈2.2，MoE增量目标 std≈0.2-0.4
+            # 原始MoE std≈0.022，需要约10-20倍缩放
+            output = output * 2.0  # 小幅缩放，产生增量调整
 
             # 添加调试信息：检查最终输出
             output_mean = output.mean().item()
@@ -468,8 +468,9 @@ class MoELayer(nn.Module):
                     print("⚠️ Expert weights too small, using passthrough")
                     final_output = hidden_states
                 else:
-                    # 🔧 调整最终输出限制，匹配基础LoRA的实际范围[-37, +48]
-                    final_output = torch.clamp(final_output, min=-60.0, max=60.0)
+                    # 🔧 增量架构：限制MoE输出为小的增量调整
+                    # 目标：增量约为基础LoRA输出的5-10%，范围约[-5, +5]
+                    final_output = torch.clamp(final_output, min=-5.0, max=5.0)
                     # 添加调试信息：检查混合后的输出
                     # final_mean = final_output.mean().item()
                     # final_std = final_output.std().item()
@@ -648,61 +649,80 @@ class JointLoRAMoEModel(nn.Module):
                 self.add_module('hidden_proj', self.hidden_proj)
             hidden_states = self.hidden_proj(hidden_states)
 
-        # 3. MoE层处理 - 重新启用，使用修复后的归一化输入
-        print("🔧 重新启用MoE层，使用输入归一化修复")
-        moe_output, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
+        # 3. MoE层处理 - 增量架构实现
+        print("🔧 启用增量MoE架构：MoE作为基础LoRA的增量调整")
+        moe_delta, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
 
-        # 关键调试：检查修复后的MoE输出
-        moe_range = f"min={moe_output.min().item():.3f}, max={moe_output.max().item():.3f}"
-        moe_std = moe_output.std().item()
-        print(f"🔧 修复后MoE输出: {moe_range}, std={moe_std:.6f}")
+        # 关键调试：检查MoE增量输出
+        moe_range = f"min={moe_delta.min().item():.3f}, max={moe_delta.max().item():.3f}"
+        moe_std = moe_delta.std().item()
+        print(f"🔧 MoE增量输出: {moe_range}, std={moe_std:.6f}")
 
-        # 检查MoE输出是否正常
+        # 检查MoE增量是否合理
         if moe_std < 1e-6:
-            print(f"⚠️ 警告: MoE输出几乎为零 (std={moe_std:.8f})!")
-        elif moe_std > 100:
-            print(f"⚠️ 警告: MoE输出过大 (std={moe_std:.6f})!")
+            print(f"⚠️ 警告: MoE增量几乎为零 (std={moe_std:.8f})!")
+        elif moe_std > 5.0:
+            print(f"⚠️ 警告: MoE增量过大 (std={moe_std:.6f})，应该是小的调整!")
 
-        # 4. 语言模型头
-        # 需要确保moe_output的维度与原始hidden_states一致
-        if hasattr(self, 'hidden_proj') and moe_output.size(-1) != base_outputs.hidden_states[-1].size(-1):
-            # 需要反向投影回原始维度
+        # 🔧 关键修改：实现增量架构
+        # 保存原始基础LoRA输出
+        base_hidden_states = base_outputs.hidden_states[-1]  # [B, L, H]
+
+        # 🔧 处理维度不匹配问题
+        if hasattr(self, 'hidden_proj') and moe_delta.size(-1) != base_hidden_states.size(-1):
+            # MoE增量需要反向投影回原始维度才能与base_hidden_states相加
             if not hasattr(self, 'hidden_proj_back'):
                 self.hidden_proj_back = nn.Linear(
-                    moe_output.size(-1),
-                    base_outputs.hidden_states[-1].size(-1),
+                    moe_delta.size(-1),
+                    base_hidden_states.size(-1),
                     bias=False,
-                    dtype=moe_output.dtype  # 确保dtype匹配
+                    dtype=moe_delta.dtype
                 )
-                # 初始化权重
                 nn.init.normal_(self.hidden_proj_back.weight, mean=0.0, std=0.001)
-                self.hidden_proj_back = self.hidden_proj_back.to(moe_output.device, moe_output.dtype)
-                # 注册为模型参数，避免重复创建
+                self.hidden_proj_back = self.hidden_proj_back.to(moe_delta.device, moe_delta.dtype)
                 self.add_module('hidden_proj_back', self.hidden_proj_back)
-            moe_output = self.hidden_proj_back(moe_output)
+            moe_delta = self.hidden_proj_back(moe_delta)
 
-        # 使用基础模型的lm_head
+        # MoE增量权重（控制MoE影响程度）
+        moe_influence_weight = 0.1  # 10%的影响权重，可调
+
+        # 组合输出：基础LoRA + 加权MoE增量
+        combined_output = base_hidden_states + moe_influence_weight * moe_delta
+
+        # 调试信息：检查组合后的输出
+        combined_range = f"min={combined_output.min().item():.3f}, max={combined_output.max().item():.3f}"
+        combined_std = combined_output.std().item()
+        print(f"🔧 组合输出(基础+MoE): {combined_range}, std={combined_std:.6f}")
+        print(f"🔧 MoE影响权重: {moe_influence_weight}, 实际增量贡献: {(moe_influence_weight * moe_std):.6f}")
+
+        # 使用组合输出作为最终隐藏状态
+        final_hidden_states = combined_output
+
+        # 4. 语言模型头 - 使用组合后的隐藏状态
+        # 维度已经在上面处理过了，final_hidden_states = combined_output应该与base_hidden_states维度一致
+
+        # 使用基础模型的lm_head计算最终logits
         if hasattr(self.base_model, 'lm_head'):
-            # print(f"🔧 Using base_model.lm_head")  # 注释掉，与tokenizer问题无关
-            logits = self.base_model.lm_head(moe_output)
+            print(f"🔧 使用组合隐藏状态(基础LoRA+MoE增量)计算logits")
+            logits = self.base_model.lm_head(final_hidden_states)
         elif hasattr(self.base_model, 'base_model') and hasattr(self.base_model.base_model, 'lm_head'):
-            # print(f"🔧 Using base_model.base_model.lm_head")  # 注释掉，与tokenizer问题无关
-            logits = self.base_model.base_model.lm_head(moe_output)
+            print(f"🔧 使用组合隐藏状态(基础LoRA+MoE增量)计算logits")
+            logits = self.base_model.base_model.lm_head(final_hidden_states)
         else:
-            print(f"🔧 Creating temporary lm_head")
+            print(f"🔧 Creating temporary lm_head for combined hidden states")
             # 创建临时的lm_head，但使用合理的初始化
             vocab_size = self.base_model.config.vocab_size
             if not hasattr(self, 'temp_lm_head'):
                 self.temp_lm_head = nn.Linear(
-                    moe_output.size(-1), vocab_size, bias=False, dtype=moe_output.dtype
+                    final_hidden_states.size(-1), vocab_size, bias=False, dtype=final_hidden_states.dtype
                 )
                 # 使用更合理的初始化，避免全零logits
                 nn.init.normal_(self.temp_lm_head.weight, mean=0.0, std=0.02)  # 增大std
-                self.temp_lm_head = self.temp_lm_head.to(moe_output.device, moe_output.dtype)
+                self.temp_lm_head = self.temp_lm_head.to(final_hidden_states.device, final_hidden_states.dtype)
                 # 注册为模型参数，避免重复创建
                 self.add_module('temp_lm_head', self.temp_lm_head)
                 print(f"🔧 Temp lm_head created with std=0.02")
-            logits = self.temp_lm_head(moe_output)
+            logits = self.temp_lm_head(final_hidden_states)
 
         # 关键调试：检查最终logits
         logits_range = f"min={logits.min().item():.3f}, max={logits.max().item():.3f}"
@@ -717,33 +737,21 @@ class JointLoRAMoEModel(nn.Module):
         elif torch.isinf(logits).any():
             print(f"⚠️ 警告: Logits包含Inf!")
 
-        # 5. 计算损失 - 数值稳定版本
+        # 5. 计算损失 - 增量架构版本
         loss = None
         if labels is not None:
             try:
-                # 🔧 调整MoE输出限制，匹配基础LoRA的实际范围[-37, +48]
-                # 允许MoE输出达到与基础LoRA相同的动态范围
-                moe_output = torch.clamp(moe_output, min=-60.0, max=60.0)
+                # 🔧 增量架构：不需要限制组合输出，因为基础LoRA已经稳定
+                # final_hidden_states = base_hidden_states + 0.1 * moe_delta
+                # 组合输出应该接近基础LoRA的范围，数值稳定
 
                 # 检查logits是否包含NaN/Inf
                 if torch.isnan(logits).any() or torch.isinf(logits).any():
-                    print("⚠️ NaN/Inf detected in logits, recomputing with clamped MoE output")
-                    # 使用经过严格限制的MoE输出重新计算
-                    if hasattr(self.base_model, 'lm_head'):
-                        logits = self.base_model.lm_head(moe_output)
-                    elif hasattr(self.base_model, 'base_model') and hasattr(self.base_model.base_model, 'lm_head'):
-                        logits = self.base_model.base_model.lm_head(moe_output)
-                    else:
-                        # 使用临时lm_head
-                        if not hasattr(self, 'temp_lm_head'):
-                            vocab_size = self.base_model.config.vocab_size
-                            self.temp_lm_head = nn.Linear(
-                                moe_output.size(-1), vocab_size, bias=False, dtype=moe_output.dtype
-                            )
-                            nn.init.normal_(self.temp_lm_head.weight, mean=0.0, std=0.01)  # 更小的初始化
-                            self.temp_lm_head = self.temp_lm_head.to(moe_output.device, moe_output.dtype)
-                            self.add_module('temp_lm_head', self.temp_lm_head)
-                        logits = self.temp_lm_head(moe_output)
+                    print("⚠️ NaN/Inf detected in logits, using base LoRA only")
+                    # 如果组合输出有问题，回退到纯基础LoRA
+                    base_only_logits = self.base_model.lm_head(base_hidden_states)
+                    logits = base_only_logits
+                    print("🔧 Fallback to base LoRA logits only")
 
                 # 严格的logits范围限制，防止inf loss
                 logits = torch.clamp(logits, min=-20.0, max=20.0)
@@ -859,13 +867,15 @@ class JointLoRAMoEModel(nn.Module):
                 else:
                     loss = torch.tensor(1.0, device=first_param.device, dtype=first_param.dtype, requires_grad=True)
 
-        # 6. 返回结果
+        # 6. 返回结果 - 增量架构版本
         return type('Outputs', (), {
             'loss': loss,
             'logits': logits,
-            'hidden_states': moe_output,
+            'hidden_states': final_hidden_states,  # 使用组合后的隐藏状态
             'expert_weights': expert_weights,
             'moe_aux_loss': moe_aux_loss,
+            'base_hidden_states': base_hidden_states,  # 额外返回基础LoRA输出用于调试
+            'moe_delta': moe_delta,  # 额外返回MoE增量用于调试
         })()
 
     def _get_regularization_loss(self):
