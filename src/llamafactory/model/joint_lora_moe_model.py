@@ -70,9 +70,9 @@ class MoEExpert(nn.Module):
 
     def _init_weights(self):
         """修复权重初始化 - 防NaN版本"""
-        # 🔧 输入归一化后，可以使用更合理的初始化
-        gate_up_std = 0.02   # 恢复合理的初始化，因为输入已归一化到[-1,1]
-        down_std = 0.01      # 恢复合理的下游投影初始化
+        # 🔧 根据新的归一化范围[-3,3]调整初始化
+        gate_up_std = 0.05   # 增加初始化方差，匹配[-3,3]输入范围
+        down_std = 0.02      # 相应增加下游投影初始化
 
         try:
             for module in [self.gate_proj, self.up_proj]:
@@ -129,8 +129,9 @@ class MoEExpert(nn.Module):
         if torch.isnan(x).any() or torch.isinf(x).any():
             return torch.zeros_like(x)
 
-        # 强制输入归一化到安全范围 [-1, 1]
-        x_normalized = torch.tanh(x / 10.0)  # 除以10后tanh，将[-37,49]映射到接近[-1,1]
+        # 🔧 调整归一化策略：减少压缩，保留更多信息
+        # 使用更温和的归一化，保留更多原始信号强度
+        x_normalized = torch.clamp(x / 5.0, min=-3.0, max=3.0)  # 线性缩放后clip，保留更多动态范围
 
         try:
             # 第一阶段：gate和up投影 - 使用归一化输入
@@ -195,10 +196,17 @@ class MoEExpert(nn.Module):
             # 最终投影 - 移除输出限制，让模型自由表达
             output = self.down_proj(intermediate)
 
+            # 🔧 输出缩放补偿：匹配基础LoRA的输出范围
+            # 基础LoRA范围约[-19,+29]，std=2.53
+            # 当前MoE范围约[-0.16,+0.14]，std=0.022
+            # 标准差比率: 2.53/0.022 ≈ 115x，范围比率: 48/0.3 = 160x
+            # 使用保守的100x缩放，确保数值稳定
+            output = output * 100.0  # 缩放输出，匹配基础LoRA范围
+
             # 添加调试信息：检查最终输出
             output_mean = output.mean().item()
             output_std = output.std().item()
-            # print(f"    🔍 final_output: mean={output_mean:.6f}, std={output_std:.6f}")
+            print(f"    🔍 专家最终输出: mean={output_mean:.6f}, std={output_std:.6f}, range=[{output.min().item():.3f}, {output.max().item():.3f}]")
 
             # 最终检查 - 只检查NaN/Inf，不限制数值范围
             if torch.isnan(output).any() or torch.isinf(output).any():
@@ -270,7 +278,7 @@ class MoERouter(nn.Module):
                 self.router.bias.data.clamp_(-self.max_bias_value, self.max_bias_value)
 
             # 2. 输入预处理和dtype转换 - 使用与专家相同的归一化
-            x_safe = torch.tanh(x / 10.0)  # 与专家网络保持一致的归一化
+            x_safe = torch.clamp(x / 5.0, min=-3.0, max=3.0)  # 与专家网络保持一致的归一化
 
             # 转换为Float32进行路由计算，确保数值稳定
             x_float32 = x_safe.float()
@@ -460,8 +468,8 @@ class MoELayer(nn.Module):
                     print("⚠️ Expert weights too small, using passthrough")
                     final_output = hidden_states
                 else:
-                    # 移除最终输出的数值限制
-                    final_output = torch.clamp(final_output, min=-3.0, max=3.0)
+                    # 🔧 调整最终输出限制，匹配基础LoRA的输出范围[-19, +29]
+                    final_output = torch.clamp(final_output, min=-50.0, max=50.0)
                     # 添加调试信息：检查混合后的输出
                     # final_mean = final_output.mean().item()
                     # final_std = final_output.std().item()
@@ -713,9 +721,9 @@ class JointLoRAMoEModel(nn.Module):
         loss = None
         if labels is not None:
             try:
-                # 🔧 恢复MoE输出限制，但使用更合理的范围
-                # 由于MoE现在使用归一化输入，输出应该更稳定，但仍需要一些限制
-                moe_output = torch.clamp(moe_output, min=-10.0, max=10.0)
+                # 🔧 调整MoE输出限制，匹配基础LoRA的输出范围[-19, +29]
+                # 允许MoE输出达到与基础LoRA相同的动态范围
+                moe_output = torch.clamp(moe_output, min=-50.0, max=50.0)
 
                 # 检查logits是否包含NaN/Inf
                 if torch.isnan(logits).any() or torch.isinf(logits).any():
