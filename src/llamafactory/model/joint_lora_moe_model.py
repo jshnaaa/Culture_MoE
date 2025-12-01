@@ -580,6 +580,18 @@ class JointLoRAMoEModel(nn.Module):
         self.base_model = get_peft_model(self.base_model, lora_config)
         logging.info(f"LoRA applied to base model with rank={self.config.lora_rank}")
 
+        # 🔍 验证LoRA是否正确应用
+        lora_params = 0
+        total_params = 0
+        for name, param in self.base_model.named_parameters():
+            total_params += param.numel()
+            if 'lora' in name.lower():
+                lora_params += param.numel()
+                if lora_params <= 5:  # 只打印前5个LoRA参数
+                    print(f"🔍 LoRA参数: {name}, shape: {param.shape}, requires_grad: {param.requires_grad}")
+
+        print(f"🔍 LoRA参数统计: {lora_params:,} / {total_params:,} ({100*lora_params/total_params:.2f}%)")
+
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         """
         前向传播
@@ -603,6 +615,11 @@ class JointLoRAMoEModel(nn.Module):
         # 2. 获取最后一层隐藏状态
         hidden_states = base_outputs.hidden_states[-1]  # [B, L, H]
 
+        # 🔍 调试基础模型输出
+        base_range = f"min={hidden_states.min().item():.3f}, max={hidden_states.max().item():.3f}"
+        base_std = hidden_states.std().item()
+        print(f"🔍 基础模型输出: {base_range}, std={base_std:.6f}")
+
         # 确保hidden_states与MoE层的hidden_dim匹配
         if hidden_states.size(-1) != self.config.moe_hidden_dim:
             # 如果维度不匹配，需要投影
@@ -620,19 +637,29 @@ class JointLoRAMoEModel(nn.Module):
                 self.add_module('hidden_proj', self.hidden_proj)
             hidden_states = self.hidden_proj(hidden_states)
 
-        # 3. MoE层处理
-        moe_output, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
+        # 3. MoE层处理 - 临时禁用，测试基础LoRA
+        # moe_output, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
 
-        # 关键调试：检查MoE输出是否为零
+        # 🔧 临时禁用MoE，直接使用基础模型输出
+        print("🔧 临时禁用MoE层，测试基础LoRA是否正常工作")
+        moe_output = hidden_states  # 直接passthrough
+
+        # 创建虚拟的专家权重和辅助损失
+        batch_size = hidden_states.size(0)
+        expert_weights = torch.ones(batch_size, self.config.num_moe_experts,
+                                  device=hidden_states.device, dtype=hidden_states.dtype) / self.config.num_moe_experts
+        moe_aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
+
+        # 关键调试：检查基础LoRA输出（MoE禁用时）
         moe_range = f"min={moe_output.min().item():.3f}, max={moe_output.max().item():.3f}"
         moe_std = moe_output.std().item()
-        print(f"🔧 MoE输出: {moe_range}, std={moe_std:.6f}")
+        print(f"🔧 基础LoRA输出: {moe_range}, std={moe_std:.6f}")
 
-        # 检查MoE输出是否异常
-        if moe_std < 1e-6:
-            print(f"⚠️ 警告: MoE输出几乎为零 (std={moe_std:.8f})!")
+        # 检查基础LoRA输出是否正常
+        if moe_std < 0.1:
+            print(f"⚠️ 警告: 基础LoRA输出变化很小 (std={moe_std:.6f})!")
         elif moe_std > 100:
-            print(f"⚠️ 警告: MoE输出过大 (std={moe_std:.6f})!")
+            print(f"⚠️ 警告: 基础LoRA输出过大 (std={moe_std:.6f})!")
 
         # 4. 语言模型头
         # 需要确保moe_output的维度与原始hidden_states一致
@@ -692,8 +719,8 @@ class JointLoRAMoEModel(nn.Module):
         loss = None
         if labels is not None:
             try:
-                # 预先限制MoE输出范围，防止logits爆炸
-                moe_output = torch.clamp(moe_output, min=-3.0, max=3.0)
+                # 🔧 暂时移除MoE输出限制，因为MoE已禁用
+                # moe_output = torch.clamp(moe_output, min=-3.0, max=3.0)
 
                 # 检查logits是否包含NaN/Inf
                 if torch.isnan(logits).any() or torch.isinf(logits).any():
@@ -726,10 +753,22 @@ class JointLoRAMoEModel(nn.Module):
                 shift_valid = (shift_labels.view(-1) != -100).sum().item()
                 total_labels = shift_labels.numel()
 
-                # 详细调试信息已注释掉，只保留必要的变量定义
-                # print(f"🔍 Labels shift analysis:")
-                # print(f"  Original labels valid: {original_valid}/{labels.numel()}")
-                # print(f"  Shifted labels valid: {shift_valid}/{total_labels}")
+                # 🔍 重新启用损失调试信息
+                print(f"🔍 损失计算分析:")
+                print(f"  shift_logits shape: {shift_logits.shape}")
+                print(f"  shift_labels shape: {shift_labels.shape}")
+                print(f"  有效标签数量: {shift_valid}/{total_labels}")
+                print(f"  logits范围: min={shift_logits.min().item():.3f}, max={shift_logits.max().item():.3f}")
+
+                # 检查第一个样本的有效标签
+                if shift_valid > 0:
+                    valid_positions = (shift_labels.view(-1) != -100).nonzero().flatten()
+                    if len(valid_positions) > 0:
+                        first_valid_pos = valid_positions[0].item()
+                        first_valid_label = shift_labels.view(-1)[first_valid_pos].item()
+                        first_valid_logit = shift_logits.view(-1, shift_logits.size(-1))[first_valid_pos]
+                        print(f"  第一个有效标签: 位置{first_valid_pos}, 标签{first_valid_label}")
+                        print(f"  对应logit范围: min={first_valid_logit.min().item():.3f}, max={first_valid_logit.max().item():.3f}")
 
                 # 检查第一个样本的labels变化（注释掉详细输出）
                 # if labels.shape[0] > 0:
