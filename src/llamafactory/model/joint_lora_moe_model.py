@@ -106,7 +106,7 @@ class MoEExpert(nn.Module):
                 print("    ⚠️ NaN detected in down_proj after init, using zeros")
                 self.down_proj.weight.zero_()
 
-            print(f"🔧 Expert safely initialized: gate/up_std={gate_up_std:.4f}, down_std={down_std:.4f}")
+            # print(f"🔧 Expert safely initialized: gate/up_std={gate_up_std:.4f}, down_std={down_std:.4f}")  # 注释掉频繁日志
 
         except Exception as e:
             print(f"⚠️ Weight initialization failed: {e}")
@@ -141,7 +141,7 @@ class MoEExpert(nn.Module):
             # print(f"    🔍 up_proj weight NaN: {up_weight_has_nan}")
 
             if gate_weight_has_nan or up_weight_has_nan:
-                print("    ⚠️ Expert weights contain NaN, reinitializing...")
+                # print("    ⚠️ Expert weights contain NaN, reinitializing...")  # 注释掉频繁警告
                 self._init_weights()
                 return torch.zeros_like(x)
 

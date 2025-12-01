@@ -85,9 +85,14 @@ class CultureLLMNewFormatDataset(Dataset):
         output_text = item.get('output', '')
         label = item.get('label', '')
 
+        # 🔧 关键修复：移除instruction中的"### Answer:"部分
+        if "### Answer:" in instruction:
+            instruction = instruction.split("### Answer:")[0].strip()
+
         # 🔍 关键调试：检查原始output_text内容
         if idx < 5:
             print(f"\n🔍 样本{idx} 原始数据:")
+            print(f"  清理后的instruction末尾: {repr(instruction[-50:])}")
             print(f"  output_text: {repr(output_text)}")
             print(f"  output_text类型: {type(output_text)}")
             print(f"  output_text长度: {len(str(output_text))}")
@@ -102,7 +107,8 @@ class CultureLLMNewFormatDataset(Dataset):
         # 完整的文本（用于语言建模）
         # 🔧 修复：使用空格分隔而不是换行符，避免tokenizer自动格式化
         # 这样模型会学习：给定 instruction + input，生成 output
-        full_text = f"{full_input} {output_text}"
+        # 🔧 修复双空格问题：确保只有一个空格分隔
+        full_text = f"{full_input.rstrip()} {output_text}"
 
         # 🔍 关键调试：检查构建后的full_text
         if idx < 5:
@@ -145,8 +151,8 @@ class CultureLLMNewFormatDataset(Dataset):
                         print(f"      token_{len(input_ids)-15+i}: {token_id}=(解码失败)")
 
         # 2. 正确计算input_length - 确保tokenizer参数一致！
-        # 🔧 修复：使用空格分隔，与full_text格式保持一致
-        input_with_space = f"{full_input} "
+        # 🔧 修复：使用空格分隔，与full_text格式保持一致，避免双空格
+        input_with_space = f"{full_input.rstrip()} "
         encoded_input = self.tokenizer(
             input_with_space,
             max_length=self.max_length,
@@ -159,7 +165,7 @@ class CultureLLMNewFormatDataset(Dataset):
         # ✅ 关键修复：正确计算input_length，避免padding污染
         # 方法：直接tokenize输入部分，不使用padding，然后计算实际长度
         encoded_input_no_pad = self.tokenizer(
-            input_with_space,
+            f"{full_input.rstrip()} ",
             truncation=True,
             return_tensors='pt',
             add_special_tokens=True,
@@ -184,7 +190,7 @@ class CultureLLMNewFormatDataset(Dataset):
         max_allowed_input_length = max(0, total_non_pad - min_output_tokens)
 
         if input_length >= max_allowed_input_length:
-            print(f"⚠️ 样本{idx}: input_length({input_length})过大，调整为{max_allowed_input_length}")
+            # print(f"⚠️ 样本{idx}: input_length({input_length})过大，调整为{max_allowed_input_length}")  # 注释掉噪音日志
             input_length = max_allowed_input_length
 
         # 🔧 额外验证：检查是否正确识别了<|eot_id|>
@@ -475,10 +481,16 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     # 🔧 修复：训练时的格式改为：full_input + " " + output，所以生成时也用空格
     # 训练时的格式：full_input = f"{instruction}\n{input_text}"，然后添加 {output}
     # 所以生成时应该给模型：full_input + " "，让它生成output
+
+    # 🔧 修复：移除instruction中的"### Answer:"部分，与训练时保持一致
+    if "### Answer:" in instruction:
+        instruction = instruction.split("### Answer:")[0].strip()
+
     if input_text:
-        full_input = f"{instruction}\n{input_text} "  # 与训练时的full_text开头一致
+        full_input = f"{instruction}\n{input_text}"
+        full_input = f"{full_input.rstrip()} "  # 避免双空格
     else:
-        full_input = f"{instruction} "  # 与训练时的full_text开头一致
+        full_input = f"{instruction.rstrip()} "  # 避免双空格
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
