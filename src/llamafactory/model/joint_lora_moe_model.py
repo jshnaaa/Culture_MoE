@@ -145,8 +145,12 @@ class MoEExpert(nn.Module):
             # print(f"    🔍 up_proj weight NaN: {up_weight_has_nan}")
 
             if gate_weight_has_nan or up_weight_has_nan:
-                print("    🚨 专家权重包含NaN，重新初始化并返回零输出!")
-                self._init_weights()
+                print(f"    🚨 专家权重包含NaN，重新初始化并返回零输出!")
+                # 更保守的重新初始化
+                with torch.no_grad():
+                    self.gate_proj.weight.normal_(0.0, 0.01)  # 更小的std
+                    self.up_proj.weight.normal_(0.0, 0.01)
+                    self.down_proj.weight.normal_(0.0, 0.01)
                 return torch.zeros_like(x)
 
             # 添加调试信息：检查投影层输出
@@ -410,8 +414,8 @@ class MoELayer(nn.Module):
             pooled = hidden_states.mean(dim=1)  # [B, H]
             # 移除pooled的数值限制
 
-            # 路由计算 - 使用更低温度增强专家选择的区分度
-            all_expert_weights, router_logits = self.router(pooled, temperature=0.3)
+            # 路由计算 - 平衡区分度和稳定性
+            all_expert_weights, router_logits = self.router(pooled, temperature=0.4)
 
             # 🔧 实现Top-2激活机制
             # 1. 选择top-2专家
@@ -448,7 +452,7 @@ class MoELayer(nn.Module):
                     expert_std = expert_output.std().item()
                     expert_min = expert_output.min().item()
                     expert_max = expert_output.max().item()
-                    print(f"    🔍 专家最终输出: mean={expert_mean:.6f}, std={expert_std:.6f}, range=[{expert_min:.3f}, {expert_max:.3f}]")
+                    print(f"    🔍 专家{expert_idx}最终输出: mean={expert_mean:.6f}, std={expert_std:.6f}, range=[{expert_min:.3f}, {expert_max:.3f}]")
 
                     # 检查专家输出
                     if not (torch.isnan(expert_output).any() or torch.isinf(expert_output).any()):
