@@ -10,17 +10,18 @@ echo "同时训练预训练LoRA适配器和新增MoE层"
 echo "======================================="
 
 # 参数设置
-BACKBONE=${1:-"llama"}  # 默认使用qwen2.5-7B
+BACKBONE=${1:-"llama"}  # 默认使用llama
 DATA_ID=${2:-"2"}
-NUM_MOE_EXPERTS=${3:-"4"}  # MoE专家数量
-USE_CULTURE_LOSS=${4:-"false"}
-NUM_GPUS=${5:-"2"}
-LORA_RANK=${6:-"8"}   # LoRA rank
-LORA_ALPHA=${7:-"16"}  # LoRA alpha
+USE_SHARED=${3:-"true"}  # 是否使用共享专家，默认为true
+NUM_MOE_EXPERTS=${4:-"4"}  # MoE专家数量
+USE_CULTURE_LOSS=${5:-"false"}
+NUM_GPUS=${6:-"2"}
+LORA_RANK=${7:-"8"}   # LoRA rank
+LORA_ALPHA=${8:-"16"}  # LoRA alpha
 
 # 检查参数
-if [ "$#" -gt 7 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [num_moe_experts] [use_culture_loss] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 8 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [num_moe_experts] [use_culture_loss] [num_gpus] [lora_rank] [lora_alpha]"
     exit 1
 fi
 
@@ -85,13 +86,14 @@ fi
 
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="/root/autodl-fs/joint_lora_moe/${MODEL_NAME}_${DATASET_TAG}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/joint_lora_moe/${MODEL_NAME}_${DATASET_TAG}_shared${USE_SHARED}_${TIMESTAMP}"
 
 echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
 echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
 echo "  总层数: $TOTAL_LAYERS"
 echo "  训练模式: 联合训练 (LoRA + MoE)"
+echo "  共享专家: $USE_SHARED"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  文化损失: $USE_CULTURE_LOSS"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
@@ -137,6 +139,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
     },
     "training_config": {
         "training_mode": "joint_lora_moe",
+        "use_shared_expert": $USE_SHARED,
         "moe_experts": $NUM_MOE_EXPERTS,
         "use_culture_loss": $USE_CULTURE_LOSS,
         "lora_rank": $LORA_RANK,
@@ -228,6 +231,7 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
         echo "  - 联合训练: 同时优化预训练LoRA + 新增MoE层"
         echo "  - LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
         echo "  - MoE专家数: $NUM_MOE_EXPERTS"
+        echo "  - 共享专家: $USE_SHARED"
         echo "  - 分层学习率: Base LoRA=$LEARNING_RATE_BASE, MoE=$LEARNING_RATE_MOE"
         echo "  - 文化损失: $USE_CULTURE_LOSS"
         echo "  - 序列长度: $MAX_SEQ_LEN"
