@@ -1050,6 +1050,10 @@ def main():
                     nan_rate, nan_count, total_calls = actual_model.moe_layer.get_nan_stats()
                     print(f"    MoE NaN统计: {nan_count}/{total_calls} ({nan_rate:.2%}) - Epoch {epoch + 1}")
 
+                    # 如果有NaN，显示更详细的信息
+                    if nan_count > 0:
+                        print(f"      ⚠️ 检测到 {nan_count} 次NaN，占总前向传播的 {nan_rate:.2%}")
+
                     # 重置统计计数器，为下一个epoch做准备
                     actual_model.moe_layer.reset_nan_stats()
             except Exception as e:

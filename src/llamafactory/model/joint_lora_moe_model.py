@@ -130,7 +130,8 @@ class MoEExpert(nn.Module):
             # 减少频繁的权重检查，只在输出异常时才检查权重
             if torch.isnan(gate_output).any() or torch.isinf(gate_output).any() or \
                torch.isnan(up_output).any() or torch.isinf(up_output).any():
-                print(f"    🚨 专家权重包含NaN，重新初始化并返回零输出!")
+                # 不打印详细信息，让MoELayer统一处理
+                # print(f"    🚨 专家权重包含NaN，重新初始化并返回零输出!")
                 # 重新初始化所有权重
                 self._init_weights()
                 return torch.zeros_like(x)
@@ -412,10 +413,16 @@ class MoELayer(nn.Module):
 
                     # 检查专家输出
                     if not (torch.isnan(expert_output).any() or torch.isinf(expert_output).any()):
+                        # 额外检查：如果专家输出全为零，可能是内部NaN导致的
+                        if torch.all(expert_output == 0) and torch.all(hidden_states != 0):
+                            # 暂时注释掉这个警告
+                            # print(f"🚨 专家{expert_idx}输出全零(可能内部NaN)，使用零输出!")
+                            current_nan_detected = True
                         expert_outputs[expert_idx] = expert_output
                         valid_experts += 1
                     else:
-                        print(f"🚨 专家{expert_idx}输出无效(NaN/Inf)，使用零输出!")
+                        # 暂时注释掉这个警告
+                        # print(f"🚨 专家{expert_idx}输出无效(NaN/Inf)，使用零输出!")
                         expert_outputs[expert_idx] = torch.zeros_like(hidden_states)
                         current_nan_detected = True
 
@@ -636,12 +643,12 @@ class JointLoRAMoEModel(nn.Module):
         # print("🔧 启用增量MoE架构：MoE作为基础LoRA的增量调整")  # 减少日志
         moe_delta, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
 
-        # 关键调试：检查MoE增量输出（只在异常时打印）
+        # 关键调试：检查MoE增量输出（只在异常时打印）- 暂时注释掉
         moe_std = moe_delta.std().item()
-        if moe_std < 1e-6:
-            print(f"⚠️ 警告: MoE增量几乎为零 (std={moe_std:.8f})!")
-        elif moe_std > 5.0:
-            print(f"⚠️ 警告: MoE增量过大 (std={moe_std:.6f})，应该是小的调整!")
+        # if moe_std < 1e-6:
+        #     print(f"⚠️ 警告: MoE增量几乎为零 (std={moe_std:.8f})!")
+        # elif moe_std > 5.0:
+        #     print(f"⚠️ 警告: MoE增量过大 (std={moe_std:.6f})，应该是小的调整!")
 
         # 🔧 关键修改：实现增量架构
         # 保存原始基础LoRA输出
@@ -703,14 +710,14 @@ class JointLoRAMoEModel(nn.Module):
                 print(f"🔧 Temp lm_head created with std=0.02")
             logits = self.temp_lm_head(final_hidden_states)
 
-        # 关键调试：检查最终logits（只在异常时打印）
+        # 关键调试：检查最终logits（只在异常时打印）- 暂时注释掉
         logits_std = logits.std().item()
-        if logits_std < 1e-6:
-            print(f"⚠️ 警告: Logits几乎为零 (std={logits_std:.8f})!")
-        elif torch.isnan(logits).any():
-            print(f"⚠️ 警告: Logits包含NaN!")
-        elif torch.isinf(logits).any():
-            print(f"⚠️ 警告: Logits包含Inf!")
+        # if logits_std < 1e-6:
+        #     print(f"⚠️ 警告: Logits几乎为零 (std={logits_std:.8f})!")
+        # elif torch.isnan(logits).any():
+        #     print(f"⚠️ 警告: Logits包含NaN!")
+        # elif torch.isinf(logits).any():
+        #     print(f"⚠️ 警告: Logits包含Inf!")
 
         # # 详细logits信息（注释掉）
         # logits_range = f"min={logits.min().item():.3f}, max={logits.max().item():.3f}"
@@ -744,8 +751,9 @@ class JointLoRAMoEModel(nn.Module):
                 total_labels = shift_labels.numel()
 
                 # 🔍 损失调试信息（简化版，只在异常时打印）
-                if shift_valid == 0:
-                    print(f"⚠️ 警告: 没有有效训练标签!")
+                # 暂时注释掉所有标签相关警告，专注解决evaluation后的日志问题
+                # if shift_valid == 0:
+                #     print(f"⚠️ 警告: 没有有效训练标签!")
                 # 注释掉有效标签过少的警告，因为单个token的标签是正常的
                 # elif shift_valid < 3:  # 只在标签过少时警告
                 #     print(f"⚠️ 警告: 有效标签过少: {shift_valid}/{total_labels}")
