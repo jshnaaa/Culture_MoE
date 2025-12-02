@@ -998,15 +998,15 @@ class JointLoRAMoEModel(nn.Module):
         print(f"  - MoE weights: {moe_path}")
         print(f"  - Config: {config_path}")
 
-    def generate(self, input_ids, attention_mask=None, max_new_tokens=150,
+    def generate(self, input_ids, attention_mask=None, max_new_tokens=10,
                  do_sample=False, temperature=0.7, pad_token_id=None, eos_token_id=None, **kwargs):
         """
-        改进的生成方法 - 确保使用MoE层
+        改进的生成方法 - 专为单数字答案优化
 
         Args:
             input_ids: 输入token ids
             attention_mask: 注意力掩码
-            max_new_tokens: 最大生成token数
+            max_new_tokens: 最大生成token数（默认10，对单数字答案足够）
             do_sample: 是否采样
             temperature: 温度
             pad_token_id: padding token id
@@ -1061,8 +1061,18 @@ class JointLoRAMoEModel(nn.Module):
                 # if step < 3:
                 #     print(f"🔍 Step {step} - Token: {next_token_id.item()}")
 
-                # 改进的重复检测和处理
+                # 🔧 数字答案检测和早停机制
                 current_token = next_token_id.item()
+
+                # 检查是否生成了有效的数字答案
+                # 对于选择题，我们期望的是单个数字 1, 2, 3, 4
+                # 这些数字的token ID通常是: 16='1', 17='2', 18='3', 19='4'
+                if step == 0:  # 第一个生成的token
+                    if current_token in [16, 17, 18, 19]:  # 数字1-4的token ID
+                        # 生成了有效数字，立即停止
+                        current_ids = torch.cat([current_ids, next_token_id], dim=-1)
+                        break
+
                 last_few_tokens.append(current_token)
                 if len(last_few_tokens) > 5:  # 只保留最近5个token
                     last_few_tokens.pop(0)
@@ -1072,11 +1082,11 @@ class JointLoRAMoEModel(nn.Module):
                     last_token = current_ids[:, -1].item()
                     if current_token == last_token:
                         repeated_count += 1
-                        print(f"⚠️ Repeat {current_token} (#{repeated_count})")
+                        # print(f"⚠️ Repeat {current_token} (#{repeated_count})")
 
                         # 不切换到base model，而是使用更强的惩罚策略
                         if repeated_count >= max_repeated_allowed:
-                            print(f"🚨 Too many repeats, applying diversity boost")
+                            # print(f"🚨 Too many repeats, applying diversity boost")
 
                             # 惩罚最近出现的所有token
                             for token in set(last_few_tokens):
@@ -1089,7 +1099,7 @@ class JointLoRAMoEModel(nn.Module):
                             next_token_id = torch.multinomial(probs, num_samples=1)
                             current_token = next_token_id.item()
 
-                            print(f"🔍 Diversity token: {current_token}")
+                            # print(f"🔍 Diversity token: {current_token}")
                             repeated_count = 0  # 重置计数器
 
                         else:
@@ -1105,7 +1115,7 @@ class JointLoRAMoEModel(nn.Module):
                                 next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
 
                             current_token = next_token_id.item()
-                            print(f"🔍 New token: {current_token}")
+                            # print(f"🔍 New token: {current_token}")
                     else:
                         repeated_count = 0  # 重置计数器
 

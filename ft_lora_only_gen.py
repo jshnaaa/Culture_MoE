@@ -88,22 +88,22 @@ class CultureLLMNewFormatDataset(Dataset):
         # 🔧 修复：保留instruction中的"### Answer:"，这是给模型的提示
         # 我们要让模型看到"### Answer:"，但不学习它，只学习后面的答案
 
-        # 🔍 关键调试：检查原始output_text内容
-        if idx < 5:
-            print(f"\n🔍 样本{idx} 原始数据:")
-            print(f"  instruction长度: {len(instruction)}")
-            print(f"  instruction开头: {repr(instruction[:100])}")
-            print(f"  instruction结尾: {repr(instruction[-100:])}")
-            print(f"  output_text: {repr(output_text)}")
-            print(f"  output_text类型: {type(output_text)}")
-            print(f"  output_text长度: {len(str(output_text))}")
+        # 🔍 关键调试：检查原始output_text内容（注释掉详细调试）
+        # if idx < 5:
+        #     print(f"\n🔍 样本{idx} 原始数据:")
+        #     print(f"  instruction长度: {len(instruction)}")
+        #     print(f"  instruction开头: {repr(instruction[:100])}")
+        #     print(f"  instruction结尾: {repr(instruction[-100:])}")
+        #     print(f"  output_text: {repr(output_text)}")
+        #     print(f"  output_text类型: {type(output_text)}")
+        #     print(f"  output_text长度: {len(str(output_text))}")
 
-            # 检查"### Answer:"的位置
-            if "### Answer:" in instruction:
-                answer_pos = instruction.find("### Answer:")
-                print(f"  '### Answer:'位置: {answer_pos}")
-                print(f"  '### Answer:'前内容末尾: {repr(instruction[answer_pos-20:answer_pos])}")
-                print(f"  '### Answer:'后内容: {repr(instruction[answer_pos:answer_pos+20])}")
+        #     # 检查"### Answer:"的位置
+        #     if "### Answer:" in instruction:
+        #         answer_pos = instruction.find("### Answer:")
+        #         print(f"  '### Answer:'位置: {answer_pos}")
+        #         print(f"  '### Answer:'前内容末尾: {repr(instruction[answer_pos-20:answer_pos])}")
+        #         print(f"  '### Answer:'后内容: {repr(instruction[answer_pos:answer_pos+20])}")
 
         # 构建完整的输入和输出
         # 格式：instruction + input → output
@@ -118,11 +118,11 @@ class CultureLLMNewFormatDataset(Dataset):
         # 🔧 修复双空格问题：确保只有一个空格分隔
         full_text = f"{full_input.rstrip()} {output_text}"
 
-        # 🔍 关键调试：检查构建后的full_text
-        if idx < 5:
-            print(f"  构建的full_text末尾: {repr(full_text[-50:])}")
-            print(f"  full_input末尾: {repr(full_input[-30:])}")
-            print(f"  期望的输出部分: {repr(output_text)}")
+        # 🔍 关键调试：检查构建后的full_text（注释掉详细调试）
+        # if idx < 5:
+        #     print(f"  构建的full_text末尾: {repr(full_text[-50:])}")
+        #     print(f"  full_input末尾: {repr(full_input[-30:])}")
+        #     print(f"  期望的输出部分: {repr(output_text)}")
 
         # 🔧 关键修复：正确的标签掩码和tokenizer一致性
         # 1. 先tokenize完整文本（统一使用add_special_tokens=True）
@@ -138,25 +138,25 @@ class CultureLLMNewFormatDataset(Dataset):
         input_ids = encoded['input_ids'].squeeze(0)
         attention_mask = encoded['attention_mask'].squeeze(0)
 
-        # 🔍 关键调试：检查tokenization结果
-        if idx < 5:
-            print(f"  🔍 Tokenization结果:")
-            print(f"    input_ids长度: {len(input_ids)}")
+        # 🔍 关键调试：检查tokenization结果（注释掉详细调试）
+        # if idx < 5:
+        #     print(f"  🔍 Tokenization结果:")
+        #     print(f"    input_ids长度: {len(input_ids)}")
 
-            # 解码完整序列看看实际内容
-            full_decoded = self.tokenizer.decode(input_ids, skip_special_tokens=True)
-            print(f"    完整解码内容: {repr(full_decoded)}")
+        #     # 解码完整序列看看实际内容
+        #     full_decoded = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+        #     print(f"    完整解码内容: {repr(full_decoded)}")
 
-            # 检查最后10个token（应该包含output部分）
-            last_tokens = input_ids[-15:].tolist()
-            print(f"    最后15个token_ids: {last_tokens}")
-            for i, token_id in enumerate(last_tokens):
-                if token_id != self.tokenizer.pad_token_id:  # 跳过padding token
-                    try:
-                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
-                        print(f"      token_{len(input_ids)-15+i}: {token_id}='{token_text}'")
-                    except:
-                        print(f"      token_{len(input_ids)-15+i}: {token_id}=(解码失败)")
+        #     # 检查最后10个token（应该包含output部分）
+        #     last_tokens = input_ids[-15:].tolist()
+        #     print(f"    最后15个token_ids: {last_tokens}")
+        #     for i, token_id in enumerate(last_tokens):
+        #         if token_id != self.tokenizer.pad_token_id:  # 跳过padding token
+        #             try:
+        #                 token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+        #                 print(f"      token_{len(input_ids)-15+i}: {token_id}='{token_text}'")
+        #             except:
+        #                 print(f"      token_{len(input_ids)-15+i}: {token_id}=(解码失败)")
 
         # 2. 🔧 关键修复：精确计算input_length，只让模型学习答案部分
         # 我们需要找到"### Answer:"之后空格的位置，让模型从那里开始学习
@@ -183,12 +183,13 @@ class CultureLLMNewFormatDataset(Dataset):
         input_length = len(encoded_input_no_pad['input_ids'][0])
 
         # 🔍 调试：检查input_length计算
-        if idx < 5:
-            print(f"  🔧 Input length计算:")
-            print(f"    input_until_answer_prompt: {repr(input_until_answer_prompt)}")
-            print(f"    计算出的input_length: {input_length}")
-            print(f"    应该掩码的部分: 0 到 {input_length-1}")
-            print(f"    应该学习的部分: {input_length} 开始")
+        # 注释掉详细调试信息
+        # if idx < 5:
+        #     print(f"  🔧 Input length计算:")
+        #     print(f"    input_until_answer_prompt: {repr(input_until_answer_prompt)}")
+        #     print(f"    计算出的input_length: {input_length}")
+        #     print(f"    应该掩码的部分: 0 到 {input_length-1}")
+        #     print(f"    应该学习的部分: {input_length} 开始")
 
         # 🔧 Llama特殊token处理：正确识别padding token
         # 获取正确的pad_token_id
@@ -234,38 +235,38 @@ class CultureLLMNewFormatDataset(Dataset):
             valid_labels = (labels != -100).sum().item()
             print(f"   强制掩码后有效标签数: {valid_labels}")
 
-        # 🔍 详细的labels调试信息（前5个样本）
-        if idx < 5:
-            print(f"\n📋 样本 {idx} - 有效标签数: {valid_labels}")
-            print(f"  🔧 掩码分析:")
-            print(f"    原始文本: '{full_text[:100]}...'")
-            print(f"    输入部分: '{full_input[:100]}...'")
-            print(f"    输出部分: '{output_text}'")
-            print(f"    精确计算的input_length: {input_length}")
-            print(f"    总序列长度: {len(input_ids)}")
-            print(f"    实际非padding长度: {(input_ids != pad_token_id).sum().item()}")
+        # 🔍 详细的labels调试信息（注释掉详细调试）
+        # if idx < 5:
+        #     print(f"\n📋 样本 {idx} - 有效标签数: {valid_labels}")
+        #     print(f"  🔧 掩码分析:")
+        #     print(f"    原始文本: '{full_text[:100]}...'")
+        #     print(f"    输入部分: '{full_input[:100]}...'")
+        #     print(f"    输出部分: '{output_text}'")
+        #     print(f"    精确计算的input_length: {input_length}")
+        #     print(f"    总序列长度: {len(input_ids)}")
+        #     print(f"    实际非padding长度: {(input_ids != pad_token_id).sum().item()}")
 
-            # 检查掩码的具体位置
-            mask_positions = (labels == -100).nonzero(as_tuple=True)[0]
-            valid_positions = (labels != -100).nonzero(as_tuple=True)[0]
-            print(f"    掩码位置数: {len(mask_positions)}")
-            print(f"    有效位置数: {len(valid_positions)}")
+        #     # 检查掩码的具体位置
+        #     mask_positions = (labels == -100).nonzero(as_tuple=True)[0]
+        #     valid_positions = (labels != -100).nonzero(as_tuple=True)[0]
+        #     print(f"    掩码位置数: {len(mask_positions)}")
+        #     print(f"    有效位置数: {len(valid_positions)}")
 
-            if len(valid_positions) > 0:
-                print(f"    有效位置范围: {valid_positions[0].item()} - {valid_positions[-1].item()}")
-                # 显示前几个有效token
-                for i, pos in enumerate(valid_positions[:3]):
-                    token_id = input_ids[pos].item()
-                    try:
-                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
-                        print(f"      位置{pos.item()}: {token_id}='{token_text}'")
-                    except:
-                        print(f"      位置{pos.item()}: {token_id}=(解码失败)")
+        #     if len(valid_positions) > 0:
+        #         print(f"    有效位置范围: {valid_positions[0].item()} - {valid_positions[-1].item()}")
+        #         # 显示前几个有效token
+        #         for i, pos in enumerate(valid_positions[:3]):
+        #             token_id = input_ids[pos].item()
+        #             try:
+        #                 token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+        #                 print(f"      位置{pos.item()}: {token_id}='{token_text}'")
+        #             except:
+        #                 print(f"      位置{pos.item()}: {token_id}=(解码失败)")
 
-            # 检查是否input_length计算有问题
-            if input_length >= len(input_ids) - 5:  # 如果输入长度几乎占满整个序列
-                print(f"  🚨 问题: input_length({input_length})过大，几乎占满整个序列!")
-                print(f"    这会导致几乎没有训练目标")
+        #     # 检查是否input_length计算有问题
+        #     if input_length >= len(input_ids) - 5:  # 如果输入长度几乎占满整个序列
+        #         print(f"  🚨 问题: input_length({input_length})过大，几乎占满整个序列!")
+        #         print(f"    这会导致几乎没有训练目标")
 
         # 只对前5个样本进行详细调试
         if idx < 5:
@@ -520,12 +521,12 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=max_new_tokens,
+                max_new_tokens=2,  # 🔧 减少到2个token，足够生成单个数字
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=True,  # 启用采样避免重复
-                temperature=0.8,  # 适中的温度
-                repetition_penalty=1.1  # 添加重复惩罚
+                do_sample=False,  # 🔧 使用贪心解码，确保稳定输出
+                temperature=0.7,  # 保持适中的温度
+                repetition_penalty=1.0  # 🔧 减少重复惩罚，避免影响数字生成
             )
         else:
             # 回退到标准generate方法
