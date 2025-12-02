@@ -1041,6 +1041,19 @@ def main():
             if use_culture_loss:
                 print(f"    Culture Loss: {train_metrics['culture_loss']:.4f}")
 
+            # 🔧 打印MoE层NaN统计信息
+            try:
+                # 获取实际的模型（处理DDP包装）
+                actual_model = model.module if hasattr(model, 'module') else model
+                if hasattr(actual_model, 'moe_layer'):
+                    nan_rate, nan_count, total_calls = actual_model.moe_layer.get_nan_stats()
+                    print(f"    MoE NaN统计: {nan_count}/{total_calls} ({nan_rate:.2%}) - Epoch {epoch + 1}")
+
+                    # 重置统计计数器，为下一个epoch做准备
+                    actual_model.moe_layer.reset_nan_stats()
+            except Exception as e:
+                print(f"    ⚠️ 无法获取MoE NaN统计: {e}")
+
         # 每eval_interval个epoch进行一次验证
         if (epoch + 1) % args.eval_interval == 0:
             # 验证

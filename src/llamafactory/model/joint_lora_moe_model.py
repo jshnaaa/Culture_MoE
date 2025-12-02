@@ -362,6 +362,10 @@ class MoELayer(nn.Module):
         self.hidden_dim = config.moe_hidden_dim
         self.dtype = dtype
 
+        # 🔧 添加NaN统计计数器
+        self.nan_count = 0
+        self.total_forward_calls = 0
+
         # 创建路由器 - 强制使用Float32以确保数值稳定
         self.router = MoERouter(
             hidden_dim=config.moe_hidden_dim,
@@ -391,6 +395,18 @@ class MoELayer(nn.Module):
         # 简化：移除复杂的门控和共享专家机制，只保留基本的专家混合
         # 不使用共享专家和门控，避免额外的复杂性
 
+    def get_nan_stats(self):
+        """获取NaN统计信息"""
+        if self.total_forward_calls == 0:
+            return 0.0, 0, 0
+        nan_rate = self.nan_count / self.total_forward_calls
+        return nan_rate, self.nan_count, self.total_forward_calls
+
+    def reset_nan_stats(self):
+        """重置NaN统计"""
+        self.nan_count = 0
+        self.total_forward_calls = 0
+
     def forward(self, hidden_states):
         """
         前向传播 - 极简版本，只保留基本的专家混合
@@ -404,6 +420,10 @@ class MoELayer(nn.Module):
             aux_loss: 辅助损失
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
+
+        # 🔧 增加前向传播调用计数
+        self.total_forward_calls += 1
+        current_nan_detected = False
 
         try:
             # 移除过度严格的输入限制，只检查NaN/Inf
@@ -463,10 +483,12 @@ class MoELayer(nn.Module):
                     else:
                         print(f"🚨 专家{expert_idx}输出无效(NaN/Inf)，使用零输出!")
                         expert_outputs[expert_idx] = torch.zeros_like(hidden_states)
+                        current_nan_detected = True
 
                 except Exception as e:
                     print(f"⚠️ Expert {expert_idx} failed: {e}, using zeros")
                     expert_outputs[expert_idx] = torch.zeros_like(hidden_states)
+                    current_nan_detected = True
 
             # 3. Top-2专家输出混合
             if valid_experts == 0:
@@ -544,6 +566,10 @@ class MoELayer(nn.Module):
                     if param.requires_grad:
                         aux_loss = aux_loss + torch.sum(param * param) * 1e-8
                         break
+
+            # 🔧 更新NaN计数
+            if current_nan_detected:
+                self.nan_count += 1
 
             return final_output, expert_weights, aux_loss
 
