@@ -50,173 +50,107 @@ class JointLoRAMoEConfig:
 
 
 class MoEExpert(nn.Module):
-    """MoE专家层 - 极度保守的数值稳定版本"""
+    """MoE专家层 - 数值稳定且有效输出版本"""
 
     def __init__(self, hidden_dim: int, intermediate_dim: int, dropout: float = 0.1, dtype: torch.dtype = torch.float16):
         super().__init__()
-        # 修复：恢复合理的中间维度，确保专家有足够的表达能力
-        safe_intermediate_dim = min(intermediate_dim, hidden_dim * 2)  # 恢复为合理的大小
+        # 🔧 关键修复：使用更大的中间维度，确保专家有足够表达能力
+        # 之前的限制太严格，导致专家容量不足
+        self.intermediate_dim = intermediate_dim  # 使用完整的intermediate_dim，不限制
 
-        self.gate_proj = nn.Linear(hidden_dim, safe_intermediate_dim, bias=True, dtype=dtype)  # 添加bias
-        self.up_proj = nn.Linear(hidden_dim, safe_intermediate_dim, bias=True, dtype=dtype)
-        self.down_proj = nn.Linear(safe_intermediate_dim, hidden_dim, bias=True, dtype=dtype)
-        self.act_fn = nn.GELU()  # 使用更稳定的GELU而不是SiLU
+        self.gate_proj = nn.Linear(hidden_dim, self.intermediate_dim, bias=True, dtype=dtype)
+        self.up_proj = nn.Linear(hidden_dim, self.intermediate_dim, bias=True, dtype=dtype)
+        self.down_proj = nn.Linear(self.intermediate_dim, hidden_dim, bias=True, dtype=dtype)
+        self.act_fn = nn.SiLU()  # 恢复SiLU，配合更好的初始化
         self.dropout = nn.Dropout(dropout)
-        # 暂时移除LayerNorm，可能导致数值不稳定
-        # self.layer_norm = nn.LayerNorm(safe_intermediate_dim, dtype=dtype)
 
-        # 保守的初始化
+        # 保守但有效的初始化
         self._init_weights()
 
     def _init_weights(self):
-        """修复权重初始化 - 防NaN版本"""
-        # 🔧 根据新的归一化范围[-3,3]调整初始化
-        gate_up_std = 0.05   # 增加初始化方差，匹配[-3,3]输入范围
-        down_std = 0.02      # 相应增加下游投影初始化
+        """改进的权重初始化 - 数值稳定且有效输出版本"""
+        # 🔧 关键修复：使用更合理的初始化策略
+        # 之前的初始化太保守，导致专家学不到有效特征
+
+        # 基于Xavier/Glorot初始化，但调整为适合当前架构
+        fan_in = self.gate_proj.weight.size(1)  # input dimension
+        fan_out = self.gate_proj.weight.size(0)  # output dimension
+
+        # 使用适中的标准差，确保既稳定又有学习能力
+        gate_up_std = (2.0 / (fan_in + fan_out)) ** 0.5 * 0.8  # 稍微保守的Xavier
+        down_std = (2.0 / (self.intermediate_dim + fan_in)) ** 0.5 * 0.5  # 更保守的输出层
 
         try:
+            # 初始化gate_proj和up_proj
             for module in [self.gate_proj, self.up_proj]:
-                # 清零权重和偏置，防止NaN残留
-                with torch.no_grad():
-                    module.weight.zero_()
-                    if module.bias is not None:
-                        module.bias.zero_()
-
-                # 安全的正态分布初始化
                 nn.init.normal_(module.weight, mean=0.0, std=gate_up_std)
                 if module.bias is not None:
-                    nn.init.constant_(module.bias, 0.0)
+                    nn.init.zeros_(module.bias)
 
-                # 检查初始化后是否有NaN
-                if torch.isnan(module.weight).any() or torch.isinf(module.weight).any():
-                    print(f"    ⚠️ NaN detected in {module.__class__.__name__} after init, using zeros")
-                    module.weight.zero_()
-
-            # down_proj安全初始化
-            with torch.no_grad():
-                self.down_proj.weight.zero_()
-                if self.down_proj.bias is not None:
-                    self.down_proj.bias.zero_()
-
+            # 初始化down_proj（输出层更保守）
             nn.init.normal_(self.down_proj.weight, mean=0.0, std=down_std)
             if self.down_proj.bias is not None:
-                nn.init.constant_(self.down_proj.bias, 0.0)
+                nn.init.zeros_(self.down_proj.bias)
 
-            if torch.isnan(self.down_proj.weight).any() or torch.isinf(self.down_proj.weight).any():
-                print("    ⚠️ NaN detected in down_proj after init, using zeros")
-                self.down_proj.weight.zero_()
-
-            # print(f"🔧 Expert safely initialized: gate/up_std={gate_up_std:.4f}, down_std={down_std:.4f}")  # 注释掉频繁日志
+            # 检查初始化结果
+            for name, module in [("gate_proj", self.gate_proj), ("up_proj", self.up_proj), ("down_proj", self.down_proj)]:
+                if torch.isnan(module.weight).any() or torch.isinf(module.weight).any():
+                    print(f"⚠️ NaN detected in {name} after init, fallback to zeros")
+                    nn.init.zeros_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
 
         except Exception as e:
             print(f"⚠️ Weight initialization failed: {e}")
-            # 最后的安全措施：全部置零
+            # 最后的安全措施：使用安全的小值初始化
             with torch.no_grad():
                 for module in [self.gate_proj, self.up_proj, self.down_proj]:
-                    module.weight.zero_()
+                    nn.init.normal_(module.weight, mean=0.0, std=0.01)
                     if module.bias is not None:
-                        module.bias.zero_()
+                        nn.init.zeros_(module.bias)
 
     def forward(self, x):
-        """前向传播 - 修复版本，减少过度限制"""
-        # 添加调试信息：检查模型模式和输入
-        # print(f"    🔍 Expert mode: training={self.training}")  # 注释掉详细调试
-        # input_mean = x.mean().item()
-        # input_std = x.std().item()
-        # print(f"    🔍 input: mean={input_mean:.6f}, std={input_std:.6f}")  # 注释掉详细调试
+        """前向传播 - 改进版本，平衡稳定性和有效性"""
 
-        # 🔧 关键修复：输入归一化，防止Float16溢出
+        # 输入有效性检查
         if torch.isnan(x).any() or torch.isinf(x).any():
             return torch.zeros_like(x)
 
-        # 🔧 调整归一化策略：减少压缩，保留更多信息
-        # 使用更温和的归一化，保留更多原始信号强度
-        x_normalized = torch.clamp(x / 5.0, min=-3.0, max=3.0)  # 线性缩放后clip，保留更多动态范围
+        # 🔧 关键修复：使用更温和的输入预处理
+        # 之前的归一化太激进，丢失了太多信息
+        # 只对极端值进行裁剪，保留大部分原始动态范围
+        x_processed = torch.clamp(x, min=-10.0, max=10.0)  # 更宽松的裁剪范围
 
         try:
-            # 第一阶段：gate和up投影 - 使用归一化输入
-            gate_output = self.gate_proj(x_normalized)
-            up_output = self.up_proj(x_normalized)
+            # 第一阶段：gate和up投影 - 使用处理后的输入
+            gate_output = self.gate_proj(x_processed)
+            up_output = self.up_proj(x_processed)
 
-            # 添加调试信息：检查投影层权重
-            gate_weight_has_nan = torch.isnan(self.gate_proj.weight).any() or torch.isinf(self.gate_proj.weight).any()
-            up_weight_has_nan = torch.isnan(self.up_proj.weight).any() or torch.isinf(self.up_proj.weight).any()
-            # print(f"    🔍 gate_proj weight NaN: {gate_weight_has_nan}")
-            # print(f"    🔍 up_proj weight NaN: {up_weight_has_nan}")
-
-            if gate_weight_has_nan or up_weight_has_nan:
+            # 🔧 简化权重检查：只在真正需要时检查和修复
+            # 减少频繁的权重检查，只在输出异常时才检查权重
+            if torch.isnan(gate_output).any() or torch.isinf(gate_output).any() or \
+               torch.isnan(up_output).any() or torch.isinf(up_output).any():
                 print(f"    🚨 专家权重包含NaN，重新初始化并返回零输出!")
-                # 更保守的重新初始化 + 权重约束
-                with torch.no_grad():
-                    self.gate_proj.weight.normal_(0.0, 0.005)  # 更小的std
-                    self.up_proj.weight.normal_(0.0, 0.005)
-                    self.down_proj.weight.normal_(0.0, 0.005)
-                    # 添加权重约束
-                    self.gate_proj.weight.clamp_(-0.1, 0.1)
-                    self.up_proj.weight.clamp_(-0.1, 0.1)
-                    self.down_proj.weight.clamp_(-0.1, 0.1)
-                return torch.zeros_like(x)
-
-            # 添加调试信息：检查投影层输出
-            gate_mean = gate_output.mean().item()
-            gate_std = gate_output.std().item()
-            up_mean = up_output.mean().item()
-            up_std = up_output.std().item()
-            # print(f"    🔍 gate_proj: mean={gate_mean:.6f}, std={gate_std:.6f}")
-            # print(f"    🔍 up_proj: mean={up_mean:.6f}, std={up_std:.6f}")
-
-            # 检查第一阶段输出 - 如果是NaN，强制重新初始化
-            if torch.isnan(gate_output).any() or torch.isinf(gate_output).any():
-                print("    ⚠️ gate_proj output is NaN, reinitializing weights...")
-                self._init_weights()
-                return torch.zeros_like(x)
-            if torch.isnan(up_output).any() or torch.isinf(up_output).any():
-                print("    ⚠️ up_proj output is NaN, reinitializing weights...")
+                # 重新初始化所有权重
                 self._init_weights()
                 return torch.zeros_like(x)
 
-            # 激活函数 - 移除激活前的限制
+            # 激活函数和元素乘法
             gate_activated = self.act_fn(gate_output)
-
-            # 添加调试信息：检查激活后的输出
-            gate_act_mean = gate_activated.mean().item()
-            gate_act_std = gate_activated.std().item()
-            # print(f"    🔍 gate_activated: mean={gate_act_mean:.6f}, std={gate_act_std:.6f}")
-
-            # 检查激活后的输出
-            if torch.isnan(gate_activated).any() or torch.isinf(gate_activated).any():
-                return torch.zeros_like(x)
-
-            # 元素乘法 - 移除过度限制
             intermediate = gate_activated * up_output
 
-            # 添加调试信息：检查元素乘法后的输出
-            inter_mean = intermediate.mean().item()
-            inter_std = intermediate.std().item()
-            # print(f"    🔍 intermediate: mean={inter_mean:.6f}, std={inter_std:.6f}")
-
-            # 暂时移除LayerNorm稳定化，可能是导致零输出的原因
-            # intermediate = self.layer_norm(intermediate)
-
-            # Dropout - 在推理时不应该有影响
+            # Dropout
             intermediate = self.dropout(intermediate)
 
-            # 最终投影 - 移除输出限制，让模型自由表达
+            # 最终投影
             output = self.down_proj(intermediate)
 
-            # 🔧 增量架构：MoE作为基础LoRA的小幅调整
-            # MoE应该产生小的增量调整，而不是替代基础LoRA
-            # 目标：MoE增量约为基础LoRA输出的5-10%
-            # 基础LoRA std≈2.2，MoE增量目标 std≈0.2-0.4
-            # 原始MoE std≈0.022，需要约10-20倍缩放
-            output = output * 2.0  # 小幅缩放，产生增量调整
+            # 🔧 关键修复：调整输出缩放，确保MoE产生有意义的增量
+            # 之前的缩放太小，导致MoE增量几乎为零
+            # 目标：产生与基础LoRA相当的输出范围，然后在MoE层级别控制影响权重
+            output = output * 5.0  # 增加缩放，让MoE有足够的表达能力
 
-            # 添加调试信息：检查最终输出（注释掉避免重复打印）
-            # output_mean = output.mean().item()
-            # output_std = output.std().item()
-            # print(f"    🔍 专家最终输出: mean={output_mean:.6f}, std={output_std:.6f}, range=[{output.min().item():.3f}, {output.max().item():.3f}]")
-
-            # 最终检查 - 只检查NaN/Inf，不限制数值范围
+            # 最终检查 - 只检查NaN/Inf
             if torch.isnan(output).any() or torch.isinf(output).any():
                 return torch.zeros_like(x)
 
@@ -241,16 +175,16 @@ class MoERouter(nn.Module):
 
         print(f"🔧 MoERouter initialized with Float32, router dtype: {self.router.weight.dtype}")
 
-        # 极保守的初始化 - 确保输出接近uniform
+        # 🔧 改进的路由器初始化 - 提高区分度
         with torch.no_grad():
-            # 权重初始化为极小值，确保初始输出接近uniform
-            nn.init.constant_(self.router.weight, 0.0)
-            # 偏置设置为小的负值，softmax后趋向uniform
-            nn.init.constant_(self.router.bias, -1.0)
+            # 使用小的随机初始化，而不是全零，这样路由器能更好地学习区分专家
+            nn.init.normal_(self.router.weight, mean=0.0, std=0.02)  # 小的随机初始化
+            # 偏置初始化为小的随机值，而不是固定值
+            nn.init.normal_(self.router.bias, mean=0.0, std=0.01)
 
-        # Float32路由器的保守权重限制
-        self.max_weight_value = 0.01   # 更保守的权重限制，防止专家权重爆炸
-        self.max_bias_value = 0.1      # 更保守的偏置限制
+        # Float32路由器的权重限制 - 放宽限制提高学习能力
+        self.max_weight_value = 0.1    # 放宽权重限制，让路由器有更多学习空间
+        self.max_bias_value = 0.5      # 放宽偏置限制
 
     def forward(self, x, temperature: float = 1.0):
         """
@@ -285,8 +219,8 @@ class MoERouter(nn.Module):
                 self.router.weight.data.clamp_(-self.max_weight_value, self.max_weight_value)
                 self.router.bias.data.clamp_(-self.max_bias_value, self.max_bias_value)
 
-            # 2. 输入预处理和dtype转换 - 使用与专家相同的归一化
-            x_safe = torch.clamp(x / 5.0, min=-3.0, max=3.0)  # 与专家网络保持一致的归一化
+            # 2. 输入预处理和dtype转换 - 使用更温和的预处理
+            x_safe = torch.clamp(x, min=-10.0, max=10.0)  # 更宽松的裁剪，与专家层一致
 
             # 转换为Float32进行路由计算，确保数值稳定
             x_float32 = x_safe.float()
@@ -438,8 +372,8 @@ class MoELayer(nn.Module):
             pooled = hidden_states.mean(dim=1)  # [B, H]
             # 移除pooled的数值限制
 
-            # 路由计算 - 平衡区分度和稳定性
-            all_expert_weights, router_logits = self.router(pooled, temperature=0.4)
+            # 路由计算 - 使用更高的温度提高区分度
+            all_expert_weights, router_logits = self.router(pooled, temperature=1.0)
 
             # 🔧 实现Top-2激活机制
             # 1. 选择top-2专家
@@ -452,10 +386,10 @@ class MoELayer(nn.Module):
             expert_weights = torch.zeros_like(all_expert_weights)  # [B, num_experts]
             expert_weights.scatter_(1, top_k_indices, top_k_weights)  # 将归一化权重分配给激活专家
 
-            # 检查路由器学习情况（只在异常时打印）
-            logits_diff = (top_k_logits[:, 0] - top_k_logits[:, 1]).mean().item()
-            if logits_diff < 0.05:  # 只在差异过小时警告
-                print(f"⚠️ 路由器区分度过低: {logits_diff:.3f}")
+            # 检查路由器学习情况（只在异常时打印）- 注释掉频繁警告
+            # logits_diff = (top_k_logits[:, 0] - top_k_logits[:, 1]).mean().item()
+            # if logits_diff < 0.05:  # 只在差异过小时警告
+            #     print(f"⚠️ 路由器区分度过低: {logits_diff:.3f}")
 
             # 2. 专家计算（Top-2版本）- 只计算激活的专家
             expert_outputs = {}  # 使用字典存储，只计算需要的专家
@@ -729,7 +663,7 @@ class JointLoRAMoEModel(nn.Module):
             moe_delta = self.hidden_proj_back(moe_delta)
 
         # MoE增量权重（控制MoE影响程度）
-        moe_influence_weight = 0.3  # 30%的影响权重，可调
+        moe_influence_weight = 0.5  # 50%的影响权重，增加MoE的作用
 
         # 组合输出：基础LoRA + 加权MoE增量
         combined_output = base_hidden_states + moe_influence_weight * moe_delta

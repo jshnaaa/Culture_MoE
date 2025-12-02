@@ -188,8 +188,9 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 # 数据集标签掩码验证（简化版，只在异常时打印）
                 if valid_labels == 0:
                     print(f"❌ 警告: Batch {batch_idx} Sample {i} 没有有效训练标签!")
-                elif valid_labels < 3:
-                    print(f"⚠️ 警告: Batch {batch_idx} Sample {i} 有效训练标签太少 ({valid_labels})")
+                # 注释掉有效标签过少的警告，因为单个token的标签是正常的
+                # elif valid_labels < 3:
+                #     print(f"⚠️ 警告: Batch {batch_idx} Sample {i} 有效训练标签太少 ({valid_labels})")
 
                 # # 详细验证信息（注释掉）
                 # print(f"🔍 数据集标签掩码验证 - Batch {batch_idx}, Sample {i}:")

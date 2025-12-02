@@ -490,20 +490,20 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             # 如果没有，添加提示
             full_input = f"{full_input.rstrip()} ### Answer: "
 
-    # 🔍 调试生成时的输入
-    print(f"🔍 生成时输入: {repr(full_input[-100:])}")  # 显示输入的最后100个字符
+    # 🔍 调试生成时的输入（注释掉详细调试）
+    # print(f"🔍 生成时输入: {repr(full_input[-100:])}")  # 显示输入的最后100个字符
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    # 🔍 调试tokenization结果
+    # 🔍 调试tokenization结果（注释掉详细调试）
     input_length = inputs['input_ids'].shape[1]
-    print(f"🔍 生成时input_ids长度: {input_length}")
+    # print(f"🔍 生成时input_ids长度: {input_length}")
 
     with torch.no_grad():
         # 检查模型类型，确定使用哪种generate方法
         model_class_name = model.__class__.__name__
-        print(f"🔍 生成时模型类型: {model_class_name}")  # 重新启用，检查模型类型
+        # print(f"🔍 生成时模型类型: {model_class_name}")  # 注释掉详细调试
 
         if 'JointLoRAMoE' in model_class_name or hasattr(model, 'moe_layer'):
             # 使用联合模型的自定义generate方法，确保通过MoE层
@@ -544,20 +544,20 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
     generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
-    # 🔍 详细的生成调试信息
-    print(f"🔍 生成结果调试:")
-    print(f"  生成的token数量: {len(generated_ids)}")
-    print(f"  生成的token IDs: {generated_ids.tolist()}")
-    print(f"  生成的文本: {repr(generated_text)}")
-    print(f"  生成文本长度: {len(generated_text)}")
+    # 🔍 详细的生成调试信息（注释掉详细调试）
+    # print(f"🔍 生成结果调试:")
+    # print(f"  生成的token数量: {len(generated_ids)}")
+    # print(f"  生成的token IDs: {generated_ids.tolist()}")
+    # print(f"  生成的文本: {repr(generated_text)}")
+    # print(f"  生成文本长度: {len(generated_text)}")
 
     if len(generated_text.strip()) == 0:
         print(f"⚠️ 生成为空!")
-    elif len(generated_ids) > 0:
-        # 检查第一个生成的token
-        first_token_id = generated_ids[0].item()
-        first_token_text = tokenizer.decode([first_token_id], skip_special_tokens=True)
-        print(f"  第一个token: {first_token_id} -> '{first_token_text}'")
+    # elif len(generated_ids) > 0:
+    #     # 检查第一个生成的token
+    #     first_token_id = generated_ids[0].item()
+    #     first_token_text = tokenizer.decode([first_token_id], skip_special_tokens=True)
+    #     print(f"  第一个token: {first_token_id} -> '{first_token_text}'")
 
     # 检查生成的token是否在合理范围内
     # vocab_size = tokenizer.vocab_size
