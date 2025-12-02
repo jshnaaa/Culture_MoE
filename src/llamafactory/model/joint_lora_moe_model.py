@@ -746,8 +746,9 @@ class JointLoRAMoEModel(nn.Module):
                 # 🔍 损失调试信息（简化版，只在异常时打印）
                 if shift_valid == 0:
                     print(f"⚠️ 警告: 没有有效训练标签!")
-                elif shift_valid < 3:  # 只在标签过少时警告
-                    print(f"⚠️ 警告: 有效标签过少: {shift_valid}/{total_labels}")
+                # 注释掉有效标签过少的警告，因为单个token的标签是正常的
+                # elif shift_valid < 3:  # 只在标签过少时警告
+                #     print(f"⚠️ 警告: 有效标签过少: {shift_valid}/{total_labels}")
 
                 # # 详细调试信息（注释掉）
                 # print(f"🔍 损失计算分析:")
