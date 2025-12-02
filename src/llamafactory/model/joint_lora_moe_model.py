@@ -146,11 +146,15 @@ class MoEExpert(nn.Module):
 
             if gate_weight_has_nan or up_weight_has_nan:
                 print(f"    🚨 专家权重包含NaN，重新初始化并返回零输出!")
-                # 更保守的重新初始化
+                # 更保守的重新初始化 + 权重约束
                 with torch.no_grad():
-                    self.gate_proj.weight.normal_(0.0, 0.01)  # 更小的std
-                    self.up_proj.weight.normal_(0.0, 0.01)
-                    self.down_proj.weight.normal_(0.0, 0.01)
+                    self.gate_proj.weight.normal_(0.0, 0.005)  # 更小的std
+                    self.up_proj.weight.normal_(0.0, 0.005)
+                    self.down_proj.weight.normal_(0.0, 0.005)
+                    # 添加权重约束
+                    self.gate_proj.weight.clamp_(-0.1, 0.1)
+                    self.up_proj.weight.clamp_(-0.1, 0.1)
+                    self.down_proj.weight.clamp_(-0.1, 0.1)
                 return torch.zeros_like(x)
 
             # 添加调试信息：检查投影层输出
@@ -428,12 +432,10 @@ class MoELayer(nn.Module):
             expert_weights = torch.zeros_like(all_expert_weights)  # [B, num_experts]
             expert_weights.scatter_(1, top_k_indices, top_k_weights)  # 将归一化权重分配给激活专家
 
-            # 添加调试信息：检查Top-2激活和路由器学习
-            weights_mean = expert_weights.mean(dim=0)
-            router_logits_mean = router_logits.mean(dim=0)
-            print(f"🔍 Top-2激活专家权重: {weights_mean.detach().cpu().numpy()}")
-            print(f"🔍 路由器原始logits: {router_logits_mean.detach().cpu().numpy()}")
-            print(f"🔍 Top-2选择的logits差异: {(top_k_logits[:, 0] - top_k_logits[:, 1]).mean().item():.6f}")
+            # 检查路由器学习情况（只在异常时打印）
+            logits_diff = (top_k_logits[:, 0] - top_k_logits[:, 1]).mean().item()
+            if logits_diff < 0.05:  # 只在差异过小时警告
+                print(f"⚠️ 路由器区分度过低: {logits_diff:.3f}")
 
             # 2. 专家计算（Top-2版本）- 只计算激活的专家
             expert_outputs = {}  # 使用字典存储，只计算需要的专家
@@ -441,18 +443,18 @@ class MoELayer(nn.Module):
 
             # 获取所有激活的专家索引（去重）
             activated_experts = torch.unique(top_k_indices.flatten()).cpu().tolist()
-            print(f"🔍 激活的专家索引: {activated_experts}")
+            # print(f"🔍 激活的专家索引: {activated_experts}")  # 注释掉减少日志
 
             for expert_idx in activated_experts:
                 try:
                     expert_output = self.experts[expert_idx](hidden_states)  # [B, L, H]
 
-                    # 添加调试信息：检查每个专家的输出
-                    expert_mean = expert_output.mean().item()
-                    expert_std = expert_output.std().item()
-                    expert_min = expert_output.min().item()
-                    expert_max = expert_output.max().item()
-                    print(f"    🔍 专家{expert_idx}最终输出: mean={expert_mean:.6f}, std={expert_std:.6f}, range=[{expert_min:.3f}, {expert_max:.3f}]")
+                    # 添加调试信息：检查每个专家的输出（简化版）
+                    # expert_mean = expert_output.mean().item()
+                    # expert_std = expert_output.std().item()
+                    # expert_min = expert_output.min().item()
+                    # expert_max = expert_output.max().item()
+                    # print(f"    🔍 专家{expert_idx}最终输出: mean={expert_mean:.6f}, std={expert_std:.6f}, range=[{expert_min:.3f}, {expert_max:.3f}]")
 
                     # 检查专家输出
                     if not (torch.isnan(expert_output).any() or torch.isinf(expert_output).any()):
@@ -648,10 +650,10 @@ class JointLoRAMoEModel(nn.Module):
         # 2. 获取最后一层隐藏状态
         hidden_states = base_outputs.hidden_states[-1]  # [B, L, H]
 
-        # 🔍 调试基础模型输出
-        base_range = f"min={hidden_states.min().item():.3f}, max={hidden_states.max().item():.3f}"
-        base_std = hidden_states.std().item()
-        print(f"🔍 基础模型输出: {base_range}, std={base_std:.6f}")
+        # 🔍 调试基础模型输出（简化版）
+        # base_range = f"min={hidden_states.min().item():.3f}, max={hidden_states.max().item():.3f}"
+        # base_std = hidden_states.std().item()
+        # print(f"🔍 基础模型输出: {base_range}, std={base_std:.6f}")
 
         # 确保hidden_states与MoE层的hidden_dim匹配
         if hidden_states.size(-1) != self.config.moe_hidden_dim:
@@ -671,15 +673,11 @@ class JointLoRAMoEModel(nn.Module):
             hidden_states = self.hidden_proj(hidden_states)
 
         # 3. MoE层处理 - 增量架构实现
-        print("🔧 启用增量MoE架构：MoE作为基础LoRA的增量调整")
+        # print("🔧 启用增量MoE架构：MoE作为基础LoRA的增量调整")  # 减少日志
         moe_delta, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
 
-        # 关键调试：检查MoE增量输出
-        moe_range = f"min={moe_delta.min().item():.3f}, max={moe_delta.max().item():.3f}"
+        # 关键调试：检查MoE增量输出（只在异常时打印）
         moe_std = moe_delta.std().item()
-        print(f"🔧 MoE增量输出: {moe_range}, std={moe_std:.6f}")
-
-        # 检查MoE增量是否合理
         if moe_std < 1e-6:
             print(f"⚠️ 警告: MoE增量几乎为零 (std={moe_std:.8f})!")
         elif moe_std > 5.0:
@@ -710,11 +708,11 @@ class JointLoRAMoEModel(nn.Module):
         # 组合输出：基础LoRA + 加权MoE增量
         combined_output = base_hidden_states + moe_influence_weight * moe_delta
 
-        # 调试信息：检查组合后的输出
-        combined_range = f"min={combined_output.min().item():.3f}, max={combined_output.max().item():.3f}"
-        combined_std = combined_output.std().item()
-        print(f"🔧 组合输出(基础+MoE): {combined_range}, std={combined_std:.6f}")
-        print(f"🔧 MoE影响权重: {moe_influence_weight}, 实际增量贡献: {(moe_influence_weight * moe_std):.6f}")
+        # 调试信息：检查组合后的输出（简化版）
+        # combined_range = f"min={combined_output.min().item():.3f}, max={combined_output.max().item():.3f}"
+        # combined_std = combined_output.std().item()
+        # print(f"🔧 组合输出(基础+MoE): {combined_range}, std={combined_std:.6f}")
+        # print(f"🔧 MoE影响权重: {moe_influence_weight}, 实际增量贡献: {(moe_influence_weight * moe_std):.6f}")
 
         # 使用组合输出作为最终隐藏状态
         final_hidden_states = combined_output
@@ -724,10 +722,10 @@ class JointLoRAMoEModel(nn.Module):
 
         # 使用基础模型的lm_head计算最终logits
         if hasattr(self.base_model, 'lm_head'):
-            print(f"🔧 使用组合隐藏状态(基础LoRA+MoE增量)计算logits")
+            # print(f"🔧 使用组合隐藏状态(基础LoRA+MoE增量)计算logits")  # 减少日志
             logits = self.base_model.lm_head(final_hidden_states)
         elif hasattr(self.base_model, 'base_model') and hasattr(self.base_model.base_model, 'lm_head'):
-            print(f"🔧 使用组合隐藏状态(基础LoRA+MoE增量)计算logits")
+            # print(f"🔧 使用组合隐藏状态(基础LoRA+MoE增量)计算logits")  # 减少日志
             logits = self.base_model.base_model.lm_head(final_hidden_states)
         else:
             print(f"🔧 Creating temporary lm_head for combined hidden states")
@@ -745,18 +743,18 @@ class JointLoRAMoEModel(nn.Module):
                 print(f"🔧 Temp lm_head created with std=0.02")
             logits = self.temp_lm_head(final_hidden_states)
 
-        # 关键调试：检查最终logits
-        logits_range = f"min={logits.min().item():.3f}, max={logits.max().item():.3f}"
+        # 关键调试：检查最终logits（只在异常时打印）
         logits_std = logits.std().item()
-        print(f"🔧 最终Logits: {logits_range}, std={logits_std:.6f}")
-
-        # 检查logits是否异常
         if logits_std < 1e-6:
             print(f"⚠️ 警告: Logits几乎为零 (std={logits_std:.8f})!")
         elif torch.isnan(logits).any():
             print(f"⚠️ 警告: Logits包含NaN!")
         elif torch.isinf(logits).any():
             print(f"⚠️ 警告: Logits包含Inf!")
+
+        # # 详细logits信息（注释掉）
+        # logits_range = f"min={logits.min().item():.3f}, max={logits.max().item():.3f}"
+        # print(f"🔧 最终Logits: {logits_range}, std={logits_std:.6f}")
 
         # 5. 计算损失 - 增量架构版本
         loss = None
@@ -785,22 +783,28 @@ class JointLoRAMoEModel(nn.Module):
                 shift_valid = (shift_labels.view(-1) != -100).sum().item()
                 total_labels = shift_labels.numel()
 
-                # 🔍 重新启用损失调试信息
-                print(f"🔍 损失计算分析:")
-                print(f"  shift_logits shape: {shift_logits.shape}")
-                print(f"  shift_labels shape: {shift_labels.shape}")
-                print(f"  有效标签数量: {shift_valid}/{total_labels}")
-                print(f"  logits范围: min={shift_logits.min().item():.3f}, max={shift_logits.max().item():.3f}")
+                # 🔍 损失调试信息（简化版，只在异常时打印）
+                if shift_valid == 0:
+                    print(f"⚠️ 警告: 没有有效训练标签!")
+                elif shift_valid < 3:  # 只在标签过少时警告
+                    print(f"⚠️ 警告: 有效标签过少: {shift_valid}/{total_labels}")
 
-                # 检查第一个样本的有效标签
-                if shift_valid > 0:
-                    valid_positions = (shift_labels.view(-1) != -100).nonzero().flatten()
-                    if len(valid_positions) > 0:
-                        first_valid_pos = valid_positions[0].item()
-                        first_valid_label = shift_labels.view(-1)[first_valid_pos].item()
-                        first_valid_logit = shift_logits.view(-1, shift_logits.size(-1))[first_valid_pos]
-                        print(f"  第一个有效标签: 位置{first_valid_pos}, 标签{first_valid_label}")
-                        print(f"  对应logit范围: min={first_valid_logit.min().item():.3f}, max={first_valid_logit.max().item():.3f}")
+                # # 详细调试信息（注释掉）
+                # print(f"🔍 损失计算分析:")
+                # print(f"  shift_logits shape: {shift_logits.shape}")
+                # print(f"  shift_labels shape: {shift_labels.shape}")
+                # print(f"  有效标签数量: {shift_valid}/{total_labels}")
+                # print(f"  logits范围: min={shift_logits.min().item():.3f}, max={shift_logits.max().item():.3f}")
+
+                # # 检查第一个样本的有效标签
+                # if shift_valid > 0:
+                #     valid_positions = (shift_labels.view(-1) != -100).nonzero().flatten()
+                #     if len(valid_positions) > 0:
+                #         first_valid_pos = valid_positions[0].item()
+                #         first_valid_label = shift_labels.view(-1)[first_valid_pos].item()
+                #         first_valid_logit = shift_logits.view(-1, shift_logits.size(-1))[first_valid_pos]
+                #         print(f"  第一个有效标签: 位置{first_valid_pos}, 标签{first_valid_label}")
+                #         print(f"  对应logit范围: min={first_valid_logit.min().item():.3f}, max={first_valid_logit.max().item():.3f}")
 
                 # 检查第一个样本的labels变化（注释掉详细输出）
                 # if labels.shape[0] > 0:
