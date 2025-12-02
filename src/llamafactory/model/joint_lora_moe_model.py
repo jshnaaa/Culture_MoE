@@ -372,11 +372,13 @@ class MoELayer(nn.Module):
             ) for _ in range(config.num_moe_experts)
         ])
 
-        # 强制重新初始化所有专家权重，确保没有NaN
-        print("🔧 Force reinitializing all experts to prevent NaN...")
+        # 🔧 确保专家分化：每个专家使用不同的初始化
+        print("🔧 Force reinitializing all experts with different seeds...")
         for i, expert in enumerate(self.experts):
+            # 为每个专家设置不同的随机种子，确保分化
+            torch.manual_seed(42 + i * 100)  # 不同的种子
             expert._init_weights()
-            print(f"🔧 Expert {i} reinitialized")
+            print(f"🔧 Expert {i} reinitialized with seed {42 + i * 100}")
 
         # 简化：移除复杂的门控和共享专家机制，只保留基本的专家混合
         # 不使用共享专家和门控，避免额外的复杂性
@@ -408,8 +410,8 @@ class MoELayer(nn.Module):
             pooled = hidden_states.mean(dim=1)  # [B, H]
             # 移除pooled的数值限制
 
-            # 路由计算 - 注意：路由器使用Float32，需要确保输入兼容
-            all_expert_weights, router_logits = self.router(pooled, temperature=1.0)
+            # 路由计算 - 使用较低温度增强专家选择的区分度
+            all_expert_weights, router_logits = self.router(pooled, temperature=0.5)
 
             # 🔧 实现Top-2激活机制
             # 1. 选择top-2专家
@@ -422,9 +424,12 @@ class MoELayer(nn.Module):
             expert_weights = torch.zeros_like(all_expert_weights)  # [B, num_experts]
             expert_weights.scatter_(1, top_k_indices, top_k_weights)  # 将归一化权重分配给激活专家
 
-            # 添加调试信息：检查Top-2激活
+            # 添加调试信息：检查Top-2激活和路由器学习
             weights_mean = expert_weights.mean(dim=0)
+            router_logits_mean = router_logits.mean(dim=0)
             print(f"🔍 Top-2激活专家权重: {weights_mean.detach().cpu().numpy()}")
+            print(f"🔍 路由器原始logits: {router_logits_mean.detach().cpu().numpy()}")
+            print(f"🔍 Top-2选择的logits差异: {(top_k_logits[:, 0] - top_k_logits[:, 1]).mean().item():.6f}")
 
             # 2. 专家计算（Top-2版本）- 只计算激活的专家
             expert_outputs = {}  # 使用字典存储，只计算需要的专家

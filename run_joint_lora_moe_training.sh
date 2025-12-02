@@ -15,8 +15,8 @@ DATA_ID=${2:-"2"}
 NUM_MOE_EXPERTS=${3:-"4"}  # MoE专家数量
 USE_CULTURE_LOSS=${4:-"false"}
 NUM_GPUS=${5:-"2"}
-LORA_RANK=${6:-"4"}   # LoRA rank（从8减到4以节省内存）
-LORA_ALPHA=${7:-"8"}  # LoRA alpha（从16减到8以节省内存）
+LORA_RANK=${6:-"8"}   # LoRA rank
+LORA_ALPHA=${7:-"16"}  # LoRA alpha
 
 # 检查参数
 if [ "$#" -gt 7 ]; then
@@ -100,10 +100,10 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数
-BATCH_SIZE=2              # batch size
+BATCH_SIZE=1              # 减少batch size避免OOM
 GRADIENT_ACCUMULATION=16  # 增加梯度累积以补偿小batch size
-LEARNING_RATE_BASE=5e-5   # 降低基础模型LoRA学习率
-LEARNING_RATE_MOE=1e-5    # 大幅降低MoE学习率，防止权重NaN
+LEARNING_RATE_BASE=2e-4   # 基础LoRA学习率
+LEARNING_RATE_MOE=5e-5    # MoE学习率
 NUM_EPOCHS=5              # 训练轮数
 MAX_SEQ_LEN=384          # 减少序列长度以节省内存
 
