@@ -12,7 +12,7 @@ echo "======================================="
 # 参数设置
 BACKBONE=${1:-"llama"}  # 默认使用qwen2.5-7B
 DATA_ID=${2:-"2"}
-NUM_MOE_EXPERTS=${3:-"2"}  # MoE专家数量（从4减到2以节省内存）
+NUM_MOE_EXPERTS=${3:-"4"}  # MoE专家数量
 USE_CULTURE_LOSS=${4:-"false"}
 NUM_GPUS=${5:-"2"}
 LORA_RANK=${6:-"4"}   # LoRA rank（从8减到4以节省内存）
@@ -100,7 +100,7 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数
-BATCH_SIZE=1              # 最小batch size
+BATCH_SIZE=2              # batch size
 GRADIENT_ACCUMULATION=16  # 增加梯度累积以补偿小batch size
 LEARNING_RATE_BASE=5e-5   # 降低基础模型LoRA学习率
 LEARNING_RATE_MOE=1e-5    # 大幅降低MoE学习率，防止权重NaN

@@ -954,7 +954,7 @@ def main():
 
         # MoE配置
         num_moe_experts=args.num_moe_experts,
-        moe_hidden_dim=base_model.config.hidden_size,  # 将自动在模型初始化时设置
+        moe_hidden_dim=2048,  # 专家隐藏层大小
 
         # 文化损失配置
         use_culture_loss=use_culture_loss,

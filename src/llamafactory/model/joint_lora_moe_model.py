@@ -409,59 +409,71 @@ class MoELayer(nn.Module):
             # 移除pooled的数值限制
 
             # 路由计算 - 注意：路由器使用Float32，需要确保输入兼容
-            expert_weights, router_logits = self.router(pooled, temperature=1.0)
+            all_expert_weights, router_logits = self.router(pooled, temperature=1.0)
 
-            # 添加调试信息：检查专家权重
+            # 🔧 实现Top-2激活机制
+            # 1. 选择top-2专家
+            top_k_logits, top_k_indices = torch.topk(router_logits, k=2, dim=-1)  # [B, 2]
+
+            # 2. 对top-2专家的logits重新归一化
+            top_k_weights = torch.softmax(top_k_logits, dim=-1)  # [B, 2] 归一化权重
+
+            # 3. 创建稀疏权重矩阵（只有激活的专家有权重）
+            expert_weights = torch.zeros_like(all_expert_weights)  # [B, num_experts]
+            expert_weights.scatter_(1, top_k_indices, top_k_weights)  # 将归一化权重分配给激活专家
+
+            # 添加调试信息：检查Top-2激活
             weights_mean = expert_weights.mean(dim=0)
-            # print(f"🔍 Expert weights: {weights_mean.detach().cpu().numpy()}")  # 注释掉详细调试
-            # print(f"🔍 Expert weights sum: {expert_weights.sum(dim=1).mean().item():.6f}")  # 注释掉详细调试
+            print(f"🔍 Top-2激活专家权重: {weights_mean.detach().cpu().numpy()}")
 
-            # 2. 专家计算（极简版）
-            expert_outputs = []
+            # 2. 专家计算（Top-2版本）- 只计算激活的专家
+            expert_outputs = {}  # 使用字典存储，只计算需要的专家
             valid_experts = 0
 
-            for i, expert in enumerate(self.experts):
+            # 获取所有激活的专家索引（去重）
+            activated_experts = torch.unique(top_k_indices.flatten()).cpu().tolist()
+            print(f"🔍 激活的专家索引: {activated_experts}")
+
+            for expert_idx in activated_experts:
                 try:
-                    expert_output = expert(hidden_states)  # [B, L, H]
+                    expert_output = self.experts[expert_idx](hidden_states)  # [B, L, H]
 
                     # 添加调试信息：检查每个专家的输出
                     expert_mean = expert_output.mean().item()
                     expert_std = expert_output.std().item()
                     expert_min = expert_output.min().item()
                     expert_max = expert_output.max().item()
-                    # print(f"🔍 Expert {i}: mean={expert_mean:.6f}, std={expert_std:.6f}, range=[{expert_min:.3f}, {expert_max:.3f}]")  # 注释掉详细调试
+                    print(f"    🔍 专家最终输出: mean={expert_mean:.6f}, std={expert_std:.6f}, range=[{expert_min:.3f}, {expert_max:.3f}]")
 
                     # 检查专家输出
                     if not (torch.isnan(expert_output).any() or torch.isinf(expert_output).any()):
-                        expert_outputs.append(expert_output)
+                        expert_outputs[expert_idx] = expert_output
                         valid_experts += 1
                     else:
-                        print(f"🚨 专家{i}输出无效(NaN/Inf)，使用零输出!")
-                        expert_outputs.append(torch.zeros_like(hidden_states))
+                        print(f"🚨 专家{expert_idx}输出无效(NaN/Inf)，使用零输出!")
+                        expert_outputs[expert_idx] = torch.zeros_like(hidden_states)
 
                 except Exception as e:
-                    print(f"⚠️ Expert {i} failed: {e}, using zeros")
-                    expert_outputs.append(torch.zeros_like(hidden_states))
+                    print(f"⚠️ Expert {expert_idx} failed: {e}, using zeros")
+                    expert_outputs[expert_idx] = torch.zeros_like(hidden_states)
 
-            # 3. 专家输出混合（极简版）
+            # 3. Top-2专家输出混合
             if valid_experts == 0:
-                print("🚨 所有专家都失效，使用输入passthrough!")
-                # 直接返回输入，确保数值稳定
+                print("🚨 所有激活专家都失效，使用输入passthrough!")
                 final_output = hidden_states
             else:
-                # 简单的加权平均，但加强数值稳定性
+                # Top-2加权融合
                 final_output = torch.zeros_like(hidden_states)
                 total_weight = 0.0
 
-                for i, expert_output in enumerate(expert_outputs):
-                    weight = expert_weights[:, i].unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
-                    weight = torch.clamp(weight, min=0.0, max=1.0)
-
-                    # 移除专家输出的数值限制，让专家自由表达
-                    # expert_output = torch.clamp(expert_output, min=-3.0, max=3.0)
-
-                    final_output += weight * expert_output
-                    total_weight += weight.mean().item()
+                for i in range(expert_weights.size(1)):  # 遍历所有专家
+                    weight_val = expert_weights[:, i]  # [B]
+                    if weight_val.sum().item() > 1e-8:  # 只处理有权重的专家
+                        if i in expert_outputs:
+                            weight = weight_val.unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
+                            weight = torch.clamp(weight, min=0.0, max=1.0)
+                            final_output += weight * expert_outputs[i]
+                            total_weight += weight_val.mean().item()
 
                 # 降低总权重阈值，避免过早使用passthrough
                 if total_weight < 0.001:  # 从0.01降到0.001
@@ -684,7 +696,7 @@ class JointLoRAMoEModel(nn.Module):
             moe_delta = self.hidden_proj_back(moe_delta)
 
         # MoE增量权重（控制MoE影响程度）
-        moe_influence_weight = 0.1  # 10%的影响权重，可调
+        moe_influence_weight = 0.3  # 30%的影响权重，可调
 
         # 组合输出：基础LoRA + 加权MoE增量
         combined_output = base_hidden_states + moe_influence_weight * moe_delta
