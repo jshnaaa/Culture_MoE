@@ -203,10 +203,11 @@ class CultureLLMNewFormatDataset(Dataset):
         # 验证：确保input_length合理
         total_non_pad = (input_ids != pad_token_id).sum().item()
 
-        if idx < 5:
-            print(f"  🔧 验证: 总非padding长度={total_non_pad}, 精确input_length={input_length}")
-            if input_length >= total_non_pad:
-                print(f"  ⚠️ 警告: input_length >= 总长度，这会导致没有训练目标")
+        # 注释掉验证调试信息，避免训练时输出过多日志
+        # if idx < 5:
+        #     print(f"  🔧 验证: 总非padding长度={total_non_pad}, 精确input_length={input_length}")
+        #     if input_length >= total_non_pad:
+        #         print(f"  ⚠️ 警告: input_length >= 总长度，这会导致没有训练目标")
 
         # 🔧 删除eot_id调整逻辑，因为我们的精确计算已经处理了这个问题
         # 新的方法直接定位到"### Answer: "后面，不需要额外调整
@@ -268,115 +269,115 @@ class CultureLLMNewFormatDataset(Dataset):
         #         print(f"  🚨 问题: input_length({input_length})过大，几乎占满整个序列!")
         #         print(f"    这会导致几乎没有训练目标")
 
-        # 只对前5个样本进行详细调试
-        if idx < 5:
-            # 检查tokenizer配置
-            eot_token_id = 128009  # <|eot_id|>
+        # 注释掉详细调试信息，避免训练时输出过多日志
+        # if idx < 5:
+        #     # 检查tokenizer配置
+        #     eot_token_id = 128009  # <|eot_id|>
 
-            print(f"  🔧 Tokenizer状态:")
-            print(f"    pad_token: {repr(self.tokenizer.pad_token)}")
-            print(f"    pad_token_id: {pad_token_id}")
-            print(f"    eos_token_id: {self.tokenizer.eos_token_id}")
+        #     print(f"  🔧 Tokenizer状态:")
+        #     print(f"    pad_token: {repr(self.tokenizer.pad_token)}")
+        #     print(f"    pad_token_id: {pad_token_id}")
+        #     print(f"    eos_token_id: {self.tokenizer.eos_token_id}")
 
-            # 分析labels中的token分布
-            eot_in_labels = (labels == eot_token_id).sum().item()
-            pad_in_labels = (labels == pad_token_id).sum().item()
+        #     # 分析labels中的token分布
+        #     eot_in_labels = (labels == eot_token_id).sum().item()
+        #     pad_in_labels = (labels == pad_token_id).sum().item()
 
-            # 统计所有非-100的token
-            non_mask_indices = (labels != -100).nonzero(as_tuple=True)[0]
+        #     # 统计所有非-100的token
+        #     non_mask_indices = (labels != -100).nonzero(as_tuple=True)[0]
 
-            print(f"  📊 Labels分析:")
-            print(f"    总序列长度: {len(labels)}")
-            print(f"    有效标签数: {valid_labels}")
-            print(f"    <|eot_id|>(128009)数量: {eot_in_labels}")
-            print(f"    padding token({pad_token_id})数量: {pad_in_labels}")
+        #     print(f"  📊 Labels分析:")
+        #     print(f"    总序列长度: {len(labels)}")
+        #     print(f"    有效标签数: {valid_labels}")
+        #     print(f"    <|eot_id|>(128009)数量: {eot_in_labels}")
+        #     print(f"    padding token({pad_token_id})数量: {pad_in_labels}")
 
-            if valid_labels > 10:
-                print(f"  ⚠️ 标签数过多({valid_labels})，可能仍有padding问题")
-                print(f"  🚨 CRITICAL: tokenizer修复失效！")
-                print(f"  当前pad_token_id: {self.tokenizer.pad_token_id}")
-                print(f"  当前pad_token: {repr(self.tokenizer.pad_token)}")
+        #     if valid_labels > 10:
+        #         print(f"  ⚠️ 标签数过多({valid_labels})，可能仍有padding问题")
+        #         print(f"  🚨 CRITICAL: tokenizer修复失效！")
+        #         print(f"  当前pad_token_id: {self.tokenizer.pad_token_id}")
+        #         print(f"  当前pad_token: {repr(self.tokenizer.pad_token)}")
 
-                # 强制检查实际使用的pad_token_id
-                if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
-                    actual_pad_text = self.tokenizer.decode([self.tokenizer.pad_token_id], skip_special_tokens=True)
-                    print(f"  实际pad_token解码: '{actual_pad_text}'")
+        #         # 强制检查实际使用的pad_token_id
+        #         if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
+        #             actual_pad_text = self.tokenizer.decode([self.tokenizer.pad_token_id], skip_special_tokens=True)
+        #             print(f"  实际pad_token解码: '{actual_pad_text}'")
 
-                # 检查input_ids中实际的token分布
-                unique_tokens, counts = torch.unique(input_ids, return_counts=True)
-                print(f"  🔍 input_ids中的token分布 (前10个):")
-                for i in range(min(10, len(unique_tokens))):
-                    token_id = unique_tokens[i].item()
-                    count = counts[i].item()
-                    try:
-                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
-                        print(f"    token_id={token_id}('{token_text}'): {count}次")
-                    except:
-                        print(f"    token_id={token_id}(解码失败): {count}次")
+        #         # 检查input_ids中实际的token分布
+        #         unique_tokens, counts = torch.unique(input_ids, return_counts=True)
+        #         print(f"  🔍 input_ids中的token分布 (前10个):")
+        #         for i in range(min(10, len(unique_tokens))):
+        #             token_id = unique_tokens[i].item()
+        #             count = counts[i].item()
+        #             try:
+        #                 token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+        #                 print(f"    token_id={token_id}('{token_text}'): {count}次")
+        #             except:
+        #                 print(f"    token_id={token_id}(解码失败): {count}次")
 
-                # 显示labels的分布情况
-                unique_tokens = {}
-                for pos in non_mask_indices[:50]:  # 检查前50个有效标签
-                    token_id = labels[pos.item()].item()
-                    unique_tokens[token_id] = unique_tokens.get(token_id, 0) + 1
+        #         # 显示labels的分布情况
+        #         unique_tokens = {}
+        #         for pos in non_mask_indices[:50]:  # 检查前50个有效标签
+        #             token_id = labels[pos.item()].item()
+        #             unique_tokens[token_id] = unique_tokens.get(token_id, 0) + 1
 
-                print(f"  🔍 前50个有效标签的token分布:")
-                for token_id, count in sorted(unique_tokens.items(), key=lambda x: x[1], reverse=True)[:10]:
-                    try:
-                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
-                        print(f"    token_id={token_id}('{token_text}'): {count}次")
-                    except:
-                        print(f"    token_id={token_id}(解码失败): {count}次")
+        #         print(f"  🔍 前50个有效标签的token分布:")
+        #         for token_id, count in sorted(unique_tokens.items(), key=lambda x: x[1], reverse=True)[:10]:
+        #             try:
+        #                 token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+        #                 print(f"    token_id={token_id}('{token_text}'): {count}次")
+        #             except:
+        #                 print(f"    token_id={token_id}(解码失败): {count}次")
 
-                # 显示labels的具体位置和值
-                print(f"  📋 前20个有效标签详情:")
-                for i, pos in enumerate(non_mask_indices[:20]):
-                    pos_idx = pos.item()
-                    token_id = labels[pos_idx].item()
-                    try:
-                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
-                        print(f"    位置{pos_idx}: {token_id}='{token_text}'")
-                    except:
-                        print(f"    位置{pos_idx}: {token_id}=(解码失败)")
+        #         # 显示labels的具体位置和值
+        #         print(f"  📋 前20个有效标签详情:")
+        #         for i, pos in enumerate(non_mask_indices[:20]):
+        #             pos_idx = pos.item()
+        #             token_id = labels[pos_idx].item()
+        #             try:
+        #                 token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+        #                 print(f"    位置{pos_idx}: {token_id}='{token_text}'")
+        #             except:
+        #                 print(f"    位置{pos_idx}: {token_id}=(解码失败)")
 
-            elif eot_in_labels > 1:
-                print(f"  ⚠️ 训练标签包含{eot_in_labels}个<|eot_id|>")
-                # 显示所有有效标签
-                print(f"  📋 所有有效标签:")
-                for i, pos in enumerate(non_mask_indices):
-                    pos_idx = pos.item()
-                    token_id = labels[pos_idx].item()
-                    try:
-                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
-                        print(f"    位置{pos_idx}: {token_id}='{token_text}'")
-                    except:
-                        print(f"    位置{pos_idx}: {token_id}=(解码失败)")
+        #     elif eot_in_labels > 1:
+        #         print(f"  ⚠️ 训练标签包含{eot_in_labels}个<|eot_id|>")
+        #         # 显示所有有效标签
+        #         print(f"  📋 所有有效标签:")
+        #         for i, pos in enumerate(non_mask_indices):
+        #             pos_idx = pos.item()
+        #             token_id = labels[pos_idx].item()
+        #             try:
+        #                 token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+        #                 print(f"    位置{pos_idx}: {token_id}='{token_text}'")
+        #             except:
+        #                 print(f"    位置{pos_idx}: {token_id}=(解码失败)")
 
-            elif valid_labels <= 5:
-                print(f"  ✅ 标签数正常({valid_labels})")
-                # 显示所有有效标签
-                print(f"  📋 所有有效标签:")
-                for i, pos in enumerate(non_mask_indices):
-                    pos_idx = pos.item()
-                    token_id = labels[pos_idx].item()
-                    try:
-                        token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
-                        print(f"    位置{pos_idx}: {token_id}='{token_text}'")
-                    except:
-                        print(f"    位置{pos_idx}: {token_id}=(解码失败)")
+        #     elif valid_labels <= 5:
+        #         print(f"  ✅ 标签数正常({valid_labels})")
+        #         # 显示所有有效标签
+        #         print(f"  📋 所有有效标签:")
+        #         for i, pos in enumerate(non_mask_indices):
+        #             pos_idx = pos.item()
+        #             token_id = labels[pos_idx].item()
+        #             try:
+        #                 token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+        #                 print(f"    位置{pos_idx}: {token_id}='{token_text}'")
+        #             except:
+        #                 print(f"    位置{pos_idx}: {token_id}=(解码失败)")
 
-            # 🔧 简化的问题检查
-            if pad_token_id == eot_token_id:
-                print(f"  🚨 发现问题: pad_token_id == <|eot_id|> ({pad_token_id})")
-                print(f"    这会导致padding区域填充<|eot_id|>，造成大量有效标签!")
-            elif pad_token_id is None:
-                print(f"  🚨 发现问题: pad_token_id is None!")
-                print(f"    tokenizer配置可能没有正确应用")
-            elif pad_in_labels > 0:
-                print(f"  🚨 发现问题: {pad_in_labels}个padding token({pad_token_id})仍在训练标签中!")
-                print(f"    padding token应该被掩码为-100，不应该出现在有效标签中")
-            elif valid_labels > 10:
-                print(f"  🚨 发现问题: 有效标签数过多({valid_labels})，可能有其他token被错误包含")
+        #     # 🔧 简化的问题检查
+        #     if pad_token_id == eot_token_id:
+        #         print(f"  🚨 发现问题: pad_token_id == <|eot_id|> ({pad_token_id})")
+        #         print(f"    这会导致padding区域填充<|eot_id|>，造成大量有效标签!")
+        #     elif pad_token_id is None:
+        #         print(f"  🚨 发现问题: pad_token_id is None!")
+        #         print(f"    tokenizer配置可能没有正确应用")
+        #     elif pad_in_labels > 0:
+        #         print(f"  🚨 发现问题: {pad_in_labels}个padding token({pad_token_id})仍在训练标签中!")
+        #         print(f"    padding token应该被掩码为-100，不应该出现在有效标签中")
+        #     elif valid_labels > 10:
+        #         print(f"  🚨 发现问题: 有效标签数过多({valid_labels})，可能有其他token被错误包含")
 
         return {
             'input_ids': input_ids,
