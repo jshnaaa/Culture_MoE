@@ -203,10 +203,10 @@ class MoEExpert(nn.Module):
             # 原始MoE std≈0.022，需要约10-20倍缩放
             output = output * 2.0  # 小幅缩放，产生增量调整
 
-            # 添加调试信息：检查最终输出
-            output_mean = output.mean().item()
-            output_std = output.std().item()
-            print(f"    🔍 专家最终输出: mean={output_mean:.6f}, std={output_std:.6f}, range=[{output.min().item():.3f}, {output.max().item():.3f}]")
+            # 添加调试信息：检查最终输出（注释掉避免重复打印）
+            # output_mean = output.mean().item()
+            # output_std = output.std().item()
+            # print(f"    🔍 专家最终输出: mean={output_mean:.6f}, std={output_std:.6f}, range=[{output.min().item():.3f}, {output.max().item():.3f}]")
 
             # 最终检查 - 只检查NaN/Inf，不限制数值范围
             if torch.isnan(output).any() or torch.isinf(output).any():
@@ -410,8 +410,8 @@ class MoELayer(nn.Module):
             pooled = hidden_states.mean(dim=1)  # [B, H]
             # 移除pooled的数值限制
 
-            # 路由计算 - 使用较低温度增强专家选择的区分度
-            all_expert_weights, router_logits = self.router(pooled, temperature=0.5)
+            # 路由计算 - 使用更低温度增强专家选择的区分度
+            all_expert_weights, router_logits = self.router(pooled, temperature=0.3)
 
             # 🔧 实现Top-2激活机制
             # 1. 选择top-2专家
