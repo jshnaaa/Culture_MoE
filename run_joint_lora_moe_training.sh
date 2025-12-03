@@ -109,7 +109,15 @@ GRADIENT_ACCUMULATION=16  # 增加梯度累积以补偿小batch size
 LEARNING_RATE_BASE=2e-4   # 基础LoRA学习率
 LEARNING_RATE_MOE=8e-5    # MoE学习率（包括路由器）- 适中的值
 NUM_EPOCHS=5              # 训练轮数
-MAX_SEQ_LEN=384          # 减少序列长度以节省内存
+
+# 动态设置max_seq_len：normad等长文本数据集需要更长的序列长度
+if [ "$DATA_ID" = "3" ] || [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
+    MAX_SEQ_LEN=768       # 长文本数据集使用768
+    echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=768"
+else
+    MAX_SEQ_LEN=384       # 其他数据集使用384
+    echo "🔧 使用标准序列长度MAX_SEQ_LEN=384"
+fi
 
 echo "训练参数:"
 echo "  Batch Size: $BATCH_SIZE (per GPU)"
@@ -118,7 +126,7 @@ echo "  有效Batch Size: $((BATCH_SIZE * GRADIENT_ACCUMULATION * NUM_GPUS))"
 echo "  基础LoRA学习率: $LEARNING_RATE_BASE"
 echo "  MoE学习率: $LEARNING_RATE_MOE"
 echo "  训练轮数: $NUM_EPOCHS"
-echo "  最大序列长度: $MAX_SEQ_LEN"
+echo "  最大序列长度: $MAX_SEQ_LEN (动态设置)"
 echo ""
 
 # 创建输出目录
