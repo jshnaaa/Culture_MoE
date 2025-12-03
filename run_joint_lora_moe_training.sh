@@ -108,9 +108,10 @@ BATCH_SIZE=1              # 减少batch size避免OOM
 GRADIENT_ACCUMULATION=16  # 增加梯度累积以补偿小batch size
 LEARNING_RATE_BASE=2e-4   # 基础LoRA学习率
 LEARNING_RATE_MOE=8e-5    # MoE学习率（包括路由器）- 适中的值
-NUM_EPOCHS=5              # 训练轮数
+NUM_EPOCHS=8              # 训练轮数
 
 # 动态设置max_seq_len：normad等长文本数据集需要更长的序列长度
+echo "🔧 调试信息: DATA_ID='$DATA_ID'"
 if [ "$DATA_ID" = "3" ] || [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
     MAX_SEQ_LEN=768       # 长文本数据集使用768
     echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=768"
@@ -118,6 +119,9 @@ else
     MAX_SEQ_LEN=384       # 其他数据集使用384
     echo "🔧 使用标准序列长度MAX_SEQ_LEN=384"
 fi
+
+# 验证变量设置
+echo "🔧 最终MAX_SEQ_LEN设置为: $MAX_SEQ_LEN"
 
 echo "训练参数:"
 echo "  Batch Size: $BATCH_SIZE (per GPU)"
