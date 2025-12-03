@@ -131,7 +131,9 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
                 if torch.isnan(similarity) or torch.isinf(similarity):
                     continue
 
-                culture_loss += (1.0 - similarity)
+                # 确保similarity是标量值，避免广播问题
+                similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
+                culture_loss += (1.0 - similarity_scalar)
             else:
                 # 不同文化，鼓励不同的专家权重
                 vec1 = expert_weights[i].unsqueeze(0)
@@ -147,7 +149,9 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
                 if torch.isnan(similarity) or torch.isinf(similarity):
                     continue
 
-                culture_loss += similarity
+                # 确保similarity是标量值，避免广播问题
+                similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
+                culture_loss += similarity_scalar
             count += 1
 
     if count > 0:
