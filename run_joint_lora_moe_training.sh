@@ -103,9 +103,9 @@ echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
 echo ""
 
-# 内存优化的训练参数
-BATCH_SIZE=1              # 减少batch size避免OOM
-GRADIENT_ACCUMULATION=16  # 增加梯度累积以补偿小batch size
+# 内存优化的训练参数 - 针对长序列优化
+BATCH_SIZE=1              # 保持最小batch size
+GRADIENT_ACCUMULATION=8   # 减少梯度累积，避免长序列内存爆炸
 LEARNING_RATE_BASE=2e-4   # 基础LoRA学习率
 LEARNING_RATE_MOE=8e-5    # MoE学习率（包括路由器）- 适中的值
 NUM_EPOCHS=8              # 训练轮数
@@ -113,8 +113,8 @@ NUM_EPOCHS=8              # 训练轮数
 # 动态设置max_seq_len：normad等长文本数据集需要更长的序列长度
 echo "🔧 调试信息: DATA_ID='$DATA_ID'"
 if [ "$DATA_ID" = "3" ] || [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
-    MAX_SEQ_LEN=768       # 长文本数据集使用768
-    echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=768"
+    MAX_SEQ_LEN=1024      # 长文本数据集使用1024，给答案部分留更多空间
+    echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=1024"
 else
     MAX_SEQ_LEN=384       # 其他数据集使用384
     echo "🔧 使用标准序列长度MAX_SEQ_LEN=384"
@@ -171,12 +171,14 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 }
 EOF
 
-# 设置内存优化环境变量
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128
+# 设置内存优化环境变量 - 修复CUDA内存分配器问题
+# 移除expandable_segments配置，避免与某些PyTorch版本冲突
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
 export CUDA_LAUNCH_BLOCKING=0
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
-export TORCH_USE_CUDA_DSA=1
+# 移除TORCH_USE_CUDA_DSA，可能导致内存分配问题
+# export TORCH_USE_CUDA_DSA=1
 
 echo "开始联合训练 LoRA + MoE..."
 
