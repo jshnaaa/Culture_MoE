@@ -159,8 +159,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
 
 
 def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
-                     num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
-                     use_shared=True, use_mask=True, use_gate=False):
+                     num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
     """
     联合训练一个epoch：同时训练LoRA和MoE
     """
@@ -218,9 +217,6 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
-            use_shared=use_shared,
-            use_gate=use_gate,
-            use_mask=use_mask,
             return_dict=True
         )
 
@@ -384,8 +380,7 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
     }
 
 
-def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
-                   use_shared=True, use_mask=True, use_gate=False):
+def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
     """
     联合模型验证
     """
@@ -442,9 +437,6 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 labels=labels,
-                use_shared=use_shared,
-                use_gate=use_gate,
-                use_mask=use_mask,
                 return_dict=True
             )
 
@@ -606,12 +598,6 @@ def main():
                         help="Whether to use culture loss")
     parser.add_argument("--culture_loss_weight", type=float, default=0.01,
                         help="Culture loss weight")
-    parser.add_argument("--use_shared", type=str, default="true",
-                        help="Whether to use shared expert")
-    parser.add_argument("--use_mask", type=str, default="true",
-                        help="Whether to use instruction mask for shared expert")
-    parser.add_argument("--use_gate", type=str, default="false",
-                        help="Whether to use gate for shared/routed expert fusion")
 
     # LoRA参数
     parser.add_argument("--lora_rank", type=int, default=8,
@@ -628,9 +614,6 @@ def main():
 
     # 转换字符串参数
     use_culture_loss = args.use_culture_loss.lower() == 'true'
-    use_shared = args.use_shared.lower() == 'true'
-    use_mask = args.use_mask.lower() == 'true'
-    use_gate = args.use_gate.lower() == 'true'
 
     # 设置内存优化
     if world_size > 1:
@@ -1049,10 +1032,7 @@ def main():
             num_accumulation_steps=args.gradient_accumulation_steps,
             rank=rank,
             use_culture_loss=use_culture_loss,
-            culture_loss_weight=args.culture_loss_weight,
-            use_shared=use_shared,
-            use_mask=use_mask,
-            use_gate=use_gate
+            culture_loss_weight=args.culture_loss_weight
         )
 
         if is_main_process(rank):
@@ -1085,10 +1065,7 @@ def main():
             val_metrics = evaluate_joint(
                 model, val_loader, device, tokenizer, rank=rank,
                 use_culture_loss=use_culture_loss,
-                culture_loss_weight=args.culture_loss_weight,
-                use_shared=use_shared,
-                use_mask=use_mask,
-                use_gate=use_gate
+                culture_loss_weight=args.culture_loss_weight
             )
 
             # 生成答案并评估准确率（只在主进程执行）

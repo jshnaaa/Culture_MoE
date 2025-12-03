@@ -13,17 +13,16 @@ echo "======================================="
 BACKBONE=${1:-"llama"}  # 默认使用llama
 DATA_ID=${2:-"2"}
 USE_SHARED=${3:-"true"}  # 是否使用共享专家，默认为true
-USE_MASK=${4:-"true"}    # 是否对共享专家使用instruction_mask，默认为true
-USE_GATE=${5:-"false"}   # 是否使用MoE内部融合Gate，默认为false
-NUM_MOE_EXPERTS=${6:-"4"}  # MoE专家数量
-USE_CULTURE_LOSS=${7:-"false"}
-NUM_GPUS=${8:-"2"}
-LORA_RANK=${9:-"8"}   # LoRA rank
-LORA_ALPHA=${10:-"16"}  # LoRA alpha
+USE_GATE=${4:-"true"}    # 是否使用MoE内部融合Gate，默认为true
+NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
+USE_CULTURE_LOSS=${6:-"false"}
+NUM_GPUS=${7:-"2"}
+LORA_RANK=${8:-"8"}   # LoRA rank
+LORA_ALPHA=${9:-"16"}  # LoRA alpha
 
 # 检查参数
-if [ "$#" -gt 10 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_mask] [use_gate] [num_moe_experts] [use_culture_loss] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 9 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_gpus] [lora_rank] [lora_alpha]"
     exit 1
 fi
 
@@ -88,7 +87,7 @@ fi
 
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="/root/autodl-fs/joint_lora_moe/${MODEL_NAME}_${DATASET_TAG}_shared${USE_SHARED}_mask${USE_MASK}_gate${USE_GATE}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/joint_lora_moe/${MODEL_NAME}_${DATASET_TAG}_shared${USE_SHARED}_gate${USE_GATE}_${TIMESTAMP}"
 
 echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
@@ -96,7 +95,6 @@ echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
 echo "  总层数: $TOTAL_LAYERS"
 echo "  训练模式: 联合训练 (LoRA + MoE)"
 echo "  共享专家: $USE_SHARED"
-echo "  共享专家Mask: $USE_MASK"
 echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  文化损失: $USE_CULTURE_LOSS"
@@ -144,7 +142,6 @@ cat > "$OUTPUT_DIR/config.json" << EOF
     "training_config": {
         "training_mode": "joint_lora_moe",
         "use_shared_expert": $USE_SHARED,
-        "use_shared_mask": $USE_MASK,
         "use_moe_gate": $USE_GATE,
         "moe_experts": $NUM_MOE_EXPERTS,
         "use_culture_loss": $USE_CULTURE_LOSS,
@@ -189,9 +186,6 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --backbone $BACKBONE \
         --num_moe_experts $NUM_MOE_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
-        --use_shared $USE_SHARED \
-        --use_mask $USE_MASK \
-        --use_gate $USE_GATE \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
@@ -216,9 +210,6 @@ else
         --backbone $BACKBONE \
         --num_moe_experts $NUM_MOE_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
-        --use_shared $USE_SHARED \
-        --use_mask $USE_MASK \
-        --use_gate $USE_GATE \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
@@ -244,7 +235,6 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
         echo "  - LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
         echo "  - MoE专家数: $NUM_MOE_EXPERTS"
         echo "  - 共享专家: $USE_SHARED"
-        echo "  - 共享专家Mask: $USE_MASK"
         echo "  - MoE内部Gate: $USE_GATE"
         echo "  - 分层学习率: Base LoRA=$LEARNING_RATE_BASE, MoE=$LEARNING_RATE_MOE"
         echo "  - 文化损失: $USE_CULTURE_LOSS"
