@@ -113,8 +113,8 @@ NUM_EPOCHS=8              # 训练轮数
 # 动态设置max_seq_len：normad等长文本数据集需要更长的序列长度
 echo "🔧 调试信息: DATA_ID='$DATA_ID'"
 if [ "$DATA_ID" = "3" ] || [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
-    MAX_SEQ_LEN=1024      # 长文本数据集使用1024，给答案部分留更多空间
-    echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=1024"
+    MAX_SEQ_LEN=850       # 长文本数据集使用850，给答案部分留更多空间
+    echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=850"
 else
     MAX_SEQ_LEN=384       # 其他数据集使用384
     echo "🔧 使用标准序列长度MAX_SEQ_LEN=384"
