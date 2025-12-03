@@ -309,7 +309,7 @@ class MoELayer(nn.Module):
             dtype=torch.float32  # 强制Float32，忽略传入的dtype
         )
 
-        # 创建专家
+        # 创建路由专家
         self.experts = nn.ModuleList([
             MoEExpert(
                 hidden_dim=config.moe_hidden_dim,
@@ -327,8 +327,18 @@ class MoELayer(nn.Module):
             expert._init_weights()
             print(f"🔧 Expert {i} reinitialized with seed {42 + i * 100}")
 
-        # 简化：移除复杂的门控和共享专家机制，只保留基本的专家混合
-        # 不使用共享专家和门控，避免额外的复杂性
+        # 🔧 添加共享专家
+        self.shared_expert = MoEExpert(
+            hidden_dim=config.moe_hidden_dim,
+            intermediate_dim=config.moe_intermediate_dim,
+            dropout=config.dropout,
+            dtype=dtype
+        )
+
+        # 为共享专家使用特殊的初始化种子
+        torch.manual_seed(1000)  # 共享专家使用固定种子
+        self.shared_expert._init_weights()
+        print(f"🔧 Shared expert initialized with seed 1000")
 
     def get_nan_stats(self):
         """获取NaN统计信息"""
@@ -342,12 +352,16 @@ class MoELayer(nn.Module):
         self.nan_count = 0
         self.total_forward_calls = 0
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, use_shared=True, use_gate=False, use_mask=True, instruction_mask=None):
         """
-        前向传播 - 极简版本，只保留基本的专家混合
+        前向传播 - 支持共享专家和instruction_mask
 
         Args:
             hidden_states: [B, L, H] 输入隐藏状态
+            use_shared: 是否使用共享专家
+            use_gate: 是否使用融合Gate
+            use_mask: 是否对共享专家使用instruction_mask
+            instruction_mask: [B, L] instruction部分的mask
 
         Returns:
             output: [B, L, H] 输出隐藏状态
@@ -361,68 +375,59 @@ class MoELayer(nn.Module):
         current_nan_detected = False
 
         try:
-            # 移除过度严格的输入限制，只检查NaN/Inf
+            # 输入有效性检查
             if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
                 print("⚠️ NaN/Inf in MoE input, using passthrough")
                 expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True) / self.num_experts
                 aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
                 return hidden_states, expert_weights, aux_loss
 
-            # 1. 路由决策（极简版）
-            # 使用平均池化获取序列表示
-            pooled = hidden_states.mean(dim=1)  # [B, H]
-            # 移除pooled的数值限制
+            # 1. 共享专家处理
+            shared_output = None
+            if use_shared:
+                if use_mask and instruction_mask is not None:
+                    # 使用instruction_mask：共享专家只处理instruction部分
+                    instruction_mask_expanded = instruction_mask.unsqueeze(-1).expand_as(hidden_states)  # [B, L, H]
+                    masked_hidden_states = hidden_states * instruction_mask_expanded.float()
+                    shared_output = self.shared_expert(masked_hidden_states)  # [B, L, H]
+                else:
+                    # 不使用mask：共享专家处理完整输入（与路由专家相同）
+                    shared_output = self.shared_expert(hidden_states)  # [B, L, H]
 
-            # 路由计算 - 使用更高的温度提高区分度
+                # 检查共享专家输出
+                if torch.isnan(shared_output).any() or torch.isinf(shared_output).any():
+                    print("⚠️ Shared expert output invalid, using zeros")
+                    shared_output = torch.zeros_like(hidden_states)
+                    current_nan_detected = True
+
+            # 2. 路由专家处理（与之前相同）
+            # 路由决策
+            pooled = hidden_states.mean(dim=1)  # [B, H]
             all_expert_weights, router_logits = self.router(pooled, temperature=1.0)
 
-            # 🔧 实现Top-2激活机制
-            # 1. 选择top-2专家
+            # Top-2激活机制
             top_k_logits, top_k_indices = torch.topk(router_logits, k=2, dim=-1)  # [B, 2]
-
-            # 2. 对top-2专家的logits重新归一化
             top_k_weights = torch.softmax(top_k_logits, dim=-1)  # [B, 2] 归一化权重
 
-            # 3. 创建稀疏权重矩阵（只有激活的专家有权重）
+            # 创建稀疏权重矩阵
             expert_weights = torch.zeros_like(all_expert_weights)  # [B, num_experts]
-            expert_weights.scatter_(1, top_k_indices, top_k_weights)  # 将归一化权重分配给激活专家
+            expert_weights.scatter_(1, top_k_indices, top_k_weights)
 
-            # 检查路由器学习情况（只在异常时打印）- 注释掉频繁警告
-            # logits_diff = (top_k_logits[:, 0] - top_k_logits[:, 1]).mean().item()
-            # if logits_diff < 0.05:  # 只在差异过小时警告
-            #     print(f"⚠️ 路由器区分度过低: {logits_diff:.3f}")
-
-            # 2. 专家计算（Top-2版本）- 只计算激活的专家
-            expert_outputs = {}  # 使用字典存储，只计算需要的专家
+            # 路由专家计算
+            expert_outputs = {}
             valid_experts = 0
-
-            # 获取所有激活的专家索引（去重）
             activated_experts = torch.unique(top_k_indices.flatten()).cpu().tolist()
-            # print(f"🔍 激活的专家索引: {activated_experts}")  # 注释掉减少日志
 
             for expert_idx in activated_experts:
                 try:
                     expert_output = self.experts[expert_idx](hidden_states)  # [B, L, H]
 
-                    # 添加调试信息：检查每个专家的输出（简化版）
-                    # expert_mean = expert_output.mean().item()
-                    # expert_std = expert_output.std().item()
-                    # expert_min = expert_output.min().item()
-                    # expert_max = expert_output.max().item()
-                    # print(f"    🔍 专家{expert_idx}最终输出: mean={expert_mean:.6f}, std={expert_std:.6f}, range=[{expert_min:.3f}, {expert_max:.3f}]")
-
-                    # 检查专家输出
                     if not (torch.isnan(expert_output).any() or torch.isinf(expert_output).any()):
-                        # 额外检查：如果专家输出全为零，可能是内部NaN导致的
                         if torch.all(expert_output == 0) and torch.all(hidden_states != 0):
-                            # 暂时注释掉这个警告
-                            # print(f"🚨 专家{expert_idx}输出全零(可能内部NaN)，使用零输出!")
                             current_nan_detected = True
                         expert_outputs[expert_idx] = expert_output
                         valid_experts += 1
                     else:
-                        # 暂时注释掉这个警告
-                        # print(f"🚨 专家{expert_idx}输出无效(NaN/Inf)，使用零输出!")
                         expert_outputs[expert_idx] = torch.zeros_like(hidden_states)
                         current_nan_detected = True
 
@@ -431,68 +436,50 @@ class MoELayer(nn.Module):
                     expert_outputs[expert_idx] = torch.zeros_like(hidden_states)
                     current_nan_detected = True
 
-            # 3. Top-2专家输出混合
-            if valid_experts == 0:
-                print("🚨 所有激活专家都失效，使用输入passthrough!")
-                final_output = hidden_states
-            else:
-                # Top-2加权融合
-                final_output = torch.zeros_like(hidden_states)
+            # 3. 路由专家输出混合
+            routed_output = torch.zeros_like(hidden_states)
+            if valid_experts > 0:
                 total_weight = 0.0
-
-                for i in range(expert_weights.size(1)):  # 遍历所有专家
+                for i in range(expert_weights.size(1)):
                     weight_val = expert_weights[:, i]  # [B]
-                    if weight_val.sum().item() > 1e-8:  # 只处理有权重的专家
-                        if i in expert_outputs:
-                            weight = weight_val.unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
-                            weight = torch.clamp(weight, min=0.0, max=1.0)
-                            final_output += weight * expert_outputs[i]
-                            total_weight += weight_val.mean().item()
+                    if weight_val.sum().item() > 1e-8 and i in expert_outputs:
+                        weight = weight_val.unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
+                        weight = torch.clamp(weight, min=0.0, max=1.0)
+                        routed_output += weight * expert_outputs[i]
+                        total_weight += weight_val.mean().item()
 
-                # 降低总权重阈值，避免过早使用passthrough
-                if total_weight < 0.001:  # 从0.01降到0.001
-                    print("⚠️ Expert weights too small, using passthrough")
-                    final_output = hidden_states
+                if total_weight < 0.001:
+                    routed_output = torch.zeros_like(hidden_states)
                 else:
-                    # 🔧 增量架构：限制MoE输出为小的增量调整
-                    # 目标：增量约为基础LoRA输出的5-10%，范围约[-5, +5]
-                    final_output = torch.clamp(final_output, min=-5.0, max=5.0)
-                    # 添加调试信息：检查混合后的输出
-                    # final_mean = final_output.mean().item()
-                    # final_std = final_output.std().item()
-                    # final_min = final_output.min().item()
-                    # final_max = final_output.max().item()
-                    # print(f"🔍 Mixed output: mean={final_mean:.6f}, std={final_std:.6f}, range=[{final_min:.3f}, {final_max:.3f}], total_weight={total_weight:.6f}")
+                    routed_output = torch.clamp(routed_output, min=-5.0, max=5.0)
 
-            # 4. 最终检查
+            # 4. 融合共享专家和路由专家输出
+            if use_shared and shared_output is not None:
+                if use_gate:
+                    # 使用可学习的融合Gate（如果实现了的话）
+                    # 目前使用固定权重：alpha * shared + (1-alpha) * routed
+                    alpha = 0.5  # 固定权重
+                    final_output = alpha * shared_output + (1 - alpha) * routed_output
+                else:
+                    # 直接相加
+                    final_output = shared_output + routed_output
+            else:
+                # 只使用路由专家输出
+                final_output = routed_output
+
+            # 5. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
-                print("⚠️ Final MoE output invalid, using input passthrough with gradient connection")
-                # 使用输入passthrough，确保梯度连接
+                print("⚠️ Final MoE output invalid, using input passthrough")
                 final_output = hidden_states
 
-            # 5. MoE辅助损失 - 修复版本，确保始终有梯度连接
+            # 6. 辅助损失计算
             try:
-                # 始终计算辅助损失，即使使用了fallback机制
-                # 负载均衡损失：鼓励专家使用均匀
                 target_uniform = torch.ones_like(expert_weights) / self.num_experts
                 balance_loss = F.mse_loss(expert_weights, target_uniform)
-
-                # 路由器正则化损失：防止logits过大
-                # 即使是fallback的logits也应该参与损失计算
                 router_reg_loss = torch.mean(router_logits ** 2)
-
-                # 组合辅助损失
                 aux_loss = balance_loss * 0.01 + router_reg_loss * 0.001
 
-                # 推理模式下不需要梯度连接，直接返回数值
-                if not aux_loss.requires_grad:
-                    # 在推理模式下(torch.no_grad)，这是正常现象
-                    # 不需要打印警告或添加参数连接
-                    pass
-
-                # 最终数值检查
                 if torch.isnan(aux_loss) or torch.isinf(aux_loss):
-                    print("⚠️ NaN/Inf in aux_loss, using parameter-connected fallback")
                     aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
                     for param in self.router.parameters():
                         if param.requires_grad:
@@ -501,7 +488,6 @@ class MoELayer(nn.Module):
 
             except Exception as e:
                 print(f"⚠️ Aux loss computation failed: {e}")
-                # 确保fallback有梯度连接
                 aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
                 for param in self.router.parameters():
                     if param.requires_grad:
@@ -594,7 +580,8 @@ class JointLoRAMoEModel(nn.Module):
 
         print(f"🔍 LoRA参数统计: {lora_params:,} / {total_params:,} ({100*lora_params/total_params:.2f}%)")
 
-    def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+    def forward(self, input_ids=None, attention_mask=None, labels=None,
+                use_shared=True, use_gate=False, use_mask=True, **kwargs):
         """
         前向传播
 
@@ -602,6 +589,9 @@ class JointLoRAMoEModel(nn.Module):
             input_ids: [B, L] 输入token IDs
             attention_mask: [B, L] 注意力掩码
             labels: [B, L] 标签（用于计算损失）
+            use_shared: 是否使用共享专家
+            use_gate: 是否使用融合Gate
+            use_mask: 是否对共享专家使用instruction_mask
 
         Returns:
             outputs: 包含loss、logits、expert_weights等的字典
@@ -639,9 +629,31 @@ class JointLoRAMoEModel(nn.Module):
                 self.add_module('hidden_proj', self.hidden_proj)
             hidden_states = self.hidden_proj(hidden_states)
 
-        # 3. MoE层处理 - 增量架构实现
+        # 3. 生成instruction_mask（如果需要）
+        instruction_mask = None
+        if use_shared and use_mask:
+            # 从kwargs中获取instruction_mask，或者根据特殊token生成
+            instruction_mask = kwargs.get('instruction_mask', None)
+
+            if instruction_mask is None:
+                # 如果没有提供instruction_mask，尝试根据特殊token生成
+                # 假设"### Answer:"标记了instruction的结束
+                batch_size, seq_len = input_ids.shape
+                instruction_mask = torch.ones((batch_size, seq_len), device=input_ids.device, dtype=torch.bool)
+
+                # 简化版本：将前80%的token视为instruction部分
+                instruction_len = int(seq_len * 0.8)
+                instruction_mask[:, instruction_len:] = False
+
+        # 4. MoE层处理 - 增量架构实现
         # print("🔧 启用增量MoE架构：MoE作为基础LoRA的增量调整")  # 减少日志
-        moe_delta, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
+        moe_delta, expert_weights, moe_aux_loss = self.moe_layer(
+            hidden_states,
+            use_shared=use_shared,
+            use_gate=use_gate,
+            use_mask=use_mask,
+            instruction_mask=instruction_mask
+        )
 
         # 关键调试：检查MoE增量输出（只在异常时打印）- 暂时注释掉
         moe_std = moe_delta.std().item()
