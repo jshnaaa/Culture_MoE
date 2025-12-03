@@ -217,6 +217,7 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
+            culture_labels=culture_labels,
             return_dict=True
         )
 
@@ -265,18 +266,14 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         #     if expert_weights is not None and (torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any()):
         #         print(f"⚠️ Batch {batch_idx} - Invalid expert weights")
 
-        # 计算文化损失 - 确保有梯度连接
-        if use_culture_loss and culture_labels is not None and expert_weights is not None:
-            culture_loss = compute_culture_loss(expert_weights, culture_labels, culture_loss_weight)
-        else:
-            # 使用requires_grad=True的零张量确保梯度连接
-            culture_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
+        # 🔧 使用模型返回的文化损失（已在模型内部计算）
+        culture_loss = getattr(outputs, 'culture_loss', torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True))
 
         # 注意：不要转换lm_loss的dtype，这会断开梯度连接
         # lm_loss = lm_loss.to(dtype=torch.float16)  # 这行代码会断开梯度！
 
-        # 总损失
-        total_batch_loss = lm_loss + moe_aux_loss + culture_loss
+        # 总损失：直接使用模型返回的loss（已包含lm_loss + moe_aux_loss + culture_loss）
+        total_batch_loss = outputs.loss
 
         # 简化的梯度检查（仅在前3个batch）- 注释掉，专注tokenizer问题
         # if batch_idx < 3:
@@ -437,6 +434,7 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 labels=labels,
+                culture_labels=culture_labels,
                 return_dict=True
             )
 
@@ -444,13 +442,12 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
             expert_weights = getattr(outputs, 'expert_weights', None)
             moe_aux_loss = getattr(outputs, 'moe_aux_loss', torch.tensor(0.0, device=device, dtype=torch.float16))
 
-            # 计算文化损失
-            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
-            if use_culture_loss and culture_labels is not None and expert_weights is not None:
-                culture_loss = compute_culture_loss(expert_weights, culture_labels, culture_loss_weight)
+            # 🔧 使用模型返回的文化损失（已在模型内部计算）
+            culture_loss = getattr(outputs, 'culture_loss', torch.tensor(0.0, device=device, dtype=torch.float16))
 
             lm_loss = lm_loss.to(dtype=torch.float16)
-            total_batch_loss = lm_loss + moe_aux_loss + culture_loss
+            # 直接使用模型返回的总损失（已包含文化损失）
+            total_batch_loss = outputs.loss
 
             # 检查总损失是否为NaN/Inf
             if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):

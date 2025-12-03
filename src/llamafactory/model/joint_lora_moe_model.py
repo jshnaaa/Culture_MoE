@@ -594,7 +594,7 @@ class JointLoRAMoEModel(nn.Module):
 
         print(f"🔍 LoRA参数统计: {lora_params:,} / {total_params:,} ({100*lora_params/total_params:.2f}%)")
 
-    def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+    def forward(self, input_ids=None, attention_mask=None, labels=None, culture_labels=None, **kwargs):
         """
         前向传播
 
@@ -602,6 +602,7 @@ class JointLoRAMoEModel(nn.Module):
             input_ids: [B, L] 输入token IDs
             attention_mask: [B, L] 注意力掩码
             labels: [B, L] 标签（用于计算损失）
+            culture_labels: [B] 文化标签（用于计算文化损失）
 
         Returns:
             outputs: 包含loss、logits、expert_weights等的字典
@@ -725,6 +726,7 @@ class JointLoRAMoEModel(nn.Module):
 
         # 5. 计算损失 - 增量架构版本
         loss = None
+        culture_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)  # 初始化文化损失
         if labels is not None:
             try:
                 # 🔧 增量架构：不需要限制组合输出，因为基础LoRA已经稳定
@@ -834,8 +836,18 @@ class JointLoRAMoEModel(nn.Module):
                 # 限制辅助损失的影响
                 moe_aux_loss = torch.clamp(moe_aux_loss, min=0.0, max=1.0)
 
-                # 总损失 = 语言模型损失 + MoE辅助损失
-                loss = lm_loss + 0.01 * moe_aux_loss  # 增强负载均衡损失权重
+                # 🔧 计算文化损失（如果启用）
+                culture_loss = torch.tensor(0.0, device=lm_loss.device, dtype=lm_loss.dtype, requires_grad=True)
+                if self.config.use_culture_loss and culture_labels is not None and expert_weights is not None:
+                    # 导入文化损失计算函数
+                    from train_joint_lora_moe import compute_culture_loss
+                    culture_loss = compute_culture_loss(expert_weights, culture_labels, self.config.culture_loss_weight)
+
+                    # 确保文化损失的数据类型和设备与主损失一致
+                    culture_loss = culture_loss.to(device=lm_loss.device, dtype=lm_loss.dtype)
+
+                # 总损失 = 语言模型损失 + MoE辅助损失 + 文化损失
+                loss = lm_loss + 0.01 * moe_aux_loss + culture_loss
 
                 # 最终损失检查
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -861,6 +873,9 @@ class JointLoRAMoEModel(nn.Module):
                 else:
                     loss = torch.tensor(1.0, device=first_param.device, dtype=first_param.dtype, requires_grad=True)
 
+                # fallback情况下的文化损失
+                culture_loss = torch.tensor(0.0, device=first_param.device, dtype=first_param.dtype, requires_grad=True)
+
         # 6. 返回结果 - 增量架构版本
         return type('Outputs', (), {
             'loss': loss,
@@ -868,6 +883,7 @@ class JointLoRAMoEModel(nn.Module):
             'hidden_states': final_hidden_states,  # 使用组合后的隐藏状态
             'expert_weights': expert_weights,
             'moe_aux_loss': moe_aux_loss,
+            'culture_loss': culture_loss,  # 文化损失
             'base_hidden_states': base_hidden_states,  # 额外返回基础LoRA输出用于调试
             'moe_delta': moe_delta,  # 额外返回MoE增量用于调试
         })()
