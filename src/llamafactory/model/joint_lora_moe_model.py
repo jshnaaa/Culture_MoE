@@ -388,8 +388,7 @@ class MoELayer(nn.Module):
                 if use_mask and instruction_mask is not None:
                     # 使用instruction_mask：共享专家只处理instruction部分
                     instruction_mask_expanded = instruction_mask.unsqueeze(-1).expand_as(hidden_states)  # [B, L, H]
-                    # 🔧 修复：保持与hidden_states相同的数据类型
-                    masked_hidden_states = hidden_states * instruction_mask_expanded.to(hidden_states.dtype)
+                    masked_hidden_states = hidden_states * instruction_mask_expanded.float()
                     shared_output = self.shared_expert(masked_hidden_states)  # [B, L, H]
                 else:
                     # 不使用mask：共享专家处理完整输入（与路由专家相同）
@@ -456,10 +455,6 @@ class MoELayer(nn.Module):
 
             # 4. 融合共享专家和路由专家输出
             if use_shared and shared_output is not None:
-                # 🔧 修复：确保shared_output和routed_output数据类型一致
-                if shared_output.dtype != routed_output.dtype:
-                    shared_output = shared_output.to(routed_output.dtype)
-
                 if use_gate:
                     # 使用可学习的融合Gate（如果实现了的话）
                     # 目前使用固定权重：alpha * shared + (1-alpha) * routed
@@ -550,13 +545,9 @@ class JointLoRAMoEModel(nn.Module):
         # 3. 确保MoE层在正确设备上，但保持路由器为Float32
         self.moe_layer = self.moe_layer.to(device=device)
 
-        # 🔧 修复：专家层转换为指定dtype，但路由器保持Float32
-        for i, expert in enumerate(self.moe_layer.experts):
-            self.moe_layer.experts[i] = expert.to(dtype=dtype)
-
-        # 🔧 修复：确保共享专家也使用正确的dtype
-        if hasattr(self.moe_layer, 'shared_expert'):
-            self.moe_layer.shared_expert = self.moe_layer.shared_expert.to(dtype=dtype)
+        # 专家层可以转换为指定dtype，但路由器保持Float32
+        for expert in self.moe_layer.experts:
+            expert = expert.to(dtype=dtype)
 
         # 确保路由器保持Float32
         self.moe_layer.router = self.moe_layer.router.to(device=device, dtype=torch.float32)
@@ -693,10 +684,6 @@ class JointLoRAMoEModel(nn.Module):
         # MoE增量权重（控制MoE影响程度）
         moe_influence_weight = 0.5  # 50%的影响权重，增加MoE的作用
 
-        # 🔧 修复：确保moe_delta与base_hidden_states数据类型一致
-        if moe_delta.dtype != base_hidden_states.dtype:
-            moe_delta = moe_delta.to(base_hidden_states.dtype)
-
         # 组合输出：基础LoRA + 加权MoE增量
         combined_output = base_hidden_states + moe_influence_weight * moe_delta
 
@@ -714,19 +701,9 @@ class JointLoRAMoEModel(nn.Module):
 
         # 使用基础模型的lm_head计算最终logits
         if hasattr(self.base_model, 'lm_head'):
-            # 🔧 修复：确保final_hidden_states与lm_head权重数据类型一致
-            lm_head_dtype = self.base_model.lm_head.weight.dtype
-            if final_hidden_states.dtype != lm_head_dtype:
-                final_hidden_states = final_hidden_states.to(lm_head_dtype)
-
             # print(f"🔧 使用组合隐藏状态(基础LoRA+MoE增量)计算logits")  # 减少日志
             logits = self.base_model.lm_head(final_hidden_states)
         elif hasattr(self.base_model, 'base_model') and hasattr(self.base_model.base_model, 'lm_head'):
-            # 🔧 修复：确保final_hidden_states与lm_head权重数据类型一致
-            lm_head_dtype = self.base_model.base_model.lm_head.weight.dtype
-            if final_hidden_states.dtype != lm_head_dtype:
-                final_hidden_states = final_hidden_states.to(lm_head_dtype)
-
             # print(f"🔧 使用组合隐藏状态(基础LoRA+MoE增量)计算logits")  # 减少日志
             logits = self.base_model.base_model.lm_head(final_hidden_states)
         else:
