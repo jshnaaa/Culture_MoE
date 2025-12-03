@@ -100,7 +100,13 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
         return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
 
     if batch_size < 2:
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+        # 当batch_size=1时，使用专家权重的正则化损失来鼓励专家分化
+        # 计算专家权重的熵，鼓励专家权重分布均匀（避免某个专家过于占主导）
+        expert_probs = torch.softmax(expert_weights, dim=-1)  # [1, num_experts]
+        entropy = -torch.sum(expert_probs * torch.log(expert_probs + 1e-8), dim=-1)  # [1]
+        # 熵越大越好（分布越均匀），所以损失是负熵
+        regularization_loss = -entropy.mean() * loss_weight
+        return regularization_loss.to(dtype=torch.float16)
 
     # 统一使用float16以节省显存
     culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)

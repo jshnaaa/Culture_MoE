@@ -104,8 +104,8 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 针对长序列优化
-BATCH_SIZE=1              # 保持最小batch size
-GRADIENT_ACCUMULATION=8   # 减少梯度累积，避免长序列内存爆炸
+BATCH_SIZE=4              # 调整为4，支持culture loss多样本计算
+GRADIENT_ACCUMULATION=2   # 相应减少梯度累积，保持有效batch size
 LEARNING_RATE_BASE=2e-4   # 基础LoRA学习率
 LEARNING_RATE_MOE=8e-5    # MoE学习率（包括路由器）- 适中的值
 NUM_EPOCHS=8              # 训练轮数

@@ -841,6 +841,8 @@ class JointLoRAMoEModel(nn.Module):
                 if self.config.use_culture_loss and culture_labels is not None and expert_weights is not None:
                     # 导入文化损失计算函数
                     from train_joint_lora_moe import compute_culture_loss
+
+                    # 计算文化损失
                     culture_loss = compute_culture_loss(expert_weights, culture_labels, self.config.culture_loss_weight)
 
                     # 确保文化损失的数据类型和设备与主损失一致
