@@ -32,6 +32,7 @@ class JointLoRAMoEConfig:
     num_moe_experts: int = 4
     moe_hidden_dim: int = 4096
     moe_intermediate_dim: int = None  # 默认为 moe_hidden_dim * 4
+    moe_influence_weight: float = 0.5  # MoE影响权重，根据backbone调整
 
     # 文化损失配置
     use_culture_loss: bool = True
@@ -670,8 +671,8 @@ class JointLoRAMoEModel(nn.Module):
                 self.add_module('hidden_proj_back', self.hidden_proj_back)
             moe_delta = self.hidden_proj_back(moe_delta)
 
-        # MoE增量权重（控制MoE影响程度）
-        moe_influence_weight = 0.5  # 50%的影响权重，增加MoE的作用
+        # MoE增量权重（控制MoE影响程度）- 从配置中获取
+        moe_influence_weight = self.config.moe_influence_weight
 
         # 组合输出：基础LoRA + 加权MoE增量
         combined_output = base_hidden_states + moe_influence_weight * moe_delta

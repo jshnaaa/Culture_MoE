@@ -106,8 +106,18 @@ echo ""
 # 内存优化的训练参数 - 针对长序列优化
 BATCH_SIZE=1              # 调整为2，支持culture loss多样本计算
 GRADIENT_ACCUMULATION=4   # 相应增加梯度累积，保持有效batch size
-LEARNING_RATE_BASE=2e-4   # 基础LoRA学习率
-LEARNING_RATE_MOE=8e-5    # MoE学习率（包括路由器）- 适中的值
+
+# 🔧 根据backbone设置不同的学习率
+if [ "$BACKBONE" = "llama" ]; then
+    LEARNING_RATE_BASE=2e-4   # LLaMA: 基础LoRA学习率
+    LEARNING_RATE_MOE=8e-5    # LLaMA: MoE学习率
+    echo "🔧 LLaMA学习率: Base=${LEARNING_RATE_BASE}, MoE=${LEARNING_RATE_MOE}"
+elif [ "$BACKBONE" = "qwen" ]; then
+    LEARNING_RATE_BASE=1e-4   # Qwen: 更保守的基础LoRA学习率
+    LEARNING_RATE_MOE=2e-5    # Qwen: 更保守的MoE学习率
+    echo "🔧 Qwen学习率: Base=${LEARNING_RATE_BASE}, MoE=${LEARNING_RATE_MOE}"
+fi
+
 NUM_EPOCHS=8              # 训练轮数
 
 # 动态设置max_seq_len：normad等长文本数据集需要更长的序列长度
@@ -127,10 +137,15 @@ echo "训练参数:"
 echo "  Batch Size: $BATCH_SIZE (per GPU)"
 echo "  梯度累积: $GRADIENT_ACCUMULATION"
 echo "  有效Batch Size: $((BATCH_SIZE * GRADIENT_ACCUMULATION * NUM_GPUS))"
-echo "  基础LoRA学习率: $LEARNING_RATE_BASE"
-echo "  MoE学习率: $LEARNING_RATE_MOE"
+echo "  基础LoRA学习率: $LEARNING_RATE_BASE (针对${BACKBONE}优化)"
+echo "  MoE学习率: $LEARNING_RATE_MOE (针对${BACKBONE}优化)"
 echo "  训练轮数: $NUM_EPOCHS"
 echo "  最大序列长度: $MAX_SEQ_LEN (动态设置)"
+if [ "$BACKBONE" = "llama" ]; then
+    echo "  MoE影响权重: 0.5 (LLaMA配置)"
+elif [ "$BACKBONE" = "qwen" ]; then
+    echo "  MoE影响权重: 0.2 (Qwen配置)"
+fi
 echo ""
 
 # 创建输出目录

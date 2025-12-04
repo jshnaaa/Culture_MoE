@@ -188,6 +188,13 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         attention_mask = batch['attention_mask'].to(device)
         labels = batch['labels'].to(device)
 
+        # 🔧 检查batch是否有有效的训练标签，如果没有则跳过
+        total_valid_labels = (labels != -100).sum().item()
+        if total_valid_labels == 0:
+            if rank == 0:  # 只在主进程打印
+                print(f"⚠️ Batch {batch_idx}: 所有标签都被mask，跳过此batch")
+            continue  # 跳过这个batch
+
         # ✅ 标签掩码已在数据集级别正确处理，不需要在训练时重复处理
         # 🔍 只添加调试信息来验证数据集的标签掩码是否正确
         if batch_idx < 1:  # 只在第一个batch显示
@@ -291,10 +298,11 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         #     if not total_batch_loss.requires_grad:
         #         print(f"⚠️ Batch {batch_idx} - Total loss missing gradients")
 
-        # 检查 NaN/Inf loss
+        # 检查 NaN/Inf loss - 跳过无效batch
         if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
-            print(f"❌ NaN or Inf total loss detected at batch {batch_idx}")
-            print(f"  LM loss: {lm_loss.item()}, MoE loss: {moe_aux_loss.item()}, Culture loss: {culture_loss.item()}")
+            if rank == 0:
+                print(f"⚠️ Batch {batch_idx}: NaN/Inf loss detected, 跳过此batch")
+                print(f"  LM loss: {lm_loss.item()}, MoE loss: {moe_aux_loss.item()}, Culture loss: {culture_loss.item()}")
             continue
 
         # 显示关键训练信息 - 注释掉，专注tokenizer问题
@@ -402,10 +410,17 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
     pbar = tqdm(val_loader, desc="Evaluating", disable=(rank != 0), mininterval=1.0)
 
     with torch.no_grad():
-        for batch in pbar:
+        for batch_idx, batch in enumerate(pbar):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
+
+            # 🔧 检查batch是否有有效的训练标签，如果没有则跳过
+            total_valid_labels = (labels != -100).sum().item()
+            if total_valid_labels == 0:
+                if rank == 0:  # 只在主进程打印
+                    print(f"⚠️ Eval Batch {batch_idx}: 所有标签都被mask，跳过此batch")
+                continue  # 跳过这个batch
 
             # 正确处理labels masking
             for i in range(labels.shape[0]):
@@ -622,6 +637,20 @@ def main():
 
     # 转换字符串参数
     use_culture_loss = args.use_culture_loss.lower() == 'true'
+
+    # 🔧 根据backbone设置MoE影响权重
+    if args.backbone == "llama":
+        moe_influence_weight = 0.5  # LLaMA: 保持较强的MoE影响
+        if is_main_process(rank):
+            print(f"🔧 LLaMA backbone: MoE影响权重设置为 {moe_influence_weight}")
+    elif args.backbone == "qwen":
+        moe_influence_weight = 0.2  # Qwen: 使用更保守的MoE影响
+        if is_main_process(rank):
+            print(f"🔧 Qwen backbone: MoE影响权重设置为 {moe_influence_weight}")
+    else:
+        moe_influence_weight = 0.5  # 默认值
+        if is_main_process(rank):
+            print(f"🔧 未知backbone: 使用默认MoE影响权重 {moe_influence_weight}")
 
     # 设置内存优化
     if world_size > 1:
@@ -982,6 +1011,7 @@ def main():
         # MoE配置
         num_moe_experts=args.num_moe_experts,
         moe_hidden_dim=2048,  # 专家隐藏层大小
+        moe_influence_weight=moe_influence_weight,  # 根据backbone设置的影响权重
 
         # 文化损失配置
         use_culture_loss=use_culture_loss,
