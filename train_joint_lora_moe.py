@@ -36,7 +36,8 @@ from ft_lora_only_gen import (
     CultureLLMNewFormatDataset,
     load_and_process_data,
     extract_answer_from_text,
-    generate_answer
+    generate_answer,
+    dynamic_padding_collate_fn
 )
 
 
@@ -914,14 +915,19 @@ def main():
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank) if world_size > 1 else None
     val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False) if world_size > 1 else None
 
-    # 创建数据加载器
+    # 创建动态padding的collate函数
+    def collate_fn(batch):
+        return dynamic_padding_collate_fn(batch, tokenizer)
+
+    # 创建数据加载器 - 使用动态padding
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         num_workers=0,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
 
     val_loader = DataLoader(
@@ -930,7 +936,8 @@ def main():
         shuffle=False,
         sampler=val_sampler,
         num_workers=0,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
 
     # 加载基础模型
@@ -948,6 +955,16 @@ def main():
     torch.cuda.empty_cache()
     base_model = base_model.to(device)
     torch.cuda.empty_cache()
+
+    # 🔧 启用梯度检查点以节省内存
+    if hasattr(base_model, 'gradient_checkpointing_enable'):
+        base_model.gradient_checkpointing_enable()
+        if is_main_process(rank):
+            print("✅ Gradient checkpointing enabled")
+    elif hasattr(base_model, 'config'):
+        base_model.config.use_cache = False  # 禁用KV cache以配合gradient checkpointing
+        if is_main_process(rank):
+            print("✅ KV cache disabled for gradient checkpointing")
 
     if is_main_process(rank):
         print("✅ Base model loaded")
@@ -976,6 +993,12 @@ def main():
 
     # 创建联合模型
     model = JointLoRAMoEModel(base_model, joint_config)
+
+    # 🔧 确保梯度检查点在联合模型中仍然有效
+    if hasattr(model.base_model, 'gradient_checkpointing_enable'):
+        model.base_model.gradient_checkpointing_enable()
+        if is_main_process(rank):
+            print("✅ Gradient checkpointing re-enabled for joint model")
 
     if is_main_process(rank):
         model.print_trainable_parameters()

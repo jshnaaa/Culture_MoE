@@ -33,6 +33,7 @@ import re
 import sys
 
 import torch
+import torch.nn.functional as F
 from peft import LoraConfig, get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, Dataset
@@ -124,13 +125,13 @@ class CultureLLMNewFormatDataset(Dataset):
         #     print(f"  full_input末尾: {repr(full_input[-30:])}")
         #     print(f"  期望的输出部分: {repr(output_text)}")
 
-        # 🔧 关键修复：正确的标签掩码和tokenizer一致性
-        # 1. 先tokenize完整文本（统一使用add_special_tokens=True）
+        # 🔧 关键修复：动态padding - 不在这里padding，在collate_fn中处理
+        # 1. 先tokenize完整文本（不padding，在batch级别动态处理）
         encoded = self.tokenizer(
             full_text,
             max_length=self.max_length,
             truncation=True,
-            padding='max_length',
+            padding=False,  # 改为False，使用动态padding
             return_tensors='pt',
             add_special_tokens=True  # 明确指定
         )
@@ -391,6 +392,67 @@ class CultureLLMNewFormatDataset(Dataset):
             'total_tokens': total_tokens,
             'input_length': input_length  # 添加调试信息
         }
+
+
+def dynamic_padding_collate_fn(batch, tokenizer):
+    """
+    动态padding collate函数：根据batch内最长样本动态设置padding长度
+
+    Args:
+        batch: 数据集返回的样本列表
+        tokenizer: tokenizer对象
+
+    Returns:
+        批次数据字典
+    """
+    # 找到batch内最长的序列长度
+    max_length = max(len(item['input_ids']) for item in batch)
+
+    # 为每个样本进行padding
+    batch_input_ids = []
+    batch_attention_mask = []
+    batch_labels = []
+    batch_instructions = []
+    batch_inputs = []
+    batch_outputs = []
+    batch_labels_culture = []
+
+    for item in batch:
+        input_ids = item['input_ids']
+        attention_mask = item['attention_mask']
+        labels = item['labels']
+
+        # 计算需要padding的长度
+        pad_length = max_length - len(input_ids)
+
+        if pad_length > 0:
+            # 右侧padding
+            padded_input_ids = F.pad(input_ids, (0, pad_length), value=tokenizer.pad_token_id)
+            padded_attention_mask = F.pad(attention_mask, (0, pad_length), value=0)
+            padded_labels = F.pad(labels, (0, pad_length), value=-100)
+        else:
+            padded_input_ids = input_ids
+            padded_attention_mask = attention_mask
+            padded_labels = labels
+
+        batch_input_ids.append(padded_input_ids)
+        batch_attention_mask.append(padded_attention_mask)
+        batch_labels.append(padded_labels)
+        batch_instructions.append(item['instruction'])
+        batch_inputs.append(item['input'])
+        batch_outputs.append(item['output'])
+        batch_labels_culture.append(item['label'])
+
+    # 堆叠成batch张量
+    return {
+        'input_ids': torch.stack(batch_input_ids),
+        'attention_mask': torch.stack(batch_attention_mask),
+        'labels': torch.stack(batch_labels),
+        'instruction': batch_instructions,
+        'input': batch_inputs,
+        'output': batch_outputs,
+        'label': batch_labels_culture
+    }
 
 
 def load_and_process_data(
