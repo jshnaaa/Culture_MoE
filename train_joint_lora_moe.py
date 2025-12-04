@@ -591,6 +591,8 @@ def main():
                         help="Path to training data (JSON)")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output directory for results")
+    parser.add_argument("--data_id", type=str, required=True,
+                        help="Data ID for dataset-specific optimizations")
 
     # 训练参数
     parser.add_argument("--num_epochs", type=int, default=5,
@@ -638,15 +640,25 @@ def main():
     # 转换字符串参数
     use_culture_loss = args.use_culture_loss.lower() == 'true'
 
-    # 🔧 根据backbone设置MoE影响权重
+    # 🔧 根据backbone和data_id组合设置MoE影响权重
     if args.backbone == "llama":
         moe_influence_weight = 0.5  # LLaMA: 保持较强的MoE影响
         if is_main_process(rank):
             print(f"🔧 LLaMA backbone: MoE影响权重设置为 {moe_influence_weight}")
     elif args.backbone == "qwen":
-        moe_influence_weight = 0.2  # Qwen: 使用更保守的MoE影响
+        # Qwen根据不同数据集进行精细调整
+        if args.data_id == "2":  # CulturalBench
+            moe_influence_weight = 0.05  # 极低影响，避免干扰Qwen原有能力
+        elif args.data_id in ["4", "1"]:  # CultureLLM或其他短文本数据集
+            moe_influence_weight = 0.1   # 低影响
+        elif args.data_id == "3":  # Normad
+            moe_influence_weight = 0.2   # 中等影响，适合长文本
+        else:
+            moe_influence_weight = 0.2   # 默认值
+
         if is_main_process(rank):
-            print(f"🔧 Qwen backbone: MoE影响权重设置为 {moe_influence_weight}")
+            dataset_name = {"2": "CulturalBench", "3": "Normad", "4": "CultureLLM", "1": "其他"}.get(args.data_id, "未知")
+            print(f"🔧 Qwen backbone + {dataset_name} (DATA_ID={args.data_id}): MoE影响权重设置为 {moe_influence_weight}")
     else:
         moe_influence_weight = 0.5  # 默认值
         if is_main_process(rank):

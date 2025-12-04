@@ -144,7 +144,20 @@ echo "  最大序列长度: $MAX_SEQ_LEN (动态设置)"
 if [ "$BACKBONE" = "llama" ]; then
     echo "  MoE影响权重: 0.5 (LLaMA配置)"
 elif [ "$BACKBONE" = "qwen" ]; then
-    echo "  MoE影响权重: 0.2 (Qwen配置)"
+    case $DATA_ID in
+        2)
+            echo "  MoE影响权重: 0.05 (Qwen + CulturalBench配置)"
+            ;;
+        4|1)
+            echo "  MoE影响权重: 0.1 (Qwen + CultureLLM配置)"
+            ;;
+        3)
+            echo "  MoE影响权重: 0.2 (Qwen + Normad配置)"
+            ;;
+        *)
+            echo "  MoE影响权重: 0.2 (Qwen默认配置)"
+            ;;
+    esac
 fi
 echo ""
 
@@ -206,6 +219,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --base_model_path "$BASE_MODEL" \
         --train_file "$TRAIN_FILE" \
         --output_dir "$OUTPUT_DIR" \
+        --data_id "$DATA_ID" \
         --num_epochs $NUM_EPOCHS \
         --batch_size $BATCH_SIZE \
         --gradient_accumulation_steps $GRADIENT_ACCUMULATION \
@@ -230,6 +244,7 @@ else
         --base_model_path "$BASE_MODEL" \
         --train_file "$TRAIN_FILE" \
         --output_dir "$OUTPUT_DIR" \
+        --data_id "$DATA_ID" \
         --num_epochs $NUM_EPOCHS \
         --batch_size $BATCH_SIZE \
         --gradient_accumulation_steps $GRADIENT_ACCUMULATION \
