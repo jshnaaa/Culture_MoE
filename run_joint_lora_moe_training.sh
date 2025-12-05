@@ -108,7 +108,7 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 针对长序列优化
-BATCH_SIZE=1·              # 调整为2，支持culture loss多样本计算
+BATCH_SIZE=1              # 调整为2，支持culture loss多样本计算
 GRADIENT_ACCUMULATION=4   # 相应增加梯度累积，保持有效batch size
 
 # 🔧 根据backbone设置不同的学习率
