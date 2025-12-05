@@ -65,7 +65,7 @@ if [ "$BACKBONE" = "llama" ]; then
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
-    JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/qwen_cultureLLM_sharedfalse_gatefalse_20251204_152323"
+    JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/qwen_cultureLLM_sharedfalse_gatefalse_20251204_152323/best_joint_model"
 fi
 
 # ✅ 根据 DATA_ID 设置测试数据集
