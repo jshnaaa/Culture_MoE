@@ -354,6 +354,9 @@ class MoESharedLayer(nn.Module):
                     expert_outputs[expert_idx] = torch.zeros_like(hidden_states)
                     current_nan_detected = True
 
+            # 🔧 保存专家输出供文化损失使用
+            self._last_expert_outputs = expert_outputs
+
             # 3. 路由专家加权融合
             routed_output = torch.zeros_like(hidden_states)
             total_routed_weight = 0.0
@@ -499,6 +502,10 @@ class JointLoRAMoESharedModel(nn.Module):
 
         # 确保路由器保持Float32
         self.moe_layer.router = self.moe_layer.router.to(device=device, dtype=torch.float32)
+
+        # 初始化文化损失相关组件
+        self.culture_memory_bank = {}  # 文化表示内存银行
+        self._last_expert_outputs = None  # 最后的专家输出
 
         logging.info(f"Joint LoRA+MoE Shared model initialized with {config.num_moe_experts} experts + 1 shared expert")
 
@@ -651,15 +658,26 @@ class JointLoRAMoESharedModel(nn.Module):
                 # 限制辅助损失的影响
                 moe_aux_loss = torch.clamp(moe_aux_loss, min=0.0, max=1.0)
 
-                # 计算文化损失（如果启用）
+                # 计算增强文化损失（如果启用）
                 culture_loss = torch.tensor(0.0, device=lm_loss.device, dtype=lm_loss.dtype, requires_grad=True)
                 if self.config.use_culture_loss and culture_labels is not None and expert_weights is not None:
-                    # 导入文化损失计算函数
-                    from train_joint_lora_moe import compute_culture_loss
+                    # 导入简化版增强文化损失计算函数
+                    from culture_loss_integration import compute_culture_loss_enhanced
 
-                    # 计算文化损失
-                    culture_loss = compute_culture_loss(expert_weights, culture_labels,
-                                                      self.config.culture_loss_weight)
+                    # 准备专家输出字典（如果可用）
+                    expert_outputs = None
+                    if hasattr(self, '_last_expert_outputs'):
+                        expert_outputs = self._last_expert_outputs
+
+                    # 计算增强文化损失
+                    culture_loss = compute_culture_loss_enhanced(
+                        expert_weights=expert_weights,
+                        culture_labels=culture_labels,
+                        hidden_states=final_hidden_states,
+                        expert_outputs=expert_outputs,
+                        memory_bank=self.culture_memory_bank,
+                        loss_weight=self.config.culture_loss_weight
+                    )
                     culture_loss = culture_loss.to(device=lm_loss.device, dtype=lm_loss.dtype)
 
                 # 总损失 = 语言模型损失 + MoE辅助损失 + 文化损失
@@ -1097,6 +1115,13 @@ def train_epoch_joint_shared(model, train_loader, optimizer, device, tokenizer,
             router_entropy = monitoring_info.get('router_entropy', 0.0)
             postfix['gate'] = f"{fusion_gate:.4f}"
             postfix['entropy'] = f"{router_entropy:.3f}"
+
+        # 🔧 添加文化损失组件监控
+        if use_culture_loss and hasattr(model.module if hasattr(model, 'module') else model, 'culture_memory_bank'):
+            memory_bank = (model.module if hasattr(model, 'module') else model).culture_memory_bank
+            num_cultures = len([k for k in memory_bank.keys() if k.endswith('_weights')])
+            if num_cultures > 0:
+                postfix['cultures'] = f"{num_cultures}"
 
         pbar.set_postfix(postfix)
 
