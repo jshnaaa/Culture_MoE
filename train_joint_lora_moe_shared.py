@@ -1236,6 +1236,8 @@ def main():
                         help="LoRA dropout")
 
     # 共享专家参数
+    parser.add_argument("--use_shared_expert", type=str, default="true",
+                        help="Whether to use shared expert (always true in this script)")
     parser.add_argument("--shared_lora_rank", type=int, default=4,
                         help="Shared expert LoRA rank")
     parser.add_argument("--shared_expert_weight", type=float, default=0.1,
@@ -1250,6 +1252,12 @@ def main():
 
     # 转换字符串参数
     use_culture_loss = args.use_culture_loss.lower() == 'true'
+    use_shared_expert = args.use_shared_expert.lower() == 'true'
+
+    # 共享专家版本强制启用共享专家
+    if not use_shared_expert:
+        print("⚠️ 警告：在共享专家版本中，强制启用共享专家功能")
+        use_shared_expert = True
 
     # 根据backbone和data_id组合设置MoE影响权重
     if args.backbone == "llama":
@@ -1312,6 +1320,7 @@ def main():
         print(f"MoE experts: {args.num_moe_experts} + 1 shared")
         print(f"Shared expert weight: {args.shared_expert_weight}")
         print(f"Routed expert weight: {args.routed_expert_weight}")
+        print(f"Use shared expert: {use_shared_expert}")
         print(f"Use culture loss: {use_culture_loss}")
         if use_culture_loss:
             print(f"Culture loss weight: {args.culture_loss_weight}")
@@ -1446,7 +1455,7 @@ def main():
         moe_influence_weight=moe_influence_weight,
 
         # 共享专家配置
-        use_shared_expert=True,
+        use_shared_expert=use_shared_expert,
         shared_lora_rank=args.shared_lora_rank,
         shared_expert_weight=args.shared_expert_weight,
         routed_expert_weight=args.routed_expert_weight,
@@ -1662,6 +1671,7 @@ def main():
                 'shared_expert_weight': args.shared_expert_weight,
                 'routed_expert_weight': args.routed_expert_weight,
             },
+            'use_shared_expert': use_shared_expert,
             'use_culture_loss': use_culture_loss,
             'culture_loss_weight': args.culture_loss_weight,
             'lora_config': {
