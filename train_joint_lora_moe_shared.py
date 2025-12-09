@@ -1338,9 +1338,9 @@ def main():
                         help="Culture loss weight")
 
     # LoRA参数
-    parser.add_argument("--lora_rank", type=int, default=8,
+    parser.add_argument("--lora_rank", type=int, default=16,
                         help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=16,
+    parser.add_argument("--lora_alpha", type=int, default=32,
                         help="LoRA alpha")
     parser.add_argument("--lora_dropout", type=float, default=0.1,
                         help="LoRA dropout")
