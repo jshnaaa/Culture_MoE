@@ -173,7 +173,7 @@ if [ "$USE_SHARED" = "true" ]; then
     echo "    - LayerNorm + 多重scale控制"
     echo "    - 大幅降低学习率（防止过强更新）"
     echo "    - 路由器敏感性监控"
-    echo "    - Shared专家LoRA rank: 4 (标准配置)"
+    echo "    - Shared专家LoRA rank: 2 (更小更弱)"
 fi
 echo ""
 
@@ -203,7 +203,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "use_culture_loss": $USE_CULTURE_LOSS,
         "lora_rank": $LORA_RANK,
         "lora_alpha": $LORA_ALPHA,
-        "shared_lora_rank": 4,
+        "shared_lora_rank": 2,
         "num_epochs": $NUM_EPOCHS,
         "batch_size": $BATCH_SIZE,
         "gradient_accumulation_steps": $GRADIENT_ACCUMULATION,
@@ -256,7 +256,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --use_culture_loss $USE_CULTURE_LOSS \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
-        --shared_lora_rank 4 \
+        --shared_lora_rank 2 \
         --eval_interval 1 \
         --memory_efficient \
         2>&1 | tee "$OUTPUT_DIR/training.log"
@@ -284,7 +284,7 @@ else
         --use_culture_loss $USE_CULTURE_LOSS \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
-        --shared_lora_rank 4 \
+        --shared_lora_rank 2 \
         --eval_interval 1 \
         --memory_efficient \
         2>&1 | tee "$OUTPUT_DIR/training.log"

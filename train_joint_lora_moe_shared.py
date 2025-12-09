@@ -58,7 +58,7 @@ class JointLoRAMoESharedConfig(JointLoRAMoEConfig):
 
     # 共享专家配置
     use_shared_expert: bool = True
-    shared_lora_rank: int = 4
+    shared_lora_rank: int = 2
     shared_expert_weight: float = 0.1
     routed_expert_weight: float = 0.9
     shared_expert_lr: float = 2e-5
