@@ -111,20 +111,20 @@ echo ""
 BATCH_SIZE=1              # 保持最小batch size
 GRADIENT_ACCUMULATION=4   # 梯度累积
 
-# 🔧 根据backbone设置不同的学习率
+# 🔧 根据backbone设置不同的学习率（针对改进的共享专家架构优化）
 if [ "$BACKBONE" = "llama" ]; then
     LEARNING_RATE_BASE=2e-4   # LLaMA: 基础LoRA学习率
     LEARNING_RATE_MOE=8e-5    # LLaMA: MoE学习率
-    LEARNING_RATE_SHARED=2e-5 # LLaMA: Shared专家学习率
-    echo "🔧 LLaMA学习率: Base=${LEARNING_RATE_BASE}, MoE=${LEARNING_RATE_MOE}, Shared=${LEARNING_RATE_SHARED}"
+    LEARNING_RATE_SHARED=1e-5 # LLaMA: Shared专家学习率（降低，让它变弱）
+    echo "🔧 LLaMA学习率: Base=${LEARNING_RATE_BASE}, MoE=${LEARNING_RATE_MOE}, Shared=${LEARNING_RATE_SHARED} (Shared降低)"
 elif [ "$BACKBONE" = "qwen" ]; then
     LEARNING_RATE_BASE=1e-4   # Qwen: 更保守的基础LoRA学习率
     LEARNING_RATE_MOE=2e-5    # Qwen: 更保守的MoE学习率
-    LEARNING_RATE_SHARED=2e-5 # Qwen: Shared专家学习率
-    echo "🔧 Qwen学习率: Base=${LEARNING_RATE_BASE}, MoE=${LEARNING_RATE_MOE}, Shared=${LEARNING_RATE_SHARED}"
+    LEARNING_RATE_SHARED=5e-6 # Qwen: Shared专家学习率（大幅降低，让它变弱且不干扰）
+    echo "🔧 Qwen学习率: Base=${LEARNING_RATE_BASE}, MoE=${LEARNING_RATE_MOE}, Shared=${LEARNING_RATE_SHARED} (Shared大幅降低)"
 fi
 
-NUM_EPOCHS=8              # 训练轮数
+NUM_EPOCHS=6              # 训练轮数（减少，避免过拟合）
 
 # 动态设置max_seq_len：normad等长文本数据集需要更长的序列长度
 echo "🔧 调试信息: DATA_ID='$DATA_ID'"
@@ -167,8 +167,13 @@ elif [ "$BACKBONE" = "qwen" ]; then
     esac
 fi
 if [ "$USE_SHARED" = "true" ]; then
-    echo "  Shared专家权重: 0.1, 路由专家权重: 0.9"
-    echo "  Shared专家LoRA rank: 4"
+    echo "  🔧 改进的Shared专家架构:"
+    echo "    - 残差式融合（避免直接线性相加）"
+    echo "    - 可学习fusion gate（初始值0.05）"
+    echo "    - LayerNorm + 多重scale控制"
+    echo "    - 大幅降低学习率（防止过强更新）"
+    echo "    - 路由器敏感性监控"
+    echo "    - Shared专家LoRA rank: 4"
 fi
 echo ""
 
@@ -191,7 +196,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "max_seq_length": $MAX_SEQ_LEN
     },
     "training_config": {
-        "training_mode": "joint_lora_moe_shared",
+        "training_mode": "joint_lora_moe_shared_improved",
         "use_shared_expert": $USE_SHARED,
         "use_moe_gate": $USE_GATE,
         "moe_experts": $NUM_MOE_EXPERTS,
@@ -205,8 +210,14 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "learning_rate_base": $LEARNING_RATE_BASE,
         "learning_rate_moe": $LEARNING_RATE_MOE,
         "learning_rate_shared": $LEARNING_RATE_SHARED,
-        "shared_weight": 0.1,
-        "routed_weight": 0.9,
+        "improvements": {
+            "residual_fusion": true,
+            "learnable_fusion_gate": 0.05,
+            "layer_norm_stabilization": true,
+            "multi_scale_control": true,
+            "router_sensitivity_monitoring": true,
+            "reduced_shared_learning_rate": true
+        },
         "num_gpus": $NUM_GPUS,
         "memory_optimized": true
     },
@@ -292,11 +303,16 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
         echo "✅ 最佳模型已保存: $BEST_MODEL"
 
         echo ""
-        echo "🎉 训练完成！模型特点:"
-        echo "  - 联合训练: 同时优化预训练LoRA + 新增MoE层 + Shared专家"
+        echo "🎉 训练完成！改进的共享专家模型特点:"
+        echo "  - 联合训练: 同时优化预训练LoRA + 新增MoE层 + 改进Shared专家"
         echo "  - LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
-        echo "  - MoE专家数: $NUM_MOE_EXPERTS"
-        echo "  - Shared专家: 启用 (LoRA rank=4, 权重=0.1)"
+        echo "  - MoE专家数: $NUM_MOE_EXPERTS + 1个改进的共享专家"
+        echo "  - 🔧 Shared专家改进:"
+        echo "    ✓ 残差式融合（避免表示冲突）"
+        echo "    ✓ 可学习fusion gate（防止dominate）"
+        echo "    ✓ LayerNorm稳定化 + 多重scale控制"
+        echo "    ✓ 大幅降低学习率（${LEARNING_RATE_SHARED}，防止过强更新）"
+        echo "    ✓ 路由器敏感性监控"
         echo "  - MoE内部Gate: $USE_GATE"
         echo "  - 分层学习率: Base LoRA=$LEARNING_RATE_BASE, MoE=$LEARNING_RATE_MOE, Shared=$LEARNING_RATE_SHARED"
         echo "  - 文化损失: $USE_CULTURE_LOSS"
