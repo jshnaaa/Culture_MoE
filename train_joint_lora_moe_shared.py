@@ -303,18 +303,7 @@ class MoESharedLayer(nn.Module):
             # 2. 路由专家处理
             # 路由决策
             pooled = hidden_states.mean(dim=1)  # [B, H]
-
-            # 🔧 优化：动态调整temperature来稳定entropy
-            # 如果entropy历史过低，降低temperature增加区分度
-            current_avg_entropy = sum(self.router_entropy_history[-10:]) / max(len(self.router_entropy_history[-10:]), 1) if self.router_entropy_history else 0.5
-            if current_avg_entropy < 0.3:
-                temperature = 0.8  # 降低temperature增加区分度
-            elif current_avg_entropy > 1.2:
-                temperature = 1.2  # 提高temperature减少过度区分
-            else:
-                temperature = 1.0  # 正常temperature
-
-            all_expert_weights, router_logits = self.router(pooled, temperature=temperature)
+            all_expert_weights, router_logits = self.router(pooled, temperature=1.0)
 
             # 🔧 路由器敏感性监控
             if self.config.use_shared_expert and self.fusion_gate is not None:
@@ -389,8 +378,8 @@ class MoESharedLayer(nn.Module):
             # 4. 🔧 改进的可控融合机制：避免直接线性相加
             if shared_output is not None and self.fusion_gate is not None:
                 # 🔧 方法1：残差连接式融合，shared作为残差分支
-                # 🔧 优化：适当放宽fusion_gate的学习范围，允许更多自适应
-                clamped_fusion_gate = torch.clamp(self.fusion_gate, min=0.001, max=0.15)
+                # 限制fusion_gate在合理范围内
+                clamped_fusion_gate = torch.clamp(self.fusion_gate, min=0.001, max=0.2)
                 clamped_residual_weight = torch.clamp(self.residual_weight, min=0.8, max=0.999)
 
                 # 残差式融合：主干是routed_output，shared作为小的残差修正
@@ -1106,14 +1095,8 @@ def train_epoch_joint_shared(model, train_loader, optimizer, device, tokenizer,
         if monitoring_info:
             fusion_gate = monitoring_info.get('fusion_gate', 0.0)
             router_entropy = monitoring_info.get('router_entropy', 0.0)
-            shared_scale_info = monitoring_info.get('shared_scale_info', {})
-            shared_scale = shared_scale_info.get('shared_scale', 0.0)
-
             postfix['gate'] = f"{fusion_gate:.4f}"
             postfix['entropy'] = f"{router_entropy:.3f}"
-            # 添加shared scale监控
-            if shared_scale > 0:
-                postfix['s_scale'] = f"{shared_scale:.3f}"
 
         pbar.set_postfix(postfix)
 

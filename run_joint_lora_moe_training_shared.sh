@@ -124,7 +124,7 @@ elif [ "$BACKBONE" = "qwen" ]; then
     echo "🔧 Qwen学习率: Base=${LEARNING_RATE_BASE}, MoE=${LEARNING_RATE_MOE}, Shared=${LEARNING_RATE_SHARED} (Shared大幅降低)"
 fi
 
-NUM_EPOCHS=6              # 训练轮数（减少，避免过拟合）
+NUM_EPOCHS=8              # 训练轮数
 
 # 动态设置max_seq_len：normad等长文本数据集需要更长的序列长度
 echo "🔧 调试信息: DATA_ID='$DATA_ID'"
