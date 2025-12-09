@@ -723,8 +723,6 @@ class JointLoRAMoESharedModel(nn.Module):
         routed_expert_params = []
         shared_expert_params = []
         router_params = []
-        fusion_gate_params = []  # 🔧 新增：fusion_gate专门的参数组
-
         # 分离不同类型的参数
         for name, param in self.named_parameters():
             if param.requires_grad:
@@ -734,11 +732,8 @@ class JointLoRAMoESharedModel(nn.Module):
                     routed_expert_params.append(param)
                 elif 'moe_layer.router' in name:
                     router_params.append(param)
-                elif 'moe_layer.fusion_gate' in name:
-                    # 🔧 fusion_gate使用专门的参数组和更高的学习率
-                    fusion_gate_params.append(param)
                 elif 'moe_layer' in name:
-                    # 其他MoE相关参数归入路由专家组
+                    # 其他MoE相关参数（包括fusion_gate）归入路由专家组
                     routed_expert_params.append(param)
                 else:
                     base_params.append(param)
@@ -781,20 +776,10 @@ class JointLoRAMoESharedModel(nn.Module):
                 'name': 'router'
             })
 
-        # 🔧 Fusion Gate参数组 - 使用更高的学习率确保可以学习
-        if fusion_gate_params:
-            param_groups.append({
-                'params': fusion_gate_params,
-                'lr': base_lr * 0.5,  # 使用base_lr的一半，比MoE高但比base低
-                'weight_decay': 0.0,  # 不使用权重衰减
-                'name': 'fusion_gate'
-            })
-
         logging.info(f"Parameter groups: base_lora={len(base_params)}, "
                     f"shared_expert={len(shared_expert_params)}, "
                     f"routed_experts={len(routed_expert_params)}, "
-                    f"router={len(router_params)}, "
-                    f"fusion_gate={len(fusion_gate_params)}")
+                    f"router={len(router_params)}")
         return param_groups
 
     def print_trainable_parameters(self):
@@ -805,7 +790,6 @@ class JointLoRAMoESharedModel(nn.Module):
         shared_expert_params = 0
         routed_expert_params = 0
         router_params = 0
-        fusion_gate_params = 0
 
         for name, param in self.named_parameters():
             total_params += param.numel()
@@ -817,9 +801,8 @@ class JointLoRAMoESharedModel(nn.Module):
                     routed_expert_params += param.numel()
                 elif 'moe_layer.router' in name:
                     router_params += param.numel()
-                elif 'moe_layer.fusion_gate' in name:
-                    fusion_gate_params += param.numel()
                 elif 'moe_layer' in name:
+                    # 其他MoE相关参数（包括fusion_gate）归入路由专家组
                     routed_expert_params += param.numel()
                 else:
                     base_lora_params += param.numel()
@@ -832,7 +815,6 @@ class JointLoRAMoESharedModel(nn.Module):
         print(f"  - Shared Expert params: {shared_expert_params:,}")
         print(f"  - Routed Expert params: {routed_expert_params:,}")
         print(f"  - Router params: {router_params:,}")
-        print(f"  - Fusion Gate params: {fusion_gate_params:,}")
         print(f"  - Architecture: Joint LoRA + MoE + Shared Expert")
         print(f"  - MoE experts: {self.config.num_moe_experts} + 1 shared")
         print(f"  - Shared expert weight: {self.config.shared_expert_weight}")
