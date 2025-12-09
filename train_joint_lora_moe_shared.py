@@ -83,7 +83,7 @@ class JointLoRAMoESharedConfig(JointLoRAMoEConfig):
 
 
 class SharedExpert(nn.Module):
-    """共享专家层 - 使用小型LoRA适配器实现"""
+    """共享专家层 - 使用小型LoRA适配器实现，变弱且不干扰专家特化"""
 
     def __init__(self, hidden_dim: int, config: JointLoRAMoESharedConfig, dtype: torch.dtype = torch.float16):
         super().__init__()
@@ -101,8 +101,17 @@ class SharedExpert(nn.Module):
         self.lora_B = nn.Linear(self.lora_rank, hidden_dim, bias=False, dtype=dtype)
         self.dropout = nn.Dropout(self.lora_dropout)
 
-        # LoRA缩放因子
+        # LoRA缩放因子 - 比正常小很多
         self.scaling = self.lora_alpha / self.lora_rank
+
+        # 🔧 关键改进1：LayerNorm稳定输出
+        self.layer_norm = nn.LayerNorm(hidden_dim, dtype=dtype)
+
+        # 🔧 关键改进2：可学习的极小scale，防止dominate专家输出
+        self.learnable_scale = nn.Parameter(torch.tensor(0.02, dtype=dtype))
+
+        # 🔧 关键改进3：输出scale控制，防止幅度过大
+        self.output_scale_factor = 0.1  # 额外的固定缩放
 
         self._init_weights()
 
@@ -115,33 +124,56 @@ class SharedExpert(nn.Module):
 
     def forward(self, x):
         """
-        前向传播
+        前向传播 - 变弱且不干扰专家特化的共享专家
 
         Args:
             x: [B, L, H] 输入隐藏状态
 
         Returns:
-            output: [B, L, H] 共享专家输出
+            output: [B, L, H] 共享专家输出（经过多重控制）
+            scale_info: dict 包含scale监控信息
         """
         if torch.isnan(x).any() or torch.isinf(x).any():
-            return torch.zeros_like(x)
+            return torch.zeros_like(x), {"shared_scale": 0.0, "input_scale": 0.0}
 
         try:
+            # 🔧 监控输入scale
+            input_scale = torch.norm(x).item()
+
             # LoRA前向传播: x -> A -> dropout -> B -> scale
             lora_output = self.lora_A(x)  # [B, L, rank]
             lora_output = self.dropout(lora_output)
             lora_output = self.lora_B(lora_output)  # [B, L, H]
             lora_output = lora_output * self.scaling
 
+            # 🔧 关键改进1：LayerNorm稳定输出，防止scale失控
+            lora_output = self.layer_norm(lora_output)
+
+            # 🔧 关键改进2：应用可学习的极小scale
+            # learnable_scale初始化为0.02，确保共享专家输出很小
+            lora_output = lora_output * torch.clamp(self.learnable_scale, min=0.001, max=0.1)
+
+            # 🔧 关键改进3：额外的固定缩放，进一步压制输出幅度
+            lora_output = lora_output * self.output_scale_factor
+
+            # 🔧 监控最终输出scale
+            output_scale = torch.norm(lora_output).item()
+
             # 检查输出有效性
             if torch.isnan(lora_output).any() or torch.isinf(lora_output).any():
-                return torch.zeros_like(x)
+                return torch.zeros_like(x), {"shared_scale": 0.0, "input_scale": input_scale}
 
-            return lora_output
+            scale_info = {
+                "shared_scale": output_scale,
+                "input_scale": input_scale,
+                "learnable_scale": self.learnable_scale.item()
+            }
+
+            return lora_output, scale_info
 
         except Exception as e:
             print(f"⚠️ SharedExpert forward failed: {e}")
-            return torch.zeros_like(x)
+            return torch.zeros_like(x), {"shared_scale": 0.0, "input_scale": 0.0}
 
 
 class MoESharedLayer(nn.Module):
@@ -186,8 +218,22 @@ class MoESharedLayer(nn.Module):
                 config=config,
                 dtype=dtype
             )
+
+            # 🔧 关键改进：可控融合机制，避免直接线性相加
+            # 可学习的融合gate，初始化为很小的值
+            self.fusion_gate = nn.Parameter(torch.tensor(0.05, dtype=torch.float32))
+
+            # 残差连接的权重，用于平衡shared和routed的贡献
+            self.residual_weight = nn.Parameter(torch.tensor(0.95, dtype=torch.float32))
+
+            # 路由器敏感性保护：监控路由分布
+            self.router_entropy_history = []
+            self.router_variance_history = []
+
         else:
             self.shared_expert = None
+            self.fusion_gate = None
+            self.residual_weight = None
 
         # 确保专家分化
         print("🔧 Initializing experts with different seeds...")
@@ -242,10 +288,11 @@ class MoESharedLayer(nn.Module):
                                       dtype=hidden_states.dtype, requires_grad=True)
                 return hidden_states, expert_weights, aux_loss
 
-            # 1. 共享专家输出（如果启用）
+            # 1. 共享专家输出（如果启用）- 使用新的返回格式
             shared_output = None
+            shared_scale_info = {}
             if self.config.use_shared_expert and self.shared_expert is not None:
-                shared_output = self.shared_expert(hidden_states)  # [B, L, H]
+                shared_output, shared_scale_info = self.shared_expert(hidden_states)  # [B, L, H], scale_info
 
                 # 检查共享专家输出
                 if torch.isnan(shared_output).any() or torch.isinf(shared_output).any():
@@ -257,6 +304,24 @@ class MoESharedLayer(nn.Module):
             # 路由决策
             pooled = hidden_states.mean(dim=1)  # [B, H]
             all_expert_weights, router_logits = self.router(pooled, temperature=1.0)
+
+            # 🔧 路由器敏感性监控
+            if self.config.use_shared_expert and self.fusion_gate is not None:
+                # 计算路由器entropy（分布平均程度）
+                router_probs = torch.softmax(router_logits, dim=-1)
+                router_entropy = -torch.sum(router_probs * torch.log(router_probs + 1e-8), dim=-1).mean().item()
+
+                # 计算路由器logits方差（区分能力）
+                router_variance = torch.var(router_logits, dim=-1).mean().item()
+
+                # 记录历史，用于监控路由器健康状态
+                self.router_entropy_history.append(router_entropy)
+                self.router_variance_history.append(router_variance)
+
+                # 保持历史长度不超过100
+                if len(self.router_entropy_history) > 100:
+                    self.router_entropy_history.pop(0)
+                    self.router_variance_history.pop(0)
 
             # Top-2激活机制
             top_k_logits, top_k_indices = torch.topk(router_logits, k=2, dim=-1)  # [B, 2]
@@ -310,11 +375,31 @@ class MoESharedLayer(nn.Module):
             else:
                 routed_output = torch.clamp(routed_output, min=-5.0, max=5.0)
 
-            # 4. 共享专家+路由专家加权融合
-            if shared_output is not None:
-                # 加权融合：shared_weight * shared_output + routed_weight * routed_output
-                final_output = (self.config.shared_expert_weight * shared_output +
-                              self.config.routed_expert_weight * routed_output)
+            # 4. 🔧 改进的可控融合机制：避免直接线性相加
+            if shared_output is not None and self.fusion_gate is not None:
+                # 🔧 方法1：残差连接式融合，shared作为残差分支
+                # 限制fusion_gate在合理范围内
+                clamped_fusion_gate = torch.clamp(self.fusion_gate, min=0.001, max=0.2)
+                clamped_residual_weight = torch.clamp(self.residual_weight, min=0.8, max=0.999)
+
+                # 残差式融合：主干是routed_output，shared作为小的残差修正
+                final_output = clamped_residual_weight * routed_output + clamped_fusion_gate * shared_output
+
+                # 🔧 方法2：Scale监控和自适应调整
+                if len(shared_scale_info) > 0:
+                    shared_scale = shared_scale_info.get("shared_scale", 0.0)
+                    routed_scale = torch.norm(routed_output).item()
+
+                    # 如果shared的scale太大，进一步压制
+                    if shared_scale > routed_scale * 0.1:  # shared不应该超过routed的10%
+                        scale_adjustment = min(0.5, (routed_scale * 0.1) / (shared_scale + 1e-8))
+                        final_output = clamped_residual_weight * routed_output + clamped_fusion_gate * shared_output * scale_adjustment
+            elif shared_output is not None:
+                # 回退到原始加权融合，但使用更保守的权重
+                conservative_shared_weight = min(self.config.shared_expert_weight, 0.05)  # 最多5%
+                conservative_routed_weight = 1.0 - conservative_shared_weight
+                final_output = (conservative_shared_weight * shared_output +
+                              conservative_routed_weight * routed_output)
             else:
                 # 如果没有共享专家，只使用路由专家输出
                 final_output = routed_output
@@ -349,7 +434,15 @@ class MoESharedLayer(nn.Module):
             if current_nan_detected:
                 self.nan_count += 1
 
-            return final_output, expert_weights, aux_loss
+            # 🔧 返回监控信息
+            monitoring_info = {
+                "shared_scale_info": shared_scale_info,
+                "router_entropy": self.router_entropy_history[-1] if self.router_entropy_history else 0.0,
+                "router_variance": self.router_variance_history[-1] if self.router_variance_history else 0.0,
+                "fusion_gate": self.fusion_gate.item() if self.fusion_gate is not None else 0.0
+            }
+
+            return final_output, expert_weights, aux_loss, monitoring_info
 
         except Exception as e:
             print(f"⚠️ MoE shared layer completely failed: {e}")
@@ -360,7 +453,13 @@ class MoESharedLayer(nn.Module):
                                        requires_grad=True) / self.num_experts
             aux_loss = torch.tensor(0.01, device=hidden_states.device,
                                   dtype=hidden_states.dtype, requires_grad=True)
-            return hidden_states, expert_weights, aux_loss
+            fallback_monitoring = {
+                "shared_scale_info": {},
+                "router_entropy": 0.0,
+                "router_variance": 0.0,
+                "fusion_gate": 0.0
+            }
+            return hidden_states, expert_weights, aux_loss, fallback_monitoring
 
 
 class JointLoRAMoESharedModel(nn.Module):
@@ -468,8 +567,8 @@ class JointLoRAMoESharedModel(nn.Module):
                 self.add_module('hidden_proj', self.hidden_proj)
             hidden_states = self.hidden_proj(hidden_states)
 
-        # 3. MoE共享层处理 - 增量架构实现
-        moe_delta, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
+        # 3. MoE共享层处理 - 增量架构实现（新增监控信息）
+        moe_delta, expert_weights, moe_aux_loss, monitoring_info = self.moe_layer(hidden_states)
 
         # 4. 增量架构：基础LoRA + 加权MoE增量
         base_hidden_states = base_outputs.hidden_states[-1]  # [B, L, H]
@@ -592,7 +691,7 @@ class JointLoRAMoESharedModel(nn.Module):
                 culture_loss = torch.tensor(0.0, device=first_param.device,
                                           dtype=first_param.dtype, requires_grad=True)
 
-        # 7. 返回结果
+        # 7. 返回结果（包含监控信息）
         return type('Outputs', (), {
             'loss': loss,
             'logits': logits,
@@ -602,6 +701,7 @@ class JointLoRAMoESharedModel(nn.Module):
             'culture_loss': culture_loss,
             'base_hidden_states': base_hidden_states,
             'moe_delta': moe_delta,
+            'monitoring_info': monitoring_info,  # 🔧 新增监控信息
         })()
 
     def get_parameter_groups(self, base_lr: float, moe_lr: float, shared_lr: float = None):
@@ -930,6 +1030,9 @@ def train_epoch_joint_shared(model, train_loader, optimizer, device, tokenizer,
 
         culture_loss = getattr(outputs, 'culture_loss', torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True))
 
+        # 🔧 获取监控信息
+        monitoring_info = getattr(outputs, 'monitoring_info', {})
+
         # 总损失
         total_batch_loss = outputs.loss
 
@@ -987,6 +1090,13 @@ def train_epoch_joint_shared(model, train_loader, optimizer, device, tokenizer,
         }
         if use_culture_loss:
             postfix['culture'] = f"{culture_loss.item():.4f}"
+
+        # 🔧 添加监控信息到进度条
+        if monitoring_info:
+            fusion_gate = monitoring_info.get('fusion_gate', 0.0)
+            router_entropy = monitoring_info.get('router_entropy', 0.0)
+            postfix['gate'] = f"{fusion_gate:.4f}"
+            postfix['entropy'] = f"{router_entropy:.3f}"
 
         pbar.set_postfix(postfix)
 
