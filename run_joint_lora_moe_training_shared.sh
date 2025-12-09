@@ -173,7 +173,7 @@ if [ "$USE_SHARED" = "true" ]; then
     echo "    - LayerNorm + 多重scale控制"
     echo "    - 大幅降低学习率（防止过强更新）"
     echo "    - 路由器敏感性监控"
-    echo "    - Shared专家LoRA rank: 4"
+    echo "    - Shared专家LoRA rank: 4 (标准配置)"
 fi
 echo ""
 
