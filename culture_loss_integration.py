@@ -34,7 +34,7 @@ def compute_culture_loss_enhanced(
     """
     if expert_weights is None or culture_labels is None:
         device = culture_labels.device if culture_labels is not None else torch.device('cuda')
-        return torch.tensor(0.0, device=device, dtype=torch.float16)
+        return torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
 
     batch_size = expert_weights.shape[0]
     device = expert_weights.device
@@ -42,40 +42,61 @@ def compute_culture_loss_enhanced(
 
     # 检查维度匹配
     if expert_weights.shape[0] != culture_labels.shape[0]:
-        return torch.tensor(0.0, device=device, dtype=dtype)
+        return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
-    total_loss = torch.tensor(0.0, device=device, dtype=dtype)
+    # 检查输入的有效性
+    if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+        return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
-    # 1. 专家激活多样性损失
-    diversity_loss = compute_diversity_loss(expert_weights, expert_outputs, loss_weight * 0.5)
-    total_loss += diversity_loss
+    try:
+        total_loss = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
-    # 2. 文化一致性损失（基于内存银行）
-    if memory_bank is not None:
-        consistency_loss = compute_consistency_loss(
-            expert_weights, culture_labels, memory_bank, loss_weight * 0.3
-        )
-        total_loss += consistency_loss
+        # 1. 专家激活多样性损失
+        diversity_loss = compute_diversity_loss(expert_weights, expert_outputs, loss_weight * 0.5)
+        if not (torch.isnan(diversity_loss) or torch.isinf(diversity_loss)):
+            total_loss = total_loss + diversity_loss
 
-    # 3. 基础文化对比损失
-    if batch_size >= 2:
-        # 标准成对比较
-        contrastive_loss = compute_pairwise_loss(expert_weights, culture_labels, loss_weight)
-        total_loss += contrastive_loss
-    else:
-        # batch_size=1时的处理
+        # 2. 文化一致性损失（基于内存银行）
         if memory_bank is not None:
-            # 基于内存银行的对比学习
-            memory_contrastive_loss = compute_memory_contrastive_loss(
-                expert_weights, culture_labels, memory_bank, loss_weight
+            consistency_loss = compute_consistency_loss(
+                expert_weights, culture_labels, memory_bank, loss_weight * 0.3
             )
-            total_loss += memory_contrastive_loss
-        else:
-            # 回退到专家正则化
-            regularization_loss = compute_regularization_loss(expert_weights, loss_weight)
-            total_loss += regularization_loss
+            if not (torch.isnan(consistency_loss) or torch.isinf(consistency_loss)):
+                total_loss = total_loss + consistency_loss
 
-    return total_loss.to(dtype=dtype)
+        # 3. 基础文化对比损失
+        if batch_size >= 2:
+            # 标准成对比较
+            contrastive_loss = compute_pairwise_loss(expert_weights, culture_labels, loss_weight)
+            if not (torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss)):
+                total_loss = total_loss + contrastive_loss
+        else:
+            # batch_size=1时的处理
+            if memory_bank is not None:
+                # 基于内存银行的对比学习
+                memory_contrastive_loss = compute_memory_contrastive_loss(
+                    expert_weights, culture_labels, memory_bank, loss_weight
+                )
+                if not (torch.isnan(memory_contrastive_loss) or torch.isinf(memory_contrastive_loss)):
+                    total_loss = total_loss + memory_contrastive_loss
+            else:
+                # 回退到专家正则化
+                regularization_loss = compute_regularization_loss(expert_weights, loss_weight)
+                if not (torch.isnan(regularization_loss) or torch.isinf(regularization_loss)):
+                    total_loss = total_loss + regularization_loss
+
+        # 最终检查和限制
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+
+        # 限制损失的范围，防止过大
+        total_loss = torch.clamp(total_loss, min=-10.0, max=10.0)
+
+        return total_loss.to(device=device, dtype=dtype)
+
+    except Exception as e:
+        print(f"⚠️ Enhanced culture loss computation failed: {e}")
+        return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
 
 def compute_diversity_loss(
@@ -88,59 +109,95 @@ def compute_diversity_loss(
     dtype = torch.float16
 
     if weight <= 0:
-        return torch.tensor(0.0, device=device, dtype=dtype)
+        return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
-    # 计算专家权重分布的均匀性
-    expert_probs = torch.softmax(expert_weights, dim=-1)  # [B, num_experts]
-    avg_activation = expert_probs.mean(dim=0)  # [num_experts]
+    try:
+        # 计算专家权重分布的均匀性
+        expert_probs = torch.softmax(expert_weights, dim=-1)  # [B, num_experts]
+        avg_activation = expert_probs.mean(dim=0)  # [num_experts]
 
-    # 鼓励专家激活的均匀分布
-    num_experts = expert_probs.shape[-1]
-    uniform_target = torch.ones_like(avg_activation) / num_experts
+        # 数值稳定性检查
+        if torch.isnan(avg_activation).any() or torch.isinf(avg_activation).any():
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
-    # KL散度损失
-    kl_loss = F.kl_div(
-        torch.log(avg_activation + 1e-8),
-        uniform_target,
-        reduction='batchmean'
-    )
+        # 鼓励专家激活的均匀分布
+        num_experts = expert_probs.shape[-1]
+        uniform_target = torch.ones_like(avg_activation) / num_experts
 
-    diversity_loss = kl_loss * weight
+        # 🔧 修复KL散度计算 - 确保返回标量张量
+        log_avg = torch.log(avg_activation + 1e-8)
+        kl_loss = F.kl_div(log_avg, uniform_target, reduction='batchmean')
 
-    # 如果有专家输出，增加输出多样性约束
-    if expert_outputs is not None and len(expert_outputs) > 1:
-        output_diversity = compute_output_diversity_simple(expert_outputs)
-        diversity_loss += -output_diversity * weight * 0.5  # 负损失鼓励多样性
+        # 确保kl_loss是标量张量且有梯度
+        if kl_loss.dim() > 0:
+            kl_loss = kl_loss.mean()
 
-    return diversity_loss.to(dtype=dtype)
+        # 检查数值稳定性
+        if torch.isnan(kl_loss) or torch.isinf(kl_loss):
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+
+        diversity_loss = kl_loss * weight
+
+        # 如果有专家输出，增加输出多样性约束
+        if expert_outputs is not None and len(expert_outputs) > 1:
+            output_diversity = compute_output_diversity_simple(expert_outputs)
+            if not (torch.isnan(output_diversity) or torch.isinf(output_diversity)):
+                diversity_loss = diversity_loss - output_diversity * weight * 0.5
+
+        # 确保返回标量张量
+        if diversity_loss.dim() > 0:
+            diversity_loss = diversity_loss.mean()
+
+        return diversity_loss.to(device=device, dtype=dtype)
+
+    except Exception as e:
+        print(f"⚠️ Diversity loss computation failed: {e}")
+        return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
 
 def compute_output_diversity_simple(expert_outputs: Dict[int, torch.Tensor]) -> torch.Tensor:
     """计算专家输出多样性（简化版）"""
     if len(expert_outputs) < 2:
-        return torch.tensor(0.0)
+        return torch.tensor(0.0, dtype=torch.float16)
 
-    expert_list = list(expert_outputs.keys())
-    similarities = []
+    try:
+        expert_list = list(expert_outputs.keys())
 
-    # 只计算前两个专家的相似度（减少计算量）
-    if len(expert_list) >= 2:
-        output1 = expert_outputs[expert_list[0]]  # [B, L, H]
-        output2 = expert_outputs[expert_list[1]]  # [B, L, H]
+        # 只计算前两个专家的相似度（减少计算量）
+        if len(expert_list) >= 2:
+            output1 = expert_outputs[expert_list[0]]  # [B, L, H]
+            output2 = expert_outputs[expert_list[1]]  # [B, L, H]
 
-        # 计算输出的余弦相似度
-        flat1 = output1.flatten(start_dim=1)  # [B, L*H]
-        flat2 = output2.flatten(start_dim=1)  # [B, L*H]
+            # 确保形状一致
+            if output1.shape != output2.shape:
+                return torch.tensor(0.0, dtype=torch.float16)
 
-        # 避免零向量
-        norm1 = torch.norm(flat1, dim=-1, keepdim=True)
-        norm2 = torch.norm(flat2, dim=-1, keepdim=True)
+            # 计算输出的余弦相似度
+            flat1 = output1.flatten(start_dim=1)  # [B, L*H]
+            flat2 = output2.flatten(start_dim=1)  # [B, L*H]
 
-        if (norm1 > 1e-8).all() and (norm2 > 1e-8).all():
-            similarity = F.cosine_similarity(flat1, flat2, dim=-1)
-            return similarity.mean()
+            # 避免零向量
+            norm1 = torch.norm(flat1, dim=-1, keepdim=True)
+            norm2 = torch.norm(flat2, dim=-1, keepdim=True)
 
-    return torch.tensor(0.0)
+            if (norm1 > 1e-8).all() and (norm2 > 1e-8).all():
+                similarity = F.cosine_similarity(flat1, flat2, dim=-1)
+
+                # 确保返回标量
+                if similarity.dim() > 0:
+                    similarity = similarity.mean()
+
+                # 检查数值稳定性
+                if torch.isnan(similarity) or torch.isinf(similarity):
+                    return torch.tensor(0.0, dtype=torch.float16)
+
+                return similarity.to(dtype=torch.float16)
+
+        return torch.tensor(0.0, dtype=torch.float16)
+
+    except Exception as e:
+        print(f"⚠️ Output diversity computation failed: {e}")
+        return torch.tensor(0.0, dtype=torch.float16)
 
 
 def compute_consistency_loss(
@@ -154,38 +211,74 @@ def compute_consistency_loss(
     dtype = torch.float16
 
     if weight <= 0:
-        return torch.tensor(0.0, device=device, dtype=dtype)
+        return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
-    consistency_loss = torch.tensor(0.0, device=device, dtype=dtype)
-    batch_size = expert_weights.shape[0]
+    try:
+        consistency_loss = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+        batch_size = expert_weights.shape[0]
 
-    for i in range(batch_size):
-        culture_id = culture_labels[i].item()
-        current_weights = expert_weights[i]  # [num_experts]
+        for i in range(batch_size):
+            culture_id = culture_labels[i].item()
+            current_weights = expert_weights[i]  # [num_experts]
 
-        weight_key = f"culture_{culture_id}_weights"
+            # 检查当前权重的有效性
+            if torch.isnan(current_weights).any() or torch.isinf(current_weights).any():
+                continue
 
-        if weight_key in memory_bank:
-            # 计算与历史模式的一致性
-            historical_weights = memory_bank[weight_key]
-            consistency = F.cosine_similarity(
-                current_weights.unsqueeze(0),
-                historical_weights.unsqueeze(0),
-                dim=-1
-            )
-            consistency_loss += (1.0 - consistency.mean()) * weight
+            weight_key = f"culture_{culture_id}_weights"
 
-            # 更新内存银行（指数移动平均）
-            momentum = 0.9
-            memory_bank[weight_key] = (
-                momentum * historical_weights +
-                (1 - momentum) * current_weights.detach()
-            ).to(dtype=dtype)
-        else:
-            # 初始化
-            memory_bank[weight_key] = current_weights.detach().to(dtype=dtype)
+            if weight_key in memory_bank:
+                # 计算与历史模式的一致性
+                historical_weights = memory_bank[weight_key]
 
-    return consistency_loss.to(dtype=dtype)
+                # 确保历史权重在正确设备上
+                historical_weights = historical_weights.to(device=device, dtype=dtype)
+
+                # 检查历史权重的有效性
+                if torch.isnan(historical_weights).any() or torch.isinf(historical_weights).any():
+                    # 重新初始化
+                    memory_bank[weight_key] = current_weights.detach().to(dtype=dtype)
+                    continue
+
+                # 计算余弦相似度
+                consistency = F.cosine_similarity(
+                    current_weights.unsqueeze(0),
+                    historical_weights.unsqueeze(0),
+                    dim=-1
+                )
+
+                # 确保consistency是标量
+                if consistency.dim() > 0:
+                    consistency = consistency.mean()
+
+                # 检查数值稳定性
+                if torch.isnan(consistency) or torch.isinf(consistency):
+                    continue
+
+                # 计算一致性损失
+                loss_increment = (1.0 - consistency) * weight
+                if not (torch.isnan(loss_increment) or torch.isinf(loss_increment)):
+                    consistency_loss = consistency_loss + loss_increment
+
+                # 更新内存银行（指数移动平均）
+                momentum = 0.9
+                updated_weights = (
+                    momentum * historical_weights +
+                    (1 - momentum) * current_weights.detach()
+                ).to(dtype=dtype)
+
+                # 检查更新后权重的有效性
+                if not (torch.isnan(updated_weights).any() or torch.isinf(updated_weights).any()):
+                    memory_bank[weight_key] = updated_weights
+            else:
+                # 初始化
+                memory_bank[weight_key] = current_weights.detach().to(dtype=dtype)
+
+        return consistency_loss
+
+    except Exception as e:
+        print(f"⚠️ Consistency loss computation failed: {e}")
+        return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
 
 def compute_memory_contrastive_loss(
@@ -200,45 +293,93 @@ def compute_memory_contrastive_loss(
     dtype = torch.float16
 
     if weight <= 0:
-        return torch.tensor(0.0, device=device, dtype=dtype)
+        return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
-    contrastive_loss = torch.tensor(0.0, device=device, dtype=dtype)
-    batch_size = expert_weights.shape[0]
+    try:
+        contrastive_loss = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+        batch_size = expert_weights.shape[0]
 
-    for i in range(batch_size):
-        culture_id = culture_labels[i].item()
-        current_weights = expert_weights[i]
+        for i in range(batch_size):
+            culture_id = culture_labels[i].item()
+            current_weights = expert_weights[i]
 
-        positive_similarities = []
-        negative_similarities = []
+            # 检查当前权重的有效性
+            if torch.isnan(current_weights).any() or torch.isinf(current_weights).any():
+                continue
 
-        # 收集正负样本
-        for key, stored_weights in memory_bank.items():
-            if key.startswith("culture_") and key.endswith("_weights"):
-                stored_culture_id = int(key.split("_")[1])
+            positive_similarities = []
+            negative_similarities = []
 
-                similarity = F.cosine_similarity(
-                    current_weights.unsqueeze(0),
-                    stored_weights.unsqueeze(0),
-                    dim=-1
-                )
+            # 收集正负样本
+            for key, stored_weights in memory_bank.items():
+                if key.startswith("culture_") and key.endswith("_weights"):
+                    try:
+                        stored_culture_id = int(key.split("_")[1])
 
-                if stored_culture_id == culture_id:
-                    positive_similarities.append(similarity / temperature)
-                else:
-                    negative_similarities.append(similarity / temperature)
+                        # 确保存储权重在正确设备上
+                        stored_weights = stored_weights.to(device=device, dtype=dtype)
 
-        # 计算对比损失
-        if positive_similarities and negative_similarities:
-            pos_scores = torch.stack(positive_similarities)
-            neg_scores = torch.stack(negative_similarities)
+                        # 检查存储权重的有效性
+                        if torch.isnan(stored_weights).any() or torch.isinf(stored_weights).any():
+                            continue
 
-            for pos_score in pos_scores:
-                all_scores = torch.cat([pos_score.unsqueeze(0), neg_scores])
-                log_prob = pos_score - torch.logsumexp(all_scores, dim=0)
-                contrastive_loss += -log_prob * weight
+                        similarity = F.cosine_similarity(
+                            current_weights.unsqueeze(0),
+                            stored_weights.unsqueeze(0),
+                            dim=-1
+                        )
 
-    return contrastive_loss.to(dtype=dtype)
+                        # 确保similarity是标量
+                        if similarity.dim() > 0:
+                            similarity = similarity.mean()
+
+                        # 检查数值稳定性
+                        if torch.isnan(similarity) or torch.isinf(similarity):
+                            continue
+
+                        similarity_scaled = similarity / temperature
+
+                        if stored_culture_id == culture_id:
+                            positive_similarities.append(similarity_scaled)
+                        else:
+                            negative_similarities.append(similarity_scaled)
+
+                    except (ValueError, IndexError):
+                        # 跳过格式不正确的键
+                        continue
+
+            # 计算对比损失
+            if positive_similarities and negative_similarities:
+                try:
+                    pos_scores = torch.stack(positive_similarities)
+                    neg_scores = torch.stack(negative_similarities)
+
+                    for pos_score in pos_scores:
+                        all_scores = torch.cat([pos_score.unsqueeze(0), neg_scores])
+
+                        # 检查scores的有效性
+                        if torch.isnan(all_scores).any() or torch.isinf(all_scores).any():
+                            continue
+
+                        log_prob = pos_score - torch.logsumexp(all_scores, dim=0)
+
+                        # 检查log_prob的有效性
+                        if torch.isnan(log_prob) or torch.isinf(log_prob):
+                            continue
+
+                        loss_increment = -log_prob * weight
+                        if not (torch.isnan(loss_increment) or torch.isinf(loss_increment)):
+                            contrastive_loss = contrastive_loss + loss_increment
+
+                except Exception as e:
+                    print(f"⚠️ Contrastive loss stack failed: {e}")
+                    continue
+
+        return contrastive_loss
+
+    except Exception as e:
+        print(f"⚠️ Memory contrastive loss computation failed: {e}")
+        return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
 
 def compute_pairwise_loss(
@@ -293,10 +434,37 @@ def compute_regularization_loss(
     device = expert_weights.device
     dtype = torch.float16
 
-    # 计算专家权重的熵
-    expert_probs = torch.softmax(expert_weights, dim=-1)
-    entropy = -torch.sum(expert_probs * torch.log(expert_probs + 1e-8), dim=-1)
+    try:
+        # 检查输入的有效性
+        if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
-    # 熵越大越好，损失是负熵
-    regularization_loss = -entropy.mean() * weight
-    return regularization_loss.to(dtype=dtype)
+        # 计算专家权重的熵
+        expert_probs = torch.softmax(expert_weights, dim=-1)
+
+        # 检查softmax结果的有效性
+        if torch.isnan(expert_probs).any() or torch.isinf(expert_probs).any():
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+
+        entropy = -torch.sum(expert_probs * torch.log(expert_probs + 1e-8), dim=-1)
+
+        # 检查熵计算结果的有效性
+        if torch.isnan(entropy).any() or torch.isinf(entropy).any():
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+
+        # 确保entropy是标量
+        if entropy.dim() > 0:
+            entropy = entropy.mean()
+
+        # 熵越大越好，损失是负熵
+        regularization_loss = -entropy * weight
+
+        # 最终检查
+        if torch.isnan(regularization_loss) or torch.isinf(regularization_loss):
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+
+        return regularization_loss.to(device=device, dtype=dtype)
+
+    except Exception as e:
+        print(f"⚠️ Regularization loss computation failed: {e}")
+        return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
