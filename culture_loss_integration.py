@@ -51,15 +51,16 @@ def compute_culture_loss_enhanced(
     try:
         total_loss = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
-        # 1. 专家激活多样性损失
-        diversity_loss = compute_diversity_loss(expert_weights, expert_outputs, loss_weight * 0.5)
-        if not (torch.isnan(diversity_loss) or torch.isinf(diversity_loss)):
-            total_loss = total_loss + diversity_loss
+        # 1. 专家激活多样性损失（大幅降低权重）
+        if expert_outputs is not None:  # 只有明确提供expert_outputs时才计算
+            diversity_loss = compute_diversity_loss(expert_weights, expert_outputs, loss_weight * 0.1)
+            if not (torch.isnan(diversity_loss) or torch.isinf(diversity_loss)):
+                total_loss = total_loss + diversity_loss
 
-        # 2. 文化一致性损失（基于内存银行）
+        # 2. 文化一致性损失（降低权重）
         if memory_bank is not None:
             consistency_loss = compute_consistency_loss(
-                expert_weights, culture_labels, memory_bank, loss_weight * 0.3
+                expert_weights, culture_labels, memory_bank, loss_weight * 0.2
             )
             if not (torch.isnan(consistency_loss) or torch.isinf(consistency_loss)):
                 total_loss = total_loss + consistency_loss

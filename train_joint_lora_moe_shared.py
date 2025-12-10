@@ -661,22 +661,15 @@ class JointLoRAMoESharedModel(nn.Module):
                 # 计算增强文化损失（如果启用）
                 culture_loss = torch.tensor(0.0, device=lm_loss.device, dtype=lm_loss.dtype, requires_grad=True)
                 if self.config.use_culture_loss and culture_labels is not None and expert_weights is not None:
-                    # 导入简化版增强文化损失计算函数
-                    from culture_loss_integration import compute_culture_loss_enhanced
+                    # 导入简化版文化损失计算函数
+                    from simple_culture_loss import compute_simple_culture_loss
 
-                    # 准备专家输出字典（如果可用）
-                    expert_outputs = None
-                    if hasattr(self, '_last_expert_outputs'):
-                        expert_outputs = self._last_expert_outputs
-
-                    # 计算增强文化损失
-                    culture_loss = compute_culture_loss_enhanced(
+                    # 计算简化版文化损失（回到接近原始实现）
+                    culture_loss = compute_simple_culture_loss(
                         expert_weights=expert_weights,
                         culture_labels=culture_labels,
-                        hidden_states=final_hidden_states,
-                        expert_outputs=expert_outputs,
                         memory_bank=self.culture_memory_bank,
-                        loss_weight=self.config.culture_loss_weight
+                        loss_weight=self.config.culture_loss_weight  # 使用原始权重
                     )
                     culture_loss = culture_loss.to(device=lm_loss.device, dtype=lm_loss.dtype)
 
