@@ -75,20 +75,6 @@ if [ ! -f "$TRAIN_FILE" ]; then
     exit 1
 fi
 
-# 检查GPU数量
-if [ "$NUM_GPUS" -lt 1 ] || [ "$NUM_GPUS" -gt 8 ]; then
-    echo "❌ GPU数量必须在1-8之间: $NUM_GPUS"
-    exit 1
-fi
-
-if [ "$NUM_GPUS" -gt 1 ]; then
-    AVAILABLE_GPUS=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits | head -1)
-    if [ "$NUM_GPUS" -gt "$AVAILABLE_GPUS" ]; then
-        echo "❌ 请求的GPU数量($NUM_GPUS)超过可用数量($AVAILABLE_GPUS)"
-        exit 1
-    fi
-fi
-
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_DIR="/root/autodl-fs/joint_lora_moe_shared/${MODEL_NAME}_${DATASET_TAG}_shared${USE_SHARED}_gate${USE_GATE}_${TIMESTAMP}"
@@ -108,8 +94,8 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 针对长序列优化
-BATCH_SIZE=1              # 保持最小batch size
-GRADIENT_ACCUMULATION=4   # 梯度累积
+BATCH_SIZE=2              # 保持最小batch size
+GRADIENT_ACCUMULATION=16   # 梯度累积
 
 # 🔧 根据backbone设置不同的学习率（针对改进的共享专家架构优化）
 if [ "$BACKBONE" = "llama" ]; then
