@@ -31,6 +31,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.llamafactory.model.joint_lora_moe_model import JointLoRAMoEModel, JointLoRAMoEConfig
 
+# 导入增强MoE损失函数
+from enhanced_moe_losses import integrate_enhanced_moe_loss
+
 # 复用现有的数据集类
 from ft_lora_only_gen import (
     CultureLLMNewFormatDataset,
@@ -267,31 +270,58 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         #     if torch.isnan(logits).any() or torch.isinf(logits).any():
         #         print(f"⚠️ Batch {batch_idx} - Invalid logits detected")
 
-        # 获取各种损失
-        lm_loss = outputs.loss  # 语言模型损失
-        expert_weights = getattr(outputs, 'expert_weights', None)  # 专家权重
+        # 🔧 增强MoE损失计算
+        if use_culture_loss:
+            # 使用增强MoE损失函数：L = L_h + L_balance = L_h + αL_aux + βL_o + γL_v
+            # 获取模型输出的所有信息
+            logits = outputs.logits
+            expert_weights = getattr(outputs, 'expert_weights', None)
+            expert_outputs = getattr(outputs, 'expert_outputs', {})
+            soft_routing_scores = getattr(outputs, 'soft_routing_scores', expert_weights)
+            activated_experts = getattr(outputs, 'activated_experts', list(expert_outputs.keys()))
 
-        # 确保moe_aux_loss有梯度连接
-        moe_aux_loss = getattr(outputs, 'moe_aux_loss', None)
-        if moe_aux_loss is None:
-            # 使用requires_grad=True的零张量确保梯度连接
-            moe_aux_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
+            # 计算增强MoE损失
+            enhanced_loss_dict = integrate_enhanced_moe_loss(
+                model_outputs=outputs,
+                labels=labels,
+                culture_labels=culture_labels,
+                use_culture_loss=True,
+                loss_weights={
+                    "alpha": 1e-3,  # L_aux权重
+                    "beta": 1e-3,   # L_o权重
+                    "gamma": 1e-3   # L_v权重
+                }
+            )
 
-        # 简化的MoE检查（仅在前3个batch）- 注释掉，专注tokenizer问题
-        # if batch_idx < 3:
-        #     if torch.isnan(moe_aux_loss).any() or torch.isinf(moe_aux_loss).any():
-        #         print(f"⚠️ Batch {batch_idx} - Invalid MoE aux loss")
-        #     if expert_weights is not None and (torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any()):
-        #         print(f"⚠️ Batch {batch_idx} - Invalid expert weights")
+            # 使用增强损失作为总损失
+            total_batch_loss = enhanced_loss_dict["L_total"]
+            lm_loss = enhanced_loss_dict["L_h"]
+            moe_aux_loss = enhanced_loss_dict["L_aux"]
+            culture_loss = enhanced_loss_dict["L_culture"]
 
-        # 🔧 使用模型返回的文化损失（已在模型内部计算）
-        culture_loss = getattr(outputs, 'culture_loss', torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True))
+            # 记录各个损失组件用于监控
+            l_balance = enhanced_loss_dict["L_balance"]
+            l_o = enhanced_loss_dict["L_o"]
+            l_v = enhanced_loss_dict["L_v"]
 
-        # 注意：不要转换lm_loss的dtype，这会断开梯度连接
-        # lm_loss = lm_loss.to(dtype=torch.float16)  # 这行代码会断开梯度！
+        else:
+            # 简化损失计算：L = L_h + αL_aux
+            lm_loss = outputs.loss  # 语言模型损失
+            expert_weights = getattr(outputs, 'expert_weights', None)
 
-        # 总损失：直接使用模型返回的loss（已包含lm_loss + moe_aux_loss + culture_loss）
-        total_batch_loss = outputs.loss
+            # 确保moe_aux_loss有梯度连接
+            moe_aux_loss = getattr(outputs, 'moe_aux_loss', None)
+            if moe_aux_loss is None:
+                moe_aux_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
+
+            # 简化的总损失
+            total_batch_loss = lm_loss + 0.01 * moe_aux_loss
+            culture_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
+
+            # 设置占位符变量用于进度条显示
+            l_balance = moe_aux_loss
+            l_o = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
+            l_v = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
 
         # 简化的梯度检查（仅在前3个batch）- 注释掉，专注tokenizer问题
         # if batch_idx < 3:
@@ -371,13 +401,20 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 import gc
                 gc.collect()
 
-        # 更新进度条 - 增加显示精度
+        # 更新进度条 - 显示增强损失组件
         postfix = {
             'loss': f"{total_batch_loss.item() * num_accumulation_steps:.6f}",
             'lm': f"{lm_loss.item():.6f}",
-            'moe': f"{moe_aux_loss.item():.6f}"
+            'aux': f"{moe_aux_loss.item():.6f}"
         }
+
         if use_culture_loss:
+            # 显示增强损失的各个组件
+            postfix['bal'] = f"{l_balance.item():.4f}"  # L_balance
+            postfix['ort'] = f"{l_o.item():.4f}"        # L_o (orthogonalization)
+            postfix['var'] = f"{l_v.item():.4f}"        # L_v (routing variance)
+            postfix['cul'] = f"{culture_loss.item():.4f}"  # L_culture
+        else:
             postfix['culture'] = f"{culture_loss.item():.4f}"
 
         pbar.set_postfix(postfix)
@@ -464,16 +501,34 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
                 return_dict=True
             )
 
-            lm_loss = outputs.loss
-            expert_weights = getattr(outputs, 'expert_weights', None)
-            moe_aux_loss = getattr(outputs, 'moe_aux_loss', torch.tensor(0.0, device=device, dtype=torch.float16))
+            # 🔧 增强MoE损失计算（评估时）
+            if use_culture_loss:
+                # 使用增强MoE损失函数进行评估
+                enhanced_loss_dict = integrate_enhanced_moe_loss(
+                    model_outputs=outputs,
+                    labels=labels,
+                    culture_labels=culture_labels,
+                    use_culture_loss=True,
+                    loss_weights={
+                        "alpha": 1e-3,  # L_aux权重
+                        "beta": 1e-3,   # L_o权重
+                        "gamma": 1e-3   # L_v权重
+                    }
+                )
 
-            # 🔧 使用模型返回的文化损失（已在模型内部计算）
-            culture_loss = getattr(outputs, 'culture_loss', torch.tensor(0.0, device=device, dtype=torch.float16))
+                total_batch_loss = enhanced_loss_dict["L_total"]
+                lm_loss = enhanced_loss_dict["L_h"]
+                moe_aux_loss = enhanced_loss_dict["L_aux"]
+                culture_loss = enhanced_loss_dict["L_culture"]
+            else:
+                # 简化损失计算
+                lm_loss = outputs.loss
+                expert_weights = getattr(outputs, 'expert_weights', None)
+                moe_aux_loss = getattr(outputs, 'moe_aux_loss', torch.tensor(0.0, device=device, dtype=torch.float16))
+                culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
 
-            lm_loss = lm_loss.to(dtype=torch.float16)
-            # 直接使用模型返回的总损失（已包含文化损失）
-            total_batch_loss = outputs.loss
+                lm_loss = lm_loss.to(dtype=torch.float16)
+                total_batch_loss = lm_loss + 0.01 * moe_aux_loss
 
             # 检查总损失是否为NaN/Inf
             if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):

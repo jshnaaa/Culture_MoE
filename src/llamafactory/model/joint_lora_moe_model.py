@@ -345,15 +345,18 @@ class MoELayer(nn.Module):
 
     def forward(self, hidden_states):
         """
-        前向传播 - 极简版本，只保留基本的专家混合
+        前向传播 - 增强损失版本，返回完整信息
 
         Args:
             hidden_states: [B, L, H] 输入隐藏状态
 
         Returns:
             output: [B, L, H] 输出隐藏状态
-            expert_weights: [B, num_experts] 专家权重（用于文化损失）
+            expert_weights: [B, num_experts] 专家权重（稀疏，只有top-k有值）
             aux_loss: 辅助损失
+            expert_outputs: Dict[int, torch.Tensor] 激活专家的输出
+            soft_routing_scores: [B, num_experts] 所有专家的soft routing分数
+            activated_experts: List[int] 被激活的专家索引列表
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
@@ -376,6 +379,9 @@ class MoELayer(nn.Module):
 
             # 路由计算 - 使用更高的温度提高区分度
             all_expert_weights, router_logits = self.router(pooled, temperature=1.0)
+
+            # 保存soft routing scores供损失计算使用
+            soft_routing_scores = all_expert_weights  # [B, num_experts] 所有专家的概率分布
 
             # 🔧 实现Top-2激活机制
             # 1. 选择top-2专家
@@ -513,7 +519,8 @@ class MoELayer(nn.Module):
             if current_nan_detected:
                 self.nan_count += 1
 
-            return final_output, expert_weights, aux_loss
+            # 返回增强损失所需的完整信息
+            return final_output, expert_weights, aux_loss, expert_outputs, soft_routing_scores, activated_experts
 
         except Exception as e:
             print(f"⚠️ MoE layer completely failed: {e}, using fallback transformation")
@@ -530,7 +537,13 @@ class MoELayer(nn.Module):
             fallback_output = self.fallback_transform(hidden_states)
             expert_weights = torch.ones(batch_size, self.num_experts, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True) / self.num_experts
             aux_loss = torch.tensor(0.01, device=hidden_states.device, dtype=hidden_states.dtype, requires_grad=True)
-            return fallback_output, expert_weights, aux_loss
+
+            # 返回fallback时的完整信息
+            fallback_expert_outputs = {}
+            fallback_soft_routing_scores = expert_weights
+            fallback_activated_experts = list(range(self.num_experts))
+
+            return fallback_output, expert_weights, aux_loss, fallback_expert_outputs, fallback_soft_routing_scores, fallback_activated_experts
 
 
 class JointLoRAMoEModel(nn.Module):
@@ -641,9 +654,9 @@ class JointLoRAMoEModel(nn.Module):
                 self.add_module('hidden_proj', self.hidden_proj)
             hidden_states = self.hidden_proj(hidden_states)
 
-        # 3. MoE层处理 - 增量架构实现
+        # 3. MoE层处理 - 增量架构实现，获取增强损失所需信息
         # print("🔧 启用增量MoE架构：MoE作为基础LoRA的增量调整")  # 减少日志
-        moe_delta, expert_weights, moe_aux_loss = self.moe_layer(hidden_states)
+        moe_delta, expert_weights, moe_aux_loss, expert_outputs, soft_routing_scores, activated_experts = self.moe_layer(hidden_states)
 
         # 关键调试：检查MoE增量输出（只在异常时打印）- 暂时注释掉
         moe_std = moe_delta.std().item()
@@ -879,7 +892,7 @@ class JointLoRAMoEModel(nn.Module):
                 # fallback情况下的文化损失
                 culture_loss = torch.tensor(0.0, device=first_param.device, dtype=first_param.dtype, requires_grad=True)
 
-        # 6. 返回结果 - 增量架构版本
+        # 6. 返回结果 - 增量架构版本，包含增强损失所需信息
         return type('Outputs', (), {
             'loss': loss,
             'logits': logits,
@@ -889,6 +902,10 @@ class JointLoRAMoEModel(nn.Module):
             'culture_loss': culture_loss,  # 文化损失
             'base_hidden_states': base_hidden_states,  # 额外返回基础LoRA输出用于调试
             'moe_delta': moe_delta,  # 额外返回MoE增量用于调试
+            # 增强损失所需的新信息
+            'expert_outputs': expert_outputs,  # 激活专家的输出
+            'soft_routing_scores': soft_routing_scores,  # 所有专家的soft routing分数
+            'activated_experts': activated_experts,  # 被激活的专家索引列表
         })()
 
     def _get_regularization_loss(self):
