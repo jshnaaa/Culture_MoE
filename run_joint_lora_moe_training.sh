@@ -12,13 +12,13 @@ echo "======================================="
 # 参数设置
 BACKBONE=${1:-"llama"}  # 默认使用llama
 DATA_ID=${2:-"2"}
-USE_SHARED=${3:-"true"}  # 是否使用共享专家，默认为true
-USE_GATE=${4:-"true"}    # 是否使用MoE内部融合Gate，默认为true
+USE_SHARED=${3:-"false"}  # 是否使用共享专家，默认为true
+USE_GATE=${4:-"false"}    # 是否使用MoE内部融合Gate，默认为true
 NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
 USE_CULTURE_LOSS=${6:-"false"}
 NUM_GPUS=${7:-"2"}
-LORA_RANK=${8:-"8"}   # LoRA rank
-LORA_ALPHA=${9:-"16"}  # LoRA alpha
+LORA_RANK=${8:-"16"}   # LoRA rank
+LORA_ALPHA=${9:-"32"}  # LoRA alpha
 
 # 检查参数
 if [ "$#" -gt 9 ]; then
@@ -75,20 +75,6 @@ if [ ! -f "$TRAIN_FILE" ]; then
     exit 1
 fi
 
-# 检查GPU数量
-if [ "$NUM_GPUS" -lt 1 ] || [ "$NUM_GPUS" -gt 8 ]; then
-    echo "❌ GPU数量必须在1-8之间: $NUM_GPUS"
-    exit 1
-fi
-
-if [ "$NUM_GPUS" -gt 1 ]; then
-    AVAILABLE_GPUS=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits | head -1)
-    if [ "$NUM_GPUS" -gt "$AVAILABLE_GPUS" ]; then
-        echo "❌ 请求的GPU数量($NUM_GPUS)超过可用数量($AVAILABLE_GPUS)"
-        exit 1
-    fi
-fi
-
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_DIR="/root/autodl-fs/joint_lora_moe/${MODEL_NAME}_${DATASET_TAG}_shared${USE_SHARED}_gate${USE_GATE}_${TIMESTAMP}"
@@ -108,8 +94,8 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 针对长序列优化
-BATCH_SIZE=1              # 调整为2，支持culture loss多样本计算
-GRADIENT_ACCUMULATION=4   # 相应增加梯度累积，保持有效batch size
+BATCH_SIZE=2              # 调整为2，支持culture loss多样本计算
+GRADIENT_ACCUMULATION=16   # 相应增加梯度累积，保持有效batch size
 
 # 🔧 根据backbone设置不同的学习率
 if [ "$BACKBONE" = "llama" ]; then
