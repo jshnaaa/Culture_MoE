@@ -59,8 +59,8 @@ class JointLoRAMoESharedConfig(JointLoRAMoEConfig):
     # 共享专家配置
     use_shared_expert: bool = True
     shared_lora_rank: int = 2
-    shared_expert_weight: float = 0.1
-    routed_expert_weight: float = 0.9
+    shared_expert_weight: float = 0.01  # 极小权重
+    routed_expert_weight: float = 0.99
     shared_expert_lr: float = 2e-5
 
     # 共享专家LoRA配置
@@ -661,16 +661,12 @@ class JointLoRAMoESharedModel(nn.Module):
                 # 计算增强文化损失（如果启用）
                 culture_loss = torch.tensor(0.0, device=lm_loss.device, dtype=lm_loss.dtype, requires_grad=True)
                 if self.config.use_culture_loss and culture_labels is not None and expert_weights is not None:
-                    # 导入简化版文化损失计算函数
-                    from simple_culture_loss import compute_simple_culture_loss
+                    # 导入原始文化损失计算函数
+                    from train_joint_lora_moe import compute_culture_loss
 
-                    # 计算简化版文化损失（回到接近原始实现）
-                    culture_loss = compute_simple_culture_loss(
-                        expert_weights=expert_weights,
-                        culture_labels=culture_labels,
-                        memory_bank=self.culture_memory_bank,
-                        loss_weight=self.config.culture_loss_weight  # 使用原始权重
-                    )
+                    # 计算原始文化损失
+                    culture_loss = compute_culture_loss(expert_weights, culture_labels,
+                                                      self.config.culture_loss_weight)
                     culture_loss = culture_loss.to(device=lm_loss.device, dtype=lm_loss.dtype)
 
                 # 总损失 = 语言模型损失 + MoE辅助损失 + 文化损失
