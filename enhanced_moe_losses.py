@@ -9,6 +9,8 @@
 2. L_aux: 负载均衡辅助损失
 3. L_o: 正交化损失（专家输出差异化约束）
 4. L_v: 路由方差损失（路由分数差异化约束）
+
+注意：文化损失L_culture仅用于监控，不加入总损失计算
 """
 
 import torch
@@ -82,15 +84,15 @@ def compute_enhanced_moe_loss(
         )
         loss_dict["L_balance"] = L_balance
 
-        # 6. 总损失 L = L_h + L_balance
+        # 6. 总损失 L = L_h + L_balance (移除文化损失权重)
         if use_culture_loss and culture_labels is not None:
-            # 如果启用文化损失，将其加入L_balance
+            # 计算文化损失但不加入总损失，仅用于监控
             L_culture = compute_culture_loss_simple(expert_weights, culture_labels)
             loss_dict["L_culture"] = L_culture
-            L_balance = L_balance + 0.01 * L_culture  # 文化损失权重
         else:
             loss_dict["L_culture"] = torch.tensor(0.0, device=device, dtype=dtype)
 
+        # 纯粹的增强损失：L_total = L_h + L_balance
         L_total = L_h + L_balance
         loss_dict["L_total"] = L_total
 

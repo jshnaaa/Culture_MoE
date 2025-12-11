@@ -691,14 +691,14 @@ class JointLoRAMoESharedModel(nn.Module):
 
                     temp_outputs = TempOutputs()
 
-                    # 使用增强MoE损失：L = L_h + L_balance = L_h + αL_aux + βL_o + γL_v
+                    # 使用增强MoE损失：L = L_h + L_balance = L_h + αL_aux + βL_o + γL_v (文化损失仅监控)
                     enhanced_loss_dict = integrate_enhanced_moe_loss(
                         model_outputs=temp_outputs,
                         labels=labels,
                         culture_labels=culture_labels,
-                        use_culture_loss=True,
+                        use_culture_loss=False,  # 文化损失不加入总损失
                         loss_weights={
-                            "alpha": 1e-3,  # L_aux权重
+                            "alpha": 1e-2,  # L_aux权重
                             "beta": 1e-3,   # L_o权重
                             "gamma": 1e-3   # L_v权重
                         }

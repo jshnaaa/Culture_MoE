@@ -280,14 +280,14 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             soft_routing_scores = getattr(outputs, 'soft_routing_scores', expert_weights)
             activated_experts = getattr(outputs, 'activated_experts', list(expert_outputs.keys()))
 
-            # 计算增强MoE损失
+            # 计算增强MoE损失 (文化损失仅用于监控，不加入总损失)
             enhanced_loss_dict = integrate_enhanced_moe_loss(
                 model_outputs=outputs,
                 labels=labels,
                 culture_labels=culture_labels,
-                use_culture_loss=True,
+                use_culture_loss=False,  # 文化损失不加入总损失
                 loss_weights={
-                    "alpha": 1e-3,  # L_aux权重
+                    "alpha": 1e-2,  # L_aux权重
                     "beta": 1e-3,   # L_o权重
                     "gamma": 1e-3   # L_v权重
                 }
@@ -503,14 +503,14 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
 
             # 🔧 增强MoE损失计算（评估时）
             if use_culture_loss:
-                # 使用增强MoE损失函数进行评估
+                # 使用增强MoE损失函数进行评估 (文化损失仅用于监控)
                 enhanced_loss_dict = integrate_enhanced_moe_loss(
                     model_outputs=outputs,
                     labels=labels,
                     culture_labels=culture_labels,
-                    use_culture_loss=True,
+                    use_culture_loss=False,  # 文化损失不加入总损失
                     loss_weights={
-                        "alpha": 1e-3,  # L_aux权重
+                        "alpha": 1e-2,  # L_aux权重
                         "beta": 1e-3,   # L_o权重
                         "gamma": 1e-3   # L_v权重
                     }
