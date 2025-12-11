@@ -51,6 +51,9 @@ from ft_lora_only_gen import (
 # 导入基础配置类
 from src.llamafactory.model.joint_lora_moe_model import JointLoRAMoEConfig
 
+# 导入增强MoE损失函数
+from enhanced_moe_losses import integrate_enhanced_moe_loss
+
 
 @dataclass
 class JointLoRAMoESharedConfig(JointLoRAMoEConfig):
@@ -357,6 +360,10 @@ class MoESharedLayer(nn.Module):
             # 🔧 保存专家输出供文化损失使用
             self._last_expert_outputs = expert_outputs
 
+            # 保存增强损失所需的信息
+            soft_routing_scores = all_expert_weights  # [B, num_experts] 所有专家的概率分布
+            activated_experts = torch.unique(top_k_indices.flatten()).cpu().tolist()  # 激活的专家索引
+
             # 3. 路由专家加权融合
             routed_output = torch.zeros_like(hidden_states)
             total_routed_weight = 0.0
@@ -445,7 +452,8 @@ class MoESharedLayer(nn.Module):
                 "fusion_gate": self.fusion_gate.item() if self.fusion_gate is not None else 0.0
             }
 
-            return final_output, expert_weights, aux_loss, monitoring_info
+            # 返回增强损失所需的完整信息
+            return final_output, expert_weights, aux_loss, expert_outputs, soft_routing_scores, activated_experts, monitoring_info
 
         except Exception as e:
             print(f"⚠️ MoE shared layer completely failed: {e}")
@@ -462,7 +470,12 @@ class MoESharedLayer(nn.Module):
                 "router_variance": 0.0,
                 "fusion_gate": 0.0
             }
-            return hidden_states, expert_weights, aux_loss, fallback_monitoring
+            # 返回fallback时的完整信息
+            fallback_expert_outputs = {}
+            fallback_soft_routing_scores = expert_weights
+            fallback_activated_experts = list(range(self.num_experts))
+
+            return hidden_states, expert_weights, aux_loss, fallback_expert_outputs, fallback_soft_routing_scores, fallback_activated_experts, fallback_monitoring
 
 
 class JointLoRAMoESharedModel(nn.Module):
@@ -575,7 +588,7 @@ class JointLoRAMoESharedModel(nn.Module):
             hidden_states = self.hidden_proj(hidden_states)
 
         # 3. MoE共享层处理 - 增量架构实现（新增监控信息）
-        moe_delta, expert_weights, moe_aux_loss, monitoring_info = self.moe_layer(hidden_states)
+        moe_delta, expert_weights, moe_aux_loss, expert_outputs, soft_routing_scores, activated_experts, monitoring_info = self.moe_layer(hidden_states)
 
         # 4. 增量架构：基础LoRA + 加权MoE增量
         base_hidden_states = base_outputs.hidden_states[-1]  # [B, L, H]
@@ -621,6 +634,13 @@ class JointLoRAMoESharedModel(nn.Module):
         # 6. 计算损失
         loss = None
         culture_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+
+        # 初始化增强损失组件
+        enhanced_loss_components = {
+            'L_balance': torch.tensor(0.0, device=logits.device, dtype=logits.dtype),
+            'L_o': torch.tensor(0.0, device=logits.device, dtype=logits.dtype),
+            'L_v': torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+        }
         if labels is not None:
             try:
                 # 检查logits是否包含NaN/Inf
@@ -658,19 +678,48 @@ class JointLoRAMoESharedModel(nn.Module):
                 # 限制辅助损失的影响
                 moe_aux_loss = torch.clamp(moe_aux_loss, min=0.0, max=1.0)
 
-                # 计算增强文化损失（如果启用）
-                culture_loss = torch.tensor(0.0, device=lm_loss.device, dtype=lm_loss.dtype, requires_grad=True)
-                if self.config.use_culture_loss and culture_labels is not None and expert_weights is not None:
-                    # 导入原始文化损失计算函数
-                    from train_joint_lora_moe import compute_culture_loss
+                # 🔧 使用增强MoE损失函数
+                if self.config.use_culture_loss:
+                    # 构建模型输出对象用于增强损失计算
+                    class TempOutputs:
+                        def __init__(self):
+                            self.logits = logits
+                            self.expert_weights = expert_weights
+                            self.expert_outputs = expert_outputs
+                            self.soft_routing_scores = soft_routing_scores
+                            self.activated_experts = activated_experts
 
-                    # 计算原始文化损失
-                    culture_loss = compute_culture_loss(expert_weights, culture_labels,
-                                                      self.config.culture_loss_weight)
-                    culture_loss = culture_loss.to(device=lm_loss.device, dtype=lm_loss.dtype)
+                    temp_outputs = TempOutputs()
 
-                # 总损失 = 语言模型损失 + MoE辅助损失 + 文化损失
-                loss = lm_loss + 0.01 * moe_aux_loss + culture_loss
+                    # 使用增强MoE损失：L = L_h + L_balance = L_h + αL_aux + βL_o + γL_v
+                    enhanced_loss_dict = integrate_enhanced_moe_loss(
+                        model_outputs=temp_outputs,
+                        labels=labels,
+                        culture_labels=culture_labels,
+                        use_culture_loss=True,
+                        loss_weights={
+                            "alpha": 1e-3,  # L_aux权重
+                            "beta": 1e-3,   # L_o权重
+                            "gamma": 1e-3   # L_v权重
+                        }
+                    )
+
+                    # 使用增强损失作为总损失
+                    loss = enhanced_loss_dict["L_total"]
+                    lm_loss = enhanced_loss_dict["L_h"]
+                    moe_aux_loss = enhanced_loss_dict["L_aux"]
+                    culture_loss = enhanced_loss_dict["L_culture"]
+
+                    # 提取增强损失组件用于监控显示
+                    enhanced_loss_components = {
+                        'L_balance': enhanced_loss_dict["L_balance"],
+                        'L_o': enhanced_loss_dict["L_o"],
+                        'L_v': enhanced_loss_dict["L_v"]
+                    }
+                else:
+                    # 简化损失计算：L = L_h + αL_aux
+                    culture_loss = torch.tensor(0.0, device=lm_loss.device, dtype=lm_loss.dtype, requires_grad=True)
+                    loss = lm_loss + 0.01 * moe_aux_loss
 
                 # 最终损失检查
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -698,7 +747,7 @@ class JointLoRAMoESharedModel(nn.Module):
                 culture_loss = torch.tensor(0.0, device=first_param.device,
                                           dtype=first_param.dtype, requires_grad=True)
 
-        # 7. 返回结果（包含监控信息）
+        # 7. 返回结果（包含监控信息和增强损失所需信息）
         return type('Outputs', (), {
             'loss': loss,
             'logits': logits,
@@ -709,6 +758,14 @@ class JointLoRAMoESharedModel(nn.Module):
             'base_hidden_states': base_hidden_states,
             'moe_delta': moe_delta,
             'monitoring_info': monitoring_info,  # 🔧 新增监控信息
+            # 增强损失所需的新信息
+            'expert_outputs': expert_outputs,  # 激活专家的输出
+            'soft_routing_scores': soft_routing_scores,  # 所有专家的soft routing分数
+            'activated_experts': activated_experts,  # 被激活的专家索引列表
+            # 增强损失组件（用于进度条显示）
+            'L_balance': enhanced_loss_components.get('L_balance', torch.tensor(0.0, device=logits.device, dtype=logits.dtype)),
+            'L_o': enhanced_loss_components.get('L_o', torch.tensor(0.0, device=logits.device, dtype=logits.dtype)),
+            'L_v': enhanced_loss_components.get('L_v', torch.tensor(0.0, device=logits.device, dtype=logits.dtype)),
         })()
 
     def get_parameter_groups(self, base_lr: float, moe_lr: float, shared_lr: float = None):
@@ -1089,14 +1146,27 @@ def train_epoch_joint_shared(model, train_loader, optimizer, device, tokenizer,
                 if rank == 0:
                     print(f"⚠️ High memory usage ({memory_allocated:.1f}GB), forced cleanup")
 
-        # 更新进度条
+        # 更新进度条 - 显示增强损失组件
         postfix = {
             'loss': f"{total_batch_loss.item() * num_accumulation_steps:.6f}",
             'lm': f"{lm_loss.item():.6f}",
-            'moe': f"{moe_aux_loss.item():.6f}"
+            'aux': f"{moe_aux_loss.item():.6f}"
         }
+
         if use_culture_loss:
-            postfix['culture'] = f"{culture_loss.item():.4f}"
+            # 尝试获取增强损失的各个组件
+            l_balance = getattr(outputs, 'L_balance', None)
+            l_o = getattr(outputs, 'L_o', None)
+            l_v = getattr(outputs, 'L_v', None)
+
+            if l_balance is not None and l_o is not None and l_v is not None:
+                # 显示增强损失的各个组件
+                postfix['bal'] = f"{l_balance.item():.4f}"  # L_balance
+                postfix['ort'] = f"{l_o.item():.4f}"        # L_o (orthogonalization)
+                postfix['var'] = f"{l_v.item():.4f}"        # L_v (routing variance)
+                postfix['cul'] = f"{culture_loss.item():.4f}"  # L_culture
+            else:
+                postfix['culture'] = f"{culture_loss.item():.4f}"
 
         # 🔧 添加监控信息到进度条
         if monitoring_info:

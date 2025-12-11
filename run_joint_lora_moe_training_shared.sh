@@ -13,9 +13,9 @@ echo "======================================="
 BACKBONE=${1:-"llama"}  # 默认使用llama
 DATA_ID=${2:-"2"}
 USE_SHARED=${3:-"true"}  # 是否使用共享专家，默认为true
-USE_GATE=${4:-"false"}    # 是否使用MoE内部融合Gate，默认为false
+USE_GATE=${4:-"true"}    # 是否使用MoE内部融合Gate，默认为false
 NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
-USE_CULTURE_LOSS=${6:-"false"}
+USE_CULTURE_LOSS=${6:-"true"}
 NUM_GPUS=${7:-"2"}
 LORA_RANK=${8:-"16"}   # LoRA rank
 LORA_ALPHA=${9:-"32"}  # LoRA alpha
