@@ -1748,7 +1748,7 @@ def main():
                 actual_model = model.module if hasattr(model, 'module') else model
                 if hasattr(actual_model, 'moe_layer'):
                     nan_rate, nan_count, total_calls = actual_model.moe_layer.get_nan_stats()
-                    print(f"    MoE NaN统计: {nan_count}/{total_calls} ({nan_rate:.2%}) - Epoch {epoch + 1}")
+                    # print(f"    MoE NaN统计: {nan_count}/{total_calls} ({nan_rate:.2%}) - Epoch {epoch + 1}")
                     if nan_count > 0:
                         print(f"      ⚠️ 检测到 {nan_count} 次NaN，占总前向传播的 {nan_rate:.2%}")
                     actual_model.moe_layer.reset_nan_stats()
