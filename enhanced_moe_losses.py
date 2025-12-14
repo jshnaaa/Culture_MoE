@@ -69,7 +69,11 @@ def compute_enhanced_moe_loss(
         loss_dict["L_aux"] = L_aux
 
         # 3. L_o: 正交化损失（专家输出差异化）
-        L_o = compute_orthogonalization_loss(expert_outputs, activated_experts)
+        # 检查是否使用文化感知的正交化损失
+        use_cultural_aware = loss_weights.get("use_cultural_aware", False)
+        L_o = compute_orthogonalization_loss(
+            expert_outputs, activated_experts, culture_labels, use_cultural_aware
+        )
         loss_dict["L_o"] = L_o
 
         # 4. L_v: 路由方差损失（路由分数差异化）
@@ -175,16 +179,21 @@ def compute_load_balance_loss(
 
 def compute_orthogonalization_loss(
     expert_outputs: Dict[int, torch.Tensor],
-    activated_experts: list
+    activated_experts: list,
+    culture_labels: Optional[torch.Tensor] = None,
+    use_cultural_aware: bool = False
 ) -> torch.Tensor:
     """
     计算正交化损失 L_o（专家输出差异化约束）
 
     目的：让激活的top-k专家输出更加不同，避免专家同质化
+    如果启用文化感知，则鼓励文化内相似、文化间不同
 
     Args:
         expert_outputs: {expert_idx: output_tensor [B, L, H]}
         activated_experts: 被激活的专家索引列表
+        culture_labels: [B] 文化标签（可选）
+        use_cultural_aware: 是否使用文化感知的正交化损失
     """
     try:
         if len(expert_outputs) < 2:
@@ -208,27 +217,33 @@ def compute_orthogonalization_loss(
         # 将所有输出堆叠为 [B, k, L*H]，其中k是激活的专家数
         expert_outputs_tensor = torch.stack(outputs_list, dim=1)  # [B, k, L*H]
 
-        # 计算两两内积：[B, k, k]
-        # expert_outputs_tensor @ expert_outputs_tensor.transpose(-1, -2)
-        similarity_matrix = torch.bmm(
-            expert_outputs_tensor,
-            expert_outputs_tensor.transpose(-1, -2)
-        )  # [B, k, k]
+        if use_cultural_aware and culture_labels is not None:
+            # 文化感知的正交化损失：鼓励文化内相似、文化间不同
+            L_o = compute_cultural_aware_orthogonalization(
+                expert_outputs_tensor, culture_labels, activated_experts
+            )
+        else:
+            # 原始的正交化损失：所有专家输出尽可能正交
+            # 计算两两内积：[B, k, k]
+            similarity_matrix = torch.bmm(
+                expert_outputs_tensor,
+                expert_outputs_tensor.transpose(-1, -2)
+            )  # [B, k, k]
 
-        # 期望对角线大（专家自身信息），非对角线小（专家差异大）
-        # 提取对角线元素
-        diagonal = torch.diagonal(similarity_matrix, dim1=-2, dim2=-1)  # [B, k]
+            # 期望对角线大（专家自身信息），非对角线小（专家差异大）
+            # 提取对角线元素
+            diagonal = torch.diagonal(similarity_matrix, dim1=-2, dim2=-1)  # [B, k]
 
-        # 创建对角矩阵，然后计算非对角线部分
-        diagonal_matrix = torch.diag_embed(diagonal)  # [B, k, k]
-        off_diagonal = similarity_matrix - diagonal_matrix  # [B, k, k]
+            # 创建对角矩阵，然后计算非对角线部分
+            diagonal_matrix = torch.diag_embed(diagonal)  # [B, k, k]
+            off_diagonal = similarity_matrix - diagonal_matrix  # [B, k, k]
 
-        # 正交化损失 = 非对角线项的平方和
-        L_o = (off_diagonal ** 2).sum()
+            # 正交化损失 = 非对角线项的平方和
+            L_o = (off_diagonal ** 2).sum()
 
-        # 归一化（可选）
-        batch_size, k = expert_outputs_tensor.shape[:2]
-        L_o = L_o / (batch_size * k * (k - 1))  # 除以非对角线元素总数
+            # 归一化（可选）
+            batch_size, k = expert_outputs_tensor.shape[:2]
+            L_o = L_o / (batch_size * k * (k - 1))  # 除以非对角线元素总数
 
         # 数值稳定性检查
         if torch.isnan(L_o) or torch.isinf(L_o):
@@ -405,3 +420,79 @@ def integrate_enhanced_moe_loss(
             "L_culture": torch.tensor(0.0, device=model_outputs.logits.device, dtype=model_outputs.logits.dtype),
             "L_total": main_loss
         }
+
+
+def compute_cultural_aware_orthogonalization(
+    expert_outputs_tensor: torch.Tensor,
+    culture_labels: torch.Tensor,
+    activated_experts: list
+) -> torch.Tensor:
+    """
+    计算文化感知的正交化损失
+
+    目标：
+    - 鼓励相同文化样本的专家输出相似
+    - 鼓励不同文化样本的专家输出不同
+
+    Args:
+        expert_outputs_tensor: [B, k, L*H] 专家输出
+        culture_labels: [B] 文化标签
+        activated_experts: 激活的专家索引列表
+    """
+    try:
+        batch_size, num_experts, feature_dim = expert_outputs_tensor.shape
+        device = expert_outputs_tensor.device
+        dtype = expert_outputs_tensor.dtype
+
+        if batch_size < 2:
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+
+        # 计算所有样本对的专家输出相似度
+        similarity_loss = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+        pair_count = 0
+
+        for i in range(batch_size):
+            for j in range(i + 1, batch_size):
+                # 获取两个样本的文化标签
+                culture_i = culture_labels[i]
+                culture_j = culture_labels[j]
+
+                # 计算两个样本在所有激活专家上的相似度
+                expert_sim = torch.tensor(0.0, device=device, dtype=dtype)
+
+                for expert_idx in range(num_experts):
+                    # 计算余弦相似度
+                    output_i = expert_outputs_tensor[i, expert_idx]  # [L*H]
+                    output_j = expert_outputs_tensor[j, expert_idx]  # [L*H]
+
+                    # 避免零向量
+                    norm_i = torch.norm(output_i)
+                    norm_j = torch.norm(output_j)
+
+                    if norm_i > 1e-8 and norm_j > 1e-8:
+                        cos_sim = torch.dot(output_i, output_j) / (norm_i * norm_j)
+                        expert_sim += cos_sim
+
+                # 平均专家相似度
+                if num_experts > 0:
+                    expert_sim = expert_sim / num_experts
+
+                # 根据文化关系调整损失
+                if culture_i == culture_j:
+                    # 相同文化：鼓励相似（最小化 1 - similarity）
+                    similarity_loss = similarity_loss + (1.0 - expert_sim)
+                else:
+                    # 不同文化：鼓励不同（最小化 similarity）
+                    similarity_loss = similarity_loss + expert_sim
+
+                pair_count += 1
+
+        # 归一化
+        if pair_count > 0:
+            similarity_loss = similarity_loss / pair_count
+
+        return similarity_loss
+
+    except Exception as e:
+        print(f"⚠️ Cultural aware orthogonalization loss computation failed: {e}")
+        return torch.tensor(0.0, device=expert_outputs_tensor.device, dtype=expert_outputs_tensor.dtype, requires_grad=True)

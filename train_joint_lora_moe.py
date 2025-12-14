@@ -280,21 +280,72 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             soft_routing_scores = getattr(outputs, 'soft_routing_scores', expert_weights)
             activated_experts = getattr(outputs, 'activated_experts', list(expert_outputs.keys()))
 
-            # 计算增强MoE损失 (文化损失仅用于监控，不加入总损失)
-            enhanced_loss_dict = integrate_enhanced_moe_loss(
-                model_outputs=outputs,
-                labels=labels,
-                culture_labels=culture_labels,
-                use_culture_loss=False,  # 文化损失不加入总损失
-                loss_weights={
-                    "alpha": 1e-2,  # L_aux权重
-                    "beta": 1e-3,   # L_o权重
-                    "gamma": 1e-3   # L_v权重
-                }
-            )
+            # 根据use_culture_loss参数决定损失函数模式
+            if use_culture_loss == "ori":
+                # 原始损失函数：L = L_h + L_balance (L_balance = αL_aux + βL_o + γL_v)
+                enhanced_loss_dict = integrate_enhanced_moe_loss(
+                    model_outputs=outputs,
+                    labels=labels,
+                    culture_labels=culture_labels,
+                    use_culture_loss=False,
+                    loss_weights={
+                        "alpha": 1e-2,  # L_aux权重
+                        "beta": 1e-3,   # L_o权重（原始）
+                        "gamma": 1e-3,  # L_v权重
+                        "use_cultural_aware": False
+                    }
+                )
+                total_batch_loss = enhanced_loss_dict["L_total"]
 
-            # 使用增强损失作为总损失
-            total_batch_loss = enhanced_loss_dict["L_total"]
+            elif use_culture_loss == "new":
+                # 新损失函数：L = L_h + L_balance (L_o使用文化感知版本)
+                enhanced_loss_dict = integrate_enhanced_moe_loss(
+                    model_outputs=outputs,
+                    labels=labels,
+                    culture_labels=culture_labels,
+                    use_culture_loss=False,
+                    loss_weights={
+                        "alpha": 1e-2,  # L_aux权重
+                        "beta": 1e-3,   # L_o权重（文化感知）
+                        "gamma": 1e-3,  # L_v权重
+                        "use_cultural_aware": True
+                    }
+                )
+                total_batch_loss = enhanced_loss_dict["L_total"]
+
+            elif use_culture_loss == "false" or use_culture_loss is False:
+                # 简化损失函数：L = L_h + αL_aux (只有主任务损失和负载均衡)
+                enhanced_loss_dict = integrate_enhanced_moe_loss(
+                    model_outputs=outputs,
+                    labels=labels,
+                    culture_labels=culture_labels,
+                    use_culture_loss=False,
+                    loss_weights={
+                        "alpha": 1e-2,  # L_aux权重
+                        "beta": 0.0,    # 不使用L_o
+                        "gamma": 0.0,   # 不使用L_v
+                        "use_cultural_aware": False
+                    }
+                )
+                total_batch_loss = enhanced_loss_dict["L_total"]
+
+            else:
+                # 默认使用原始损失函数
+                enhanced_loss_dict = integrate_enhanced_moe_loss(
+                    model_outputs=outputs,
+                    labels=labels,
+                    culture_labels=culture_labels,
+                    use_culture_loss=False,
+                    loss_weights={
+                        "alpha": 1e-2,
+                        "beta": 1e-3,
+                        "gamma": 1e-3,
+                        "use_cultural_aware": False
+                    }
+                )
+                total_batch_loss = enhanced_loss_dict["L_total"]
+
+            # 提取损失组件
             lm_loss = enhanced_loss_dict["L_h"]
             moe_aux_loss = enhanced_loss_dict["L_aux"]
             culture_loss = enhanced_loss_dict["L_culture"]
@@ -503,18 +554,51 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
 
             # 🔧 增强MoE损失计算（评估时）
             if use_culture_loss:
-                # 使用增强MoE损失函数进行评估 (文化损失仅用于监控)
-                enhanced_loss_dict = integrate_enhanced_moe_loss(
-                    model_outputs=outputs,
-                    labels=labels,
-                    culture_labels=culture_labels,
-                    use_culture_loss=False,  # 文化损失不加入总损失
-                    loss_weights={
-                        "alpha": 1e-2,  # L_aux权重
-                        "beta": 1e-3,   # L_o权重
-                        "gamma": 1e-3   # L_v权重
-                    }
-                )
+                # 根据use_culture_loss参数决定损失函数模式（评估时）
+                if use_culture_loss == "ori":
+                    enhanced_loss_dict = integrate_enhanced_moe_loss(
+                        model_outputs=outputs,
+                        labels=labels,
+                        culture_labels=culture_labels,
+                        use_culture_loss=False,
+                        loss_weights={
+                            "alpha": 1e-2, "beta": 1e-3, "gamma": 1e-3,
+                            "use_cultural_aware": False
+                        }
+                    )
+                elif use_culture_loss == "new":
+                    enhanced_loss_dict = integrate_enhanced_moe_loss(
+                        model_outputs=outputs,
+                        labels=labels,
+                        culture_labels=culture_labels,
+                        use_culture_loss=False,
+                        loss_weights={
+                            "alpha": 1e-2, "beta": 1e-3, "gamma": 1e-3,
+                            "use_cultural_aware": True
+                        }
+                    )
+                elif use_culture_loss == "false" or use_culture_loss is False:
+                    enhanced_loss_dict = integrate_enhanced_moe_loss(
+                        model_outputs=outputs,
+                        labels=labels,
+                        culture_labels=culture_labels,
+                        use_culture_loss=False,
+                        loss_weights={
+                            "alpha": 1e-2, "beta": 0.0, "gamma": 0.0,
+                            "use_cultural_aware": False
+                        }
+                    )
+                else:
+                    enhanced_loss_dict = integrate_enhanced_moe_loss(
+                        model_outputs=outputs,
+                        labels=labels,
+                        culture_labels=culture_labels,
+                        use_culture_loss=False,
+                        loss_weights={
+                            "alpha": 1e-2, "beta": 1e-3, "gamma": 1e-3,
+                            "use_cultural_aware": False
+                        }
+                    )
 
                 total_batch_loss = enhanced_loss_dict["L_total"]
                 lm_loss = enhanced_loss_dict["L_h"]

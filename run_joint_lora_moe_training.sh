@@ -15,7 +15,7 @@ DATA_ID=${2:-"2"}
 USE_SHARED=${3:-"false"}  # 是否使用共享专家，默认为true
 USE_GATE=${4:-"false"}    # 是否使用MoE内部融合Gate，默认为true
 NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
-USE_CULTURE_LOSS=${6:-"true"}
+USE_CULTURE_LOSS=${6:-"ori"}  # ori/new/false
 NUM_GPUS=${7:-"2"}
 LORA_RANK=${8:-"16"}   # LoRA rank
 LORA_ALPHA=${9:-"32"}  # LoRA alpha
@@ -87,7 +87,7 @@ echo "  训练模式: 联合训练 (LoRA + MoE)"
 echo "  共享专家: $USE_SHARED"
 echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
-echo "  文化损失: $USE_CULTURE_LOSS"
+echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, false=仅L_aux)"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
 echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
@@ -271,7 +271,7 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
         echo "  - 共享专家: $USE_SHARED"
         echo "  - MoE内部Gate: $USE_GATE"
         echo "  - 分层学习率: Base LoRA=$LEARNING_RATE_BASE, MoE=$LEARNING_RATE_MOE"
-        echo "  - 文化损失: $USE_CULTURE_LOSS"
+        echo "  - 文化损失模式: $USE_CULTURE_LOSS"
         echo "  - 序列长度: $MAX_SEQ_LEN"
     else
         echo "⚠️  训练完成但未找到最佳模型"
