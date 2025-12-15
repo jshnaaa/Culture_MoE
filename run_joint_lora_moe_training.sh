@@ -16,13 +16,14 @@ USE_SHARED=${3:-"false"}  # 是否使用共享专家，默认为true
 USE_GATE=${4:-"false"}    # 是否使用MoE内部融合Gate，默认为true
 NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
 USE_CULTURE_LOSS=${6:-"ori"}  # ori/new/false
-NUM_GPUS=${7:-"2"}
-LORA_RANK=${8:-"16"}   # LoRA rank
-LORA_ALPHA=${9:-"32"}  # LoRA alpha
+USE_LORA=${7:-"true"}   # 是否启用预训练LoRA微调，默认为true
+NUM_GPUS=${8:-"2"}
+LORA_RANK=${9:-"16"}   # LoRA rank
+LORA_ALPHA=${10:-"32"}  # LoRA alpha
 
 # 检查参数
-if [ "$#" -gt 9 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 10 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
     exit 1
 fi
 
@@ -83,11 +84,16 @@ echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
 echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
 echo "  总层数: $TOTAL_LAYERS"
-echo "  训练模式: 联合训练 (LoRA + MoE)"
+if [ "$USE_LORA" = "true" ]; then
+    echo "  训练模式: 联合训练 (预训练LoRA + MoE专家LoRA + Router)"
+else
+    echo "  训练模式: MoE专家训练 (基座冻结，仅训练MoE专家LoRA + Router)"
+fi
 echo "  共享专家: $USE_SHARED"
 echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, false=仅L_aux)"
+echo "  启用预训练LoRA: $USE_LORA"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
 echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
@@ -175,6 +181,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "use_moe_gate": $USE_GATE,
         "moe_experts": $NUM_MOE_EXPERTS,
         "use_culture_loss": $USE_CULTURE_LOSS,
+        "use_lora": $USE_LORA,
         "lora_rank": $LORA_RANK,
         "lora_alpha": $LORA_ALPHA,
         "num_epochs": $NUM_EPOCHS,
@@ -219,6 +226,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --backbone $BACKBONE \
         --num_moe_experts $NUM_MOE_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
+        --use_lora $USE_LORA \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
@@ -244,6 +252,7 @@ else
         --backbone $BACKBONE \
         --num_moe_experts $NUM_MOE_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
+        --use_lora $USE_LORA \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \

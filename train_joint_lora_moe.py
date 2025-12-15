@@ -762,6 +762,8 @@ def main():
                         help="Whether to use culture loss")
     parser.add_argument("--culture_loss_weight", type=float, default=0.01,
                         help="Culture loss weight")
+    parser.add_argument("--use_lora", type=str, default="true",
+                        help="Whether to enable pre-trained LoRA fine-tuning")
 
     # LoRA参数
     parser.add_argument("--lora_rank", type=int, default=8,
@@ -778,6 +780,7 @@ def main():
 
     # 转换字符串参数
     use_culture_loss = args.use_culture_loss.lower() == 'true'
+    use_lora = args.use_lora.lower() == 'true'
 
     # 🔧 根据backbone和data_id组合设置MoE影响权重
     if args.backbone == "llama":
@@ -841,6 +844,7 @@ def main():
         print(f"Use culture loss: {use_culture_loss}")
         if use_culture_loss:
             print(f"Culture loss weight: {args.culture_loss_weight}")
+        print(f"Use pre-trained LoRA: {use_lora}")
         print(f"LoRA config: rank={args.lora_rank}, alpha={args.lora_alpha}")
         print("="*80 + "\n")
 
@@ -1158,6 +1162,7 @@ def main():
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
+        use_lora=use_lora,  # 是否启用预训练LoRA微调
 
         # MoE配置
         num_moe_experts=args.num_moe_experts,
@@ -1376,6 +1381,7 @@ def main():
             'num_moe_experts': args.num_moe_experts,
             'use_culture_loss': use_culture_loss,
             'culture_loss_weight': args.culture_loss_weight,
+            'use_lora': use_lora,
             'lora_config': {
                 'rank': args.lora_rank,
                 'alpha': args.lora_alpha,

@@ -27,6 +27,7 @@ class JointLoRAMoEConfig:
     lora_alpha: int = 32
     lora_dropout: float = 0.1
     lora_target_modules: List[str] = None
+    use_lora: bool = True  # 是否启用预训练LoRA微调
 
     # MoE配置
     num_moe_experts: int = 4
@@ -560,8 +561,12 @@ class JointLoRAMoEModel(nn.Module):
         elif hasattr(base_model, 'config') and hasattr(base_model.config, 'hidden_size'):
             self.config.moe_hidden_dim = base_model.config.hidden_size
 
-        # 1. 应用LoRA到基础模型
-        self._apply_lora()
+        # 1. 根据配置决定是否应用LoRA到基础模型
+        if config.use_lora:
+            self._apply_lora()
+        else:
+            # 冻结基础模型，不启用LoRA
+            self._freeze_base_model()
 
         # 获取基础模型的设备和数据类型
         device = next(base_model.parameters()).device
@@ -607,6 +612,14 @@ class JointLoRAMoEModel(nn.Module):
                     print(f"🔍 LoRA参数: {name}, shape: {param.shape}, requires_grad: {param.requires_grad}")
 
         print(f"🔍 LoRA参数统计: {lora_params:,} / {total_params:,} ({100*lora_params/total_params:.2f}%)")
+
+    def _freeze_base_model(self):
+        """冻结基础模型，不启用LoRA微调"""
+        for param in self.base_model.parameters():
+            param.requires_grad = False
+
+        logging.info("Base model frozen (LoRA disabled)")
+        print("🔒 基础模型已冻结，仅训练MoE专家层和路由器")
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, culture_labels=None, **kwargs):
         """
@@ -951,7 +964,7 @@ class JointLoRAMoEModel(nn.Module):
                 'params': base_params,
                 'lr': base_lr,
                 'weight_decay': 0.001,
-                'name': 'base_lora'
+                'name': 'base_lora' if self.config.use_lora else 'base_frozen'
             })
 
         if moe_params:
@@ -962,7 +975,14 @@ class JointLoRAMoEModel(nn.Module):
                 'name': 'moe'
             })
 
-        logging.info(f"Parameter groups: base_lora={len(base_params)}, moe={len(moe_params)}")
+        base_group_name = 'base_lora' if self.config.use_lora else 'base_frozen'
+        logging.info(f"Parameter groups: {base_group_name}={len(base_params)}, moe={len(moe_params)}")
+
+        if not self.config.use_lora and len(base_params) > 0:
+            print(f"⚠️ 警告: use_lora=False但仍有{len(base_params)}个基础模型参数可训练")
+        elif self.config.use_lora and len(base_params) == 0:
+            print(f"⚠️ 警告: use_lora=True但没有找到可训练的基础模型参数")
+
         return param_groups
 
     def print_trainable_parameters(self):
@@ -985,10 +1005,18 @@ class JointLoRAMoEModel(nn.Module):
               f"Total params: {total_params:,} || "
               f"Trainable%: {100 * trainable_params / total_params:.4f}%")
 
-        print(f"  - Base LoRA params: {base_lora_params:,}")
-        print(f"  - MoE params: {moe_params:,}")
-        print(f"  - Architecture: Joint LoRA + MoE")
+        if self.config.use_lora:
+            print(f"  - Base LoRA params: {base_lora_params:,}")
+            print(f"  - MoE params: {moe_params:,}")
+            print(f"  - Architecture: Joint LoRA + MoE (预训练LoRA + 专家LoRA)")
+        else:
+            print(f"  - Base params (frozen): {total_params - trainable_params:,}")
+            print(f"  - MoE params (trainable): {moe_params:,}")
+            if base_lora_params > 0:
+                print(f"  - Unexpected trainable base params: {base_lora_params:,}")
+            print(f"  - Architecture: MoE Expert Training (基座冻结)")
         print(f"  - MoE experts: {self.config.num_moe_experts}")
+        print(f"  - Use LoRA: {self.config.use_lora}")
 
     def save_model(self, save_path: str):
         """保存模型权重"""
