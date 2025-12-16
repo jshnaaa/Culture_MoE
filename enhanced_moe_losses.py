@@ -69,10 +69,12 @@ def compute_enhanced_moe_loss(
         loss_dict["L_aux"] = L_aux
 
         # 3. L_o: 正交化损失（专家输出差异化）
-        # 检查是否使用文化感知的正交化损失
+        # 检查是否使用文化感知的正交化损失或KL散度损失
         use_cultural_aware = loss_weights.get("use_cultural_aware", False)
+        use_kl_loss = loss_weights.get("use_kl_loss", False)
         L_o = compute_orthogonalization_loss(
-            expert_outputs, activated_experts, culture_labels, use_cultural_aware
+            expert_outputs, activated_experts, culture_labels,
+            use_cultural_aware, use_kl_loss, expert_weights
         )
         loss_dict["L_o"] = L_o
 
@@ -181,25 +183,34 @@ def compute_orthogonalization_loss(
     expert_outputs: Dict[int, torch.Tensor],
     activated_experts: list,
     culture_labels: Optional[torch.Tensor] = None,
-    use_cultural_aware: bool = False
+    use_cultural_aware: bool = False,
+    use_kl_loss: bool = False,
+    expert_weights: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     """
     计算正交化损失 L_o（专家输出差异化约束）
 
     目的：让激活的top-k专家输出更加不同，避免专家同质化
     如果启用文化感知，则鼓励文化内相似、文化间不同
+    如果启用KL损失，则使用KL散度计算文化损失
 
     Args:
         expert_outputs: {expert_idx: output_tensor [B, L, H]}
         activated_experts: 被激活的专家索引列表
         culture_labels: [B] 文化标签（可选）
         use_cultural_aware: 是否使用文化感知的正交化损失
+        use_kl_loss: 是否使用KL散度文化损失
+        expert_weights: [B, num_experts] 专家权重分布（KL损失模式需要）
     """
     try:
         if len(expert_outputs) < 2:
             # 少于2个专家，无法计算正交化损失
             first_output = next(iter(expert_outputs.values()))
             return torch.tensor(0.0, device=first_output.device, dtype=first_output.dtype, requires_grad=True)
+
+        # 如果使用KL散度文化损失
+        if use_kl_loss and culture_labels is not None and expert_weights is not None:
+            return compute_kl_culture_loss(expert_weights, culture_labels)
 
         # 收集所有激活专家的输出
         outputs_list = []
@@ -496,3 +507,116 @@ def compute_cultural_aware_orthogonalization(
     except Exception as e:
         print(f"⚠️ Cultural aware orthogonalization loss computation failed: {e}")
         return torch.tensor(0.0, device=expert_outputs_tensor.device, dtype=expert_outputs_tensor.dtype, requires_grad=True)
+
+
+def compute_kl_culture_loss(
+    expert_weights: torch.Tensor,
+    culture_labels: torch.Tensor,
+    alpha: float = 0.7,
+    beta: float = 0.3
+) -> torch.Tensor:
+    """
+    计算基于KL散度的文化损失（方案2：文化内聚集 + 文化间分离）
+
+    Args:
+        expert_weights: [B, num_experts] 专家权重分布（已经过softmax）
+        culture_labels: [B] 文化标签
+        alpha: 文化内聚集损失权重
+        beta: 文化间分离损失权重
+
+    Returns:
+        kl_culture_loss: KL散度文化损失
+    """
+    try:
+        device = expert_weights.device
+        dtype = expert_weights.dtype
+        batch_size = expert_weights.shape[0]
+
+        if batch_size < 2:
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+
+        # 获取所有唯一的文化标签
+        unique_cultures = torch.unique(culture_labels)
+        num_cultures = len(unique_cultures)
+
+        if num_cultures < 2:
+            # 只有一种文化，无法计算文化间分离损失
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+
+        # 1. 计算文化内聚集损失 L_intra
+        L_intra = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+        culture_centers = {}
+        culture_sample_counts = {}
+
+        for culture_id in unique_cultures:
+            culture_mask = (culture_labels == culture_id)
+            culture_samples = expert_weights[culture_mask]  # [n_samples, num_experts]
+
+            if culture_samples.shape[0] > 0:
+                # 计算该文化的中心分布（均值）
+                culture_center = culture_samples.mean(0)  # [num_experts]
+                culture_centers[culture_id.item()] = culture_center
+                culture_sample_counts[culture_id.item()] = culture_samples.shape[0]
+
+                # 计算该文化内所有样本到中心的KL散度
+                if culture_samples.shape[0] > 1:  # 至少需要2个样本才计算内聚损失
+                    for sample_idx in range(culture_samples.shape[0]):
+                        sample_dist = culture_samples[sample_idx]  # [num_experts]
+
+                        # KL散度：KL(sample || center)
+                        # 避免log(0)和除0问题
+                        sample_dist_safe = torch.clamp(sample_dist, min=1e-8)
+                        culture_center_safe = torch.clamp(culture_center, min=1e-8)
+
+                        kl_div = F.kl_div(
+                            sample_dist_safe.log(),
+                            culture_center_safe,
+                            reduction='sum'
+                        )
+
+                        L_intra = L_intra + kl_div
+
+        # 归一化文化内聚集损失
+        total_intra_samples = sum(max(0, count-1) for count in culture_sample_counts.values())
+        if total_intra_samples > 0:
+            L_intra = L_intra / total_intra_samples
+
+        # 2. 计算文化间分离损失 L_inter
+        L_inter = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+        inter_pair_count = 0
+
+        culture_ids = list(culture_centers.keys())
+        for i in range(len(culture_ids)):
+            for j in range(i + 1, len(culture_ids)):
+                center_i = culture_centers[culture_ids[i]]
+                center_j = culture_centers[culture_ids[j]]
+
+                # 避免数值问题
+                center_i_safe = torch.clamp(center_i, min=1e-8)
+                center_j_safe = torch.clamp(center_j, min=1e-8)
+
+                # 计算双向KL散度并取平均（对称化）
+                kl_ij = F.kl_div(center_i_safe.log(), center_j_safe, reduction='sum')
+                kl_ji = F.kl_div(center_j_safe.log(), center_i_safe, reduction='sum')
+                symmetric_kl = (kl_ij + kl_ji) / 2.0
+
+                # 文化间分离：最大化KL散度（所以是负号）
+                L_inter = L_inter - symmetric_kl
+                inter_pair_count += 1
+
+        # 归一化文化间分离损失
+        if inter_pair_count > 0:
+            L_inter = L_inter / inter_pair_count
+
+        # 3. 组合损失
+        total_kl_loss = alpha * L_intra + beta * L_inter
+
+        # 数值稳定性检查
+        if torch.isnan(total_kl_loss) or torch.isinf(total_kl_loss):
+            return torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+
+        return total_kl_loss
+
+    except Exception as e:
+        print(f"⚠️ KL culture loss computation failed: {e}")
+        return torch.tensor(0.0, device=expert_weights.device, dtype=expert_weights.dtype, requires_grad=True)

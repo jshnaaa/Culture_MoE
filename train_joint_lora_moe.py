@@ -292,7 +292,8 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                         "alpha": 1e-2,  # L_aux权重
                         "beta": 1e-3,   # L_o权重（原始）
                         "gamma": 1e-3,  # L_v权重
-                        "use_cultural_aware": False
+                        "use_cultural_aware": False,
+                        "use_kl_loss": False
                     }
                 )
                 total_batch_loss = enhanced_loss_dict["L_total"]
@@ -308,7 +309,25 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                         "alpha": 1e-2,  # L_aux权重
                         "beta": 1e-3,   # L_o权重（文化感知）
                         "gamma": 1e-3,  # L_v权重
-                        "use_cultural_aware": True
+                        "use_cultural_aware": True,
+                        "use_kl_loss": False
+                    }
+                )
+                total_batch_loss = enhanced_loss_dict["L_total"]
+
+            elif use_culture_loss == "kl":
+                # KL散度损失函数：L = L_h + L_balance (L_o使用KL散度文化损失)
+                enhanced_loss_dict = integrate_enhanced_moe_loss(
+                    model_outputs=outputs,
+                    labels=labels,
+                    culture_labels=culture_labels,
+                    use_culture_loss=False,
+                    loss_weights={
+                        "alpha": 1e-2,  # L_aux权重
+                        "beta": 1e-3,   # L_o权重（KL散度）
+                        "gamma": 1e-3,  # L_v权重
+                        "use_cultural_aware": False,
+                        "use_kl_loss": True
                     }
                 )
                 total_batch_loss = enhanced_loss_dict["L_total"]
@@ -324,7 +343,8 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                         "alpha": 1e-2,  # L_aux权重
                         "beta": 0.0,    # 不使用L_o
                         "gamma": 0.0,   # 不使用L_v
-                        "use_cultural_aware": False
+                        "use_cultural_aware": False,
+                        "use_kl_loss": False
                     }
                 )
                 total_batch_loss = enhanced_loss_dict["L_total"]
@@ -340,7 +360,8 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                         "alpha": 1e-2,
                         "beta": 1e-3,
                         "gamma": 1e-3,
-                        "use_cultural_aware": False
+                        "use_cultural_aware": False,
+                        "use_kl_loss": False
                     }
                 )
                 total_batch_loss = enhanced_loss_dict["L_total"]
@@ -563,7 +584,7 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
                         use_culture_loss=False,
                         loss_weights={
                             "alpha": 1e-2, "beta": 1e-3, "gamma": 1e-3,
-                            "use_cultural_aware": False
+                            "use_cultural_aware": False, "use_kl_loss": False
                         }
                     )
                 elif use_culture_loss == "new":
@@ -574,7 +595,18 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
                         use_culture_loss=False,
                         loss_weights={
                             "alpha": 1e-2, "beta": 1e-3, "gamma": 1e-3,
-                            "use_cultural_aware": True
+                            "use_cultural_aware": True, "use_kl_loss": False
+                        }
+                    )
+                elif use_culture_loss == "kl":
+                    enhanced_loss_dict = integrate_enhanced_moe_loss(
+                        model_outputs=outputs,
+                        labels=labels,
+                        culture_labels=culture_labels,
+                        use_culture_loss=False,
+                        loss_weights={
+                            "alpha": 1e-2, "beta": 1e-3, "gamma": 1e-3,
+                            "use_cultural_aware": False, "use_kl_loss": True
                         }
                     )
                 elif use_culture_loss == "false" or use_culture_loss is False:
@@ -585,7 +617,7 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
                         use_culture_loss=False,
                         loss_weights={
                             "alpha": 1e-2, "beta": 0.0, "gamma": 0.0,
-                            "use_cultural_aware": False
+                            "use_cultural_aware": False, "use_kl_loss": False
                         }
                     )
                 else:
@@ -596,7 +628,7 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
                         use_culture_loss=False,
                         loss_weights={
                             "alpha": 1e-2, "beta": 1e-3, "gamma": 1e-3,
-                            "use_cultural_aware": False
+                            "use_cultural_aware": False, "use_kl_loss": False
                         }
                     )
 
