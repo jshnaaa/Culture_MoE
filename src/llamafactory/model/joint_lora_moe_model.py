@@ -31,6 +31,7 @@ class JointLoRAMoEConfig:
 
     # MoE配置
     num_moe_experts: int = 4
+    num_activated_experts: int = 2  # 激活的专家数量，top-k
     moe_hidden_dim: int = 4096
     moe_intermediate_dim: int = None  # 默认为 moe_hidden_dim * 4
     moe_influence_weight: float = 0.5  # MoE影响权重，根据backbone调整
@@ -296,6 +297,7 @@ class MoELayer(nn.Module):
         super().__init__()
         self.config = config
         self.num_experts = config.num_moe_experts
+        self.num_activated_experts = config.num_activated_experts
         self.hidden_dim = config.moe_hidden_dim
         self.dtype = dtype
 
@@ -384,29 +386,37 @@ class MoELayer(nn.Module):
             # 保存soft routing scores供损失计算使用
             soft_routing_scores = all_expert_weights  # [B, num_experts] 所有专家的概率分布
 
-            # 🔧 实现Top-2激活机制
-            # 1. 选择top-2专家
-            top_k_logits, top_k_indices = torch.topk(router_logits, k=2, dim=-1)  # [B, 2]
+            # 🔧 实现Top-k激活机制（动态k值）
+            # 1. 选择top-k专家
+            k = min(self.num_activated_experts, self.num_experts)  # 确保k不超过专家总数
 
-            # 2. 对top-2专家的logits重新归一化
-            top_k_weights = torch.softmax(top_k_logits, dim=-1)  # [B, 2] 归一化权重
+            if k == self.num_experts:
+                # Dense模式：激活所有专家
+                expert_weights = all_expert_weights  # 直接使用所有专家的权重
+                top_k_indices = torch.arange(self.num_experts, device=router_logits.device).unsqueeze(0).expand(batch_size, -1)  # [B, num_experts]
+            else:
+                # Top-k模式：只激活top-k专家
+                top_k_logits, top_k_indices = torch.topk(router_logits, k=k, dim=-1)  # [B, k]
 
-            # 3. 创建稀疏权重矩阵（只有激活的专家有权重）
-            expert_weights = torch.zeros_like(all_expert_weights)  # [B, num_experts]
-            expert_weights.scatter_(1, top_k_indices, top_k_weights)  # 将归一化权重分配给激活专家
+                # 2. 对top-k专家的logits重新归一化
+                top_k_weights = torch.softmax(top_k_logits, dim=-1)  # [B, k] 归一化权重
+
+                # 3. 创建稀疏权重矩阵（只有激活的专家有权重）
+                expert_weights = torch.zeros_like(all_expert_weights)  # [B, num_experts]
+                expert_weights.scatter_(1, top_k_indices, top_k_weights)  # 将归一化权重分配给激活专家
 
             # 检查路由器学习情况（只在异常时打印）- 注释掉频繁警告
             # logits_diff = (top_k_logits[:, 0] - top_k_logits[:, 1]).mean().item()
             # if logits_diff < 0.05:  # 只在差异过小时警告
             #     print(f"⚠️ 路由器区分度过低: {logits_diff:.3f}")
 
-            # 2. 专家计算（Top-2版本）- 只计算激活的专家
+            # 2. 专家计算（动态Top-k版本）- 只计算激活的专家
             expert_outputs = {}  # 使用字典存储，只计算需要的专家
             valid_experts = 0
 
             # 获取所有激活的专家索引（去重）
             activated_experts = torch.unique(top_k_indices.flatten()).cpu().tolist()
-            # print(f"🔍 激活的专家索引: {activated_experts}")  # 注释掉减少日志
+            # print(f"🔍 激活的专家索引: {activated_experts} (k={k}, mode={'dense' if k == self.num_experts else f'top-{k}'})")  # 注释掉减少日志
 
             for expert_idx in activated_experts:
                 try:
@@ -439,12 +449,12 @@ class MoELayer(nn.Module):
                     expert_outputs[expert_idx] = torch.zeros_like(hidden_states)
                     current_nan_detected = True
 
-            # 3. Top-2专家输出混合
+            # 3. 动态Top-k专家输出混合
             if valid_experts == 0:
-                print("🚨 所有激活专家都失效，使用输入passthrough!")
+                print(f"🚨 所有激活专家都失效，使用输入passthrough! (k={k})")
                 final_output = hidden_states
             else:
-                # Top-2加权融合
+                # 动态Top-k加权融合
                 final_output = torch.zeros_like(hidden_states)
                 total_weight = 0.0
 

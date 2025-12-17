@@ -899,7 +899,9 @@ def main():
                         help="Model backbone type")
     parser.add_argument("--num_moe_experts", type=int, default=4,
                         help="Number of MoE experts")
-    parser.add_argument("--use_culture_loss", type=str, default="true",
+    parser.add_argument("--num_activated_experts", type=int, default=2,
+                        help="Number of activated experts (top-k), if equal to num_moe_experts then dense mode")
+    parser.add_argument("--use_culture_loss", type=str, default="new",
                         help="Whether to use culture loss")
     parser.add_argument("--use_culture_router", type=str, default="false",
                         help="Whether to enable culture-aware conflict detection routing")
@@ -985,6 +987,7 @@ def main():
         print(f"MoE learning rate: {args.learning_rate_moe}")
         print(f"Max length: {args.max_length}")
         print(f"MoE experts: {args.num_moe_experts}")
+        print(f"Activated experts: {args.num_activated_experts} ({'dense mode' if args.num_activated_experts == args.num_moe_experts else f'top-{args.num_activated_experts}'})")
         print(f"Use culture loss: {use_culture_loss}")
         print(f"Use culture router: {use_culture_router}")
         if use_culture_loss != 'false':
@@ -1311,6 +1314,7 @@ def main():
 
         # MoE配置
         num_moe_experts=args.num_moe_experts,
+        num_activated_experts=args.num_activated_experts,
         moe_hidden_dim=2048,  # 专家隐藏层大小
         moe_influence_weight=moe_influence_weight,  # 根据backbone设置的影响权重
 
@@ -1526,6 +1530,7 @@ def main():
             'learning_rate_moe': args.learning_rate_moe,
             'max_length': args.max_length,
             'num_moe_experts': args.num_moe_experts,
+            'num_activated_experts': args.num_activated_experts,
             'use_culture_loss': use_culture_loss,
             'use_culture_router': use_culture_router,
             'culture_loss_weight': args.culture_loss_weight,
@@ -1555,6 +1560,8 @@ def main():
         print(f"\nBest validation accuracy: {best_eval_accuracy:.4f}")
         print(f"Architecture: Joint LoRA + MoE End-to-End Training")
         print(f"MoE experts: {args.num_moe_experts}")
+        print(f"Activated experts: {args.num_activated_experts} ({'dense mode' if args.num_activated_experts == args.num_moe_experts else f'top-{args.num_activated_experts}'})")
+        print(f"Use LoRA: {use_lora}")
         print(f"Culture loss: {use_culture_loss}")
         print(f"Culture router: {'enabled' if use_culture_router else 'disabled'}")
         print("="*80)

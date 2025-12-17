@@ -15,16 +15,17 @@ DATA_ID=${2:-"2"}
 USE_SHARED=${3:-"false"}  # 是否使用共享专家，默认为false
 USE_GATE=${4:-"false"}    # 是否使用MoE内部融合Gate，默认为false
 NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
-USE_CULTURE_LOSS=${6:-"ori"}  # ori/new/kl/false
-USE_CULTURE_ROUTER=${7:-"false"}  # 是否使用文化感知冲突检测路由，默认为false
-USE_LORA=${8:-"true"}   # 是否启用预训练LoRA微调，默认为true
-NUM_GPUS=${9:-"2"}
-LORA_RANK=${10:-"16"}   # LoRA rank
-LORA_ALPHA=${11:-"32"}  # LoRA alpha
+USE_CULTURE_LOSS=${6:-"new"}  # ori/new/kl/false，默认改为new
+NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
+USE_CULTURE_ROUTER=${8:-"false"}  # 是否使用文化感知冲突检测路由，默认为false
+USE_LORA=${9:-"true"}   # 是否启用预训练LoRA微调，默认为true
+NUM_GPUS=${10:-"2"}
+LORA_RANK=${11:-"16"}   # LoRA rank
+LORA_ALPHA=${12:-"32"}  # LoRA alpha
 
 # 检查参数
-if [ "$#" -gt 11 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [use_culture_router] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 12 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_culture_router] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
     exit 1
 fi
 
@@ -93,6 +94,7 @@ fi
 echo "  共享专家: $USE_SHARED"
 echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
+echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
 echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, false=仅L_aux)"
 echo "  文化感知路由: $USE_CULTURE_ROUTER (true=启用文化感知冲突检测路由, false=标准路由)"
 echo "  启用预训练LoRA: $USE_LORA"
@@ -182,6 +184,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "use_shared_expert": $USE_SHARED,
         "use_moe_gate": $USE_GATE,
         "moe_experts": $NUM_MOE_EXPERTS,
+        "activated_experts": $NUM_ACTIVATED_EXPERTS,
         "use_culture_loss": $USE_CULTURE_LOSS,
         "use_culture_router": $USE_CULTURE_ROUTER,
         "use_lora": $USE_LORA,
@@ -228,6 +231,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --max_length $MAX_SEQ_LEN \
         --backbone $BACKBONE \
         --num_moe_experts $NUM_MOE_EXPERTS \
+        --num_activated_experts $NUM_ACTIVATED_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
         --use_culture_router $USE_CULTURE_ROUTER \
         --use_lora $USE_LORA \
@@ -255,6 +259,7 @@ else
         --max_length $MAX_SEQ_LEN \
         --backbone $BACKBONE \
         --num_moe_experts $NUM_MOE_EXPERTS \
+        --num_activated_experts $NUM_ACTIVATED_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
         --use_culture_router $USE_CULTURE_ROUTER \
         --use_lora $USE_LORA \
