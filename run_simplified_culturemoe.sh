@@ -11,21 +11,38 @@ echo "针对48GB×2卡优化"
 echo "======================================="
 
 # 参数设置
-BACKBONE=${1:-"llama"}  # 默认使用qwen2.5-7B
+BACKBONE=${1:-"llama"}  # 默认使用llama
 DATA_ID=${2:-"2"}
-NUM_ROUTING_EXPERTS=${3:-"2"}  # 减少到2个路由专家
-USE_CULTURE_LOSS=${4:-"true"}
-NUM_GPUS=${5:-"2"}
+USE_SHARED=${3:-"false"}  # 是否使用共享专家，默认为false（占位符）
+USE_GATE=${4:-"false"}    # 是否使用MoE内部融合Gate，默认为false（占位符）
+NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
+USE_CULTURE_LOSS=${6:-"new"}  # ori/new/kl/false，默认为new
+NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
+USE_LORA=${8:-"true"}   # 是否启用LoRA，默认为true
+NUM_GPUS=${9:-"2"}
+LORA_RANK=${10:-"16"}   # LoRA rank
+LORA_ALPHA=${11:-"32"}  # LoRA alpha
 
 # 检查参数
-if [ "$#" -gt 5 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [num_routing_experts] [use_culture_loss] [num_gpus]"
+if [ "$#" -gt 11 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
     exit 1
 fi
 
 # 验证专家数参数
-if ! [[ "$NUM_ROUTING_EXPERTS" =~ ^[1-4]$ ]]; then
-    echo "❌ 路由专家数必须是1-4: $NUM_ROUTING_EXPERTS"
+if ! [[ "$NUM_MOE_EXPERTS" =~ ^[1-8]$ ]]; then
+    echo "❌ MoE专家数必须是1-8: $NUM_MOE_EXPERTS"
+    exit 1
+fi
+
+# 验证激活专家数参数
+if ! [[ "$NUM_ACTIVATED_EXPERTS" =~ ^[1-8]$ ]]; then
+    echo "❌ 激活专家数必须是1-8: $NUM_ACTIVATED_EXPERTS"
+    exit 1
+fi
+
+if [ "$NUM_ACTIVATED_EXPERTS" -gt "$NUM_MOE_EXPERTS" ]; then
+    echo "❌ 激活专家数不能超过总专家数: $NUM_ACTIVATED_EXPERTS > $NUM_MOE_EXPERTS"
     exit 1
 fi
 
@@ -98,27 +115,46 @@ echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
 echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
 echo "  总层数: $TOTAL_LAYERS"
-echo "  MoE层: $MoE_LAYERS (最后2层)"
-echo "  专家配置: ${NUM_ROUTING_EXPERTS}个路由专家"
-echo "  文化损失: $USE_CULTURE_LOSS"
+echo "  MoE层: $MoE_LAYERS (最后2层FFN替换为MoE)"
+if [ "$USE_LORA" = "true" ]; then
+    echo "  训练模式: LoRA微调 + 最后两层MoE专家训练"
+else
+    echo "  训练模式: 仅最后两层MoE专家训练"
+fi
+echo "  共享专家: $USE_SHARED (占位符)"
+echo "  MoE内部Gate: $USE_GATE (占位符)"
+echo "  MoE专家数: $NUM_MOE_EXPERTS"
+echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
+echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, false=仅L_aux)"
+echo "  启用LoRA: $USE_LORA"
+echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
 echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
 echo ""
 
-# 内存优化的训练参数
-BATCH_SIZE=1              # 最小batch size
-GRADIENT_ACCUMULATION=8   # 梯度累积
-LEARNING_RATE=1e-4        # 学习率
-NUM_EPOCHS=5              # 训练轮数
-MAX_SEQ_LEN=512          # 序列长度
+# 内存优化的训练参数 - 参考joint版本设置
+BATCH_SIZE=2              # 调整为2，支持culture loss多样本计算
+GRADIENT_ACCUMULATION=16   # 相应增加梯度累积，保持有效batch size
+LEARNING_RATE=1e-4        # 简化版使用单一学习率
+NUM_EPOCHS=8              # 训练轮数
+
+# 动态设置max_seq_len：参考joint版本逻辑
+echo "🔧 调试信息: DATA_ID='$DATA_ID'"
+if [ "$DATA_ID" = "3" ] || [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
+    MAX_SEQ_LEN=850       # 长文本数据集使用850
+    echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=850"
+else
+    MAX_SEQ_LEN=384       # 其他数据集使用384
+    echo "🔧 使用标准序列长度MAX_SEQ_LEN=384"
+fi
 
 echo "训练参数:"
 echo "  Batch Size: $BATCH_SIZE (per GPU)"
 echo "  梯度累积: $GRADIENT_ACCUMULATION"
 echo "  有效Batch Size: $((BATCH_SIZE * GRADIENT_ACCUMULATION * NUM_GPUS))"
-echo "  学习率: $LEARNING_RATE"
+echo "  学习率: $LEARNING_RATE (简化版使用单一学习率)"
 echo "  训练轮数: $NUM_EPOCHS"
-echo "  最大序列长度: $MAX_SEQ_LEN"
+echo "  最大序列长度: $MAX_SEQ_LEN (动态设置)"
 echo ""
 
 # 创建输出目录
@@ -140,13 +176,16 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "dataset_tag": "$DATASET_TAG",
         "max_seq_length": $MAX_SEQ_LEN
     },
-    "moe_config": {
-        "moe_layers": "ALL layers (like MixLoRA)",
-        "routing_experts": $NUM_ROUTING_EXPERTS,
-        "use_culture_loss": $USE_CULTURE_LOSS,
-        "architecture": "simplified_mixlora_based"
-    },
     "training_config": {
+        "training_mode": "simplified_last_two_layers_moe",
+        "use_shared_expert": $USE_SHARED,
+        "use_moe_gate": $USE_GATE,
+        "moe_experts": $NUM_MOE_EXPERTS,
+        "activated_experts": $NUM_ACTIVATED_EXPERTS,
+        "use_culture_loss": $USE_CULTURE_LOSS,
+        "use_lora": $USE_LORA,
+        "lora_rank": $LORA_RANK,
+        "lora_alpha": $LORA_ALPHA,
         "num_epochs": $NUM_EPOCHS,
         "batch_size": $BATCH_SIZE,
         "gradient_accumulation_steps": $GRADIENT_ACCUMULATION,
@@ -181,11 +220,15 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --learning_rate $LEARNING_RATE \
         --max_length $MAX_SEQ_LEN \
         --backbone $BACKBONE \
-        --num_routing_experts $NUM_ROUTING_EXPERTS \
+        --use_shared $USE_SHARED \
+        --use_gate $USE_GATE \
+        --num_moe_experts $NUM_MOE_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
+        --num_activated_experts $NUM_ACTIVATED_EXPERTS \
+        --use_lora $USE_LORA \
+        --lora_rank $LORA_RANK \
+        --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
-        --lora_r 16 \
-        --lora_alpha 8 \
         --memory_efficient \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 else
@@ -204,11 +247,15 @@ else
         --learning_rate $LEARNING_RATE \
         --max_length $MAX_SEQ_LEN \
         --backbone $BACKBONE \
-        --num_routing_experts $NUM_ROUTING_EXPERTS \
+        --use_shared $USE_SHARED \
+        --use_gate $USE_GATE \
+        --num_moe_experts $NUM_MOE_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
+        --num_activated_experts $NUM_ACTIVATED_EXPERTS \
+        --use_lora $USE_LORA \
+        --lora_rank $LORA_RANK \
+        --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
-        --lora_r 16 \
-        --lora_alpha 8 \
         --memory_efficient \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 fi
@@ -227,12 +274,13 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
 
         echo ""
         echo "🎉 训练完成！模型特点:"
-        echo "  - 基于MixLoRA架构，内存优化"
-        echo "  - 所有层都使用MoE (与MixLoRA一致)"
-        echo "  - ${NUM_ROUTING_EXPERTS}个路由专家每层"
-        echo "  - 添加了文化损失"
-        echo "  - LoRA rank=16, alpha=8"
-        echo "  - 序列长度=$MAX_SEQ_LEN (内存优化)"
+        echo "  - 简化架构：仅最后两层FFN替换为MoE"
+        echo "  - MoE专家数: $NUM_MOE_EXPERTS"
+        echo "  - 激活专家数: $NUM_ACTIVATED_EXPERTS ({'dense模式' if [ "$NUM_ACTIVATED_EXPERTS" = "$NUM_MOE_EXPERTS" ]; then echo 'dense模式'; else echo "top-$NUM_ACTIVATED_EXPERTS"; fi})"
+        echo "  - 文化损失模式: $USE_CULTURE_LOSS"
+        echo "  - LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
+        echo "  - 启用LoRA: $USE_LORA"
+        echo "  - 序列长度: $MAX_SEQ_LEN"
     else
         echo "⚠️  训练完成但未找到最佳模型"
     fi

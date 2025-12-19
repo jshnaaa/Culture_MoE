@@ -228,7 +228,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         # 计算文化损失 - 统一使用float16节省显存
         culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
-        if use_culture_loss and culture_labels is not None:
+        if use_culture_loss != 'false' and culture_labels is not None:
             culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
 
         # 获取MoE的z-loss用于稳定router
@@ -286,7 +286,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             loss_info = outputs.loss_info
             postfix['main'] = f"{loss_info['main_loss'].item():.4f}"
             postfix['aux'] = f"{loss_info['load_balancing_loss'].item():.4f}"
-        if use_culture_loss:
+        if use_culture_loss != 'false':
             postfix['culture'] = f"{culture_loss.item():.4f}"
 
         pbar.set_postfix(postfix)
@@ -367,7 +367,7 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
 
             # 计算文化损失 - 统一使用float16节省显存
             culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
-            if use_culture_loss and culture_labels is not None:
+            if use_culture_loss != 'false' and culture_labels is not None:
                 culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
 
             # 获取MoE的z-loss用于稳定router
@@ -523,20 +523,28 @@ def main():
     parser.add_argument("--eval_interval", type=int, default=2,
                         help="Evaluation interval (every N epochs)")
 
-    # 模型参数
-    parser.add_argument("--backbone", type=str, default="qwen", choices=["llama", "qwen"],
+    # 模型参数 - 与joint版本保持一致
+    parser.add_argument("--backbone", type=str, default="llama", choices=["llama", "qwen"],
                         help="Model backbone type")
-    parser.add_argument("--num_routing_experts", type=int, default=2,
-                        help="Number of routing experts")
-    parser.add_argument("--use_culture_loss", type=str, default="true",
-                        help="Whether to use culture loss")
+    parser.add_argument("--use_shared", type=str, default="false",
+                        help="Whether to use shared expert (placeholder)")
+    parser.add_argument("--use_gate", type=str, default="false",
+                        help="Whether to use MoE gate (placeholder)")
+    parser.add_argument("--num_moe_experts", type=int, default=4,
+                        help="Number of MoE experts")
+    parser.add_argument("--use_culture_loss", type=str, default="new",
+                        help="Culture loss mode: ori/new/kl/false")
+    parser.add_argument("--num_activated_experts", type=int, default=2,
+                        help="Number of activated experts (top-k), if equal to num_moe_experts then dense mode")
+    parser.add_argument("--use_lora", type=str, default="true",
+                        help="Whether to enable LoRA fine-tuning")
     parser.add_argument("--culture_loss_weight", type=float, default=0.01,
                         help="Culture loss weight")
 
-    # LoRA参数
-    parser.add_argument("--lora_r", type=int, default=16,
+    # LoRA参数 - 与joint版本保持一致
+    parser.add_argument("--lora_rank", type=int, default=16,
                         help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=8,
+    parser.add_argument("--lora_alpha", type=int, default=32,
                         help="LoRA alpha")
     parser.add_argument("--lora_dropout", type=float, default=0.1,
                         help="LoRA dropout")
@@ -546,8 +554,11 @@ def main():
 
     args = parser.parse_args()
 
-    # 转换字符串参数
-    use_culture_loss = args.use_culture_loss.lower() == 'true'
+    # 转换字符串参数 - 与joint版本保持一致
+    use_culture_loss = args.use_culture_loss.lower() if args.use_culture_loss.lower() in ['ori', 'new', 'kl', 'false'] else 'new'
+    use_shared = args.use_shared.lower() == 'true'
+    use_gate = args.use_gate.lower() == 'true'
+    use_lora = args.use_lora.lower() == 'true'
 
     # 设置内存优化
     if world_size > 1:
@@ -580,13 +591,17 @@ def main():
         print(f"Number of epochs: {args.num_epochs}")
         print(f"Batch size: {args.batch_size} (per GPU)")
         print(f"Effective batch size: {args.batch_size * world_size * args.gradient_accumulation_steps}")
-        print(f"Learning rate: {args.learning_rate}")
+        print(f"Learning rate: {args.learning_rate} (简化版使用单一学习率)")
         print(f"Max length: {args.max_length}")
-        print(f"Routing experts: {args.num_routing_experts}")
+        print(f"MoE experts: {args.num_moe_experts}")
+        print(f"Activated experts: {args.num_activated_experts} ({'dense mode' if args.num_activated_experts == args.num_moe_experts else f'top-{args.num_activated_experts}'})")
+        print(f"Use shared expert: {use_shared} (占位符)")
+        print(f"Use MoE gate: {use_gate} (占位符)")
         print(f"Use culture loss: {use_culture_loss}")
-        if use_culture_loss:
+        if use_culture_loss != 'false':
             print(f"Culture loss weight: {args.culture_loss_weight}")
-        print(f"LoRA config: r={args.lora_r}, alpha={args.lora_alpha}")
+        print(f"Use LoRA: {use_lora}")
+        print(f"LoRA config: rank={args.lora_rank}, alpha={args.lora_alpha}")
         print("="*80 + "\n")
 
     # 创建输出目录
@@ -667,13 +682,17 @@ def main():
         print(f"MoE layers: ALL layers (like MixLoRA)")
 
     culturemoe_config = SimplifiedCultureMoEConfig(
-        lora_rank=args.lora_r,
+        lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        num_routing_experts=args.num_routing_experts,
-        moe_layers=None,  # None表示所有层都使用MoE
+        num_moe_experts=args.num_moe_experts,
+        num_activated_experts=args.num_activated_experts,
+        moe_layers=None,  # None表示最后两层替换为MoE
+        use_shared=use_shared,  # 占位符
+        use_gate=use_gate,      # 占位符
         use_culture_loss=use_culture_loss,
         culture_loss_weight=args.culture_loss_weight,
+        use_lora=use_lora,
         aux_loss_coef=0.001  # 小的辅助损失
     )
 
@@ -775,7 +794,7 @@ def main():
             if train_metrics['main_loss'] > 0:
                 print(f"    Main Loss: {train_metrics['main_loss']:.4f}")
                 print(f"    Aux Loss: {train_metrics['aux_loss']:.4f}")
-            if use_culture_loss:
+            if use_culture_loss != 'false':
                 print(f"    Culture Loss: {train_metrics['culture_loss']:.4f}")
 
         # 每eval_interval个epoch进行一次验证
@@ -804,7 +823,7 @@ def main():
                 if val_metrics['main_loss'] > 0:
                     print(f"    Main Loss: {val_metrics['main_loss']:.4f}")
                     print(f"    Aux Loss: {val_metrics['aux_loss']:.4f}")
-                if use_culture_loss:
+                if use_culture_loss != 'false':
                     print(f"    Culture Loss: {val_metrics['culture_loss']:.4f}")
                 print(f"  Eval Accuracy: {gen_metrics['accuracy']:.4f} ({gen_metrics['correct']}/{gen_metrics['total']})")
 
@@ -871,24 +890,29 @@ def main():
         config = {
             'base_model': args.base_model_path,
             'backbone': args.backbone,
+            'training_mode': 'simplified_last_two_layers_moe',
             'num_epochs': args.num_epochs,
             'batch_size': args.batch_size,
             'effective_batch_size': args.batch_size * world_size * args.gradient_accumulation_steps,
             'world_size': world_size,
             'learning_rate': args.learning_rate,
             'max_length': args.max_length,
-            'num_routing_experts': args.num_routing_experts,
-            'moe_layers': 'ALL layers',
+            'use_shared_expert': use_shared,
+            'use_moe_gate': use_gate,
+            'num_moe_experts': args.num_moe_experts,
+            'num_activated_experts': args.num_activated_experts,
+            'moe_layers': 'Last 2 layers FFN replaced with MoE',
             'use_culture_loss': use_culture_loss,
             'culture_loss_weight': args.culture_loss_weight,
+            'use_lora': use_lora,
             'lora_config': {
-                'rank': args.lora_r,
+                'rank': args.lora_rank,
                 'alpha': args.lora_alpha,
                 'dropout': args.lora_dropout
             },
             'eval_interval': args.eval_interval,
             'best_eval_accuracy': best_eval_accuracy,
-            'architecture': 'simplified_culturemoe_based_on_mixlora'
+            'architecture': 'simplified_last_two_layers_moe'
         }
 
         with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
@@ -904,10 +928,12 @@ def main():
         print(f"  - generated_answers.json (Generated answers on validation set)")
         print(f"  - config.json (Training configuration)")
         print(f"\nBest validation accuracy: {best_eval_accuracy:.4f}")
-        print(f"Architecture: Simplified CultureMoE based on MixLoRA")
-        print(f"MoE layers: ALL layers (like MixLoRA)")
-        print(f"Routing experts: {args.num_routing_experts}")
-        print(f"Culture loss: {'enabled' if use_culture_loss else 'disabled'}")
+        print(f"Architecture: Simplified Last Two Layers MoE")
+        print(f"MoE layers: Last 2 layers FFN replaced with MoE")
+        print(f"MoE experts: {args.num_moe_experts}")
+        print(f"Activated experts: {args.num_activated_experts} ({'dense mode' if args.num_activated_experts == args.num_moe_experts else f'top-{args.num_activated_experts}'})")
+        print(f"Use LoRA: {use_lora}")
+        print(f"Culture loss: {use_culture_loss}")
         print("="*80)
 
     # 清理分布式训练
