@@ -37,7 +37,8 @@ from ft_lora_only_gen import (
     CultureLLMNewFormatDataset,
     load_and_process_data,
     extract_answer_from_text,
-    generate_answer
+    generate_answer,
+    dynamic_padding_collate_fn
 )
 
 
@@ -631,14 +632,19 @@ def main():
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank) if world_size > 1 else None
     val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False) if world_size > 1 else None
 
-    # 创建数据加载器
+    # 创建动态padding的collate函数
+    def collate_fn(batch):
+        return dynamic_padding_collate_fn(batch, tokenizer)
+
+    # 创建数据加载器 - 使用动态padding
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         num_workers=0,  # 设为0避免多进程问题
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
 
     val_loader = DataLoader(
@@ -647,7 +653,8 @@ def main():
         shuffle=False,
         sampler=val_sampler,
         num_workers=0,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
 
     # 加载基础模型
