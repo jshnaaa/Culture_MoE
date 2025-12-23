@@ -745,18 +745,14 @@ def main():
             model_adapter.base_model,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=False,
+            find_unused_parameters=True,  # MoE需要设为True，因为top-k路由导致某些专家不参与计算
             broadcast_buffers=False,
             gradient_as_bucket_view=True
         )
 
-        try:
-            model_adapter.base_model._set_static_graph()
-            if is_main_process(rank):
-                print("✅ DDP static graph enabled")
-        except Exception as e:
-            if is_main_process(rank):
-                print(f"⚠️  Warning: Could not set static graph: {e}")
+        # 不设置static_graph，因为MoE的动态路由与static_graph不兼容
+        if is_main_process(rank):
+            print("✅ DDP configured for MoE (find_unused_parameters=True, no static_graph)")
 
         if is_main_process(rank):
             print("✅ Model wrapped with DDP")

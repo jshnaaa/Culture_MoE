@@ -1,7 +1,8 @@
 # src/llamafactory/model/simplified_culturemoe_adapter.py
 """
 简化版CultureMoE适配器
-严格基于MixLoRA实现 + 文化损失
+纯MoE架构：只在最后两层替换FFN为MoE结构
+不使用MixLoRA，仅在指定层使用MoE专家
 """
 
 import torch
@@ -13,478 +14,434 @@ import math
 from .simplified_culturemoe import SimplifiedCultureMoEConfig
 
 
-class LoRALinear(nn.Module):
-    """LoRA线性层 - 数值稳定版本（与MixLoRA一致）"""
+class MoEExpert(nn.Module):
+    """MoE专家层 - 完整的FFN结构"""
 
-    def __init__(self, in_features: int, out_features: int, rank: int, alpha: int, dropout: float = 0.1):
+    def __init__(self, hidden_dim: int, intermediate_dim: int, act_fn, dropout: float = 0.1):
         super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.rank = rank
-        self.alpha = alpha
-        self.scaling = alpha / rank
+        self.hidden_dim = hidden_dim
+        self.intermediate_dim = intermediate_dim
 
-        # LoRA参数
-        self.lora_A = nn.Linear(in_features, rank, bias=False)
-        self.lora_B = nn.Linear(rank, out_features, bias=False)
+        # 完整的FFN结构（与原始FFN相同）
+        self.gate_proj = nn.Linear(hidden_dim, intermediate_dim, bias=False)
+        self.up_proj = nn.Linear(hidden_dim, intermediate_dim, bias=False)
+        self.down_proj = nn.Linear(intermediate_dim, hidden_dim, bias=False)
+        self.act_fn = act_fn  # 使用原始模型的激活函数
         self.dropout = nn.Dropout(dropout)
 
-        # 初始化 - 数值稳定版本（与MixLoRA一致）
-        nn.init.normal_(self.lora_A.weight, mean=0.0, std=0.001)
-        nn.init.zeros_(self.lora_B.weight)
-        # 限制LoRA A权重范围
-        with torch.no_grad():
-            self.lora_A.weight.data.clamp_(-0.1, 0.1)
+        # 保守的权重初始化
+        self._init_weights()
+
+    def _init_weights(self):
+        """保守的权重初始化"""
+        # 使用较小的标准差初始化
+        std = 0.02 / math.sqrt(2 * self.hidden_dim)
+
+        nn.init.normal_(self.gate_proj.weight, mean=0.0, std=std)
+        nn.init.normal_(self.up_proj.weight, mean=0.0, std=std)
+        nn.init.normal_(self.down_proj.weight, mean=0.0, std=std * 0.5)  # 输出层更保守
 
     def forward(self, x):
-        # 输入预处理：限制范围（与MixLoRA一致）
-        x = torch.clamp(x, min=-5.0, max=5.0)
+        """前向传播"""
+        # 检查输入
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            return torch.zeros_like(x)
 
-        # 限制LoRA权重范围，防止训练中权重爆炸（与MixLoRA一致）
-        with torch.no_grad():
-            self.lora_A.weight.data.clamp_(-1.0, 1.0)
-            self.lora_B.weight.data.clamp_(-1.0, 1.0)
+        # 限制输入范围
+        x = torch.clamp(x, min=-10.0, max=10.0)
 
-        # 计算LoRA输出: B * A * x (数值稳定版本)
-        lora_a_output = self.lora_A(x)
-        lora_a_output = torch.clamp(lora_a_output, min=-5.0, max=5.0)  # 限制中间结果
-        lora_output = self.lora_B(self.dropout(lora_a_output))
+        try:
+            # FFN计算
+            gate_output = self.act_fn(self.gate_proj(x))
+            up_output = self.up_proj(x)
 
-        # 应用保守的LoRA缩放（与MixLoRA一致）
-        safe_scaling = min(self.scaling, 1.0)  # 限制最大缩放
-        lora_output = lora_output * safe_scaling
+            # 限制中间结果
+            gate_output = torch.clamp(gate_output, min=-15.0, max=15.0)
+            up_output = torch.clamp(up_output, min=-15.0, max=15.0)
 
-        # 限制LoRA输出范围（与MixLoRA一致）
-        lora_output = torch.clamp(lora_output, min=-3.0, max=3.0)
+            # 组合
+            intermediate = gate_output * up_output
+            intermediate = torch.clamp(intermediate, min=-20.0, max=20.0)
 
-        # 检查NaN/Inf（与MixLoRA一致）
-        if torch.isnan(lora_output).any() or torch.isinf(lora_output).any():
-            lora_output = torch.zeros_like(lora_output)
+            # Dropout
+            intermediate = self.dropout(intermediate)
 
-        return lora_output
+            # 最终投影
+            output = self.down_proj(intermediate)
+            output = torch.clamp(output, min=-10.0, max=10.0)
+
+            # 检查输出
+            if torch.isnan(output).any() or torch.isinf(output).any():
+                return torch.zeros_like(x)
+
+            return output
+
+        except Exception as e:
+            print(f"⚠️ MoEExpert forward failed: {e}")
+            return torch.zeros_like(x)
 
 
-class SimplifiedMixLoRALayer(nn.Module):
-    """简化的MixLoRA层，严格基于MixLoRA + 文化损失"""
+class MoERouter(nn.Module):
+    """MoE路由器"""
 
-    def __init__(self, original_mlp, config: SimplifiedCultureMoEConfig):
+    def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1):
+        super().__init__()
+        self.num_experts = num_experts
+        self.hidden_dim = hidden_dim
+
+        # 路由器网络
+        self.router = nn.Linear(hidden_dim, num_experts, bias=False)
+
+        # 保守的初始化
+        nn.init.normal_(self.router.weight, mean=0.0, std=0.01)
+
+    def forward(self, x):
+        """
+        路由计算
+
+        Args:
+            x: [B, L, H] 输入隐藏状态
+
+        Returns:
+            expert_weights: [B, L, num_experts] 专家权重
+            router_logits: [B, L, num_experts] 路由logits
+        """
+        batch_size, seq_len, hidden_dim = x.shape
+
+        # 限制输入
+        x = torch.clamp(x, min=-10.0, max=10.0)
+
+        try:
+            # 计算路由logits
+            router_logits = self.router(x)  # [B, L, num_experts]
+            router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
+
+            # 数值稳定的softmax
+            max_logits = torch.max(router_logits, dim=-1, keepdim=True)[0]
+            shifted_logits = router_logits - max_logits
+            shifted_logits = torch.clamp(shifted_logits, min=-20.0, max=0.0)
+
+            # 计算专家权重
+            expert_weights = F.softmax(shifted_logits, dim=-1)
+
+            # 检查结果
+            if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+                # 使用均匀分布作为fallback
+                expert_weights = torch.ones_like(expert_weights) / self.num_experts
+                router_logits = torch.zeros_like(router_logits)
+
+            return expert_weights, router_logits
+
+        except Exception as e:
+            print(f"⚠️ Router forward failed: {e}")
+            # 安全的fallback
+            expert_weights = torch.ones(batch_size, seq_len, self.num_experts,
+                                      device=x.device, dtype=x.dtype) / self.num_experts
+            router_logits = torch.zeros(batch_size, seq_len, self.num_experts,
+                                      device=x.device, dtype=x.dtype)
+            return expert_weights, router_logits
+
+
+class MoEFFN(nn.Module):
+    """MoE FFN层 - 替换原始FFN"""
+
+    def __init__(self, original_ffn, config: SimplifiedCultureMoEConfig):
         super().__init__()
         self.config = config
-        self.num_experts = config.num_routing_experts
-        self.top_k = config.top_k
+        self.num_experts = config.num_moe_experts
+        self.num_activated_experts = config.num_activated_experts
 
-        # 保存原始MLP（冻结）
-        self.shared_ffn = original_mlp
-        # 冻结共享FFN
-        for param in self.shared_ffn.parameters():
-            param.requires_grad = False
+        # 获取原始FFN的参数
+        self.hidden_dim = original_ffn.gate_proj.in_features
+        self.intermediate_dim = original_ffn.gate_proj.out_features
+        self.act_fn = original_ffn.act_fn
 
-        # 获取维度
-        self.hidden_size = original_mlp.gate_proj.in_features
-        self.intermediate_size = original_mlp.gate_proj.out_features
-        self.device = original_mlp.gate_proj.weight.device
-        self.dtype = original_mlp.gate_proj.weight.dtype
+        # 创建路由器
+        self.router = MoERouter(
+            hidden_dim=self.hidden_dim,
+            num_experts=self.num_experts,
+            dropout=config.lora_dropout
+        )
 
-        # 简单的线性路由器（与MixLoRA一致）
-        self.router = nn.Linear(self.hidden_size, self.num_experts, bias=False)
-
-        # 路由器初始化（与MixLoRA一致）
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.001)
-        with torch.no_grad():
-            self.router.weight.data.clamp_(-0.1, 0.1)
-
-        # 创建LoRA专家（每个专家只是LoRA适配器）
-        self.lora_experts = nn.ModuleList([
-            self._create_lora_expert(config)
-            for _ in range(self.num_experts)
+        # 创建专家
+        self.experts = nn.ModuleList([
+            MoEExpert(
+                hidden_dim=self.hidden_dim,
+                intermediate_dim=self.intermediate_dim,
+                act_fn=self.act_fn,
+                dropout=config.lora_dropout
+            ) for _ in range(self.num_experts)
         ])
 
-        # 移动到正确设备
-        self.router = self.router.to(device=self.device, dtype=self.dtype)
-        self.lora_experts = self.lora_experts.to(device=self.device, dtype=self.dtype)
-
-        # 保存最新的router logits用于文化损失
-        self.latest_router_logits = None
-        self.latest_batch_size = None
-        self.latest_seq_len = None
-
-    def _create_lora_expert(self, config):
-        """创建LoRA专家（只是LoRA适配器）"""
-        expert = nn.Module()
-
-        # 为每个FFN层添加LoRA适配器
-        expert.gate_proj_lora = LoRALinear(
-            self.hidden_size, self.intermediate_size,
-            config.lora_rank, config.lora_alpha, config.lora_dropout
-        )
-        expert.up_proj_lora = LoRALinear(
-            self.hidden_size, self.intermediate_size,
-            config.lora_rank, config.lora_alpha, config.lora_dropout
-        )
-        expert.down_proj_lora = LoRALinear(
-            self.intermediate_size, self.hidden_size,
-            config.lora_rank, config.lora_alpha, config.lora_dropout
-        )
-
-        return expert
+        # 保存最新的专家权重用于文化损失
+        self.latest_expert_weights = None
 
     def forward(self, hidden_states):
+        """
+        前向传播
+
+        Args:
+            hidden_states: [B, L, H] 输入隐藏状态
+
+        Returns:
+            output: [B, L, H] 输出隐藏状态
+        """
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
-        # 输入预处理（与MixLoRA一致）- 数值稳定版本
-        hidden_states = torch.clamp(hidden_states, min=-5.0, max=5.0)
-
-        # 检查输入是否有NaN/Inf
+        # 检查输入
         if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
-            print("⚠️ NaN/Inf detected in input, using zeros")
-            hidden_states = torch.zeros_like(hidden_states)
+            print("⚠️ NaN/Inf in MoE input, using zeros")
+            return torch.zeros_like(hidden_states)
 
-        hidden_flat = hidden_states.view(-1, hidden_dim)
-
-        # 确保router在正确设备和dtype上
-        if self.router.weight.device != hidden_flat.device or self.router.weight.dtype != hidden_flat.dtype:
-            self.router = self.router.to(device=hidden_flat.device, dtype=hidden_flat.dtype)
-
-        # 限制router权重（与MixLoRA一致）- 更保守的限制
-        with torch.no_grad():
-            self.router.weight.data.clamp_(-1.0, 1.0)  # 更保守的限制
-            if self.router.bias is not None:
-                self.router.bias.data.clamp_(-0.5, 0.5)
-
-        # 计算路由logits - 数值稳定版本
-        router_logits = self.router(hidden_flat)
-        router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)  # 更保守的限制
-
-        # 保存router logits用于文化损失 - 移除detach()以保持梯度流
-        if self.training:
-            self.latest_router_logits = router_logits.clone()
-            self.latest_batch_size = batch_size
-            self.latest_seq_len = seq_len
-
-        # 检查异常值（与MixLoRA一致）
-        if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
-            print("⚠️ NaN/Inf detected in router_logits, using zeros")
-            router_logits = torch.zeros_like(router_logits)
-
-        # Top-K选择（与MixLoRA一致）- 数值稳定版本
         try:
-            top_k_logits, selected_experts = torch.topk(router_logits, self.top_k, dim=-1)
-        except Exception as e:
-            print(f"⚠️ TopK selection failed: {e}, using fallback")
-            selected_experts = torch.arange(self.top_k, device=router_logits.device).unsqueeze(0).expand(router_logits.size(0), -1)
-            top_k_logits = router_logits[:, :self.top_k]
+            # 1. 路由计算
+            expert_weights, router_logits = self.router(hidden_states)
 
-        # 数值稳定的softmax（与MixLoRA一致）
-        try:
-            # 减去最大值提高数值稳定性
-            top_k_logits_max = top_k_logits.max(dim=-1, keepdim=True)[0]
-            top_k_logits_stable = top_k_logits - top_k_logits_max
-            # 进一步限制范围
-            top_k_logits_stable = torch.clamp(top_k_logits_stable, min=-10.0, max=10.0)
-            expert_weights = F.softmax(top_k_logits_stable, dim=-1)
-        except Exception as e:
-            print(f"⚠️ Softmax failed: {e}, using uniform weights")
-            expert_weights = torch.ones_like(top_k_logits) / self.top_k
+            # 保存专家权重用于文化损失（平均到序列维度）
+            self.latest_expert_weights = expert_weights.mean(dim=1)  # [B, num_experts]
 
-        # 检查权重异常值（与MixLoRA一致）
-        if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
-            print("⚠️ NaN/Inf detected in expert_weights, using uniform weights")
-            expert_weights = torch.ones_like(expert_weights) / self.top_k
+            # 2. Top-k选择
+            if self.num_activated_experts == self.num_experts:
+                # Dense模式：使用所有专家
+                selected_expert_weights = expert_weights
+                selected_experts = torch.arange(self.num_experts, device=hidden_states.device).unsqueeze(0).unsqueeze(0).expand(batch_size, seq_len, -1)
+                k = self.num_experts
+            else:
+                # Top-k模式
+                k = min(self.num_activated_experts, self.num_experts)
+                top_k_logits, top_k_indices = torch.topk(router_logits, k=k, dim=-1)  # [B, L, k]
 
-        # 确保权重和为1（数值稳定性）
-        weight_sums = expert_weights.sum(dim=-1, keepdim=True)
-        weight_sums = torch.clamp(weight_sums, min=1e-8)  # 避免除零
-        expert_weights = expert_weights / weight_sums
+                # 重新归一化top-k权重
+                top_k_weights = F.softmax(top_k_logits, dim=-1)  # [B, L, k]
 
-        # 1. 共享FFN计算（与MixLoRA一致）
-        shared_output = self._compute_shared_ffn(hidden_states)
+                # 创建稀疏权重矩阵
+                selected_expert_weights = torch.zeros_like(expert_weights)  # [B, L, num_experts]
+                selected_expert_weights.scatter_(-1, top_k_indices, top_k_weights)
+                selected_experts = top_k_indices
 
-        # 2. LoRA专家计算
-        expert_output = self._compute_lora_experts(
-            hidden_states, selected_experts, expert_weights
-        )
+            # 3. 专家计算
+            if self.num_activated_experts == self.num_experts:
+                # Dense模式：计算所有专家
+                expert_outputs = []
+                for expert_idx in range(self.num_experts):
+                    expert_output = self.experts[expert_idx](hidden_states)  # [B, L, H]
+                    expert_outputs.append(expert_output)
+                expert_outputs = torch.stack(expert_outputs, dim=-1)  # [B, L, H, num_experts]
 
-        # 3. 组合输出 - 数值稳定版本
-        try:
-            # 检查共享输出
-            if torch.isnan(shared_output).any() or torch.isinf(shared_output).any():
-                print("⚠️ NaN/Inf in shared_output, using zeros")
-                shared_output = torch.zeros_like(shared_output)
+                # 加权组合
+                weights = selected_expert_weights.unsqueeze(-2)  # [B, L, 1, num_experts]
+                final_output = torch.sum(expert_outputs * weights, dim=-1)  # [B, L, H]
+            else:
+                # Top-k模式：只计算被选中的专家
+                final_output = torch.zeros_like(hidden_states)
 
-            # 检查专家输出
-            if torch.isnan(expert_output).any() or torch.isinf(expert_output).any():
-                print("⚠️ NaN/Inf in expert_output, using zeros")
-                expert_output = torch.zeros_like(expert_output)
+                # 重塑为[B*L, H]便于处理
+                hidden_flat = hidden_states.view(-1, hidden_dim)  # [B*L, H]
+                output_flat = final_output.view(-1, hidden_dim)  # [B*L, H]
+                weights_flat = selected_expert_weights.view(-1, self.num_experts)  # [B*L, num_experts]
 
-            # 限制输出范围
-            shared_output = torch.clamp(shared_output, min=-10.0, max=10.0)
-            expert_output = torch.clamp(expert_output, min=-5.0, max=5.0)
+                # 对每个专家计算
+                for expert_idx in range(self.num_experts):
+                    # 找到使用此专家的token
+                    expert_mask = weights_flat[:, expert_idx] > 1e-8
 
-            # 组合输出
-            final_output = shared_output + expert_output
+                    if expert_mask.any():
+                        # 获取对应的输入
+                        expert_input = hidden_flat[expert_mask]  # [num_tokens, H]
 
-            # 限制最终输出范围（与MixLoRA一致）
-            final_output = torch.clamp(final_output, min=-15.0, max=15.0)
+                        # 计算专家输出
+                        expert_output = self.experts[expert_idx](expert_input)  # [num_tokens, H]
 
-            # 最终NaN/Inf检查
+                        # 获取权重
+                        expert_weight = weights_flat[:, expert_idx][expert_mask].unsqueeze(-1)  # [num_tokens, 1]
+
+                        # 加权累加
+                        output_flat[expert_mask] += expert_output * expert_weight
+
+                # 重塑回原始形状
+                final_output = output_flat.view(batch_size, seq_len, hidden_dim)
+
+            # 4. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
-                print("⚠️ NaN/Inf detected in final output, using shared output only")
-                final_output = torch.clamp(shared_output, min=-10.0, max=10.0)
+                print("⚠️ NaN/Inf in MoE output, using zeros")
+                final_output = torch.zeros_like(hidden_states)
 
             return final_output
 
         except Exception as e:
-            print(f"⚠️ Final output computation failed: {e}, using input")
-            return torch.clamp(hidden_states, min=-5.0, max=5.0)
-
-    def _compute_shared_ffn(self, hidden_states):
-        """计算共享FFN输出（与MixLoRA一致）- 数值稳定版本"""
-        try:
-            # 输入限制
-            hidden_states = torch.clamp(hidden_states, min=-5.0, max=5.0)
-
-            # 使用原始的共享FFN
-            gate_output = self.shared_ffn.act_fn(self.shared_ffn.gate_proj(hidden_states))
-            up_output = self.shared_ffn.up_proj(hidden_states)
-
-            # 限制中间结果
-            gate_output = torch.clamp(gate_output, min=-10.0, max=10.0)
-            up_output = torch.clamp(up_output, min=-10.0, max=10.0)
-
-            # 计算最终输出
-            combined = gate_output * up_output
-            combined = torch.clamp(combined, min=-15.0, max=15.0)
-            shared_output = self.shared_ffn.down_proj(combined)
-
-            # 限制最终输出
-            shared_output = torch.clamp(shared_output, min=-10.0, max=10.0)
-
-            # 检查NaN/Inf
-            if torch.isnan(shared_output).any() or torch.isinf(shared_output).any():
-                print("⚠️ NaN/Inf detected in shared_ffn output, using zeros")
-                shared_output = torch.zeros_like(shared_output)
-
-            return shared_output
-
-        except Exception as e:
-            print(f"⚠️ Shared FFN computation failed: {e}, using zeros")
+            print(f"⚠️ MoE forward failed: {e}, using zeros")
             return torch.zeros_like(hidden_states)
 
-    def _compute_lora_experts(self, hidden_states, selected_experts, expert_weights):
-        """计算LoRA专家输出 - 真正的稀疏MoE（只计算被选中的专家）"""
-        batch_size, seq_len, hidden_dim = hidden_states.shape
+    def get_aux_loss(self):
+        """计算辅助损失"""
+        if self.latest_expert_weights is None:
+            return torch.tensor(0.0, device=next(self.parameters()).device)
 
         try:
-            # 初始化专家输出
-            expert_output = torch.zeros_like(hidden_states)
+            # 负载均衡损失
+            expert_usage = self.latest_expert_weights.mean(dim=0)  # [num_experts]
+            target_usage = torch.ones_like(expert_usage) / self.num_experts
+            balance_loss = F.mse_loss(expert_usage, target_usage)
 
-            # 重塑为[batch_size * seq_len, hidden_dim]
-            hidden_flat = hidden_states.view(-1, hidden_dim)  # [B*L, H]
-            expert_output_flat = expert_output.view(-1, hidden_dim)  # [B*L, H]
+            # 检查数值稳定性
+            if torch.isnan(balance_loss) or torch.isinf(balance_loss):
+                balance_loss = torch.tensor(0.0, device=balance_loss.device)
 
-            # 稀疏MoE：只对被选中的专家-token对进行计算
-            for k in range(self.top_k):  # 遍历Top-K选择
-                for expert_idx in range(self.num_experts):
-                    # 找到选择了当前专家且在第k位置的token
-                    expert_mask = (selected_experts[:, k] == expert_idx)  # [B*L]
-
-                    if expert_mask.any():
-                        # 获取被选中的token的hidden states
-                        selected_hidden = hidden_flat[expert_mask]  # [num_selected_tokens, H]
-
-                        if selected_hidden.numel() == 0:
-                            continue
-
-                        try:
-                            # 只对被选中的token计算LoRA专家
-                            expert = self.lora_experts[expert_idx]
-
-                            # LoRA FFN计算 - 只对选中的token
-                            gate_lora = expert.gate_proj_lora(selected_hidden)
-                            up_lora = expert.up_proj_lora(selected_hidden)
-
-                            # 检查中间结果
-                            if torch.isnan(gate_lora).any() or torch.isinf(gate_lora).any():
-                                print(f"⚠️ NaN/Inf in expert {expert_idx} gate_lora, skipping")
-                                continue
-                            if torch.isnan(up_lora).any() or torch.isinf(up_lora).any():
-                                print(f"⚠️ NaN/Inf in expert {expert_idx} up_lora, skipping")
-                                continue
-
-                            # 应用激活函数并限制范围
-                            activated_gate = self.shared_ffn.act_fn(gate_lora)
-                            activated_gate = torch.clamp(activated_gate, min=-10.0, max=10.0)
-                            up_lora = torch.clamp(up_lora, min=-10.0, max=10.0)
-
-                            # 计算down projection
-                            combined_lora = activated_gate * up_lora
-                            combined_lora = torch.clamp(combined_lora, min=-15.0, max=15.0)
-                            down_lora = expert.down_proj_lora(combined_lora)
-
-                            # 检查最终LoRA输出
-                            if torch.isnan(down_lora).any() or torch.isinf(down_lora).any():
-                                print(f"⚠️ NaN/Inf in expert {expert_idx} down_lora, skipping")
-                                continue
-
-                            # 获取对应的权重
-                            selected_weights = expert_weights[:, k][expert_mask]  # [num_selected_tokens]
-
-                            # 检查权重
-                            if torch.isnan(selected_weights).any() or torch.isinf(selected_weights).any():
-                                print(f"⚠️ NaN/Inf in expert {expert_idx} weights, skipping")
-                                continue
-
-                            # 限制权重范围
-                            selected_weights = torch.clamp(selected_weights, min=0.0, max=1.0)
-
-                            # 应用权重
-                            weighted_output = down_lora * selected_weights.unsqueeze(-1)  # [num_selected_tokens, H]
-
-                            # 限制加权输出
-                            weighted_output = torch.clamp(weighted_output, min=-5.0, max=5.0)
-
-                            # 累加到对应位置（稀疏更新）
-                            expert_output_flat[expert_mask] += weighted_output
-
-                        except Exception as e:
-                            print(f"⚠️ Expert {expert_idx} computation failed: {e}, skipping")
-                            continue
-
-            # 重塑回原始维度
-            expert_output = expert_output_flat.view(batch_size, seq_len, hidden_dim)
-
-            # 限制最终专家输出
-            expert_output = torch.clamp(expert_output, min=-10.0, max=10.0)
-
-            # 最终NaN/Inf检查
-            if torch.isnan(expert_output).any() or torch.isinf(expert_output).any():
-                print("⚠️ NaN/Inf detected in final expert output, using zeros")
-                expert_output = torch.zeros_like(expert_output)
-
-            return expert_output
+            return balance_loss * 0.01  # 小的权重
 
         except Exception as e:
-            print(f"⚠️ Sparse expert computation failed: {e}, using zeros")
-            return torch.zeros_like(hidden_states)
-
-    def get_router_probs_for_culture_loss(self):
-        """获取路由概率用于文化损失计算"""
-        if self.latest_router_logits is None:
-            return None
-
-        # 计算概率分布 - 移除detach()以保持梯度流
-        router_probs = F.softmax(self.latest_router_logits, dim=-1)
-
-        # 平均到batch维度
-        avg_probs = router_probs.mean(dim=0, keepdim=True)  # [1, num_experts]
-
-        # 扩展到batch size
-        if self.latest_batch_size is not None:
-            expert_weights = avg_probs.expand(self.latest_batch_size, -1)
-            return expert_weights.to(dtype=torch.float16)
-        else:
-            return avg_probs.to(dtype=torch.float16)
+            print(f"⚠️ Aux loss computation failed: {e}")
+            return torch.tensor(0.0, device=next(self.parameters()).device)
 
 
 class SimplifiedCultureMoEAdapter:
-    """简化版CultureMoE适配器，严格基于MixLoRA + 文化损失"""
+    """简化版CultureMoE适配器 - 纯MoE架构"""
 
     def __init__(self, base_model, config: SimplifiedCultureMoEConfig):
         self.base_model = base_model
         self.config = config
 
-        # 替换所有层的MLP为MixLoRA层
-        self._replace_mlp_with_mixlora()
+        # 只替换最后两层的FFN为MoE
+        self._replace_last_layers_with_moe()
 
-        # 冻结非LoRA参数
-        self._freeze_non_lora_parameters()
+        # 应用LoRA到注意力层
+        if config.use_lora:
+            self._apply_attention_lora()
+
+        # 冻结非训练参数
+        self._freeze_non_trainable_parameters()
 
         # 确保设备一致性
         self._ensure_device_consistency()
 
-    def _replace_mlp_with_mixlora(self):
-        """替换所有层的MLP为MixLoRA层"""
+    def _get_target_layers(self):
+        """获取目标层索引（最后两层）"""
         # 处理DDP包装的模型
-        model_to_modify = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        if hasattr(model_to_modify, 'model'):
+        if hasattr(model_to_check, 'model'):
             # LlamaForCausalLM
-            layers = model_to_modify.model.layers
+            layers = model_to_check.model.layers
         else:
             # LlamaModel
-            layers = model_to_modify.layers
+            layers = model_to_check.layers
 
-        print(f"🔄 Replacing ALL {len(layers)} layers with MixLoRA (like MixLoRA)")
+        total_layers = len(layers)
 
-        # 替换所有层的MLP为MixLoRA层
-        for layer_idx in range(len(layers)):
-            original_mlp = layers[layer_idx].mlp
-            mixlora_layer = SimplifiedMixLoRALayer(original_mlp, self.config)
-            layers[layer_idx].mlp = mixlora_layer
-            if layer_idx % 5 == 0 or layer_idx == len(layers) - 1:
-                print(f"✅ Replaced layer {layer_idx}/{len(layers)-1} MLP with MixLoRA")
+        # 最后两层
+        target_layers = [total_layers - 2, total_layers - 1]
 
-    def _freeze_non_lora_parameters(self):
-        """冻结非LoRA参数"""
+        return layers, target_layers
+
+    def _replace_last_layers_with_moe(self):
+        """只替换最后两层的FFN为MoE"""
+        layers, target_layers = self._get_target_layers()
+
+        print(f"🔄 Replacing FFN in last 2 layers ({target_layers}) with MoE (Pure MoE Architecture)")
+
+        for layer_idx in target_layers:
+            original_ffn = layers[layer_idx].mlp
+            moe_ffn = MoEFFN(original_ffn, self.config)
+            layers[layer_idx].mlp = moe_ffn
+            print(f"✅ Replaced layer {layer_idx} FFN with MoE ({self.config.num_moe_experts} experts)")
+
+    def _apply_attention_lora(self):
+        """应用LoRA到注意力层"""
+        try:
+            from peft import LoraConfig, get_peft_model, TaskType
+
+            # LoRA配置
+            lora_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=self.config.lora_rank,
+                lora_alpha=self.config.lora_alpha,
+                lora_dropout=self.config.lora_dropout,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],  # 只针对注意力层
+                bias="none",
+            )
+
+            # 应用LoRA
+            self.base_model = get_peft_model(self.base_model, lora_config)
+            print(f"✅ Applied LoRA to attention layers (rank={self.config.lora_rank})")
+
+        except ImportError:
+            print("⚠️ PEFT not available, skipping LoRA")
+        except Exception as e:
+            print(f"⚠️ LoRA application failed: {e}")
+
+    def _freeze_non_trainable_parameters(self):
+        """冻结非训练参数"""
         model_to_freeze = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
         for name, param in model_to_freeze.named_parameters():
-            if 'lora_' not in name and 'router' not in name:
-                param.requires_grad = False
-            else:
+            # 只训练LoRA参数和MoE参数
+            if any(keyword in name.lower() for keyword in ['lora', 'experts', 'router']):
                 param.requires_grad = True
+            else:
+                param.requires_grad = False
+
+        print("✅ Frozen non-trainable parameters (only LoRA + MoE trainable)")
 
     def _ensure_device_consistency(self):
         """确保设备一致性"""
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        # 获取基础模型的设备和数据类型
-        base_param = next(model_to_check.parameters())
-        base_device = base_param.device
-        base_dtype = base_param.dtype
+        # 获取基础模型的设备
+        base_device = next(model_to_check.parameters()).device
 
-        if hasattr(model_to_check, 'model'):
-            layers = model_to_check.model.layers
-        else:
-            layers = model_to_check.layers
+        layers, target_layers = self._get_target_layers()
 
-        # 确保所有MixLoRA层在正确设备上
-        for layer_idx in range(len(layers)):
-            mixlora_layer = layers[layer_idx].mlp
-            if isinstance(mixlora_layer, SimplifiedMixLoRALayer):
-                mixlora_layer.router = mixlora_layer.router.to(device=base_device, dtype=base_dtype)
-                mixlora_layer.lora_experts = mixlora_layer.lora_experts.to(device=base_device, dtype=base_dtype)
+        # 确保MoE层在正确设备上
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, MoEFFN):
+                moe_layer = moe_layer.to(device=base_device)
 
-                if layer_idx % 10 == 0 or layer_idx == len(layers) - 1:
-                    print(f"✅ Ensured device consistency for MixLoRA layer {layer_idx}/{len(layers)-1}")
+        print(f"✅ Ensured device consistency for MoE layers on {base_device}")
 
     def get_expert_weights_for_culture_loss(self):
-        """收集所有MixLoRA层的专家权重用于文化损失计算"""
-        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+        """获取专家权重用于文化损失计算"""
+        layers, target_layers = self._get_target_layers()
 
-        if hasattr(model_to_check, 'model'):
-            layers = model_to_check.model.layers
-        else:
-            layers = model_to_check.layers
+        # 收集MoE层的专家权重
+        expert_weights_list = []
 
-        # 收集所有层的路由概率
-        all_router_probs = []
-        target_batch_size = None
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, MoEFFN) and moe_layer.latest_expert_weights is not None:
+                expert_weights_list.append(moe_layer.latest_expert_weights)
 
-        for layer_idx in range(len(layers)):
-            mixlora_layer = layers[layer_idx].mlp
-            if isinstance(mixlora_layer, SimplifiedMixLoRALayer):
-                expert_weights = mixlora_layer.get_router_probs_for_culture_loss()
-                if expert_weights is not None:
-                    if target_batch_size is None:
-                        target_batch_size = expert_weights.shape[0]
-                    all_router_probs.append(expert_weights)
-
-        if all_router_probs and target_batch_size is not None:
-            # 对所有层的专家权重求平均
-            layer_avg_probs = torch.stack(all_router_probs, dim=0).mean(dim=0)
-            return layer_avg_probs.to(dtype=torch.float16)
+        if expert_weights_list:
+            # 对所有MoE层的权重求平均
+            avg_expert_weights = torch.stack(expert_weights_list, dim=0).mean(dim=0)
+            return avg_expert_weights.to(dtype=torch.float16)
         else:
             return None
+
+    def get_accumulated_z_loss(self):
+        """计算累积的z-loss"""
+        layers, target_layers = self._get_target_layers()
+
+        total_aux_loss = None
+        moe_layer_count = 0
+
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, MoEFFN):
+                aux_loss = moe_layer.get_aux_loss()
+                if total_aux_loss is None:
+                    total_aux_loss = aux_loss
+                else:
+                    total_aux_loss += aux_loss
+                moe_layer_count += 1
+
+        if total_aux_loss is None:
+            device = next(self.base_model.parameters()).device
+            total_aux_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+        elif moe_layer_count > 1:
+            total_aux_loss = total_aux_loss / moe_layer_count
+
+        return total_aux_loss.to(dtype=torch.float16)
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """前向传播"""
@@ -504,22 +461,28 @@ class SimplifiedCultureMoEAdapter:
         return outputs
 
     def save_model(self, save_path: str):
-        """保存LoRA权重"""
+        """保存模型权重"""
         import os
 
         # 创建目录
         os.makedirs(save_path, exist_ok=True)
 
-        # 只保存LoRA参数
-        lora_state_dict = {}
-        model_to_save = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
-        for name, param in model_to_save.named_parameters():
-            if 'lora_' in name and param.requires_grad:
-                lora_state_dict[name] = param.data
+        # 保存LoRA权重（如果有）
+        if hasattr(self.base_model, 'save_pretrained'):
+            lora_path = os.path.join(save_path, 'lora_weights')
+            self.base_model.save_pretrained(lora_path)
 
-        # 保存LoRA权重
-        lora_path = os.path.join(save_path, 'lora_weights.pt')
-        torch.save(lora_state_dict, lora_path)
+        # 保存MoE权重
+        moe_state_dict = {}
+        model_to_save = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        for name, param in model_to_save.named_parameters():
+            if any(keyword in name.lower() for keyword in ['experts', 'router']) and param.requires_grad:
+                moe_state_dict[name] = param.data
+
+        if moe_state_dict:
+            moe_path = os.path.join(save_path, 'moe_weights.pt')
+            torch.save(moe_state_dict, moe_path)
 
         # 保存配置
         config_path = os.path.join(save_path, 'simplified_culturemoe_config.json')
@@ -527,81 +490,35 @@ class SimplifiedCultureMoEAdapter:
         with open(config_path, 'w') as f:
             json.dump(self.config.to_dict(), f, indent=2)
 
-        print(f"✅ Simplified CultureMoE weights saved to {save_path}")
-
-    def get_accumulated_z_loss(self):
-        """计算z-loss用于稳定路由器"""
-        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
-
-        if hasattr(model_to_check, 'model'):
-            layers = model_to_check.model.layers
-        else:
-            layers = model_to_check.layers
-
-        total_z_loss = None
-        mixlora_layer_count = 0
-
-        # 收集所有MixLoRA层的z-loss
-        for layer_idx in range(len(layers)):
-            mixlora_layer = layers[layer_idx].mlp
-            if isinstance(mixlora_layer, SimplifiedMixLoRALayer) and hasattr(mixlora_layer, 'latest_router_logits'):
-                if mixlora_layer.latest_router_logits is not None:
-                    # 计算z-loss：惩罚过大的logits值
-                    z_loss = 0.001 * (mixlora_layer.latest_router_logits ** 2).mean()
-                    z_loss = z_loss.to(dtype=torch.float16)
-
-                    # 检查数值稳定性
-                    if torch.isnan(z_loss) or torch.isinf(z_loss):
-                        z_loss = torch.tensor(0.0, device=mixlora_layer.latest_router_logits.device, dtype=torch.float16)
-
-                    if total_z_loss is None:
-                        total_z_loss = z_loss
-                    else:
-                        total_z_loss += z_loss
-
-                    mixlora_layer_count += 1
-
-        # 如果没有找到任何MixLoRA层，返回零损失
-        if total_z_loss is None:
-            device = next(model_to_check.parameters()).device
-            total_z_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
-        else:
-            # 平均化z-loss
-            if mixlora_layer_count > 1:
-                total_z_loss = total_z_loss / mixlora_layer_count
-
-        return total_z_loss
+        print(f"✅ Simplified CultureMoE (Pure MoE) weights saved to {save_path}")
 
     def print_trainable_parameters(self):
         """打印可训练参数统计"""
         total_params = 0
         trainable_params = 0
+        lora_params = 0
+        moe_params = 0
 
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
-        for param in model_to_check.parameters():
+
+        for name, param in model_to_check.named_parameters():
             total_params += param.numel()
             if param.requires_grad:
                 trainable_params += param.numel()
+                if 'lora' in name.lower():
+                    lora_params += param.numel()
+                elif any(keyword in name.lower() for keyword in ['experts', 'router']):
+                    moe_params += param.numel()
 
         print(f"Trainable params: {trainable_params:,} || "
               f"Total params: {total_params:,} || "
               f"Trainable%: {100 * trainable_params / total_params:.4f}%")
 
-        # 详细统计
-        lora_params = 0
-        router_params = 0
-
-        for name, param in model_to_check.named_parameters():
-            if param.requires_grad:
-                if 'lora_' in name:
-                    lora_params += param.numel()
-                elif 'router' in name:
-                    router_params += param.numel()
-
-        print(f"  - LoRA params: {lora_params:,}")
-        print(f"  - Router params: {router_params:,}")
-        print(f"  - Architecture: MixLoRA + Culture Loss")
-        print(f"  - Routing experts: {self.config.num_routing_experts}")
+        print(f"  - LoRA params (attention): {lora_params:,}")
+        print(f"  - MoE params (experts+router): {moe_params:,}")
+        print(f"  - Architecture: Pure MoE (Last 2 Layers FFN Only)")
+        print(f"  - MoE experts: {self.config.num_moe_experts}")
+        print(f"  - Activated experts: {self.config.num_activated_experts}")
 
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):

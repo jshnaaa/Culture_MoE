@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # 简化版FFN CultureMoE训练脚本
-# 基于MixLoRA实现，所有层都使用MoE，添加文化损失
+# 纯MoE架构，只在最后2层替换FFN为MoE，添加文化损失
 # 针对48GB×2卡优化
 
 echo "======================================="
 echo "简化版FFN CultureMoE训练"
-echo "基于MixLoRA + 文化损失，所有层都使用MoE"
+echo "纯MoE架构，只在最后2层FFN替换为MoE"
 echo "针对48GB×2卡优化"
 echo "======================================="
 
@@ -117,7 +117,7 @@ echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
 echo "  总层数: $TOTAL_LAYERS"
 echo "  MoE层: $MoE_LAYERS (最后2层FFN替换为MoE)"
 if [ "$USE_LORA" = "true" ]; then
-    echo "  训练模式: LoRA微调 + 最后两层MoE专家训练"
+    echo "  训练模式: 注意力层LoRA + 最后两层MoE专家训练"
 else
     echo "  训练模式: 仅最后两层MoE专家训练"
 fi
@@ -274,12 +274,12 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
 
         echo ""
         echo "🎉 训练完成！模型特点:"
-        echo "  - 简化架构：仅最后两层FFN替换为MoE"
+        echo "  - 纯MoE架构：仅最后两层FFN替换为MoE"
         echo "  - MoE专家数: $NUM_MOE_EXPERTS"
         echo "  - 激活专家数: $NUM_ACTIVATED_EXPERTS ({'dense模式' if [ "$NUM_ACTIVATED_EXPERTS" = "$NUM_MOE_EXPERTS" ]; then echo 'dense模式'; else echo "top-$NUM_ACTIVATED_EXPERTS"; fi})"
         echo "  - 文化损失模式: $USE_CULTURE_LOSS"
         echo "  - LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
-        echo "  - 启用LoRA: $USE_LORA"
+        echo "  - 注意力层LoRA: $USE_LORA"
         echo "  - 序列长度: $MAX_SEQ_LEN"
     else
         echo "⚠️  训练完成但未找到最佳模型"
