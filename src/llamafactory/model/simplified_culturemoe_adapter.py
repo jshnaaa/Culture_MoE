@@ -14,35 +14,52 @@ import math
 from .simplified_culturemoe import SimplifiedCultureMoEConfig
 
 
-class MoEExpert(nn.Module):
-    """MoE专家层 - 完整的FFN结构"""
+class LoRAExpert(nn.Module):
+    """LoRA专家层 - 为FFN的每个线性层添加LoRA分支"""
 
-    def __init__(self, hidden_dim: int, intermediate_dim: int, act_fn, dropout: float = 0.1):
+    def __init__(self, original_ffn, lora_rank: int = 16, lora_alpha: int = 32, dropout: float = 0.1):
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.intermediate_dim = intermediate_dim
+        self.original_ffn = original_ffn  # 保持原始FFN不变
+        self.lora_rank = lora_rank
+        self.lora_alpha = lora_alpha
+        self.scaling = lora_alpha / lora_rank
 
-        # 完整的FFN结构（与原始FFN相同）
-        self.gate_proj = nn.Linear(hidden_dim, intermediate_dim, bias=False)
-        self.up_proj = nn.Linear(hidden_dim, intermediate_dim, bias=False)
-        self.down_proj = nn.Linear(intermediate_dim, hidden_dim, bias=False)
-        self.act_fn = act_fn  # 使用原始模型的激活函数
+        # 获取原始FFN的维度
+        self.hidden_dim = original_ffn.gate_proj.in_features
+        self.intermediate_dim = original_ffn.gate_proj.out_features
+
+        # 为每个FFN线性层创建LoRA分支
+        # gate_proj LoRA: hidden_dim -> intermediate_dim
+        self.gate_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
+        self.gate_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
+
+        # up_proj LoRA: hidden_dim -> intermediate_dim
+        self.up_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
+        self.up_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
+
+        # down_proj LoRA: intermediate_dim -> hidden_dim
+        self.down_lora_A = nn.Linear(self.intermediate_dim, lora_rank, bias=False)
+        self.down_lora_B = nn.Linear(lora_rank, self.hidden_dim, bias=False)
+
         self.dropout = nn.Dropout(dropout)
 
-        # 保守的权重初始化
-        self._init_weights()
+        # LoRA权重初始化
+        self._init_lora_weights()
 
-    def _init_weights(self):
-        """保守的权重初始化"""
-        # 使用较小的标准差初始化
-        std = 0.02 / math.sqrt(2 * self.hidden_dim)
+    def _init_lora_weights(self):
+        """LoRA权重初始化"""
+        # A矩阵使用高斯初始化，B矩阵初始化为0
+        nn.init.kaiming_uniform_(self.gate_lora_A.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.gate_lora_B.weight)
 
-        nn.init.normal_(self.gate_proj.weight, mean=0.0, std=std)
-        nn.init.normal_(self.up_proj.weight, mean=0.0, std=std)
-        nn.init.normal_(self.down_proj.weight, mean=0.0, std=std * 0.5)  # 输出层更保守
+        nn.init.kaiming_uniform_(self.up_lora_A.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.up_lora_B.weight)
+
+        nn.init.kaiming_uniform_(self.down_lora_A.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.down_lora_B.weight)
 
     def forward(self, x):
-        """前向传播"""
+        """前向传播：原始FFN输出 + LoRA输出"""
         # 检查输入
         if torch.isnan(x).any() or torch.isinf(x).any():
             return torch.zeros_like(x)
@@ -51,23 +68,34 @@ class MoEExpert(nn.Module):
         x = torch.clamp(x, min=-10.0, max=10.0)
 
         try:
-            # FFN计算
-            gate_output = self.act_fn(self.gate_proj(x))
-            up_output = self.up_proj(x)
+            # 原始FFN前向传播
+            gate_output = self.original_ffn.act_fn(self.original_ffn.gate_proj(x))
+            up_output = self.original_ffn.up_proj(x)
+
+            # LoRA分支计算
+            gate_lora = self.gate_lora_B(self.gate_lora_A(x)) * self.scaling
+            up_lora = self.up_lora_B(self.up_lora_A(x)) * self.scaling
+
+            # 组合原始输出和LoRA输出
+            gate_combined = gate_output + gate_lora
+            up_combined = up_output + up_lora
 
             # 限制中间结果
-            gate_output = torch.clamp(gate_output, min=-15.0, max=15.0)
-            up_output = torch.clamp(up_output, min=-15.0, max=15.0)
+            gate_combined = torch.clamp(gate_combined, min=-15.0, max=15.0)
+            up_combined = torch.clamp(up_combined, min=-15.0, max=15.0)
 
-            # 组合
-            intermediate = gate_output * up_output
+            # FFN的激活和组合
+            intermediate = gate_combined * up_combined
             intermediate = torch.clamp(intermediate, min=-20.0, max=20.0)
 
             # Dropout
             intermediate = self.dropout(intermediate)
 
-            # 最终投影
-            output = self.down_proj(intermediate)
+            # down_proj: 原始 + LoRA
+            down_original = self.original_ffn.down_proj(intermediate)
+            down_lora = self.down_lora_B(self.down_lora_A(intermediate)) * self.scaling
+            output = down_original + down_lora
+
             output = torch.clamp(output, min=-10.0, max=10.0)
 
             # 检查输出
@@ -77,7 +105,7 @@ class MoEExpert(nn.Module):
             return output
 
         except Exception as e:
-            print(f"⚠️ MoEExpert forward failed: {e}")
+            print(f"⚠️ LoRAExpert forward failed: {e}")
             return torch.zeros_like(x)
 
 
@@ -142,19 +170,19 @@ class MoERouter(nn.Module):
             return expert_weights, router_logits
 
 
-class MoEFFN(nn.Module):
-    """MoE FFN层 - 替换原始FFN"""
+class MoEFFNLoRA(nn.Module):
+    """MoE FFN层 - 使用LoRA专家"""
 
     def __init__(self, original_ffn, config: SimplifiedCultureMoEConfig):
         super().__init__()
         self.config = config
         self.num_experts = config.num_moe_experts
         self.num_activated_experts = config.num_activated_experts
+        self.original_ffn = original_ffn  # 保持原始FFN
 
         # 获取原始FFN的参数
         self.hidden_dim = original_ffn.gate_proj.in_features
         self.intermediate_dim = original_ffn.gate_proj.out_features
-        self.act_fn = original_ffn.act_fn
 
         # 创建路由器
         self.router = MoERouter(
@@ -163,12 +191,12 @@ class MoEFFN(nn.Module):
             dropout=config.lora_dropout
         )
 
-        # 创建专家
+        # 创建LoRA专家
         self.experts = nn.ModuleList([
-            MoEExpert(
-                hidden_dim=self.hidden_dim,
-                intermediate_dim=self.intermediate_dim,
-                act_fn=self.act_fn,
+            LoRAExpert(
+                original_ffn=original_ffn,
+                lora_rank=config.lora_rank,
+                lora_alpha=config.lora_alpha,
                 dropout=config.lora_dropout
             ) for _ in range(self.num_experts)
         ])
@@ -190,8 +218,8 @@ class MoEFFN(nn.Module):
 
         # 检查输入
         if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
-            print("⚠️ NaN/Inf in MoE input, using zeros")
-            return torch.zeros_like(hidden_states)
+            print("⚠️ NaN/Inf in MoE input, using original FFN")
+            return self.original_ffn(hidden_states)
 
         try:
             # 1. 路由计算
@@ -204,7 +232,6 @@ class MoEFFN(nn.Module):
             if self.num_activated_experts == self.num_experts:
                 # Dense模式：使用所有专家
                 selected_expert_weights = expert_weights
-                selected_experts = torch.arange(self.num_experts, device=hidden_states.device).unsqueeze(0).unsqueeze(0).expand(batch_size, seq_len, -1)
                 k = self.num_experts
             else:
                 # Top-k模式
@@ -217,28 +244,34 @@ class MoEFFN(nn.Module):
                 # 创建稀疏权重矩阵
                 selected_expert_weights = torch.zeros_like(expert_weights)  # [B, L, num_experts]
                 selected_expert_weights.scatter_(-1, top_k_indices, top_k_weights)
-                selected_experts = top_k_indices
 
-            # 3. 专家计算
+            # 3. 专家计算（LoRA专家模式）
+            # 首先计算原始FFN输出作为基础
+            original_output = self.original_ffn(hidden_states)
+
+            # 计算专家的LoRA增量
             if self.num_activated_experts == self.num_experts:
-                # Dense模式：计算所有专家
-                expert_outputs = []
+                # Dense模式：计算所有专家的增量
+                expert_deltas = []
                 for expert_idx in range(self.num_experts):
-                    expert_output = self.experts[expert_idx](hidden_states)  # [B, L, H]
-                    expert_outputs.append(expert_output)
-                expert_outputs = torch.stack(expert_outputs, dim=-1)  # [B, L, H, num_experts]
+                    # 专家输出 - 原始输出 = LoRA增量
+                    expert_output = self.experts[expert_idx](hidden_states)
+                    expert_delta = expert_output - original_output
+                    expert_deltas.append(expert_delta)
+                expert_deltas = torch.stack(expert_deltas, dim=-1)  # [B, L, H, num_experts]
 
-                # 加权组合
+                # 加权组合增量
                 weights = selected_expert_weights.unsqueeze(-2)  # [B, L, 1, num_experts]
-                final_output = torch.sum(expert_outputs * weights, dim=-1)  # [B, L, H]
+                weighted_delta = torch.sum(expert_deltas * weights, dim=-1)  # [B, L, H]
+                final_output = original_output + weighted_delta
             else:
-                # Top-k模式：只计算被选中的专家
-                final_output = torch.zeros_like(hidden_states)
+                # Top-k模式：只计算被选中专家的增量
+                weighted_delta = torch.zeros_like(hidden_states)
 
                 # 重塑为[B*L, H]便于处理
-                hidden_flat = hidden_states.view(-1, hidden_dim)  # [B*L, H]
-                output_flat = final_output.view(-1, hidden_dim)  # [B*L, H]
-                weights_flat = selected_expert_weights.view(-1, self.num_experts)  # [B*L, num_experts]
+                hidden_flat = hidden_states.view(-1, self.hidden_dim)
+                delta_flat = weighted_delta.view(-1, self.hidden_dim)
+                weights_flat = selected_expert_weights.view(-1, self.num_experts)
 
                 # 对每个专家计算
                 for expert_idx in range(self.num_experts):
@@ -247,30 +280,33 @@ class MoEFFN(nn.Module):
 
                     if expert_mask.any():
                         # 获取对应的输入
-                        expert_input = hidden_flat[expert_mask]  # [num_tokens, H]
+                        expert_input = hidden_flat[expert_mask]
+                        original_input = original_output.view(-1, self.hidden_dim)[expert_mask]
 
-                        # 计算专家输出
-                        expert_output = self.experts[expert_idx](expert_input)  # [num_tokens, H]
+                        # 计算专家输出和增量
+                        expert_output = self.experts[expert_idx](expert_input)
+                        expert_delta = expert_output - original_input
 
                         # 获取权重
-                        expert_weight = weights_flat[:, expert_idx][expert_mask].unsqueeze(-1)  # [num_tokens, 1]
+                        expert_weight = weights_flat[:, expert_idx][expert_mask].unsqueeze(-1)
 
-                        # 加权累加
-                        output_flat[expert_mask] += expert_output * expert_weight
+                        # 加权累加增量
+                        delta_flat[expert_mask] += expert_delta * expert_weight
 
-                # 重塑回原始形状
-                final_output = output_flat.view(batch_size, seq_len, hidden_dim)
+                # 重塑回原始形状并添加到原始输出
+                weighted_delta = delta_flat.view(batch_size, seq_len, self.hidden_dim)
+                final_output = original_output + weighted_delta
 
             # 4. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
-                print("⚠️ NaN/Inf in MoE output, using zeros")
-                final_output = torch.zeros_like(hidden_states)
+                print("⚠️ NaN/Inf in MoE output, using original FFN")
+                final_output = self.original_ffn(hidden_states)
 
             return final_output
 
         except Exception as e:
-            print(f"⚠️ MoE forward failed: {e}, using zeros")
-            return torch.zeros_like(hidden_states)
+            print(f"⚠️ MoE forward failed: {e}, using original FFN")
+            return self.original_ffn(hidden_states)
 
     def get_aux_loss(self):
         """计算辅助损失"""
@@ -315,7 +351,7 @@ class SimplifiedCultureMoEAdapter:
         self._ensure_device_consistency()
 
     def _get_target_layers(self):
-        """获取目标层索引（最后两层）"""
+        """获取目标层索引（最后8层）"""
         # 处理DDP包装的模型
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
@@ -328,22 +364,22 @@ class SimplifiedCultureMoEAdapter:
 
         total_layers = len(layers)
 
-        # 最后两层
-        target_layers = [total_layers - 2, total_layers - 1]
+        # 最后8层
+        target_layers = list(range(total_layers - 8, total_layers))
 
         return layers, target_layers
 
     def _replace_last_layers_with_moe(self):
-        """只替换最后两层的FFN为MoE"""
+        """替换最后8层的FFN为LoRA MoE"""
         layers, target_layers = self._get_target_layers()
 
-        print(f"🔄 Replacing FFN in last 2 layers ({target_layers}) with MoE (Pure MoE Architecture)")
+        print(f"🔄 Replacing FFN in last 8 layers ({target_layers}) with LoRA MoE (Pure LoRA MoE Architecture)")
 
         for layer_idx in target_layers:
             original_ffn = layers[layer_idx].mlp
-            moe_ffn = MoEFFN(original_ffn, self.config)
+            moe_ffn = MoEFFNLoRA(original_ffn, self.config)
             layers[layer_idx].mlp = moe_ffn
-            print(f"✅ Replaced layer {layer_idx} FFN with MoE ({self.config.num_moe_experts} experts)")
+            print(f"✅ Replaced layer {layer_idx} FFN with LoRA MoE ({self.config.num_moe_experts} experts, rank={self.config.lora_rank})")
 
     def _apply_attention_lora(self):
         """应用LoRA到注意力层"""
@@ -394,7 +430,7 @@ class SimplifiedCultureMoEAdapter:
         # 确保MoE层在正确设备上
         for layer_idx in target_layers:
             moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFN):
+            if isinstance(moe_layer, MoEFFNLoRA):
                 moe_layer = moe_layer.to(device=base_device)
 
         print(f"✅ Ensured device consistency for MoE layers on {base_device}")
@@ -408,7 +444,7 @@ class SimplifiedCultureMoEAdapter:
 
         for layer_idx in target_layers:
             moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFN) and moe_layer.latest_expert_weights is not None:
+            if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_expert_weights is not None:
                 expert_weights_list.append(moe_layer.latest_expert_weights)
 
         if expert_weights_list:
@@ -427,7 +463,7 @@ class SimplifiedCultureMoEAdapter:
 
         for layer_idx in target_layers:
             moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFN):
+            if isinstance(moe_layer, MoEFFNLoRA):
                 aux_loss = moe_layer.get_aux_loss()
                 if total_aux_loss is None:
                     total_aux_loss = aux_loss
@@ -516,9 +552,11 @@ class SimplifiedCultureMoEAdapter:
 
         print(f"  - LoRA params (attention): {lora_params:,}")
         print(f"  - MoE params (experts+router): {moe_params:,}")
-        print(f"  - Architecture: Pure MoE (Last 2 Layers FFN Only)")
+        print(f"  - Architecture: Pure LoRA MoE (Last 8 Layers FFN)")
         print(f"  - MoE experts: {self.config.num_moe_experts}")
         print(f"  - Activated experts: {self.config.num_activated_experts}")
+        print(f"  - LoRA rank: {self.config.lora_rank}")
+        print(f"  - LoRA alpha: {self.config.lora_alpha}")
 
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):
