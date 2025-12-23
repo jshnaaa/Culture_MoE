@@ -61,11 +61,13 @@ fi
 if [ "$BACKBONE" = "llama" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/llama_unified_sharedfalse_gatefalse_20251205_134336/best_joint_model"
+    JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/llama_unified_sharedfalse_gatefalse_20251216_143714/best_joint_model"
+    # JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/llama_unified_sharedfalse_gatefalse_20251205_134336/best_joint_model"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
     JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/qwen_unified_sharedfalse_gatefalse_20251205_154255/best_joint_model"
+    # JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/qwen_unified_sharedfalse_gatefalse_20251205_154255/best_joint_model"
 fi
 
 # ✅ 根据 DATA_ID 设置测试数据集
