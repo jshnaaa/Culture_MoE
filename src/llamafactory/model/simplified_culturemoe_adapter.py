@@ -446,15 +446,15 @@ class SimplifiedCultureMoEAdapter:
     def _get_target_layers(self):
         """获取目标层索引（最后8层）"""
         # 🔧 使用单一真源 - 直接从backbone_model获取layers
-        print(f"🔍 Using backbone model: {type(self.backbone_model)}")
+        # print(f"🔍 Using backbone model: {type(self.backbone_model)}")
 
         # 直接访问backbone模型的layers
         if hasattr(self.backbone_model, 'layers'):
             layers = self.backbone_model.layers
-            print(f"✅ Found layers directly: {len(layers)} layers")
+            # print(f"✅ Found layers directly: {len(layers)} layers")
         elif hasattr(self.backbone_model, 'model') and hasattr(self.backbone_model.model, 'layers'):
             layers = self.backbone_model.model.layers
-            print(f"✅ Found layers via model: {len(layers)} layers")
+            # print(f"✅ Found layers via model: {len(layers)} layers")
         else:
             raise AttributeError(f"Cannot find layers in backbone model type: {type(self.backbone_model)}")
 
