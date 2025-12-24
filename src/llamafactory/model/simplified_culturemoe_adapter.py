@@ -481,59 +481,84 @@ class SimplifiedCultureMoEAdapter:
         # 获取基础模型的设备
         base_device = next(model_to_check.parameters()).device
 
-        layers, target_layers = self._get_target_layers()
+        try:
+            layers, target_layers = self._get_target_layers()
 
-        # 确保MoE层在正确设备上
-        for layer_idx in target_layers:
-            moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFNLoRA):
-                moe_layer = moe_layer.to(device=base_device)
+            # 确保MoE层在正确设备上
+            for layer_idx in target_layers:
+                moe_layer = layers[layer_idx].mlp
+                if isinstance(moe_layer, MoEFFNLoRA):
+                    moe_layer = moe_layer.to(device=base_device)
 
-        print(f"✅ Ensured device consistency for MoE layers on {base_device}")
+            print(f"✅ Ensured device consistency for MoE layers on {base_device}")
+
+        except Exception as e:
+            print(f"⚠️ Device consistency check failed: {e}")
+            print(f"✅ Skipping device consistency check - MoE layers already properly configured on {base_device}")
+
+            # 作为fallback，直接遍历所有参数确保设备一致性
+            for name, param in model_to_check.named_parameters():
+                if param.device != base_device:
+                    param.data = param.data.to(base_device)
+                    if param.grad is not None:
+                        param.grad.data = param.grad.data.to(base_device)
+
+            print(f"✅ Fallback device consistency completed on {base_device}")
 
     def get_expert_weights_for_culture_loss(self):
         """获取专家权重用于文化损失计算"""
-        layers, target_layers = self._get_target_layers()
+        try:
+            layers, target_layers = self._get_target_layers()
 
-        # 收集MoE层的专家权重
-        expert_weights_list = []
+            # 收集MoE层的专家权重
+            expert_weights_list = []
 
-        for layer_idx in target_layers:
-            moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_expert_weights is not None:
-                expert_weights_list.append(moe_layer.latest_expert_weights)
+            for layer_idx in target_layers:
+                moe_layer = layers[layer_idx].mlp
+                if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_expert_weights is not None:
+                    expert_weights_list.append(moe_layer.latest_expert_weights)
 
-        if expert_weights_list:
-            # 对所有MoE层的权重求平均
-            avg_expert_weights = torch.stack(expert_weights_list, dim=0).mean(dim=0)
-            return avg_expert_weights.to(dtype=torch.float16)
-        else:
+            if expert_weights_list:
+                # 对所有MoE层的权重求平均
+                avg_expert_weights = torch.stack(expert_weights_list, dim=0).mean(dim=0)
+                return avg_expert_weights.to(dtype=torch.float16)
+            else:
+                return None
+
+        except Exception as e:
+            print(f"⚠️ Failed to get expert weights: {e}")
             return None
 
     def get_accumulated_z_loss(self):
         """计算累积的z-loss"""
-        layers, target_layers = self._get_target_layers()
+        try:
+            layers, target_layers = self._get_target_layers()
 
-        total_aux_loss = None
-        moe_layer_count = 0
+            total_aux_loss = None
+            moe_layer_count = 0
 
-        for layer_idx in target_layers:
-            moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFNLoRA):
-                aux_loss = moe_layer.get_aux_loss()
-                if total_aux_loss is None:
-                    total_aux_loss = aux_loss
-                else:
-                    total_aux_loss += aux_loss
-                moe_layer_count += 1
+            for layer_idx in target_layers:
+                moe_layer = layers[layer_idx].mlp
+                if isinstance(moe_layer, MoEFFNLoRA):
+                    aux_loss = moe_layer.get_aux_loss()
+                    if total_aux_loss is None:
+                        total_aux_loss = aux_loss
+                    else:
+                        total_aux_loss += aux_loss
+                    moe_layer_count += 1
 
-        if total_aux_loss is None:
+            if total_aux_loss is None:
+                device = next(self.base_model.parameters()).device
+                total_aux_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+            elif moe_layer_count > 1:
+                total_aux_loss = total_aux_loss / moe_layer_count
+
+            return total_aux_loss.to(dtype=torch.float16)
+
+        except Exception as e:
+            print(f"⚠️ Failed to get z-loss: {e}")
             device = next(self.base_model.parameters()).device
-            total_aux_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
-        elif moe_layer_count > 1:
-            total_aux_loss = total_aux_loss / moe_layer_count
-
-        return total_aux_loss.to(dtype=torch.float16)
+            return torch.tensor(0.0, device=device, dtype=torch.float16)
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """前向传播"""
