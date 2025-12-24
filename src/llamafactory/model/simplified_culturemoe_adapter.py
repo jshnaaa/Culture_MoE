@@ -189,6 +189,10 @@ class MoEFFNLoRA(nn.Module):
         self.use_shared = config.use_shared
         self.use_gate = config.use_gate
 
+        # 🔧 消融实验控制标志
+        self.ablation_disable_shared = False
+        self.ablation_disable_gate = False
+
         # 获取原始FFN的参数
         self.hidden_dim = original_ffn.gate_proj.in_features
         self.intermediate_dim = original_ffn.gate_proj.out_features
@@ -330,15 +334,18 @@ class MoEFFNLoRA(nn.Module):
 
                 routed_delta = delta_flat.view(batch_size, seq_len, self.hidden_dim)
 
-            # 5. 计算shared专家输出（如果启用）
-            if self.use_shared:
+            # 5. 计算shared专家输出（如果启用且未被消融）
+            if self.use_shared and not self.ablation_disable_shared:
                 shared_output = self.shared_expert(hidden_states)
                 shared_delta = shared_output - original_output
             else:
                 shared_delta = torch.zeros_like(hidden_states)
 
             # 6. 融合shared专家和路由专家的输出
-            if self.use_shared and self.use_gate:
+            use_shared_effective = self.use_shared and not self.ablation_disable_shared
+            use_gate_effective = self.use_gate and not self.ablation_disable_gate
+
+            if use_shared_effective and use_gate_effective:
                 # 使用gate网络进行融合
                 shared_final = original_output + shared_delta
                 routed_final = original_output + routed_delta
@@ -351,7 +358,7 @@ class MoEFFNLoRA(nn.Module):
                 final_output = (gate_weights[..., 0:1] * shared_final +
                               gate_weights[..., 1:2] * routed_final)
 
-            elif self.use_shared:
+            elif use_shared_effective:
                 # 固定权重融合：0.1*shared + 0.9*routed
                 final_output = original_output + 0.1 * shared_delta + 0.9 * routed_delta
 
