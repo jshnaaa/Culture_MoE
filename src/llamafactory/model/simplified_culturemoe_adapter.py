@@ -28,27 +28,27 @@ class LoRAExpert(nn.Module):
         self.hidden_dim = original_ffn.gate_proj.in_features
         self.intermediate_dim = original_ffn.gate_proj.out_features
 
-        # 🔧 获取原始FFN的数据类型，确保LoRA层使用相同类型
-        self.target_dtype = original_ffn.gate_proj.weight.dtype
-        self.target_device = original_ffn.gate_proj.weight.device
-
-        # 为每个FFN线性层创建LoRA分支，使用正确的数据类型
+        # 为每个FFN线性层创建LoRA分支
         # gate_proj LoRA: hidden_dim -> intermediate_dim
-        self.gate_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False, dtype=self.target_dtype)
-        self.gate_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False, dtype=self.target_dtype)
+        self.gate_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
+        self.gate_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
 
         # up_proj LoRA: hidden_dim -> intermediate_dim
-        self.up_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False, dtype=self.target_dtype)
-        self.up_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False, dtype=self.target_dtype)
+        self.up_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
+        self.up_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
 
         # down_proj LoRA: intermediate_dim -> hidden_dim
-        self.down_lora_A = nn.Linear(self.intermediate_dim, lora_rank, bias=False, dtype=self.target_dtype)
-        self.down_lora_B = nn.Linear(lora_rank, self.hidden_dim, bias=False, dtype=self.target_dtype)
+        self.down_lora_A = nn.Linear(self.intermediate_dim, lora_rank, bias=False)
+        self.down_lora_B = nn.Linear(lora_rank, self.hidden_dim, bias=False)
 
         self.dropout = nn.Dropout(dropout)
 
-        # 将所有LoRA层移动到正确设备
-        self.to(device=self.target_device, dtype=self.target_dtype)
+        # 🔧 获取原始FFN的数据类型和设备，确保LoRA层使用相同类型
+        target_dtype = original_ffn.gate_proj.weight.dtype
+        target_device = original_ffn.gate_proj.weight.device
+
+        # 将所有LoRA层移动到正确设备和数据类型
+        self.to(device=target_device, dtype=target_dtype)
 
         # LoRA权重初始化
         self._init_lora_weights()
@@ -119,17 +119,13 @@ class LoRAExpert(nn.Module):
 class MoERouter(nn.Module):
     """MoE路由器"""
 
-    def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1, dtype=torch.float16, device=None):
+    def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1):
         super().__init__()
         self.num_experts = num_experts
         self.hidden_dim = hidden_dim
 
-        # 路由器网络 - 使用指定的数据类型
-        self.router = nn.Linear(hidden_dim, num_experts, bias=False, dtype=dtype)
-
-        # 如果指定了设备，移动到该设备
-        if device is not None:
-            self.to(device=device, dtype=dtype)
+        # 路由器网络
+        self.router = nn.Linear(hidden_dim, num_experts, bias=False)
 
         # 保守的初始化
         nn.init.normal_(self.router.weight, mean=0.0, std=0.01)
@@ -197,17 +193,11 @@ class MoEFFNLoRA(nn.Module):
         self.hidden_dim = original_ffn.gate_proj.in_features
         self.intermediate_dim = original_ffn.gate_proj.out_features
 
-        # 🔧 获取原始FFN的数据类型和设备
-        target_dtype = original_ffn.gate_proj.weight.dtype
-        target_device = original_ffn.gate_proj.weight.device
-
-        # 创建路由器 - 使用与原始FFN相同的数据类型和设备
+        # 创建路由器
         self.router = MoERouter(
             hidden_dim=self.hidden_dim,
             num_experts=self.num_experts,
-            dropout=config.lora_dropout,
-            dtype=target_dtype,
-            device=target_device
+            dropout=config.lora_dropout
         )
 
         # 创建路由LoRA专家
@@ -231,20 +221,30 @@ class MoEFFNLoRA(nn.Module):
 
         # 创建gate网络（如果启用）
         if self.use_gate:
-            # gate网络：输入两个专家输出，输出融合权重 - 使用正确的数据类型
+            # gate网络：输入两个专家输出，输出融合权重
             self.gate_network = nn.Sequential(
-                nn.Linear(self.hidden_dim * 2, self.hidden_dim, bias=False, dtype=target_dtype),
+                nn.Linear(self.hidden_dim * 2, self.hidden_dim, bias=False),
                 nn.ReLU(),
-                nn.Linear(self.hidden_dim, 2, bias=False, dtype=target_dtype),  # 输出2个权重：[shared_weight, routed_weight]
+                nn.Linear(self.hidden_dim, 2, bias=False),  # 输出2个权重：[shared_weight, routed_weight]
                 nn.Softmax(dim=-1)
             )
-            # 移动gate网络到正确设备
-            self.gate_network.to(device=target_device, dtype=target_dtype)
-
             # Gate网络权重初始化
             for layer in self.gate_network:
                 if isinstance(layer, nn.Linear):
                     nn.init.xavier_uniform_(layer.weight)
+
+        # 🔧 获取原始FFN的数据类型和设备，统一设置所有MoE组件
+        target_dtype = original_ffn.gate_proj.weight.dtype
+        target_device = original_ffn.gate_proj.weight.device
+
+        # 将所有MoE组件移动到正确设备和数据类型
+        self.router.to(device=target_device, dtype=target_dtype)
+        for expert in self.experts:
+            expert.to(device=target_device, dtype=target_dtype)
+        if self.use_shared:
+            self.shared_expert.to(device=target_device, dtype=target_dtype)
+        if self.use_gate:
+            self.gate_network.to(device=target_device, dtype=target_dtype)
 
         # 保存最新的专家权重用于文化损失
         self.latest_expert_weights = None
@@ -399,6 +399,9 @@ class SimplifiedCultureMoEAdapter:
         self.base_model = base_model
         self.config = config
 
+        # 🔧 实现"单一真源"原则 - 彻底解包PeftModel
+        self.backbone_model = self._extract_backbone_model(base_model)
+
         # 只替换最后两层的FFN为MoE
         self._replace_last_layers_with_moe()
 
@@ -412,98 +415,56 @@ class SimplifiedCultureMoEAdapter:
         # 确保设备一致性
         self._ensure_device_consistency()
 
+    def _extract_backbone_model(self, model):
+        """从各种包装中提取真正的backbone模型"""
+        # 处理DDP包装
+        if hasattr(model, 'module'):
+            model = model.module
+
+        # 处理PeftModel包装
+        try:
+            from peft import PeftModel
+            if isinstance(model, PeftModel):
+                print("🔧 检测到PeftModel，提取backbone...")
+                backbone = model.base_model.model
+                print(f"✅ 成功提取backbone: {type(backbone)}")
+                return backbone
+        except ImportError:
+            pass
+
+        # 检查是否已经是backbone模型
+        if hasattr(model, 'layers'):
+            print(f"✅ 直接使用模型: {type(model)}")
+            return model
+        elif hasattr(model, 'model') and hasattr(model.model, 'layers'):
+            print(f"✅ 提取model.layers: {type(model.model)}")
+            return model.model
+        else:
+            print(f"⚠️ 未知模型结构，直接使用: {type(model)}")
+            return model
+
     def _get_target_layers(self):
         """获取目标层索引（最后8层）"""
-        # 处理DDP包装的模型
-        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+        # 🔧 使用单一真源 - 直接从backbone_model获取layers
+        print(f"🔍 Using backbone model: {type(self.backbone_model)}")
 
-        print(f"🔍 Debug: Model type = {type(model_to_check)}")
-
-        # 🔧 改进的PeftModel处理逻辑，尝试多种访问路径
-        layers = None
-        access_path = None
-
-        # 尝试多种可能的访问路径
-        possible_paths = [
-            # PeftModel的各种可能结构
-            ('base_model.model.layers', lambda m: m.base_model.model.layers),
-            ('base_model.layers', lambda m: m.base_model.layers),
-            ('model.layers', lambda m: m.model.layers),
-            ('layers', lambda m: m.layers),
-        ]
-
-        for path_name, path_func in possible_paths:
-            try:
-                layers_candidate = path_func(model_to_check)
-                if hasattr(layers_candidate, '__len__') and len(layers_candidate) > 0:
-                    layers = layers_candidate
-                    access_path = path_name
-                    print(f"✅ Found layers via path: {path_name}")
-                    break
-            except (AttributeError, TypeError) as e:
-                print(f"⚠️ Path {path_name} failed: {e}")
-                continue
-
-        # 如果所有路径都失败，尝试递归搜索
-        if layers is None:
-            print(f"🔍 Attempting recursive search for layers...")
-            layers = self._recursive_find_layers(model_to_check)
-            if layers is not None:
-                access_path = "recursive_search"
-                print(f"✅ Found layers via recursive search")
-
-        # 最终检查
-        if layers is None:
-            # 打印模型结构以便调试
-            print(f"🚨 Model structure debug:")
-            self._debug_model_structure(model_to_check, max_depth=3)
-            raise AttributeError(f"Cannot find layers in model type: {type(model_to_check)}")
+        # 直接访问backbone模型的layers
+        if hasattr(self.backbone_model, 'layers'):
+            layers = self.backbone_model.layers
+            print(f"✅ Found layers directly: {len(layers)} layers")
+        elif hasattr(self.backbone_model, 'model') and hasattr(self.backbone_model.model, 'layers'):
+            layers = self.backbone_model.model.layers
+            print(f"✅ Found layers via model: {len(layers)} layers")
+        else:
+            raise AttributeError(f"Cannot find layers in backbone model type: {type(self.backbone_model)}")
 
         total_layers = len(layers)
-        print(f"✅ Found {total_layers} layers via {access_path}")
 
         # 最后8层
         target_layers = list(range(total_layers - 8, total_layers))
 
         return layers, target_layers
 
-    def _recursive_find_layers(self, model, max_depth=3, current_depth=0):
-        """递归搜索layers属性"""
-        if current_depth >= max_depth:
-            return None
-
-        # 检查当前对象是否有layers属性
-        if hasattr(model, 'layers'):
-            layers_candidate = getattr(model, 'layers')
-            if hasattr(layers_candidate, '__len__') and len(layers_candidate) > 0:
-                return layers_candidate
-
-        # 递归搜索子属性
-        for attr_name in ['base_model', 'model', 'module']:
-            if hasattr(model, attr_name):
-                sub_model = getattr(model, attr_name)
-                result = self._recursive_find_layers(sub_model, max_depth, current_depth + 1)
-                if result is not None:
-                    return result
-
-        return None
-
-    def _debug_model_structure(self, model, prefix="", max_depth=3, current_depth=0):
-        """打印模型结构用于调试"""
-        if current_depth >= max_depth:
-            return
-
-        for attr_name in dir(model):
-            if not attr_name.startswith('_') and not callable(getattr(model, attr_name, None)):
-                try:
-                    attr_value = getattr(model, attr_name)
-                    if hasattr(attr_value, '__class__'):
-                        print(f"{prefix}{attr_name}: {type(attr_value)}")
-                        if attr_name in ['base_model', 'model', 'module', 'layers'] and current_depth < max_depth - 1:
-                            self._debug_model_structure(attr_value, prefix + "  ", max_depth, current_depth + 1)
-                except Exception as e:
-                    print(f"{prefix}{attr_name}: <error accessing: {e}>")
-                    continue
 
     def _replace_last_layers_with_moe(self):
         """替换最后8层的FFN为LoRA MoE"""
@@ -595,58 +556,47 @@ class SimplifiedCultureMoEAdapter:
 
     def get_expert_weights_for_culture_loss(self):
         """获取专家权重用于文化损失计算"""
-        try:
-            layers, target_layers = self._get_target_layers()
+        layers, target_layers = self._get_target_layers()
 
-            # 收集MoE层的专家权重
-            expert_weights_list = []
+        # 收集MoE层的专家权重
+        expert_weights_list = []
 
-            for layer_idx in target_layers:
-                moe_layer = layers[layer_idx].mlp
-                if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_expert_weights is not None:
-                    expert_weights_list.append(moe_layer.latest_expert_weights)
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_expert_weights is not None:
+                expert_weights_list.append(moe_layer.latest_expert_weights)
 
-            if expert_weights_list:
-                # 对所有MoE层的权重求平均
-                avg_expert_weights = torch.stack(expert_weights_list, dim=0).mean(dim=0)
-                return avg_expert_weights.to(dtype=torch.float16)
-            else:
-                return None
-
-        except Exception as e:
-            print(f"⚠️ Failed to get expert weights: {e}")
+        if expert_weights_list:
+            # 对所有MoE层的权重求平均
+            avg_expert_weights = torch.stack(expert_weights_list, dim=0).mean(dim=0)
+            return avg_expert_weights.to(dtype=torch.float16)
+        else:
             return None
 
     def get_accumulated_z_loss(self):
         """计算累积的z-loss"""
-        try:
-            layers, target_layers = self._get_target_layers()
+        layers, target_layers = self._get_target_layers()
 
-            total_aux_loss = None
-            moe_layer_count = 0
+        total_aux_loss = None
+        moe_layer_count = 0
 
-            for layer_idx in target_layers:
-                moe_layer = layers[layer_idx].mlp
-                if isinstance(moe_layer, MoEFFNLoRA):
-                    aux_loss = moe_layer.get_aux_loss()
-                    if total_aux_loss is None:
-                        total_aux_loss = aux_loss
-                    else:
-                        total_aux_loss += aux_loss
-                    moe_layer_count += 1
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, MoEFFNLoRA):
+                aux_loss = moe_layer.get_aux_loss()
+                if total_aux_loss is None:
+                    total_aux_loss = aux_loss
+                else:
+                    total_aux_loss += aux_loss
+                moe_layer_count += 1
 
-            if total_aux_loss is None:
-                device = next(self.base_model.parameters()).device
-                total_aux_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
-            elif moe_layer_count > 1:
-                total_aux_loss = total_aux_loss / moe_layer_count
-
-            return total_aux_loss.to(dtype=torch.float16)
-
-        except Exception as e:
-            print(f"⚠️ Failed to get z-loss: {e}")
+        if total_aux_loss is None:
             device = next(self.base_model.parameters()).device
-            return torch.tensor(0.0, device=device, dtype=torch.float16)
+            total_aux_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+        elif moe_layer_count > 1:
+            total_aux_loss = total_aux_loss / moe_layer_count
+
+        return total_aux_loss.to(dtype=torch.float16)
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """前向传播"""
