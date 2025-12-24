@@ -397,14 +397,11 @@ class SimplifiedCultureMoEAdapter:
         # 处理DDP包装的模型
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        # 调试信息
-        print(f"🔍 Model type: {type(model_to_check)}")
-        print(f"🔍 Has 'model' attr: {hasattr(model_to_check, 'model')}")
-        if hasattr(model_to_check, 'model'):
-            print(f"🔍 model.model type: {type(model_to_check.model)}")
-            print(f"🔍 model.model has 'layers': {hasattr(model_to_check.model, 'layers')}")
-
-        if hasattr(model_to_check, 'model') and hasattr(model_to_check.model, 'layers'):
+        # 处理PeftModel包装：PeftModelForCausalLM -> base_model -> model -> layers
+        if hasattr(model_to_check, 'base_model') and hasattr(model_to_check.base_model, 'model') and hasattr(model_to_check.base_model.model, 'layers'):
+            # PeftModelForCausalLM -> base_model -> model -> layers
+            layers = model_to_check.base_model.model.layers
+        elif hasattr(model_to_check, 'model') and hasattr(model_to_check.model, 'layers'):
             # LlamaForCausalLM -> model -> layers
             layers = model_to_check.model.layers
         elif hasattr(model_to_check, 'layers'):
