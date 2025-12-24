@@ -588,31 +588,34 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
                 outputs = actual_model.generate(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=10,  # 🔧 增加到10个token，确保能生成完整答案
+                    max_new_tokens=3,  # 🔧 减少到3个token，只生成数字答案，避免乱码
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
-                    do_sample=False  # 🔧 移除无效参数：temperature和repetition_penalty在do_sample=False时无效
+                    do_sample=False,  # 🔧 贪心解码
+                    early_stopping=True  # 🔧 遇到eos_token立即停止
                 )
             else:
                 # 使用联合模型的自定义generate方法
                 outputs = model.generate(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=10,  # 🔧 增加到10个token
+                    max_new_tokens=3,  # 🔧 减少到3个token，只生成数字答案
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
-                    do_sample=False  # 🔧 移除无效参数
+                    do_sample=False,  # 🔧 贪心解码
+                    early_stopping=True  # 🔧 遇到eos_token立即停止
                 )
         else:
             # 回退到标准generate方法
             # print(f"🔍 Using standard model generate method")  # 注释掉详细调试
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=max_new_tokens,
+                max_new_tokens=3,  # 🔧 统一减少到3个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,  # 贪婪解码
-                num_beams=1       # 禁用 beam search，移除repetition_penalty
+                num_beams=1,      # 禁用 beam search
+                early_stopping=True  # 🔧 添加早停
             )
 
     # 解码

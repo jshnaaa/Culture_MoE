@@ -202,7 +202,7 @@ echo ""
 BATCH_SIZE=2              # 调整为2，支持culture loss多样本计算
 GRADIENT_ACCUMULATION=16   # 相应增加梯度累积，保持有效batch size
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
-NUM_EPOCHS=8              # 训练轮数
+NUM_EPOCHS=7              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
 # 动态设置max_seq_len：参考joint版本逻辑
 echo "🔧 调试信息: DATA_ID='$DATA_ID'"
