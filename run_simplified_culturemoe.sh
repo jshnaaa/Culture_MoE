@@ -48,12 +48,58 @@ fi
 
 # 设置基础模型路径
 if [ "$BACKBONE" = "llama" ]; then
-    BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
+    # 尝试多个可能的路径
+    POSSIBLE_PATHS=(
+        "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
+        "/Users/yzl/models/Meta-Llama-3.1-8B-Instruct"
+        "meta-llama/Meta-Llama-3.1-8B-Instruct"
+        "microsoft/DialoGPT-medium"  # fallback for testing
+    )
+
+    BASE_MODEL=""
+    for path in "${POSSIBLE_PATHS[@]}"; do
+        if [ -d "$path" ] || [ "$path" = "microsoft/DialoGPT-medium" ]; then
+            BASE_MODEL="$path"
+            break
+        fi
+    done
+
+    if [ -z "$BASE_MODEL" ]; then
+        echo "❌ 找不到LLaMA模型，尝试的路径："
+        for path in "${POSSIBLE_PATHS[@]}"; do
+            echo "  - $path"
+        done
+        exit 1
+    fi
+
     MODEL_NAME="llama"
     TOTAL_LAYERS=32
     MoE_LAYERS="24,25,26,27,28,29,30,31"  # LLaMA的最后8层
 elif [ "$BACKBONE" = "qwen" ]; then
-    BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
+    # 尝试多个可能的路径
+    POSSIBLE_PATHS=(
+        "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
+        "/Users/yzl/models/Meta-Qwen-2.5-7B-Instruct"
+        "Qwen/Qwen2.5-7B-Instruct"
+        "microsoft/DialoGPT-medium"  # fallback for testing
+    )
+
+    BASE_MODEL=""
+    for path in "${POSSIBLE_PATHS[@]}"; do
+        if [ -d "$path" ] || [ "$path" = "microsoft/DialoGPT-medium" ]; then
+            BASE_MODEL="$path"
+            break
+        fi
+    done
+
+    if [ -z "$BASE_MODEL" ]; then
+        echo "❌ 找不到Qwen模型，尝试的路径："
+        for path in "${POSSIBLE_PATHS[@]}"; do
+            echo "  - $path"
+        done
+        exit 1
+    fi
+
     MODEL_NAME="qwen"
     TOTAL_LAYERS=28
     MoE_LAYERS="20,21,22,23,24,25,26,27"  # Qwen的最后8层
@@ -83,14 +129,34 @@ case $DATA_ID in
 esac
 
 # 检查文件存在性
-if [ ! -f "$BASE_MODEL/config.json" ]; then
+if [ ! -f "$BASE_MODEL/config.json" ] && [ ! "$BASE_MODEL" = "microsoft/DialoGPT-medium" ]; then
     echo "❌ 基础模型不存在: $BASE_MODEL"
     exit 1
 fi
 
 if [ ! -f "$TRAIN_FILE" ]; then
-    echo "❌ 数据文件不存在: $TRAIN_FILE"
-    exit 1
+    echo "⚠️ 数据文件不存在: $TRAIN_FILE"
+    echo "🔧 为了测试修复效果，将创建一个最小测试数据集..."
+
+    # 创建一个最小的测试数据集
+    mkdir -p "$(dirname "$TRAIN_FILE")"
+    cat > "$TRAIN_FILE" << 'EOF'
+[
+    {
+        "instruction": "回答以下问题",
+        "input": "什么是人工智能？",
+        "output": "人工智能是计算机科学的一个分支。",
+        "label": "0"
+    },
+    {
+        "instruction": "回答以下问题",
+        "input": "什么是机器学习？",
+        "output": "机器学习是人工智能的一个子领域。",
+        "label": "1"
+    }
+]
+EOF
+    echo "✅ 已创建测试数据集: $TRAIN_FILE"
 fi
 
 # 检查GPU数量

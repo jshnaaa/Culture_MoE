@@ -24,24 +24,31 @@ class LoRAExpert(nn.Module):
         self.lora_alpha = lora_alpha
         self.scaling = lora_alpha / lora_rank
 
-        # 获取原始FFN的维度
+        # 获取原始FFN的维度和数据类型
         self.hidden_dim = original_ffn.gate_proj.in_features
         self.intermediate_dim = original_ffn.gate_proj.out_features
 
-        # 为每个FFN线性层创建LoRA分支
+        # 🔧 获取原始FFN的数据类型，确保LoRA层使用相同类型
+        self.target_dtype = original_ffn.gate_proj.weight.dtype
+        self.target_device = original_ffn.gate_proj.weight.device
+
+        # 为每个FFN线性层创建LoRA分支，使用正确的数据类型
         # gate_proj LoRA: hidden_dim -> intermediate_dim
-        self.gate_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
-        self.gate_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
+        self.gate_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False, dtype=self.target_dtype)
+        self.gate_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False, dtype=self.target_dtype)
 
         # up_proj LoRA: hidden_dim -> intermediate_dim
-        self.up_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
-        self.up_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
+        self.up_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False, dtype=self.target_dtype)
+        self.up_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False, dtype=self.target_dtype)
 
         # down_proj LoRA: intermediate_dim -> hidden_dim
-        self.down_lora_A = nn.Linear(self.intermediate_dim, lora_rank, bias=False)
-        self.down_lora_B = nn.Linear(lora_rank, self.hidden_dim, bias=False)
+        self.down_lora_A = nn.Linear(self.intermediate_dim, lora_rank, bias=False, dtype=self.target_dtype)
+        self.down_lora_B = nn.Linear(lora_rank, self.hidden_dim, bias=False, dtype=self.target_dtype)
 
         self.dropout = nn.Dropout(dropout)
+
+        # 将所有LoRA层移动到正确设备
+        self.to(device=self.target_device, dtype=self.target_dtype)
 
         # LoRA权重初始化
         self._init_lora_weights()
@@ -112,13 +119,17 @@ class LoRAExpert(nn.Module):
 class MoERouter(nn.Module):
     """MoE路由器"""
 
-    def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1):
+    def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1, dtype=torch.float16, device=None):
         super().__init__()
         self.num_experts = num_experts
         self.hidden_dim = hidden_dim
 
-        # 路由器网络
-        self.router = nn.Linear(hidden_dim, num_experts, bias=False)
+        # 路由器网络 - 使用指定的数据类型
+        self.router = nn.Linear(hidden_dim, num_experts, bias=False, dtype=dtype)
+
+        # 如果指定了设备，移动到该设备
+        if device is not None:
+            self.to(device=device, dtype=dtype)
 
         # 保守的初始化
         nn.init.normal_(self.router.weight, mean=0.0, std=0.01)
@@ -186,11 +197,17 @@ class MoEFFNLoRA(nn.Module):
         self.hidden_dim = original_ffn.gate_proj.in_features
         self.intermediate_dim = original_ffn.gate_proj.out_features
 
-        # 创建路由器
+        # 🔧 获取原始FFN的数据类型和设备
+        target_dtype = original_ffn.gate_proj.weight.dtype
+        target_device = original_ffn.gate_proj.weight.device
+
+        # 创建路由器 - 使用与原始FFN相同的数据类型和设备
         self.router = MoERouter(
             hidden_dim=self.hidden_dim,
             num_experts=self.num_experts,
-            dropout=config.lora_dropout
+            dropout=config.lora_dropout,
+            dtype=target_dtype,
+            device=target_device
         )
 
         # 创建路由LoRA专家
@@ -214,13 +231,16 @@ class MoEFFNLoRA(nn.Module):
 
         # 创建gate网络（如果启用）
         if self.use_gate:
-            # gate网络：输入两个专家输出，输出融合权重
+            # gate网络：输入两个专家输出，输出融合权重 - 使用正确的数据类型
             self.gate_network = nn.Sequential(
-                nn.Linear(self.hidden_dim * 2, self.hidden_dim, bias=False),
+                nn.Linear(self.hidden_dim * 2, self.hidden_dim, bias=False, dtype=target_dtype),
                 nn.ReLU(),
-                nn.Linear(self.hidden_dim, 2, bias=False),  # 输出2个权重：[shared_weight, routed_weight]
+                nn.Linear(self.hidden_dim, 2, bias=False, dtype=target_dtype),  # 输出2个权重：[shared_weight, routed_weight]
                 nn.Softmax(dim=-1)
             )
+            # 移动gate网络到正确设备
+            self.gate_network.to(device=target_device, dtype=target_dtype)
+
             # Gate网络权重初始化
             for layer in self.gate_network:
                 if isinstance(layer, nn.Linear):
@@ -397,25 +417,93 @@ class SimplifiedCultureMoEAdapter:
         # 处理DDP包装的模型
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        # 处理PeftModel包装：PeftModelForCausalLM -> base_model -> model -> layers
-        if hasattr(model_to_check, 'base_model') and hasattr(model_to_check.base_model, 'model') and hasattr(model_to_check.base_model.model, 'layers'):
-            # PeftModelForCausalLM -> base_model -> model -> layers
-            layers = model_to_check.base_model.model.layers
-        elif hasattr(model_to_check, 'model') and hasattr(model_to_check.model, 'layers'):
-            # LlamaForCausalLM -> model -> layers
-            layers = model_to_check.model.layers
-        elif hasattr(model_to_check, 'layers'):
-            # LlamaModel -> layers
-            layers = model_to_check.layers
-        else:
+        print(f"🔍 Debug: Model type = {type(model_to_check)}")
+
+        # 🔧 改进的PeftModel处理逻辑，尝试多种访问路径
+        layers = None
+        access_path = None
+
+        # 尝试多种可能的访问路径
+        possible_paths = [
+            # PeftModel的各种可能结构
+            ('base_model.model.layers', lambda m: m.base_model.model.layers),
+            ('base_model.layers', lambda m: m.base_model.layers),
+            ('model.layers', lambda m: m.model.layers),
+            ('layers', lambda m: m.layers),
+        ]
+
+        for path_name, path_func in possible_paths:
+            try:
+                layers_candidate = path_func(model_to_check)
+                if hasattr(layers_candidate, '__len__') and len(layers_candidate) > 0:
+                    layers = layers_candidate
+                    access_path = path_name
+                    print(f"✅ Found layers via path: {path_name}")
+                    break
+            except (AttributeError, TypeError) as e:
+                print(f"⚠️ Path {path_name} failed: {e}")
+                continue
+
+        # 如果所有路径都失败，尝试递归搜索
+        if layers is None:
+            print(f"🔍 Attempting recursive search for layers...")
+            layers = self._recursive_find_layers(model_to_check)
+            if layers is not None:
+                access_path = "recursive_search"
+                print(f"✅ Found layers via recursive search")
+
+        # 最终检查
+        if layers is None:
+            # 打印模型结构以便调试
+            print(f"🚨 Model structure debug:")
+            self._debug_model_structure(model_to_check, max_depth=3)
             raise AttributeError(f"Cannot find layers in model type: {type(model_to_check)}")
 
         total_layers = len(layers)
+        print(f"✅ Found {total_layers} layers via {access_path}")
 
         # 最后8层
         target_layers = list(range(total_layers - 8, total_layers))
 
         return layers, target_layers
+
+    def _recursive_find_layers(self, model, max_depth=3, current_depth=0):
+        """递归搜索layers属性"""
+        if current_depth >= max_depth:
+            return None
+
+        # 检查当前对象是否有layers属性
+        if hasattr(model, 'layers'):
+            layers_candidate = getattr(model, 'layers')
+            if hasattr(layers_candidate, '__len__') and len(layers_candidate) > 0:
+                return layers_candidate
+
+        # 递归搜索子属性
+        for attr_name in ['base_model', 'model', 'module']:
+            if hasattr(model, attr_name):
+                sub_model = getattr(model, attr_name)
+                result = self._recursive_find_layers(sub_model, max_depth, current_depth + 1)
+                if result is not None:
+                    return result
+
+        return None
+
+    def _debug_model_structure(self, model, prefix="", max_depth=3, current_depth=0):
+        """打印模型结构用于调试"""
+        if current_depth >= max_depth:
+            return
+
+        for attr_name in dir(model):
+            if not attr_name.startswith('_') and not callable(getattr(model, attr_name, None)):
+                try:
+                    attr_value = getattr(model, attr_name)
+                    if hasattr(attr_value, '__class__'):
+                        print(f"{prefix}{attr_name}: {type(attr_value)}")
+                        if attr_name in ['base_model', 'model', 'module', 'layers'] and current_depth < max_depth - 1:
+                            self._debug_model_structure(attr_value, prefix + "  ", max_depth, current_depth + 1)
+                except Exception as e:
+                    print(f"{prefix}{attr_name}: <error accessing: {e}>")
+                    continue
 
     def _replace_last_layers_with_moe(self):
         """替换最后8层的FFN为LoRA MoE"""
