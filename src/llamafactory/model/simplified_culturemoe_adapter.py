@@ -191,6 +191,7 @@ class MoEFFNLoRA(nn.Module):
 
         # 🔧 消融实验控制标志
         self.ablation_disable_shared = False
+        self.ablation_disable_mask = False  # MASK机制占位符
         self.ablation_disable_gate = False
 
         # 获取原始FFN的参数
@@ -359,8 +360,8 @@ class MoEFFNLoRA(nn.Module):
                               gate_weights[..., 1:2] * routed_final)
 
             elif use_shared_effective:
-                # 固定权重融合：0.1*shared + 0.9*routed
-                final_output = original_output + 0.1 * shared_delta + 0.9 * routed_delta
+                # 当有shared专家但没有gate时，使用简单相加（按照用户要求）
+                final_output = original_output + shared_delta + routed_delta
 
             else:
                 # 仅使用路由专家
@@ -686,7 +687,7 @@ class SimplifiedCultureMoEAdapter:
         print(f"  - Shared expert: {'enabled' if self.config.use_shared else 'disabled'}")
         print(f"  - Gate network: {'enabled' if self.config.use_gate else 'disabled'}")
         if self.config.use_shared and not self.config.use_gate:
-            print(f"  - Fusion weights: 0.1*shared + 0.9*routed")
+            print(f"  - Fusion method: simple addition (shared + routed)")
 
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):

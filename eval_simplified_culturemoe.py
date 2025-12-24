@@ -77,7 +77,9 @@ class SimplifiedCultureMoEEvaluator:
 
         # 消融实验控制
         self.disable_shared = False
+        self.disable_mask = False  # 新增MASK机制控制（占位符）
         self.disable_gate = False
+        self.disable_culture_loss = False  # 新增文化损失控制
 
     def _load_config(self) -> SimplifiedCultureMoEConfig:
         """加载模型配置"""
@@ -186,15 +188,20 @@ class SimplifiedCultureMoEEvaluator:
             except Exception as e:
                 print(f"⚠️ MoE权重加载失败: {e}")
 
-    def set_ablation_config(self, disable_shared: bool = False, disable_gate: bool = False):
+    def set_ablation_config(self, disable_shared: bool = False, disable_mask: bool = False,
+                           disable_gate: bool = False, disable_culture_loss: bool = False):
         """设置消融实验配置"""
         self.disable_shared = disable_shared
+        self.disable_mask = disable_mask
         self.disable_gate = disable_gate
+        self.disable_culture_loss = disable_culture_loss
 
-        if disable_shared or disable_gate:
+        if disable_shared or disable_mask or disable_gate or disable_culture_loss:
             print(f"\n🔧 消融实验配置:")
             print(f"  - 禁用共享专家: {disable_shared}")
+            print(f"  - 禁用MASK机制: {disable_mask} (占位符)")
             print(f"  - 禁用Gate网络: {disable_gate}")
+            print(f"  - 禁用文化损失: {disable_culture_loss}")
 
             # 应用消融配置到模型
             self._apply_ablation_to_model()
@@ -208,6 +215,7 @@ class SimplifiedCultureMoEEvaluator:
             if isinstance(moe_layer, MoEFFNLoRA):
                 # 设置消融标志
                 moe_layer.ablation_disable_shared = self.disable_shared
+                moe_layer.ablation_disable_mask = self.disable_mask  # MASK机制占位符
                 moe_layer.ablation_disable_gate = self.disable_gate
 
         print(f"✅ 消融配置已应用到{len(target_layers)}个MoE层")
@@ -304,11 +312,15 @@ class SimplifiedCultureMoEEvaluator:
             **gen_metrics,
             'config': {
                 'disable_shared': self.disable_shared,
+                'disable_mask': self.disable_mask,
                 'disable_gate': self.disable_gate,
+                'disable_culture_loss': self.disable_culture_loss,
                 'num_moe_experts': self.config.num_moe_experts,
                 'num_activated_experts': self.config.num_activated_experts,
                 'use_shared': self.config.use_shared and not self.disable_shared,
-                'use_gate': self.config.use_gate and not self.disable_gate
+                'use_mask': True and not self.disable_mask,  # 占位符，目前默认为True
+                'use_gate': self.config.use_gate and not self.disable_gate,
+                'use_culture_loss': True and not self.disable_culture_loss  # 占位符，目前默认为True
             }
         }
 
@@ -356,8 +368,9 @@ class SimplifiedCultureMoEEvaluator:
                 if not torch.isnan(loss) and not torch.isinf(loss):
                     total_loss += loss.item()
 
-                # 计算文化损失（如果有专家权重）
-                if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
+                # 计算文化损失（如果有专家权重且未被禁用）
+                if (hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None
+                    and not self.disable_culture_loss):
                     culture_labels = None
                     if 'label' in batch:
                         if isinstance(batch['label'], list):
@@ -439,8 +452,12 @@ class SimplifiedCultureMoEEvaluator:
         suffix = ""
         if self.disable_shared:
             suffix += "_no_shared"
+        if self.disable_mask:
+            suffix += "_no_mask"
         if self.disable_gate:
             suffix += "_no_gate"
+        if self.disable_culture_loss:
+            suffix += "_no_culture_loss"
         if not suffix:
             suffix = "_full"
 
@@ -481,8 +498,12 @@ def main():
     # 消融实验参数
     parser.add_argument("--disable_shared", action='store_true',
                         help="禁用共享专家")
+    parser.add_argument("--disable_mask", action='store_true',
+                        help="禁用MASK机制（占位符）")
     parser.add_argument("--disable_gate", action='store_true',
                         help="禁用Gate网络")
+    parser.add_argument("--disable_culture_loss", action='store_true',
+                        help="禁用文化损失")
     parser.add_argument("--experiment_name", type=str, default="",
                         help="实验名称（用于文件命名）")
     parser.add_argument("--use_fixed_split", action='store_true', default=True,
@@ -496,7 +517,7 @@ def main():
     print(f"模型路径: {args.model_path}")
     print(f"数据文件: {args.data_file}")
     print(f"输出目录: {args.output_dir}")
-    print(f"消融实验: disable_shared={args.disable_shared}, disable_gate={args.disable_gate}")
+    print(f"消融实验: disable_shared={args.disable_shared}, disable_mask={args.disable_mask}, disable_gate={args.disable_gate}, disable_culture_loss={args.disable_culture_loss}")
     if args.experiment_name:
         print(f"实验名称: {args.experiment_name}")
     print("="*80)
@@ -537,7 +558,8 @@ def main():
         evaluator.load_model(args.base_model_path, args.device)
 
         # 设置消融实验配置
-        evaluator.set_ablation_config(args.disable_shared, args.disable_gate)
+        evaluator.set_ablation_config(args.disable_shared, args.disable_mask,
+                                     args.disable_gate, args.disable_culture_loss)
 
         # 评估模型
         results = evaluator.evaluate(
@@ -556,15 +578,22 @@ def main():
         print(f"验证损失: {results['eval_loss']:.4f}")
         print(f"文化损失: {results['eval_culture_loss']:.4f}")
         print(f"准确率: {results['accuracy']:.4f} ({results['correct']}/{results['total']})")
-        print(f"配置: 共享专家={'启用' if results['config']['use_shared'] else '禁用'}, "
-              f"Gate网络={'启用' if results['config']['use_gate'] else '禁用'}")
+        print(f"配置:")
+        print(f"  - 共享专家: {'启用' if results['config']['use_shared'] else '禁用'}")
+        print(f"  - MASK机制: {'启用' if results['config']['use_mask'] else '禁用'} (占位符)")
+        print(f"  - Gate网络: {'启用' if results['config']['use_gate'] else '禁用'}")
+        print(f"  - 文化损失: {'启用' if results['config']['use_culture_loss'] else '禁用'}")
 
         # 保存结果
         experiment_suffix = ""
         if args.disable_shared:
             experiment_suffix += "_no_shared"
+        if args.disable_mask:
+            experiment_suffix += "_no_mask"
         if args.disable_gate:
             experiment_suffix += "_no_gate"
+        if args.disable_culture_loss:
+            experiment_suffix += "_no_culture_loss"
         if args.experiment_name:
             experiment_suffix += f"_{args.experiment_name}"
         if not experiment_suffix:

@@ -3,33 +3,43 @@
 # 简化版CultureMoE消融实验批处理脚本
 #
 # 使用方法：
-#   bash run_ablation_study.sh /path/to/trained_model /path/to/data.json /path/to/output
+#   bash run_ablation_study.sh <model_path> [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss]
 
 echo "======================================="
 echo "简化版CultureMoE消融实验"
 echo "自动化测试不同组件配置的性能"
 echo "======================================="
 
+# 参数设置
+MODEL_PATH="$1"
+BACKBONE=${2:-"llama"}        # 默认llama
+DATA_ID=${3:-"2"}            # 默认数据集2
+USE_SHARED=${4:-"true"}      # 默认保留shared专家
+USE_MASK=${5:-"true"}        # 默认保留MASK机制（占位符）
+USE_GATE=${6:-"true"}        # 默认保留gate机制
+USE_CULTURE_LOSS=${7:-"true"} # 默认保留文化损失
+
 # 参数检查
-if [ "$#" -ne 3 ]; then
-    echo "❌ 用法: $0 <model_path> <data_file> <output_dir>"
+if [ "$#" -lt 1 ]; then
+    echo "❌ 用法: $0 <model_path> [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss]"
     echo ""
     echo "参数说明:"
-    echo "  model_path: 训练好的模型路径（包含best_simplified_culturemoe目录）"
-    echo "  data_file:  评估数据文件路径"
-    echo "  output_dir: 输出结果目录"
+    echo "  model_path:      训练好的模型路径（必需）"
+    echo "  backbone:        基座模型 (llama/qwen, 默认: llama)"
+    echo "  data_id:         数据集ID (2/3/4, 默认: 2)"
+    echo "  use_shared:      是否保留shared专家 (true/false, 默认: true)"
+    echo "  use_mask:        是否保留MASK机制 (true/false, 默认: true, 占位符)"
+    echo "  use_gate:        是否保留gate机制 (true/false, 默认: true)"
+    echo "  use_culture_loss: 是否保留文化损失 (true/false, 默认: true)"
     echo ""
     echo "示例:"
     echo "  bash run_ablation_study.sh \\"
-    echo "    /root/autodl-fs/simplified_culturemoe/llama_CulturalBench_20251224_153803/best_simplified_culturemoe \\"
-    echo "    /root/autodl-fs/CulturalBench_merge_gen.json \\"
-    echo "    /root/autodl-fs/ablation_results"
+    echo "    /root/autodl-fs/simplified_culturemoe/llama_CulturalBench_20251224_153803/best_simplified_culturemoe"
+    echo ""
+    echo "  bash run_ablation_study.sh \\"
+    echo "    /path/to/model llama 2 false true false true"
     exit 1
 fi
-
-MODEL_PATH="$1"
-DATA_FILE="$2"
-OUTPUT_DIR="$3"
 
 # 验证路径
 if [ ! -d "$MODEL_PATH" ]; then
@@ -37,117 +47,162 @@ if [ ! -d "$MODEL_PATH" ]; then
     exit 1
 fi
 
+# 验证参数
+if [[ "$BACKBONE" != "llama" && "$BACKBONE" != "qwen" ]]; then
+    echo "❌ 不支持的backbone: $BACKBONE (支持: llama, qwen)"
+    exit 1
+fi
+
+if [[ "$DATA_ID" != "2" && "$DATA_ID" != "3" && "$DATA_ID" != "4" ]]; then
+    echo "❌ 无效的DATA_ID: $DATA_ID (支持: 2, 3, 4)"
+    exit 1
+fi
+
+# 设置数据文件路径（与训练脚本一致）
+case $DATA_ID in
+    2)
+        DATA_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
+        DATASET_TAG="CulturalBench"
+        ;;
+    3)
+        DATA_FILE="/root/autodl-fs/normad_merge_gen.json"
+        DATASET_TAG="normad"
+        ;;
+    4)
+        DATA_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
+        DATASET_TAG="cultureLLM"
+        ;;
+esac
+
+# 验证数据文件存在
 if [ ! -f "$DATA_FILE" ]; then
     echo "❌ 数据文件不存在: $DATA_FILE"
     exit 1
 fi
 
-# 创建输出目录
-mkdir -p "$OUTPUT_DIR"
+# 设置基础模型路径（与训练脚本一致）
+if [ "$BACKBONE" = "llama" ]; then
+    POSSIBLE_PATHS=(
+        "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
+        "/Users/yzl/models/Meta-Llama-3.1-8B-Instruct"
+        "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    )
+elif [ "$BACKBONE" = "qwen" ]; then
+    POSSIBLE_PATHS=(
+        "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
+        "/Users/yzl/models/Meta-Qwen-2.5-7B-Instruct"
+        "Qwen/Qwen2.5-7B-Instruct"
+    )
+fi
+
+BASE_MODEL_PATH=""
+for path in "${POSSIBLE_PATHS[@]}"; do
+    if [ -d "$path" ] || [[ "$path" == *"/"* ]]; then
+        BASE_MODEL_PATH="$path"
+        break
+    fi
+done
+
+if [ -z "$BASE_MODEL_PATH" ]; then
+    echo "❌ 找不到基础模型，尝试的路径："
+    for path in "${POSSIBLE_PATHS[@]}"; do
+        echo "  - $path"
+    done
+    exit 1
+fi
 
 # 获取时间戳
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-EXPERIMENT_DIR="$OUTPUT_DIR/ablation_$TIMESTAMP"
-mkdir -p "$EXPERIMENT_DIR"
+
+# 创建输出目录（新的命名规则）
+OUTPUT_DIR="/root/autodl-fs/simplified_culturemoe_ablation/${BACKBONE}_${DATA_ID}_${USE_SHARED}_${USE_MASK}_${USE_GATE}_${USE_CULTURE_LOSS}_${TIMESTAMP}"
+mkdir -p "$OUTPUT_DIR"
 
 echo "配置信息:"
 echo "  模型路径: $MODEL_PATH"
-echo "  数据文件: $DATA_FILE"
-echo "  输出目录: $EXPERIMENT_DIR"
+echo "  基座模型: $BACKBONE ($BASE_MODEL_PATH)"
+echo "  数据集: $DATASET_TAG ($DATA_FILE)"
+echo "  使用shared专家: $USE_SHARED"
+echo "  使用MASK机制: $USE_MASK (占位符)"
+echo "  使用gate机制: $USE_GATE"
+echo "  使用文化损失: $USE_CULTURE_LOSS"
+echo "  输出目录: $OUTPUT_DIR"
 echo ""
 
 # 保存实验配置
-cat > "$EXPERIMENT_DIR/experiment_config.json" << EOF
+cat > "$OUTPUT_DIR/experiment_config.json" << EOF
 {
     "model_path": "$MODEL_PATH",
+    "backbone": "$BACKBONE",
+    "base_model_path": "$BASE_MODEL_PATH",
+    "data_id": "$DATA_ID",
     "data_file": "$DATA_FILE",
-    "output_dir": "$EXPERIMENT_DIR",
+    "dataset_tag": "$DATASET_TAG",
+    "output_dir": "$OUTPUT_DIR",
     "timestamp": "$TIMESTAMP",
-    "experiments": [
-        {"name": "full", "disable_shared": false, "disable_gate": false, "description": "完整模型（所有组件）"},
-        {"name": "no_shared", "disable_shared": true, "disable_gate": false, "description": "无共享专家"},
-        {"name": "no_gate", "disable_shared": false, "disable_gate": true, "description": "无Gate网络"},
-        {"name": "no_shared_no_gate", "disable_shared": true, "disable_gate": true, "description": "无共享专家和Gate网络"}
-    ]
+    "experiment_config": {
+        "use_shared": $USE_SHARED,
+        "use_mask": $USE_MASK,
+        "use_gate": $USE_GATE,
+        "use_culture_loss": $USE_CULTURE_LOSS
+    }
 }
 EOF
 
-echo "🔄 开始消融实验..."
+echo "🔄 开始单一配置消融实验..."
 echo ""
 
-# 实验1: 完整模型（基线）
-echo "📊 实验1: 完整模型（基线）"
-echo "----------------------------------------"
-python eval_simplified_culturemoe.py \
-    --model_path "$MODEL_PATH" \
-    --data_file "$DATA_FILE" \
-    --output_dir "$EXPERIMENT_DIR" \
-    --experiment_name "full" \
-    --use_fixed_split
-
-EXPERIMENT_1_SUCCESS=$?
-if [ $EXPERIMENT_1_SUCCESS -eq 0 ]; then
-    echo "✅ 实验1完成"
-else
-    echo "❌ 实验1失败"
+# 根据参数设置实验名称
+EXPERIMENT_NAME="${BACKBONE}_${DATA_ID}"
+if [ "$USE_SHARED" = "false" ]; then
+    EXPERIMENT_NAME="${EXPERIMENT_NAME}_no_shared"
 fi
-echo ""
-
-# 实验2: 无共享专家
-echo "📊 实验2: 无共享专家"
-echo "----------------------------------------"
-python eval_simplified_culturemoe.py \
-    --model_path "$MODEL_PATH" \
-    --data_file "$DATA_FILE" \
-    --output_dir "$EXPERIMENT_DIR" \
-    --disable_shared \
-    --experiment_name "no_shared" \
-    --use_fixed_split
-
-EXPERIMENT_2_SUCCESS=$?
-if [ $EXPERIMENT_2_SUCCESS -eq 0 ]; then
-    echo "✅ 实验2完成"
-else
-    echo "❌ 实验2失败"
+if [ "$USE_MASK" = "false" ]; then
+    EXPERIMENT_NAME="${EXPERIMENT_NAME}_no_mask"
 fi
-echo ""
-
-# 实验3: 无Gate网络
-echo "📊 实验3: 无Gate网络"
-echo "----------------------------------------"
-python eval_simplified_culturemoe.py \
-    --model_path "$MODEL_PATH" \
-    --data_file "$DATA_FILE" \
-    --output_dir "$EXPERIMENT_DIR" \
-    --disable_gate \
-    --experiment_name "no_gate" \
-    --use_fixed_split
-
-EXPERIMENT_3_SUCCESS=$?
-if [ $EXPERIMENT_3_SUCCESS -eq 0 ]; then
-    echo "✅ 实验3完成"
-else
-    echo "❌ 实验3失败"
+if [ "$USE_GATE" = "false" ]; then
+    EXPERIMENT_NAME="${EXPERIMENT_NAME}_no_gate"
 fi
-echo ""
+if [ "$USE_CULTURE_LOSS" = "false" ]; then
+    EXPERIMENT_NAME="${EXPERIMENT_NAME}_no_culture_loss"
+fi
 
-# 实验4: 无共享专家和Gate网络
-echo "📊 实验4: 无共享专家和Gate网络"
+echo "📊 实验配置: $EXPERIMENT_NAME"
 echo "----------------------------------------"
-python eval_simplified_culturemoe.py \
-    --model_path "$MODEL_PATH" \
-    --data_file "$DATA_FILE" \
-    --output_dir "$EXPERIMENT_DIR" \
-    --disable_shared \
-    --disable_gate \
-    --experiment_name "no_shared_no_gate" \
-    --use_fixed_split
 
-EXPERIMENT_4_SUCCESS=$?
-if [ $EXPERIMENT_4_SUCCESS -eq 0 ]; then
-    echo "✅ 实验4完成"
+# 构建eval命令参数
+EVAL_ARGS="--model_path \"$MODEL_PATH\" \
+    --base_model_path \"$BASE_MODEL_PATH\" \
+    --data_file \"$DATA_FILE\" \
+    --output_dir \"$OUTPUT_DIR\" \
+    --experiment_name \"$EXPERIMENT_NAME\" \
+    --use_fixed_split"
+
+# 根据配置添加disable参数
+if [ "$USE_SHARED" = "false" ]; then
+    EVAL_ARGS="$EVAL_ARGS --disable_shared"
+fi
+
+if [ "$USE_MASK" = "false" ]; then
+    EVAL_ARGS="$EVAL_ARGS --disable_mask"
+fi
+
+if [ "$USE_GATE" = "false" ]; then
+    EVAL_ARGS="$EVAL_ARGS --disable_gate"
+fi
+
+if [ "$USE_CULTURE_LOSS" = "false" ]; then
+    EVAL_ARGS="$EVAL_ARGS --disable_culture_loss"
+fi
+
+# 执行评估
+eval "python eval_simplified_culturemoe.py $EVAL_ARGS"
+
+EXPERIMENT_SUCCESS=$?
+if [ $EXPERIMENT_SUCCESS -eq 0 ]; then
+    echo "✅ 实验完成"
 else
-    echo "❌ 实验4失败"
+    echo "❌ 实验失败"
 fi
 echo ""
 
@@ -156,108 +211,65 @@ echo "======================================="
 echo "📊 消融实验结果汇总"
 echo "======================================="
 
-# 创建结果汇总脚本
-python << EOF
+# 显示实验结果
+RESULT_FILE="$OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}.json"
+
+if [ -f "$RESULT_FILE" ]; then
+    echo "实验配置: $EXPERIMENT_NAME"
+    echo "----------------------------------------"
+
+    # 使用Python读取结果
+    python << EOF
 import json
 import os
-import pandas as pd
 
-experiment_dir = "$EXPERIMENT_DIR"
-results = []
+result_file = "$RESULT_FILE"
+config_file = "$OUTPUT_DIR/experiment_config.json"
 
-# 读取各个实验的结果
-experiments = [
-    {"name": "full", "description": "完整模型（基线）"},
-    {"name": "no_shared", "description": "无共享专家"},
-    {"name": "no_gate", "description": "无Gate网络"},
-    {"name": "no_shared_no_gate", "description": "无共享专家和Gate网络"}
-]
+if os.path.exists(result_file):
+    with open(result_file, 'r', encoding='utf-8') as f:
+        result = json.load(f)
 
-print("实验结果对比:")
-print("-" * 80)
-print(f"{'实验名称':<20} {'描述':<25} {'准确率':<10} {'损失':<10} {'文化损失':<10}")
-print("-" * 80)
+    accuracy = result.get('accuracy', 0)
+    eval_loss = result.get('eval_loss', 0)
+    culture_loss = result.get('eval_culture_loss', 0)
+    correct = result.get('correct', 0)
+    total = result.get('total', 0)
 
-for exp in experiments:
-    result_file = os.path.join(experiment_dir, f"evaluation_results_{exp['name']}.json")
+    print(f"📊 实验结果:")
+    print(f"  准确率: {accuracy:.4f} ({correct}/{total})")
+    print(f"  验证损失: {eval_loss:.4f}")
+    print(f"  文化损失: {culture_loss:.4f}")
 
-    if os.path.exists(result_file):
-        with open(result_file, 'r', encoding='utf-8') as f:
-            result = json.load(f)
-
-        accuracy = result.get('accuracy', 0)
-        eval_loss = result.get('eval_loss', 0)
-        culture_loss = result.get('eval_culture_loss', 0)
-
-        print(f"{exp['name']:<20} {exp['description']:<25} {accuracy:<10.4f} {eval_loss:<10.4f} {culture_loss:<10.4f}")
-
-        results.append({
-            'experiment': exp['name'],
-            'description': exp['description'],
-            'accuracy': accuracy,
-            'eval_loss': eval_loss,
-            'culture_loss': culture_loss,
-            'correct': result.get('correct', 0),
-            'total': result.get('total', 0)
-        })
-    else:
-        print(f"{exp['name']:<20} {exp['description']:<25} {'失败':<10} {'N/A':<10} {'N/A':<10}")
-
-print("-" * 80)
-
-# 保存汇总结果
-if results:
-    summary_file = os.path.join(experiment_dir, "ablation_summary.json")
-    with open(summary_file, 'w', encoding='utf-8') as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-
-    # 计算性能变化
-    baseline = next((r for r in results if r['experiment'] == 'full'), None)
-    if baseline:
-        print(f"\n性能变化分析（相对于基线 {baseline['accuracy']:.4f}）:")
-        print("-" * 60)
-        for result in results:
-            if result['experiment'] != 'full':
-                accuracy_change = result['accuracy'] - baseline['accuracy']
-                change_pct = (accuracy_change / baseline['accuracy']) * 100
-                change_sign = "+" if accuracy_change > 0 else ""
-                print(f"{result['description']:<25}: {change_sign}{accuracy_change:.4f} ({change_sign}{change_pct:.2f}%)")
-        print("-" * 60)
-
-    print(f"\n✅ 详细结果已保存到: {summary_file}")
+    # 显示配置信息
+    config = result.get('config', {})
+    print(f"\\n🔧 有效配置:")
+    print(f"  Shared专家: {'启用' if config.get('use_shared', True) else '禁用'}")
+    print(f"  MASK机制: {'启用' if config.get('use_mask', True) else '禁用'} (占位符)")
+    print(f"  Gate网络: {'启用' if config.get('use_gate', True) else '禁用'}")
+    print(f"  文化损失: {'启用' if config.get('use_culture_loss', True) else '禁用'}")
+else:
+    print("❌ 未找到结果文件: $RESULT_FILE")
 
 EOF
-
-# 统计成功的实验数量
-TOTAL_SUCCESS=$((EXPERIMENT_1_SUCCESS == 0 ? 1 : 0))
-TOTAL_SUCCESS=$((TOTAL_SUCCESS + (EXPERIMENT_2_SUCCESS == 0 ? 1 : 0)))
-TOTAL_SUCCESS=$((TOTAL_SUCCESS + (EXPERIMENT_3_SUCCESS == 0 ? 1 : 0)))
-TOTAL_SUCCESS=$((TOTAL_SUCCESS + (EXPERIMENT_4_SUCCESS == 0 ? 1 : 0)))
+else
+    echo "❌ 实验失败，未生成结果文件"
+fi
 
 echo ""
-echo "实验完成情况:"
-echo "  实验1 (完整模型): $([ $EXPERIMENT_1_SUCCESS -eq 0 ] && echo '✅ 成功' || echo '❌ 失败')"
-echo "  实验2 (无共享专家): $([ $EXPERIMENT_2_SUCCESS -eq 0 ] && echo '✅ 成功' || echo '❌ 失败')"
-echo "  实验3 (无Gate网络): $([ $EXPERIMENT_3_SUCCESS -eq 0 ] && echo '✅ 成功' || echo '❌ 失败')"
-echo "  实验4 (无共享+Gate): $([ $EXPERIMENT_4_SUCCESS -eq 0 ] && echo '✅ 成功' || echo '❌ 失败')"
-echo ""
-echo "成功完成: $TOTAL_SUCCESS/4 个实验"
-
-echo ""
-echo "📁 所有结果文件位置:"
-echo "  实验目录: $EXPERIMENT_DIR"
-echo "  配置文件: $EXPERIMENT_DIR/experiment_config.json"
-echo "  汇总结果: $EXPERIMENT_DIR/ablation_summary.json"
-echo "  详细结果: $EXPERIMENT_DIR/evaluation_results_*.json"
-echo "  生成答案: $EXPERIMENT_DIR/generated_answers_*.json"
+echo "📁 结果文件位置:"
+echo "  实验目录: $OUTPUT_DIR"
+echo "  配置文件: $OUTPUT_DIR/experiment_config.json"
+echo "  详细结果: $OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}.json"
+echo "  生成答案: $OUTPUT_DIR/generated_answers_${EXPERIMENT_NAME}.json"
 echo ""
 
-if [ $TOTAL_SUCCESS -eq 4 ]; then
-    echo "🎉 所有消融实验成功完成！"
+if [ $EXPERIMENT_SUCCESS -eq 0 ]; then
+    echo "🎉 消融实验成功完成！"
     echo "======================================="
     exit 0
 else
-    echo "⚠️ 部分实验失败，请检查日志"
+    echo "⚠️ 实验失败，请检查日志"
     echo "======================================="
     exit 1
 fi
