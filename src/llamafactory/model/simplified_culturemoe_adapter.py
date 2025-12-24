@@ -171,7 +171,7 @@ class MoERouter(nn.Module):
 
 
 class MoEFFNLoRA(nn.Module):
-    """MoE FFN层 - 使用LoRA专家"""
+    """MoE FFN层 - 使用LoRA专家，支持shared专家和gate机制"""
 
     def __init__(self, original_ffn, config: SimplifiedCultureMoEConfig):
         super().__init__()
@@ -179,6 +179,8 @@ class MoEFFNLoRA(nn.Module):
         self.num_experts = config.num_moe_experts
         self.num_activated_experts = config.num_activated_experts
         self.original_ffn = original_ffn  # 保持原始FFN
+        self.use_shared = config.use_shared
+        self.use_gate = config.use_gate
 
         # 获取原始FFN的参数
         self.hidden_dim = original_ffn.gate_proj.in_features
@@ -191,7 +193,7 @@ class MoEFFNLoRA(nn.Module):
             dropout=config.lora_dropout
         )
 
-        # 创建LoRA专家
+        # 创建路由LoRA专家
         self.experts = nn.ModuleList([
             LoRAExpert(
                 original_ffn=original_ffn,
@@ -200,6 +202,29 @@ class MoEFFNLoRA(nn.Module):
                 dropout=config.lora_dropout
             ) for _ in range(self.num_experts)
         ])
+
+        # 创建shared专家（如果启用）
+        if self.use_shared:
+            self.shared_expert = LoRAExpert(
+                original_ffn=original_ffn,
+                lora_rank=config.lora_rank,
+                lora_alpha=config.lora_alpha,
+                dropout=config.lora_dropout
+            )
+
+        # 创建gate网络（如果启用）
+        if self.use_gate:
+            # gate网络：输入两个专家输出，输出融合权重
+            self.gate_network = nn.Sequential(
+                nn.Linear(self.hidden_dim * 2, self.hidden_dim, bias=False),
+                nn.ReLU(),
+                nn.Linear(self.hidden_dim, 2, bias=False),  # 输出2个权重：[shared_weight, routed_weight]
+                nn.Softmax(dim=-1)
+            )
+            # Gate网络权重初始化
+            for layer in self.gate_network:
+                if isinstance(layer, nn.Linear):
+                    nn.init.xavier_uniform_(layer.weight)
 
         # 保存最新的专家权重用于文化损失
         self.latest_expert_weights = None
@@ -222,17 +247,19 @@ class MoEFFNLoRA(nn.Module):
             return self.original_ffn(hidden_states)
 
         try:
-            # 1. 路由计算
+            # 1. 计算原始FFN输出作为基础
+            original_output = self.original_ffn(hidden_states)
+
+            # 2. 路由计算（为路由专家）
             expert_weights, router_logits = self.router(hidden_states)
 
             # 保存专家权重用于文化损失（平均到序列维度）
             self.latest_expert_weights = expert_weights.mean(dim=1)  # [B, num_experts]
 
-            # 2. Top-k选择
+            # 3. Top-k选择（路由专家）
             if self.num_activated_experts == self.num_experts:
                 # Dense模式：使用所有专家
                 selected_expert_weights = expert_weights
-                k = self.num_experts
             else:
                 # Top-k模式
                 k = min(self.num_activated_experts, self.num_experts)
@@ -245,16 +272,11 @@ class MoEFFNLoRA(nn.Module):
                 selected_expert_weights = torch.zeros_like(expert_weights)  # [B, L, num_experts]
                 selected_expert_weights.scatter_(-1, top_k_indices, top_k_weights)
 
-            # 3. 专家计算（LoRA专家模式）
-            # 首先计算原始FFN输出作为基础
-            original_output = self.original_ffn(hidden_states)
-
-            # 计算专家的LoRA增量
+            # 4. 计算路由专家的LoRA增量
             if self.num_activated_experts == self.num_experts:
                 # Dense模式：计算所有专家的增量
                 expert_deltas = []
                 for expert_idx in range(self.num_experts):
-                    # 专家输出 - 原始输出 = LoRA增量
                     expert_output = self.experts[expert_idx](hidden_states)
                     expert_delta = expert_output - original_output
                     expert_deltas.append(expert_delta)
@@ -262,42 +284,62 @@ class MoEFFNLoRA(nn.Module):
 
                 # 加权组合增量
                 weights = selected_expert_weights.unsqueeze(-2)  # [B, L, 1, num_experts]
-                weighted_delta = torch.sum(expert_deltas * weights, dim=-1)  # [B, L, H]
-                final_output = original_output + weighted_delta
+                routed_delta = torch.sum(expert_deltas * weights, dim=-1)  # [B, L, H]
             else:
                 # Top-k模式：只计算被选中专家的增量
-                weighted_delta = torch.zeros_like(hidden_states)
+                routed_delta = torch.zeros_like(hidden_states)
 
                 # 重塑为[B*L, H]便于处理
                 hidden_flat = hidden_states.view(-1, self.hidden_dim)
-                delta_flat = weighted_delta.view(-1, self.hidden_dim)
+                delta_flat = routed_delta.view(-1, self.hidden_dim)
                 weights_flat = selected_expert_weights.view(-1, self.num_experts)
 
                 # 对每个专家计算
                 for expert_idx in range(self.num_experts):
-                    # 找到使用此专家的token
                     expert_mask = weights_flat[:, expert_idx] > 1e-8
 
                     if expert_mask.any():
-                        # 获取对应的输入
                         expert_input = hidden_flat[expert_mask]
                         original_input = original_output.view(-1, self.hidden_dim)[expert_mask]
 
-                        # 计算专家输出和增量
                         expert_output = self.experts[expert_idx](expert_input)
                         expert_delta = expert_output - original_input
 
-                        # 获取权重
                         expert_weight = weights_flat[:, expert_idx][expert_mask].unsqueeze(-1)
-
-                        # 加权累加增量
                         delta_flat[expert_mask] += expert_delta * expert_weight
 
-                # 重塑回原始形状并添加到原始输出
-                weighted_delta = delta_flat.view(batch_size, seq_len, self.hidden_dim)
-                final_output = original_output + weighted_delta
+                routed_delta = delta_flat.view(batch_size, seq_len, self.hidden_dim)
 
-            # 4. 最终检查
+            # 5. 计算shared专家输出（如果启用）
+            if self.use_shared:
+                shared_output = self.shared_expert(hidden_states)
+                shared_delta = shared_output - original_output
+            else:
+                shared_delta = torch.zeros_like(hidden_states)
+
+            # 6. 融合shared专家和路由专家的输出
+            if self.use_shared and self.use_gate:
+                # 使用gate网络进行融合
+                shared_final = original_output + shared_delta
+                routed_final = original_output + routed_delta
+
+                # 将两个专家输出拼接作为gate输入
+                gate_input = torch.cat([shared_final, routed_final], dim=-1)  # [B, L, 2*H]
+                gate_weights = self.gate_network(gate_input)  # [B, L, 2]
+
+                # 加权融合
+                final_output = (gate_weights[..., 0:1] * shared_final +
+                              gate_weights[..., 1:2] * routed_final)
+
+            elif self.use_shared:
+                # 固定权重融合：0.1*shared + 0.9*routed
+                final_output = original_output + 0.1 * shared_delta + 0.9 * routed_delta
+
+            else:
+                # 仅使用路由专家
+                final_output = original_output + routed_delta
+
+            # 7. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
                 print("⚠️ NaN/Inf in MoE output, using original FFN")
                 final_output = self.original_ffn(hidden_states)
@@ -379,7 +421,15 @@ class SimplifiedCultureMoEAdapter:
             original_ffn = layers[layer_idx].mlp
             moe_ffn = MoEFFNLoRA(original_ffn, self.config)
             layers[layer_idx].mlp = moe_ffn
-            print(f"✅ Replaced layer {layer_idx} FFN with LoRA MoE ({self.config.num_moe_experts} experts, rank={self.config.lora_rank})")
+
+            # 构建配置信息字符串
+            config_info = f"{self.config.num_moe_experts} experts, rank={self.config.lora_rank}"
+            if self.config.use_shared:
+                config_info += ", +shared"
+            if self.config.use_gate:
+                config_info += ", +gate"
+
+            print(f"✅ Replaced layer {layer_idx} FFN with LoRA MoE ({config_info})")
 
     def _apply_attention_lora(self):
         """应用LoRA到注意力层"""
@@ -557,6 +607,10 @@ class SimplifiedCultureMoEAdapter:
         print(f"  - Activated experts: {self.config.num_activated_experts}")
         print(f"  - LoRA rank: {self.config.lora_rank}")
         print(f"  - LoRA alpha: {self.config.lora_alpha}")
+        print(f"  - Shared expert: {'enabled' if self.config.use_shared else 'disabled'}")
+        print(f"  - Gate network: {'enabled' if self.config.use_gate else 'disabled'}")
+        if self.config.use_shared and not self.config.use_gate:
+            print(f"  - Fusion weights: 0.1*shared + 0.9*routed")
 
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):

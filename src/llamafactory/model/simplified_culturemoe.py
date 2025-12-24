@@ -26,12 +26,12 @@ class SimplifiedCultureMoEConfig:
     num_routing_experts: int = None  # 将被num_moe_experts覆盖
     top_k: int = None  # 将被num_activated_experts覆盖
 
-    # 占位符参数（与joint版本保持一致）
-    use_shared: bool = False  # 是否使用共享专家（占位符）
-    use_gate: bool = False  # 是否使用MoE门控（占位符）
+    # Shared专家和Gate机制
+    use_shared: bool = False  # 是否使用共享专家（始终激活的LoRA专家）
+    use_gate: bool = False  # 是否使用MoE门控网络（动态融合shared和routed专家）
 
-    # 指定哪些层使用MoE (0-indexed) - None表示最后两层
-    moe_layers: List[int] = None  # None表示最后两层FFN替换为MoE
+    # 指定哪些层使用MoE (0-indexed) - None表示最后8层
+    moe_layers: List[int] = None  # None表示最后8层FFN替换为LoRA MoE
 
     # FFN目标模块
     ffn_target_modules: List[str] = None
@@ -55,7 +55,7 @@ class SimplifiedCultureMoEConfig:
         if self.top_k is None:
             self.top_k = self.num_activated_experts
 
-        # moe_layers为None表示最后两层FFN替换为MoE
+        # moe_layers为None表示最后8层FFN替换为LoRA MoE
         # 具体的层数将在适配器中根据模型动态确定
 
         if self.ffn_target_modules is None:

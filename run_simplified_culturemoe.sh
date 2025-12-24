@@ -121,8 +121,8 @@ if [ "$USE_LORA" = "true" ]; then
 else
     echo "  训练模式: 仅最后8层LoRA MoE专家训练"
 fi
-echo "  共享专家: $USE_SHARED (占位符)"
-echo "  MoE内部Gate: $USE_GATE (占位符)"
+echo "  共享专家: $USE_SHARED"
+echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
 echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, false=仅L_aux)"
@@ -280,6 +280,8 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
         echo "  - 文化损失模式: $USE_CULTURE_LOSS"
         echo "  - LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
         echo "  - 注意力层LoRA: $USE_LORA"
+        echo "  - 共享专家: $USE_SHARED"
+        echo "  - MoE内部Gate: $USE_GATE"
         echo "  - 序列长度: $MAX_SEQ_LEN"
     else
         echo "⚠️  训练完成但未找到最佳模型"
