@@ -127,6 +127,7 @@ echo "  使用MASK机制: $USE_MASK (占位符)"
 echo "  使用gate机制: $USE_GATE"
 echo "  使用文化损失: $USE_CULTURE_LOSS"
 echo "  输出目录: $OUTPUT_DIR"
+echo "  数据划分: 8:1:1 (训练:验证:测试)"
 echo ""
 
 # 保存实验配置
@@ -170,6 +171,24 @@ fi
 echo "📊 实验配置: $EXPERIMENT_NAME"
 echo "----------------------------------------"
 
+# 查找数据划分文件
+SPLIT_FILE=""
+# 首先检查模型目录中是否有划分文件
+if [ -f "$MODEL_PATH/data_split_8_1_1.pkl" ]; then
+    SPLIT_FILE="$MODEL_PATH/data_split_8_1_1.pkl"
+    echo "✅ 找到模型目录中的数据划分文件: $SPLIT_FILE"
+# 检查模型的父目录
+elif [ -f "$(dirname "$MODEL_PATH")/data_split_8_1_1.pkl" ]; then
+    SPLIT_FILE="$(dirname "$MODEL_PATH")/data_split_8_1_1.pkl"
+    echo "✅ 找到父目录中的数据划分文件: $SPLIT_FILE"
+# 检查常见的训练输出目录
+elif [ -f "/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl" ]; then
+    SPLIT_FILE="/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
+    echo "✅ 找到通用目录中的数据划分文件: $SPLIT_FILE"
+else
+    echo "⚠️ 未找到数据划分文件，将使用原有的验证集划分逻辑"
+fi
+
 # 构建eval命令参数
 EVAL_ARGS="--model_path \"$MODEL_PATH\" \
     --base_model_path \"$BASE_MODEL_PATH\" \
@@ -177,6 +196,11 @@ EVAL_ARGS="--model_path \"$MODEL_PATH\" \
     --output_dir \"$OUTPUT_DIR\" \
     --experiment_name \"$EXPERIMENT_NAME\" \
     --use_fixed_split"
+
+# 如果找到了数据划分文件，添加到参数中
+if [ -n "$SPLIT_FILE" ]; then
+    EVAL_ARGS="$EVAL_ARGS --split_file \"$SPLIT_FILE\""
+fi
 
 # 根据配置添加disable参数
 if [ "$USE_SHARED" = "false" ]; then

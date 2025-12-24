@@ -40,6 +40,8 @@ from ft_lora_only_gen import (
     generate_answer,
     dynamic_padding_collate_fn
 )
+import pickle
+import numpy as np
 
 
 def setup_distributed():
@@ -77,6 +79,119 @@ def cleanup_distributed():
 def is_main_process(rank):
     """检查是否为主进程"""
     return rank == 0
+
+
+def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
+                               output_dir: str = None, force_resplit: bool = False):
+    """
+    加载数据并按8:1:1划分为训练集、验证集、测试集
+
+    Args:
+        data_path: 数据文件路径
+        tokenizer: Tokenizer
+        max_length: 最大序列长度
+        output_dir: 输出目录，用于保存划分索引
+        force_resplit: 是否强制重新划分
+
+    Returns:
+        dict: 包含 'train', 'validation', 'test' 的字典
+    """
+    # 创建完整数据集
+    full_dataset = CultureLLMNewFormatDataset(data_path, tokenizer, max_length)
+    total_size = len(full_dataset)
+
+    # 检查是否已有划分文件
+    split_file = None
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        split_file = os.path.join(output_dir, 'data_split_8_1_1.pkl')
+
+        if os.path.exists(split_file) and not force_resplit:
+            print(f"🔄 加载已有的8:1:1数据划分: {split_file}")
+            with open(split_file, 'rb') as f:
+                split_info = pickle.load(f)
+
+            # 验证划分是否与当前数据集匹配
+            if split_info['total_size'] == total_size:
+                train_indices = split_info['train_indices']
+                val_indices = split_info['val_indices']
+                test_indices = split_info['test_indices']
+
+                print(f"✅ 使用已有划分:")
+                print(f"  - 训练集: {len(train_indices)} 样本 ({len(train_indices)/total_size*100:.1f}%)")
+                print(f"  - 验证集: {len(val_indices)} 样本 ({len(val_indices)/total_size*100:.1f}%)")
+                print(f"  - 测试集: {len(test_indices)} 样本 ({len(test_indices)/total_size*100:.1f}%)")
+
+                # 创建子数据集
+                from torch.utils.data import Subset
+                train_dataset = Subset(full_dataset, train_indices)
+                val_dataset = Subset(full_dataset, val_indices)
+                test_dataset = Subset(full_dataset, test_indices)
+
+                return {
+                    'train': train_dataset,
+                    'validation': val_dataset,
+                    'test': test_dataset,
+                    'split_info': split_info
+                }
+            else:
+                print(f"⚠️ 数据集大小不匹配，重新划分 (saved: {split_info['total_size']}, current: {total_size})")
+
+    # 执行8:1:1划分
+    print(f"🔄 创建8:1:1数据划分 (总数: {total_size})")
+
+    # 计算各部分大小
+    train_size = int(total_size * 0.8)
+    val_size = int(total_size * 0.1)
+    test_size = total_size - train_size - val_size  # 剩余部分作为测试集
+
+    # 生成随机索引
+    np.random.seed(42)  # 固定随机种子确保可重现
+    indices = np.random.permutation(total_size)
+
+    # 划分索引
+    train_indices = indices[:train_size].tolist()
+    val_indices = indices[train_size:train_size + val_size].tolist()
+    test_indices = indices[train_size + val_size:].tolist()
+
+    print(f"✅ 数据划分完成:")
+    print(f"  - 训练集: {len(train_indices)} 样本 ({len(train_indices)/total_size*100:.1f}%)")
+    print(f"  - 验证集: {len(val_indices)} 样本 ({len(val_indices)/total_size*100:.1f}%)")
+    print(f"  - 测试集: {len(test_indices)} 样本 ({len(test_indices)/total_size*100:.1f}%)")
+
+    # 保存划分信息
+    if split_file:
+        split_info = {
+            'total_size': total_size,
+            'train_indices': train_indices,
+            'val_indices': val_indices,
+            'test_indices': test_indices,
+            'train_size': len(train_indices),
+            'val_size': len(val_indices),
+            'test_size': len(test_indices),
+            'data_path': data_path,
+            'max_length': max_length,
+            'split_method': '8:1:1',
+            'random_seed': 42
+        }
+
+        with open(split_file, 'wb') as f:
+            pickle.dump(split_info, f)
+
+        print(f"✅ 数据划分信息已保存: {split_file}")
+
+    # 创建子数据集
+    from torch.utils.data import Subset
+    train_dataset = Subset(full_dataset, train_indices)
+    val_dataset = Subset(full_dataset, val_indices)
+    test_dataset = Subset(full_dataset, test_indices)
+
+    return {
+        'train': train_dataset,
+        'validation': val_dataset,
+        'test': test_dataset,
+        'split_info': split_info if split_file else None
+    }
 
 
 def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
@@ -619,17 +734,24 @@ def main():
     tokenizer.padding_side = "right"
     print("✅ Tokenizer loaded")
 
-    # 加载数据
-    print("\nLoading and processing data...")
-    datasets = load_and_process_data(
+    # 加载数据 - 使用8:1:1划分
+    print("\nLoading and processing data with 8:1:1 split...")
+    datasets = load_and_split_data_8_1_1(
         args.train_file,
         tokenizer,
         max_length=args.max_length,
-        val_split=args.val_split
+        output_dir=args.output_dir,  # 将划分信息保存到输出目录
+        force_resplit=False
     )
     train_dataset = datasets['train']
     val_dataset = datasets['validation']
-    print("✅ Data loaded")
+    test_dataset = datasets['test']  # 测试集（用于最终评估）
+    split_info = datasets['split_info']
+
+    print("✅ Data loaded with 8:1:1 split")
+    print(f"  - 训练集: {len(train_dataset)} 样本")
+    print(f"  - 验证集: {len(val_dataset)} 样本")
+    print(f"  - 测试集: {len(test_dataset)} 样本")
 
     # 创建分布式采样器
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank) if world_size > 1 else None

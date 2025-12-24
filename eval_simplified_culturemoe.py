@@ -33,6 +33,7 @@ import sys
 import pickle
 from typing import Dict, List, Optional
 import numpy as np
+from torch.utils.data import Subset
 
 import torch
 import torch.nn.functional as F
@@ -52,6 +53,63 @@ from ft_lora_only_gen import (
     generate_answer,
     dynamic_padding_collate_fn
 )
+
+
+def load_fixed_test_split(data_file: str, tokenizer, max_length: int,
+                          split_file: str, split_type: str = 'test'):
+    """
+    加载固定的数据集划分（测试集）
+
+    Args:
+        data_file: 数据文件路径
+        tokenizer: tokenizer
+        max_length: 最大序列长度
+        split_file: 划分文件路径
+        split_type: 划分类型 ('test', 'validation')
+
+    Returns:
+        测试集数据集对象
+    """
+    if not os.path.exists(split_file):
+        raise FileNotFoundError(f"数据划分文件不存在: {split_file}")
+
+    # 加载划分信息
+    with open(split_file, 'rb') as f:
+        split_info = pickle.load(f)
+
+    print(f"✅ 加载数据划分信息: {split_file}")
+    print(f"  - 划分方法: {split_info.get('split_method', 'unknown')}")
+    print(f"  - 总样本数: {split_info['total_size']}")
+    print(f"  - 训练集: {split_info['train_size']} 样本")
+    print(f"  - 验证集: {split_info['val_size']} 样本")
+    print(f"  - 测试集: {split_info['test_size']} 样本")
+
+    # 验证数据文件是否匹配
+    if split_info.get('data_path') != data_file:
+        print(f"⚠️ 数据文件路径不匹配:")
+        print(f"  保存的: {split_info.get('data_path')}")
+        print(f"  当前的: {data_file}")
+
+    # 创建完整数据集
+    full_dataset = CultureLLMNewFormatDataset(data_file, tokenizer, max_length)
+
+    if len(full_dataset) != split_info['total_size']:
+        raise ValueError(f"数据集大小不匹配: 保存的={split_info['total_size']}, 当前={len(full_dataset)}")
+
+    # 获取对应的索引
+    if split_type == 'test':
+        indices = split_info['test_indices']
+        print(f"✅ 使用测试集: {len(indices)} 样本")
+    elif split_type == 'validation':
+        indices = split_info['val_indices']
+        print(f"✅ 使用验证集: {len(indices)} 样本")
+    else:
+        raise ValueError(f"不支持的split_type: {split_type}")
+
+    # 创建子数据集
+    subset = Subset(full_dataset, indices)
+
+    return subset, split_info
 
 
 class SimplifiedCultureMoEEvaluator:
@@ -255,37 +313,49 @@ class SimplifiedCultureMoEEvaluator:
         return split_info['val_indices']
 
     def evaluate(self, data_file: str, output_dir: str, max_length: int = 384,
-                 val_split: float = 0.1, device: str = 'cuda', use_fixed_split: bool = True):
+                 val_split: float = 0.1, device: str = 'cuda', use_fixed_split: bool = True,
+                 split_file: str = None):
         """评估模型性能"""
         print(f"\n📊 开始评估...")
         print(f"  数据文件: {data_file}")
         print(f"  输出目录: {output_dir}")
-        print(f"  使用固定验证集: {use_fixed_split}")
+        print(f"  使用固定数据集划分: {use_fixed_split}")
+        print(f"  数据划分文件: {split_file}")
 
-        # 加载数据集
-        full_dataset = CultureLLMNewFormatDataset(data_file, self.tokenizer, max_length)
+        # 加载测试集
+        if use_fixed_split and split_file:
+            # 使用固定的测试集划分
+            test_dataset, split_info = load_fixed_test_split(
+                data_file, self.tokenizer, max_length, split_file, split_type='test'
+            )
+            val_dataset = test_dataset  # 在消融实验中，我们在测试集上评估
+            print(f"✅ 使用固定测试集进行评估")
+        else:
+            # 回退到原来的逻辑（兼容性）
+            print("⚠️ 未指定数据划分文件，使用原有的验证集划分逻辑")
+            full_dataset = CultureLLMNewFormatDataset(data_file, self.tokenizer, max_length)
 
-        # 处理验证集划分
-        if use_fixed_split:
-            val_indices = self.load_validation_split(output_dir)
-            if val_indices is None:
-                # 第一次运行，创建并保存验证集划分
-                print("🔄 创建新的验证集划分...")
+            # 处理验证集划分
+            if use_fixed_split:
+                val_indices = self.load_validation_split(output_dir)
+                if val_indices is None:
+                    # 第一次运行，创建并保存验证集划分
+                    print("🔄 创建新的验证集划分...")
+                    val_size = int(len(full_dataset) * val_split)
+                    indices = list(range(len(full_dataset)))
+                    np.random.seed(42)  # 固定随机种子确保可重现
+                    np.random.shuffle(indices)
+                    val_indices = indices[:val_size]
+                    self.save_validation_split(full_dataset, val_indices, output_dir)
+            else:
+                # 使用随机划分
                 val_size = int(len(full_dataset) * val_split)
                 indices = list(range(len(full_dataset)))
-                np.random.seed(42)  # 固定随机种子确保可重现
                 np.random.shuffle(indices)
                 val_indices = indices[:val_size]
-                self.save_validation_split(full_dataset, val_indices, output_dir)
-        else:
-            # 使用随机划分
-            val_size = int(len(full_dataset) * val_split)
-            indices = list(range(len(full_dataset)))
-            np.random.shuffle(indices)
-            val_indices = indices[:val_size]
 
-        # 创建验证集
-        val_dataset = Subset(full_dataset, val_indices)
+            # 创建验证集
+            val_dataset = Subset(full_dataset, val_indices)
 
         # 创建数据加载器
         def collate_fn(batch):
@@ -508,6 +578,8 @@ def main():
                         help="实验名称（用于文件命名）")
     parser.add_argument("--use_fixed_split", action='store_true', default=True,
                         help="使用固定的验证集划分（默认启用）")
+    parser.add_argument("--split_file", type=str, default="",
+                        help="数据划分文件路径（8:1:1划分信息）")
 
     args = parser.parse_args()
 
@@ -568,7 +640,8 @@ def main():
             args.max_length,
             args.val_split,
             args.device,
-            args.use_fixed_split
+            args.use_fixed_split,
+            args.split_file if args.split_file else None
         )
 
         # 打印结果
