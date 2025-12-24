@@ -438,11 +438,10 @@ def generate_and_evaluate_answers_simplified(
         true_output = sample['output']
         label = sample['label']
 
-        # 生成答案（使用基础模型进行推理）
-        # 处理DDP包装的模型
-        base_model = model_adapter.base_model.module if hasattr(model_adapter.base_model, 'module') else model_adapter.base_model
+        # 生成答案（使用完整的MoE适配器进行推理）
+        # 🔧 修复：传递完整的model_adapter而不是base_model，确保生成时使用MoE层
         generated_text = generate_answer(
-            base_model, tokenizer, instruction, input_text, device
+            model_adapter, tokenizer, instruction, input_text, device
         )
 
         # 提取答案

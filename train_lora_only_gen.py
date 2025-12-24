@@ -83,9 +83,8 @@ def generate_and_evaluate(model, tokenizer, eval_dataset, output_dir, output_typ
                 max_new_tokens=max_new_tokens,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,
-                temperature=None,
-                top_p=None,
+                do_sample=False
+                # 🔧 移除无效参数：temperature=None和top_p=None在do_sample=False时无效
             )
 
             generated_ids = outputs[0][len(prompt_ids):]

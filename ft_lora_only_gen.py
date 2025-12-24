@@ -575,28 +575,34 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
         model_class_name = model.__class__.__name__
         # print(f"🔍 生成时模型类型: {model_class_name}")  # 注释掉详细调试
 
-        if 'JointLoRAMoE' in model_class_name or hasattr(model, 'moe_layer'):
-            # 使用联合模型的自定义generate方法，确保通过MoE层
-            # print(f"🔍 Using custom joint model generate method")  # 注释掉详细调试
-            # print(f"🔍 Input shape: {inputs['input_ids'].shape}")  # 注释掉详细调试
-            # print(f"🔍 Input tokens: {inputs['input_ids'][0].tolist()}")  # 注释掉详细调试
+        # 🔧 修复：支持SimplifiedCultureMoEAdapter
+        if ('JointLoRAMoE' in model_class_name or
+            hasattr(model, 'moe_layer') or
+            'SimplifiedCultureMoEAdapter' in model_class_name or
+            hasattr(model, 'base_model')):
 
-            # 检查模型是否真的是联合模型
-            # if hasattr(model, 'base_model') and hasattr(model, 'moe_layer'):
-            #     print(f"🔍 Confirmed: Model has both base_model and moe_layer")
-            # else:
-            #     print(f"⚠️ Warning: Model structure unexpected")
-
-            outputs = model.generate(
-                input_ids=inputs['input_ids'],
-                attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=2,  # 🔧 减少到2个token，足够生成单个数字
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,  # 🔧 使用贪心解码，确保稳定输出
-                temperature=0.7,  # 保持适中的温度
-                repetition_penalty=1.0  # 🔧 减少重复惩罚，避免影响数字生成
-            )
+            # 🔧 修复：对于SimplifiedCultureMoEAdapter，需要使用其base_model进行生成
+            if hasattr(model, 'base_model'):
+                # 处理DDP包装的情况
+                actual_model = model.base_model.module if hasattr(model.base_model, 'module') else model.base_model
+                outputs = actual_model.generate(
+                    input_ids=inputs['input_ids'],
+                    attention_mask=inputs.get('attention_mask'),
+                    max_new_tokens=10,  # 🔧 增加到10个token，确保能生成完整答案
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                    do_sample=False  # 🔧 移除无效参数：temperature和repetition_penalty在do_sample=False时无效
+                )
+            else:
+                # 使用联合模型的自定义generate方法
+                outputs = model.generate(
+                    input_ids=inputs['input_ids'],
+                    attention_mask=inputs.get('attention_mask'),
+                    max_new_tokens=10,  # 🔧 增加到10个token
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                    do_sample=False  # 🔧 移除无效参数
+                )
         else:
             # 回退到标准generate方法
             # print(f"🔍 Using standard model generate method")  # 注释掉详细调试
@@ -606,8 +612,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,  # 贪婪解码
-                num_beams=1,      # 禁用 beam search
-                repetition_penalty=1.0
+                num_beams=1       # 禁用 beam search，移除repetition_penalty
             )
 
     # 解码
