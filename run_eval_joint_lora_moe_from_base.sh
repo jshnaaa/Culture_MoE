@@ -65,14 +65,17 @@ case $DATA_ID in
     2)
         TEST_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
         DATASET_TAG="CulturalBench"
+        NUM_CLASSES=2
         ;;
     3)
         TEST_FILE="/root/autodl-fs/normad_merge_gen.json"
         DATASET_TAG="normad"
+        NUM_CLASSES=3
         ;;
     4)
         TEST_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
+        NUM_CLASSES=10
         ;;
     6)
         TEST_FILE="/autodl-fs/data/moral_stories_merge_gen.json"

@@ -211,21 +211,25 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
         culture_loss: 文化损失
     """
     if not hasattr(model_outputs, 'expert_weights') or model_outputs.expert_weights is None:
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=False)
 
-    expert_weights = model_outputs.expert_weights  # [B, num_experts]
+    expert_weights = model_outputs.expert_weights  # [B_expert, num_experts]
+
+    # 🔧 MASK机制修复：expert_weights可能只包含激活路由专家的样本
+    # 如果维度不匹配，说明部分样本使用了shared专家，没有expert_weights
+    if expert_weights.shape[0] != culture_labels.shape[0]:
+        # 只对有expert_weights的样本计算文化损失
+        if expert_weights.shape[0] < 2:
+            # 激活路由专家的样本少于2个，无法计算文化损失
+            return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=False)
+
+        # 使用前expert_weights.shape[0]个culture_labels
+        culture_labels = culture_labels[:expert_weights.shape[0]]
+
     batch_size = expert_weights.shape[0]
 
-    # 检查维度匹配
-    if expert_weights.shape[0] != culture_labels.shape[0]:
-        print(f"⚠️ Dimension mismatch: expert_weights.shape={expert_weights.shape}, culture_labels.shape={culture_labels.shape}")
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
-
-    if batch_size < 2:
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
-
-    # 统一使用float16以节省显存
-    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+    # 🔧 修复：使用requires_grad=True的tensor，确保梯度计算正确
+    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=True)
     count = 0
 
     # 计算同文化样本间的相似性和不同文化样本间的差异性
@@ -278,13 +282,13 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
     if count > 0:
         culture_loss = culture_loss / count * loss_weight
 
-    # 确保返回的是标量张量
+    # 🔧 修复：确保返回的tensor有正确的梯度属性
     if not isinstance(culture_loss, torch.Tensor):
-        culture_loss = torch.tensor(culture_loss, device=culture_labels.device, dtype=torch.float16)
+        culture_loss = torch.tensor(culture_loss, device=culture_labels.device, dtype=torch.float16, requires_grad=True)
 
     # 检查文化损失是否为NaN/Inf，如果是则返回零损失
     if torch.isnan(culture_loss) or torch.isinf(culture_loss):
-        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=True)
 
     return culture_loss
 
@@ -357,9 +361,33 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         loss = outputs.loss
 
         # 计算文化损失 - 统一使用float16节省显存
-        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
         if use_culture_loss != 'false' and culture_labels is not None:
-            culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
+            # 🔧 MASK机制：传递input_type信息以正确处理文化损失
+            if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
+                # 如果有expert_weights，说明有样本激活了路由专家
+                expert_batch_size = outputs.expert_weights.shape[0]
+                full_batch_size = culture_labels.shape[0]
+
+                if expert_batch_size == full_batch_size:
+                    # 所有样本都激活路由专家
+                    culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
+                elif expert_batch_size > 0:
+                    # 部分样本激活路由专家，需要找到对应的culture_labels
+                    # 🔧 MASK机制：根据input_type找到激活路由专家的样本索引
+                    if input_type is not None:
+                        full_indices = (input_type == 1).nonzero(as_tuple=True)[0]
+                        if len(full_indices) == expert_batch_size:
+                            # 提取对应的culture_labels
+                            relevant_culture_labels = culture_labels[full_indices]
+                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
+                        else:
+                            # 索引数量不匹配，跳过文化损失计算
+                            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
+                    else:
+                        # 兼容模式，使用前expert_batch_size个
+                        relevant_culture_labels = culture_labels[:expert_batch_size]
+                        culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
 
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss()
@@ -502,9 +530,27 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             loss = outputs.loss
 
             # 计算文化损失 - 统一使用float16节省显存
-            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
             if use_culture_loss != 'false' and culture_labels is not None:
-                culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
+                # 🔧 MASK机制：正确处理文化损失
+                if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
+                    expert_batch_size = outputs.expert_weights.shape[0]
+                    full_batch_size = culture_labels.shape[0]
+
+                    if expert_batch_size == full_batch_size:
+                        culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
+                    elif expert_batch_size > 0:
+                        # 🔧 MASK机制：根据input_type找到对应的culture_labels
+                        if input_type is not None:
+                            full_indices = (input_type == 1).nonzero(as_tuple=True)[0]
+                            if len(full_indices) == expert_batch_size:
+                                relevant_culture_labels = culture_labels[full_indices]
+                                culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
+                            else:
+                                culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
+                        else:
+                            relevant_culture_labels = culture_labels[:expert_batch_size]
+                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
 
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss()

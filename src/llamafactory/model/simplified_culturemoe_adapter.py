@@ -437,6 +437,9 @@ class MoEFFNLoRA(nn.Module):
         Returns:
             output: [B, L, H] 输出隐藏状态
         """
+        # 🔧 MASK机制：shared专家不产生expert_weights
+        self.latest_expert_weights = None
+
         # 计算原始FFN输出
         original_output = self.original_ffn(hidden_states)
 
@@ -535,6 +538,9 @@ class MoEFFNLoRA(nn.Module):
         mask_indices = (input_type == 0).nonzero(as_tuple=True)[0]  # masked输入的样本索引
         full_indices = (input_type == 1).nonzero(as_tuple=True)[0]  # 完整输入的样本索引
 
+        # 🔧 MASK机制：混合batch时，expert_weights只包含路由专家的样本
+        self.latest_expert_weights = None
+
         # 处理masked输入样本（激活shared专家）
         if len(mask_indices) > 0:
             mask_hidden = hidden_states[mask_indices]  # [mask_count, L, H]
@@ -546,6 +552,9 @@ class MoEFFNLoRA(nn.Module):
             full_hidden = hidden_states[full_indices]  # [full_count, L, H]
             full_output = self._forward_routed_only(full_hidden)
             output[full_indices] = full_output
+
+            # 🔧 只有路由专家产生expert_weights，且只对应路由样本
+            # latest_expert_weights在_forward_routed_only中已设置，形状为[len(full_indices), num_experts]
 
         return output
 
