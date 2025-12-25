@@ -63,15 +63,15 @@ fi
 # ✅ 根据 DATA_ID 设置测试数据集
 case $DATA_ID in
     2)
-        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
+        TEST_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
         DATASET_TAG="CulturalBench"
         ;;
     3)
-        TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
+        TEST_FILE="/root/autodl-fs/normad_merge_gen.json"
         DATASET_TAG="normad"
         ;;
     4)
-        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
+        TEST_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
         ;;
     6)
