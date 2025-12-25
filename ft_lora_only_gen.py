@@ -145,9 +145,10 @@ class CultureLLMNewFormatDataset(Dataset):
                 instruction_text = instruction
                 input_type = 1  # 标识为完整输入，激活路由专家
         else:
-            # 兼容模式：使用原始instruction，激活所有专家
+            # MASK机制禁用：使用原始instruction，只激活路由专家
+            # 确保shared专家和路由专家输入一致（都是instruction+input）
             instruction_text = instruction
-            input_type = -1  # 标识为兼容模式
+            input_type = 1  # 标识为完整输入，只激活路由专家
 
         # 构建完整的输入和输出
         # 格式：instruction + input → output

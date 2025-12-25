@@ -228,9 +228,8 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
 
     batch_size = expert_weights.shape[0]
 
-    # 🔧 修复：使用requires_grad=True的tensor，确保梯度计算正确
-    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=True)
-    count = 0
+    # 🔧 修复：避免in-place操作，收集所有损失然后求和
+    culture_losses = []
 
     # 计算同文化样本间的相似性和不同文化样本间的差异性
     for i in range(batch_size):
@@ -253,9 +252,9 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
                 if torch.isnan(similarity) or torch.isinf(similarity):
                     continue  # 跳过无效的相似度计算
 
-                # 确保similarity是标量值，避免广播问题
-                similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
-                culture_loss += (1.0 - similarity_scalar)
+                # 🔧 修复：避免in-place操作，直接使用tensor
+                loss_term = 1.0 - similarity
+                culture_losses.append(loss_term)
             else:
                 # 不同文化，鼓励不同的专家权重
                 vec1 = expert_weights[i].unsqueeze(0)
@@ -274,13 +273,14 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
                 if torch.isnan(similarity) or torch.isinf(similarity):
                     continue  # 跳过无效的相似度计算
 
-                # 确保similarity是标量值，避免广播问题
-                similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
-                culture_loss += similarity_scalar
-            count += 1
+                # 🔧 修复：避免in-place操作，直接使用tensor
+                culture_losses.append(similarity)
 
-    if count > 0:
-        culture_loss = culture_loss / count * loss_weight
+    # 🔧 修复：计算最终的culture_loss
+    if len(culture_losses) > 0:
+        culture_loss = torch.stack(culture_losses).mean() * loss_weight
+    else:
+        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
 
     # 🔧 修复：确保返回的tensor有正确的梯度属性
     if not isinstance(culture_loss, torch.Tensor):
