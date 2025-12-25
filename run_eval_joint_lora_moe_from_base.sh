@@ -46,16 +46,6 @@ fi
 BACKBONE="$1"
 DATA_ID="$2"
 
-# ✅ 验证参数
-if [ "$BACKBONE" != "llama" ] && [ "$BACKBONE" != "qwen" ]; then
-    echo "❌ 错误: BACKBONE 必须是 'llama' 或 'qwen'"
-    exit 1
-fi
-
-if [ "$DATA_ID" != "6" ] && [ "$DATA_ID" != "7" ] && [ "$DATA_ID" != "8" ]; then
-    echo "❌ 错误: DATA_ID 必须是 6, 7, 或 8"
-    exit 1
-fi
 
 # ✅ 根据 backbone 设置基础模型路径和联合训练模型路径（固定时间戳）
 if [ "$BACKBONE" = "llama" ]; then

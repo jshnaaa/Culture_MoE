@@ -296,6 +296,8 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
         --memory_efficient \
+        --enable_mask \
+        --mask_prob 0.15 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 else
     # 多卡训练
@@ -323,6 +325,8 @@ else
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
         --memory_efficient \
+        --enable_mask \
+        --mask_prob 0.15 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 fi
 

@@ -82,7 +82,8 @@ def is_main_process(rank):
 
 
 def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
-                               output_dir: str = None, force_resplit: bool = False):
+                               output_dir: str = None, force_resplit: bool = False,
+                               enable_mask: bool = False, mask_prob: float = 0.15):
     """
     加载数据并按8:1:1划分为训练集、验证集、测试集
 
@@ -97,7 +98,10 @@ def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
         dict: 包含 'train', 'validation', 'test' 的字典
     """
     # 创建完整数据集
-    full_dataset = CultureLLMNewFormatDataset(data_path, tokenizer, max_length)
+    full_dataset = CultureLLMNewFormatDataset(
+        data_path, tokenizer, max_length,
+        enable_mask=enable_mask, mask_prob=mask_prob
+    )
     total_size = len(full_dataset)
 
     # 检查是否已有划分文件
@@ -337,11 +341,17 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             else:
                 culture_labels = batch['label'].to(device)
 
+        # 获取input_type（MASK机制）
+        input_type = batch.get('input_type', None)
+        if input_type is not None:
+            input_type = input_type.to(device)
+
         # 前向传播
         outputs = model_adapter.forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            labels=labels
+            labels=labels,
+            input_type=input_type  # 🆕 MASK机制
         )
 
         loss = outputs.loss
@@ -476,11 +486,17 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
                 else:
                     culture_labels = batch['label'].to(device)
 
+            # 获取input_type（MASK机制）
+            input_type = batch.get('input_type', None)
+            if input_type is not None:
+                input_type = input_type.to(device)
+
             # 前向传播
             outputs = model_adapter.forward(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                labels=labels
+                labels=labels,
+                input_type=input_type  # 🆕 MASK机制
             )
 
             loss = outputs.loss
@@ -671,6 +687,12 @@ def main():
     parser.add_argument("--memory_efficient", action='store_true',
                         help="Enable memory efficient training")
 
+    # MASK机制参数
+    parser.add_argument("--enable_mask", action='store_true',
+                        help="Enable MASK mechanism for conditional expert activation")
+    parser.add_argument("--mask_prob", type=float, default=0.15,
+                        help="Probability of masking tokens in instruction")
+
     args = parser.parse_args()
 
     # 转换字符串参数 - 与joint版本保持一致
@@ -741,7 +763,9 @@ def main():
         tokenizer,
         max_length=args.max_length,
         output_dir=args.output_dir,  # 将划分信息保存到输出目录
-        force_resplit=False
+        force_resplit=False,
+        enable_mask=args.enable_mask,  # 🆕 MASK机制
+        mask_prob=args.mask_prob
     )
     train_dataset = datasets['train']
     val_dataset = datasets['validation']

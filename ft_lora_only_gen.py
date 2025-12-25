@@ -58,26 +58,71 @@ class CultureLLMNewFormatDataset(Dataset):
     }
     """
 
-    def __init__(self, data_path: str, tokenizer, max_length: int = 512):
+    def __init__(self, data_path: str, tokenizer, max_length: int = 512,
+                 enable_mask: bool = False, mask_prob: float = 0.15):
         """
         Args:
             data_path: 数据文件路径
             tokenizer: Tokenizer
             max_length: 最大序列长度
+            enable_mask: 是否启用MASK机制
+            mask_prob: instruction中token被mask的概率
         """
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.enable_mask = enable_mask
+        self.mask_prob = mask_prob
+
+        # 获取mask token id
+        if hasattr(tokenizer, 'mask_token_id') and tokenizer.mask_token_id is not None:
+            self.mask_token_id = tokenizer.mask_token_id
+        else:
+            # 如果没有mask token，使用unk token
+            self.mask_token_id = tokenizer.unk_token_id
 
         print(f"Loading data from: {data_path}")
         with open(data_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
 
         print(f"Loaded {len(self.data)} samples")
+        if enable_mask:
+            print(f"✅ MASK mechanism enabled (mask_prob={mask_prob})")
 
     def __len__(self):
         return len(self.data)
 
+    def create_instruction_mask(self, instruction):
+        """
+        创建instruction的masked版本
+
+        Args:
+            instruction: 原始instruction文本
+
+        Returns:
+            masked_instruction: mask后的instruction文本
+        """
+        import random
+
+        # 简单的token级别masking
+        # 按空格分割，对每个token随机mask
+        tokens = instruction.split()
+        masked_tokens = []
+
+        for token in tokens:
+            if random.random() < self.mask_prob:
+                # 保留重要的提示词不被mask
+                if token.lower() in ['answer:', '###', 'from', '1', '2', '3', '4', 'to']:
+                    masked_tokens.append(token)
+                else:
+                    masked_tokens.append('[MASK]')
+            else:
+                masked_tokens.append(token)
+
+        return ' '.join(masked_tokens)
+
     def __getitem__(self, idx):
+        import random
+
         item = self.data[idx]
 
         # 新格式：instruction + input + output
@@ -86,37 +131,32 @@ class CultureLLMNewFormatDataset(Dataset):
         output_text = item.get('output', '')
         label = item.get('label', '')
 
-        # 🔧 修复：保留instruction中的"### Answer:"，这是给模型的提示
-        # 我们要让模型看到"### Answer:"，但不学习它，只学习后面的答案
+        # 🆕 MASK机制：条件专家激活
+        if self.enable_mask:
+            # 随机选择输入类型
+            use_mask = random.random() < 0.5
 
-        # 🔍 关键调试：检查原始output_text内容（注释掉详细调试）
-        # if idx < 5:
-        #     print(f"\n🔍 样本{idx} 原始数据:")
-        #     print(f"  instruction长度: {len(instruction)}")
-        #     print(f"  instruction开头: {repr(instruction[:100])}")
-        #     print(f"  instruction结尾: {repr(instruction[-100:])}")
-        #     print(f"  output_text: {repr(output_text)}")
-        #     print(f"  output_text类型: {type(output_text)}")
-        #     print(f"  output_text长度: {len(str(output_text))}")
-
-        #     # 检查"### Answer:"的位置
-        #     if "### Answer:" in instruction:
-        #         answer_pos = instruction.find("### Answer:")
-        #         print(f"  '### Answer:'位置: {answer_pos}")
-        #         print(f"  '### Answer:'前内容末尾: {repr(instruction[answer_pos-20:answer_pos])}")
-        #         print(f"  '### Answer:'后内容: {repr(instruction[answer_pos:answer_pos+20])}")
+            if use_mask:
+                # shared专家路径：使用instruction_mask
+                instruction_text = self.create_instruction_mask(instruction)
+                input_type = 0  # 标识为masked输入，激活shared专家
+            else:
+                # 路由专家路径：使用完整instruction
+                instruction_text = instruction
+                input_type = 1  # 标识为完整输入，激活路由专家
+        else:
+            # 兼容模式：使用原始instruction，激活所有专家
+            instruction_text = instruction
+            input_type = -1  # 标识为兼容模式
 
         # 构建完整的输入和输出
         # 格式：instruction + input → output
         if input_text:
-            full_input = f"{instruction}\n{input_text}"
+            full_input = f"{instruction_text}\n{input_text}"
         else:
-            full_input = instruction
+            full_input = instruction_text
 
         # 完整的文本（用于语言建模）
-        # 🔧 修复：使用空格分隔而不是换行符，避免tokenizer自动格式化
-        # 这样模型会学习：给定 instruction + input，生成 output
-        # 🔧 修复双空格问题：确保只有一个空格分隔
         full_text = f"{full_input.rstrip()} {output_text}"
 
         # 🔍 关键调试：检查构建后的full_text（注释掉详细调试）
@@ -388,6 +428,7 @@ class CultureLLMNewFormatDataset(Dataset):
             'input': input_text,
             'output': output_text,
             'label': label,
+            'input_type': input_type,  # 🆕 MASK机制：专家激活类型
             'valid_labels': valid_labels,
             'total_tokens': total_tokens,
             'input_length': input_length  # 添加调试信息
@@ -416,6 +457,7 @@ def dynamic_padding_collate_fn(batch, tokenizer):
     batch_inputs = []
     batch_outputs = []
     batch_labels_culture = []
+    batch_input_types = []  # 🆕 MASK机制：收集input_type
 
     for item in batch:
         input_ids = item['input_ids']
@@ -448,6 +490,7 @@ def dynamic_padding_collate_fn(batch, tokenizer):
         batch_inputs.append(item['input'])
         batch_outputs.append(item['output'])
         batch_labels_culture.append(item['label'])
+        batch_input_types.append(item['input_type'])  # 🆕 MASK机制
 
     # 堆叠成batch张量
     return {
@@ -457,7 +500,8 @@ def dynamic_padding_collate_fn(batch, tokenizer):
         'instruction': batch_instructions,
         'input': batch_inputs,
         'output': batch_outputs,
-        'label': batch_labels_culture
+        'label': batch_labels_culture,
+        'input_type': torch.tensor(batch_input_types, dtype=torch.long)  # 🆕 MASK机制
     }
 
 

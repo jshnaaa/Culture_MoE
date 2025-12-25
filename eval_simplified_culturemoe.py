@@ -90,8 +90,11 @@ def load_fixed_test_split(data_file: str, tokenizer, max_length: int,
         print(f"  保存的: {split_info.get('data_path')}")
         print(f"  当前的: {data_file}")
 
-    # 创建完整数据集
-    full_dataset = CultureLLMNewFormatDataset(data_file, tokenizer, max_length)
+    # 创建完整数据集（评估时不启用MASK机制）
+    full_dataset = CultureLLMNewFormatDataset(
+        data_file, tokenizer, max_length,
+        enable_mask=False  # 评估时不使用MASK
+    )
 
     if len(full_dataset) != split_info['total_size']:
         raise ValueError(f"数据集大小不匹配: 保存的={split_info['total_size']}, 当前={len(full_dataset)}")
@@ -333,7 +336,10 @@ class SimplifiedCultureMoEEvaluator:
         else:
             # 回退到原来的逻辑（兼容性）
             print("⚠️ 未指定数据划分文件，使用原有的验证集划分逻辑")
-            full_dataset = CultureLLMNewFormatDataset(data_file, self.tokenizer, max_length)
+            full_dataset = CultureLLMNewFormatDataset(
+                data_file, self.tokenizer, max_length,
+                enable_mask=False  # 评估时不使用MASK
+            )
 
             # 处理验证集划分
             if use_fixed_split:
@@ -427,11 +433,17 @@ class SimplifiedCultureMoEEvaluator:
                     if input_length < labels.shape[1]:
                         labels[i, :input_length] = -100
 
+                # 获取input_type（评估时为兼容模式）
+                input_type = batch.get('input_type', None)
+                if input_type is not None:
+                    input_type = input_type.to(device)
+
                 # 前向传播
                 outputs = self.model_adapter.forward(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
-                    labels=labels
+                    labels=labels,
+                    input_type=input_type  # 🆕 MASK机制
                 )
 
                 loss = outputs.loss
@@ -488,7 +500,7 @@ class SimplifiedCultureMoEEvaluator:
             true_output = sample['output']
             label = sample['label']
 
-            # 生成答案
+            # 生成答案（评估时使用原始instruction，不使用mask）
             generated_text = generate_answer(
                 self.model_adapter, self.tokenizer, instruction, input_text, device
             )
