@@ -61,17 +61,29 @@ fi
 if [ "$BACKBONE" = "llama" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/llama_unified_sharedfalse_gatefalse_20251216_143714/best_joint_model"
+    JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/llama_cultureLLM_sharedfalse_gatefalse_20251215_155307/best_joint_model"
     # JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/llama_unified_sharedfalse_gatefalse_20251205_134336/best_joint_model"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
-    JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/qwen_unified_sharedfalse_gatefalse_20251205_154255/best_joint_model"
+    JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/qwen_cultureLLM_sharedfalse_gatefalse_20251204_152323/best_joint_model"
     # JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/qwen_unified_sharedfalse_gatefalse_20251205_154255/best_joint_model"
 fi
 
 # ✅ 根据 DATA_ID 设置测试数据集
 case $DATA_ID in
+    2)
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
+        DATASET_TAG="CulturalBench"
+        ;;
+    3)
+        TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
+        DATASET_TAG="normad"
+        ;;
+    4)
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
+        DATASET_TAG="cultureLLM"
+        ;;
     6)
         TEST_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
         DATASET_NAME="moral_Gen"
