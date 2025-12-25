@@ -203,26 +203,38 @@ class CultureLLMNewFormatDataset(Dataset):
         # 2. 🔧 关键修复：精确计算input_length，只让模型学习答案部分
         # 我们需要找到"### Answer:"之后空格的位置，让模型从那里开始学习
 
-        # 构建到"### Answer: "为止的部分（包含最后的空格）
-        if "### Answer:" in full_text:
-            # 找到"### Answer:"的位置，然后添加": "
-            answer_pos = full_text.find("### Answer:")
-            input_until_answer_prompt = full_text[:answer_pos + len("### Answer: ")]
-        else:
-            # 如果没有"### Answer:"，使用原来的逻辑
-            input_until_answer_prompt = f"{full_input.rstrip()} "
+        # 🔧 修复：精确计算input_length - 确保只学习output部分
+        # 实际数据格式：full_input + " " + output_text
+        # 我们需要计算到空格结束位置的token数量
 
-        # 计算这个部分的token长度
-        encoded_input_no_pad = self.tokenizer(
-            input_until_answer_prompt,
+        # 方法1：直接使用full_input计算长度
+        input_encoded = self.tokenizer(
+            full_input,
             truncation=True,
             return_tensors='pt',
             add_special_tokens=True,
-            padding=False  # 不使用padding！
+            padding=False
         )
 
-        # 获取真实的输入长度（不包含padding）
-        input_length = len(encoded_input_no_pad['input_ids'][0])
+        # 方法2：计算分隔符（空格）的长度
+        separator = " "
+        separator_encoded = self.tokenizer(
+            separator,
+            truncation=True,
+            return_tensors='pt',
+            add_special_tokens=False,  # 分隔符不需要特殊token
+            padding=False
+        )
+
+        # input_length = full_input的token数 + 分隔符的token数
+        input_length = len(input_encoded['input_ids'][0]) + len(separator_encoded['input_ids'][0])
+
+        # 🔧 安全检查：确保input_length不超过总长度
+        total_length = len(input_ids)
+        if input_length >= total_length:
+            # 如果计算出的input_length过大，使用保守的估计
+            # 假设output至少有1个token
+            input_length = max(0, total_length - 2)
 
         # 🔍 调试：检查input_length计算
         # 注释掉详细调试信息
@@ -311,12 +323,26 @@ class CultureLLMNewFormatDataset(Dataset):
         #         print(f"  🚨 问题: input_length({input_length})过大，几乎占满整个序列!")
         #         print(f"    这会导致几乎没有训练目标")
 
-        # 注释掉详细调试信息，避免训练时输出过多日志
-        # if idx < 5:
-        #     # 检查tokenizer配置
-        #     eot_token_id = 128009  # <|eot_id|>
+        # 🔧 临时启用调试信息来验证标签掩码
+        if idx < 3:
+            print(f"\n📋 样本 {idx} - 标签掩码验证:")
+            print(f"  原始文本: '{full_text[:100]}...'")
+            print(f"  full_input: '{full_input[:80]}...'")
+            print(f"  output_text: '{output_text}'")
+            print(f"  计算的input_length: {input_length}")
+            print(f"  总序列长度: {len(input_ids)}")
+            print(f"  有效训练标签数: {valid_labels}")
 
-        #     print(f"  🔧 Tokenizer状态:")
+            # 检查前几个和后几个token的掩码情况
+            print(f"  前10个labels: {labels[:10].tolist()}")
+            print(f"  后10个labels: {labels[-10:].tolist()}")
+
+            # 解码前几个和后几个token看看内容
+            print(f"  前10个tokens: {self.tokenizer.decode(input_ids[:10], skip_special_tokens=True)}")
+            print(f"  后10个tokens: {self.tokenizer.decode(input_ids[-10:], skip_special_tokens=True)}")
+
+        # 注释掉其他调试信息
+        # if idx < 5:
         #     print(f"    pad_token: {repr(self.tokenizer.pad_token)}")
         #     print(f"    pad_token_id: {pad_token_id}")
         #     print(f"    eos_token_id: {self.tokenizer.eos_token_id}")
@@ -548,7 +574,7 @@ def extract_answer_from_text(text: str) -> str:
     """
     从生成的文本中提取答案
 
-    使用正则表达式查找数字
+    使用正则表达式查找单个数字
 
     Args:
         text: 生成的文本
@@ -556,10 +582,20 @@ def extract_answer_from_text(text: str) -> str:
     Returns:
         提取的答案（数字字符串）
     """
-    # 查找数字（1-10 或 1-4）
-    match = re.search(r'\d+', text)
+    # 🔧 修复：只匹配单个数字1-4，避免提取"442"这种多位数字
+    match = re.search(r'\b([1-4])\b', text)
     if match:
-        return match.group(0)
+        return match.group(1)
+
+    # 如果没有找到1-4，尝试查找任意单个数字（兼容性）
+    match = re.search(r'\b(\d)\b', text)
+    if match:
+        return match.group(1)
+
+    # 最后兜底：查找第一个数字字符
+    match = re.search(r'(\d)', text)
+    if match:
+        return match.group(1)
 
     return ""
 
@@ -596,14 +632,13 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     else:
         full_input = instruction
 
-    # 确保以"### Answer: "结尾，给模型明确的生成提示
-    if not full_input.endswith("### Answer: "):
-        if "### Answer:" in full_input:
-            # 如果已经有"### Answer:"但格式不对，修正它
-            full_input = full_input.split("### Answer:")[0].strip() + " ### Answer: "
-        else:
-            # 如果没有，添加提示
-            full_input = f"{full_input.rstrip()} ### Answer: "
+    # 🔧 修复：确保生成时的输入格式与训练时完全一致
+    # 训练时格式：full_input + " " + output_text
+    # 生成时格式：full_input + " " (让模型生成output_text)
+
+    # 简化逻辑：直接使用与训练时相同的格式
+    if not full_input.endswith(" "):
+        full_input = f"{full_input.rstrip()} "
 
     # 🔍 调试生成时的输入（注释掉详细调试）
     # print(f"🔍 生成时输入: {repr(full_input[-100:])}")  # 显示输入的最后100个字符
@@ -633,10 +668,13 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
                 outputs = actual_model.generate(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=3,  # 🔧 减少到3个token，只生成数字答案，避免乱码
+                    max_new_tokens=2,  # 🔧 进一步减少到2个token，只生成单个数字
+                    min_new_tokens=1,  # 🔧 至少生成1个token
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
                     do_sample=False,  # 🔧 贪心解码
+                    temperature=1.0,  # 🔧 确保temperature设置
+                    repetition_penalty=1.1,  # 🔧 轻微的重复惩罚
                     early_stopping=True  # 🔧 遇到eos_token立即停止
                 )
             else:
@@ -644,10 +682,13 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
                 outputs = model.generate(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=3,  # 🔧 减少到3个token，只生成数字答案
+                    max_new_tokens=2,  # 🔧 减少到2个token，只生成数字答案
+                    min_new_tokens=1,  # 🔧 至少生成1个token
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
                     do_sample=False,  # 🔧 贪心解码
+                    temperature=1.0,  # 🔧 确保temperature设置
+                    repetition_penalty=1.1,  # 🔧 轻微的重复惩罚
                     early_stopping=True  # 🔧 遇到eos_token立即停止
                 )
         else:
@@ -655,10 +696,13 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             # print(f"🔍 Using standard model generate method")  # 注释掉详细调试
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=3,  # 🔧 统一减少到3个token
+                max_new_tokens=2,  # 🔧 统一减少到2个token
+                min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,  # 贪婪解码
+                temperature=1.0,  # 🔧 确保temperature设置
+                repetition_penalty=1.1,  # 🔧 轻微的重复惩罚
                 num_beams=1,      # 禁用 beam search
                 early_stopping=True  # 🔧 添加早停
             )
