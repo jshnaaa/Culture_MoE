@@ -141,6 +141,59 @@ case $DATA_ID in
         ;;
 esac
 
+# 特殊处理：DATA_ID=15时合并blend和cultureAtlas数据集
+if [ "$DATA_ID" = "15" ]; then
+    echo "🔄 合并blend和cultureAtlas数据集..."
+
+    BLEND_FILE="/root/autodl-fs/blend_merge_gen.json"
+    CULTUREATLAS_FILE="/autodl-fs/data/cultureAtlas_merge_gen.json"
+    MERGED_FILE="/root/autodl-fs/blend_cultureAtlas_merged.json"
+
+    # 检查源文件是否存在
+    if [ ! -f "$BLEND_FILE" ]; then
+        echo "❌ blend数据文件不存在: $BLEND_FILE"
+        exit 1
+    fi
+
+    if [ ! -f "$CULTUREATLAS_FILE" ]; then
+        echo "❌ cultureAtlas数据文件不存在: $CULTUREATLAS_FILE"
+        exit 1
+    fi
+
+    # 使用Python合并JSON数据
+    python3 -c "
+import json
+
+# 读取两个数据集
+with open('$BLEND_FILE', 'r', encoding='utf-8') as f:
+    blend_data = json.load(f)
+
+with open('$CULTUREATLAS_FILE', 'r', encoding='utf-8') as f:
+    cultureatlas_data = json.load(f)
+
+# 合并数据
+merged_data = blend_data + cultureatlas_data
+
+# 保存合并结果
+with open('$MERGED_FILE', 'w', encoding='utf-8') as f:
+    json.dump(merged_data, f, indent=2, ensure_ascii=False)
+
+print(f'✅ 数据合并完成:')
+print(f'  - blend: {len(blend_data)} 条')
+print(f'  - cultureAtlas: {len(cultureatlas_data)} 条')
+print(f'  - 合并后: {len(merged_data)} 条')
+print(f'  - 保存至: $MERGED_FILE')
+"
+
+    if [ $? -eq 0 ]; then
+        TRAIN_FILE="$MERGED_FILE"
+        echo "✅ 使用合并数据集: $TRAIN_FILE"
+    else
+        echo "❌ 数据合并失败"
+        exit 1
+    fi
+fi
+
 # 检查文件存在性
 if [ ! -f "$BASE_MODEL/config.json" ] && [ ! "$BASE_MODEL" = "microsoft/DialoGPT-medium" ]; then
     echo "❌ 基础模型不存在: $BASE_MODEL"
