@@ -3,7 +3,9 @@
 # 简化版CultureMoE消融实验批处理脚本
 #
 # 使用方法：
-#   bash run_ablation_study.sh <model_path> [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss]
+#   bash run_ablation_study.sh <training_output_dir> [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss]
+#
+# 注意：传入训练输出目录（包含data_split_8_1_1.pkl和best_simplified_culturemoe/），而不是模型目录
 
 echo "======================================="
 echo "简化版CultureMoE消融实验"
@@ -11,7 +13,7 @@ echo "自动化测试不同组件配置的性能"
 echo "======================================="
 
 # 参数设置
-MODEL_PATH="$1"
+TRAINING_OUTPUT_DIR="$1"     # 训练输出目录（包含data_split_8_1_1.pkl和best_simplified_culturemoe/）
 BACKBONE=${2:-"llama"}        # 默认llama
 DATA_ID=${3:-"2"}            # 默认数据集2
 USE_SHARED=${4:-"true"}      # 默认保留shared专家
@@ -19,31 +21,49 @@ USE_MASK=${5:-"true"}        # 默认保留MASK机制（占位符）
 USE_GATE=${6:-"true"}        # 默认保留gate机制
 USE_CULTURE_LOSS=${7:-"true"} # 默认保留文化损失
 
+# 构建实际的模型路径
+MODEL_PATH="$TRAINING_OUTPUT_DIR/best_simplified_culturemoe"
+
 # 参数检查
 if [ "$#" -lt 1 ]; then
-    echo "❌ 用法: $0 <model_path> [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss]"
+    echo "❌ 用法: $0 <training_output_dir> [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss]"
     echo ""
     echo "参数说明:"
-    echo "  model_path:      训练好的模型路径（必需）"
-    echo "  backbone:        基座模型 (llama/qwen, 默认: llama)"
-    echo "  data_id:         数据集ID (2/3/4, 默认: 2)"
-    echo "  use_shared:      是否保留shared专家 (true/false, 默认: true)"
-    echo "  use_mask:        是否保留MASK机制 (true/false, 默认: true, 占位符)"
-    echo "  use_gate:        是否保留gate机制 (true/false, 默认: true)"
-    echo "  use_culture_loss: 是否保留文化损失 (true/false, 默认: true)"
+    echo "  training_output_dir: 训练输出目录（包含data_split_8_1_1.pkl和best_simplified_culturemoe/）（必需）"
+    echo "  backbone:            基座模型 (llama/qwen, 默认: llama)"
+    echo "  data_id:             数据集ID (2/3/4, 默认: 2)"
+    echo "  use_shared:          是否保留shared专家 (true/false, 默认: true)"
+    echo "  use_mask:            是否保留MASK机制 (true/false, 默认: true, 占位符)"
+    echo "  use_gate:            是否保留gate机制 (true/false, 默认: true)"
+    echo "  use_culture_loss:    是否保留文化损失 (true/false, 默认: true)"
     echo ""
     echo "示例:"
+    echo "  # 正确的用法：传入训练输出目录"
     echo "  bash run_ablation_study.sh \\"
-    echo "    /root/autodl-fs/simplified_culturemoe/llama_CulturalBench_20251224_153803/best_simplified_culturemoe"
+    echo "    /autodl-fs/data/simplified_culturemoe/llama_blend_20251226_121046"
     echo ""
     echo "  bash run_ablation_study.sh \\"
-    echo "    /path/to/model llama 2 false true false true"
+    echo "    /autodl-fs/data/simplified_culturemoe/llama_blend_20251226_121046 llama 2 false true false true"
+    echo ""
+    echo "目录结构应该是："
+    echo "  training_output_dir/"
+    echo "  ├── data_split_8_1_1.pkl"
+    echo "  └── best_simplified_culturemoe/"
+    echo "      ├── moe_weights.pt"
+    echo "      ├── simplified_culturemoe_config.json"
+    echo "      └── tokenizer files..."
     exit 1
 fi
 
 # 验证路径
+if [ ! -d "$TRAINING_OUTPUT_DIR" ]; then
+    echo "❌ 训练输出目录不存在: $TRAINING_OUTPUT_DIR"
+    exit 1
+fi
+
 if [ ! -d "$MODEL_PATH" ]; then
     echo "❌ 模型路径不存在: $MODEL_PATH"
+    echo "请确保训练输出目录中包含 best_simplified_culturemoe/ 子目录"
     exit 1
 fi
 
@@ -119,6 +139,7 @@ OUTPUT_DIR="/root/autodl-fs/simplified_culturemoe_ablation/${BACKBONE}_${DATA_ID
 mkdir -p "$OUTPUT_DIR"
 
 echo "配置信息:"
+echo "  训练输出目录: $TRAINING_OUTPUT_DIR"
 echo "  模型路径: $MODEL_PATH"
 echo "  基座模型: $BACKBONE ($BASE_MODEL_PATH)"
 echo "  数据集: $DATASET_TAG ($DATA_FILE)"
@@ -173,20 +194,25 @@ echo "----------------------------------------"
 
 # 查找数据划分文件
 SPLIT_FILE=""
-# 首先检查模型目录中是否有划分文件
-if [ -f "$MODEL_PATH/data_split_8_1_1.pkl" ]; then
+# 首先检查训练输出目录中的数据划分文件（这是正确位置）
+if [ -f "$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl" ]; then
+    SPLIT_FILE="$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl"
+    echo "✅ 找到训练输出目录中的数据划分文件: $SPLIT_FILE"
+# 备用：检查模型目录中是否有划分文件（兼容旧版本）
+elif [ -f "$MODEL_PATH/data_split_8_1_1.pkl" ]; then
     SPLIT_FILE="$MODEL_PATH/data_split_8_1_1.pkl"
     echo "✅ 找到模型目录中的数据划分文件: $SPLIT_FILE"
-# 检查模型的父目录
-elif [ -f "$(dirname "$MODEL_PATH")/data_split_8_1_1.pkl" ]; then
-    SPLIT_FILE="$(dirname "$MODEL_PATH")/data_split_8_1_1.pkl"
-    echo "✅ 找到父目录中的数据划分文件: $SPLIT_FILE"
-# 检查常见的训练输出目录
+# 备用：检查常见的训练输出目录
 elif [ -f "/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl" ]; then
     SPLIT_FILE="/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
     echo "✅ 找到通用目录中的数据划分文件: $SPLIT_FILE"
 else
-    echo "⚠️ 未找到数据划分文件，将使用原有的验证集划分逻辑"
+    echo "❌ 未找到数据划分文件"
+    echo "请确保以下位置之一存在 data_split_8_1_1.pkl 文件："
+    echo "  1. $TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl (推荐)"
+    echo "  2. $MODEL_PATH/data_split_8_1_1.pkl"
+    echo "  3. /root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
+    exit 1
 fi
 
 # 构建eval命令参数
