@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # 简化版FFN CultureMoE训练脚本
-# 纯LoRA MoE架构，在最后8层替换FFN为LoRA MoE，添加文化损失
+# 纯LoRA MoE架构，在所有层替换FFN为LoRA MoE，添加文化损失
 # 针对48GB×2卡优化
 
 echo "======================================="
 echo "简化版FFN CultureMoE训练"
-echo "纯LoRA MoE架构，在最后8层FFN替换为LoRA MoE"
+echo "纯LoRA MoE架构，在所有层FFN替换为LoRA MoE"
 echo "针对48GB×2卡优化"
 echo "======================================="
 
@@ -75,7 +75,7 @@ if [ "$BACKBONE" = "llama" ]; then
 
     MODEL_NAME="llama"
     TOTAL_LAYERS=32
-    MoE_LAYERS="24,25,26,27,28,29,30,31"  # LLaMA的最后8层
+    MoE_LAYERS="ALL"  # 所有层都使用MoE
 elif [ "$BACKBONE" = "qwen" ]; then
     # 尝试多个可能的路径
     POSSIBLE_PATHS=(
@@ -103,7 +103,7 @@ elif [ "$BACKBONE" = "qwen" ]; then
 
     MODEL_NAME="qwen"
     TOTAL_LAYERS=28
-    MoE_LAYERS="20,21,22,23,24,25,26,27"  # Qwen的最后8层
+    MoE_LAYERS="ALL"  # 所有层都使用MoE
 else
     echo "❌ 不支持的backbone: $BACKBONE (支持: llama, qwen)"
     exit 1
@@ -186,11 +186,11 @@ echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
 echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
 echo "  总层数: $TOTAL_LAYERS"
-echo "  MoE层: $MoE_LAYERS (最后8层FFN替换为LoRA MoE)"
+echo "  MoE层: $MoE_LAYERS (所有层FFN替换为LoRA MoE)"
 if [ "$USE_LORA" = "true" ]; then
-    echo "  训练模式: 注意力层LoRA + 最后8层LoRA MoE专家训练"
+    echo "  训练模式: 注意力层LoRA + 所有层LoRA MoE专家训练"
 else
-    echo "  训练模式: 仅最后8层LoRA MoE专家训练"
+    echo "  训练模式: 仅所有层LoRA MoE专家训练"
 fi
 echo "  共享专家: $USE_SHARED"
 echo "  MASK机制: $USE_MASK"
@@ -249,7 +249,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "max_seq_length": $MAX_SEQ_LEN
     },
     "training_config": {
-        "training_mode": "simplified_last_two_layers_moe",
+        "training_mode": "simplified_all_layers_moe",
         "use_shared_expert": $USE_SHARED,
         "use_mask": $USE_MASK,
         "use_moe_gate": $USE_GATE,
@@ -349,7 +349,7 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
 
         echo ""
         echo "🎉 训练完成！模型特点:"
-        echo "  - 纯LoRA MoE架构：最后8层FFN替换为LoRA MoE"
+        echo "  - 纯LoRA MoE架构：所有层FFN替换为LoRA MoE"
         echo "  - MoE专家数: $NUM_MOE_EXPERTS"
         echo "  - 激活专家数: $NUM_ACTIVATED_EXPERTS ({'dense模式' if [ "$NUM_ACTIVATED_EXPERTS" = "$NUM_MOE_EXPERTS" ]; then echo 'dense模式'; else echo "top-$NUM_ACTIVATED_EXPERTS"; fi})"
         echo "  - 文化损失模式: $USE_CULTURE_LOSS"

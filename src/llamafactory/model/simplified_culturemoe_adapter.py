@@ -1,8 +1,8 @@
 # src/llamafactory/model/simplified_culturemoe_adapter.py
 """
 简化版CultureMoE适配器
-纯MoE架构：只在最后两层替换FFN为MoE结构
-不使用MixLoRA，仅在指定层使用MoE专家
+纯MoE架构：在所有层替换FFN为MoE结构
+不使用MixLoRA，在所有层使用MoE专家
 """
 
 import torch
@@ -572,8 +572,8 @@ class SimplifiedCultureMoEAdapter:
         # 🔧 实现"单一真源"原则 - 彻底解包PeftModel
         self.backbone_model = self._extract_backbone_model(base_model)
 
-        # 只替换最后两层的FFN为MoE
-        self._replace_last_layers_with_moe()
+        # 🆕 替换所有层的FFN为MoE
+        self._replace_all_layers_with_moe()
 
         # 应用LoRA到注意力层
         if config.use_lora:
@@ -614,7 +614,7 @@ class SimplifiedCultureMoEAdapter:
             return model
 
     def _get_target_layers(self):
-        """获取目标层索引（最后8层）"""
+        """获取目标层索引（所有层）"""
         # 🔧 使用单一真源 - 直接从backbone_model获取layers
         # print(f"🔍 Using backbone model: {type(self.backbone_model)}")
 
@@ -630,17 +630,17 @@ class SimplifiedCultureMoEAdapter:
 
         total_layers = len(layers)
 
-        # 最后8层
-        target_layers = list(range(total_layers - 8, total_layers))
+        # 🆕 所有层都嵌入MoE
+        target_layers = list(range(total_layers))
 
         return layers, target_layers
 
 
-    def _replace_last_layers_with_moe(self):
-        """替换最后8层的FFN为LoRA MoE"""
+    def _replace_all_layers_with_moe(self):
+        """替换所有层的FFN为LoRA MoE"""
         layers, target_layers = self._get_target_layers()
 
-        print(f"🔄 Replacing FFN in last 8 layers ({target_layers}) with LoRA MoE (Pure LoRA MoE Architecture)")
+        print(f"🔄 Replacing FFN in ALL {len(target_layers)} layers with LoRA MoE (Pure LoRA MoE Architecture)")
 
         for layer_idx in target_layers:
             original_ffn = layers[layer_idx].mlp

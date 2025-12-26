@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 简化版FFN CultureMoE训练脚本
-基于MixLoRA实现，只在最后2层使用MoE，添加文化损失
+基于MixLoRA实现，在所有层使用MoE，添加文化损失
 针对48GB×2卡优化
 
 特点：
 1. 基于成功的MixLoRA架构
-2. 只在最后2层(26-27 for Qwen, 30-31 for LLaMA)替换为MoE
+2. 在所有层替换FFN为MoE
 3. 添加文化感知损失
 4. 极简内存优化配置
 """
@@ -889,7 +889,7 @@ def main():
         lora_dropout=args.lora_dropout,
         num_moe_experts=args.num_moe_experts,
         num_activated_experts=args.num_activated_experts,
-        moe_layers=None,  # None表示最后两层替换为MoE
+        moe_layers=None,  # None表示所有层替换为MoE
         use_shared=use_shared,  # 占位符
         use_gate=use_gate,      # 占位符
         use_culture_loss=use_culture_loss,
@@ -1088,7 +1088,7 @@ def main():
         config = {
             'base_model': args.base_model_path,
             'backbone': args.backbone,
-            'training_mode': 'simplified_last_two_layers_moe',
+            'training_mode': 'simplified_all_layers_moe',
             'num_epochs': args.num_epochs,
             'batch_size': args.batch_size,
             'effective_batch_size': args.batch_size * world_size * args.gradient_accumulation_steps,
@@ -1099,7 +1099,7 @@ def main():
             'use_moe_gate': use_gate,
             'num_moe_experts': args.num_moe_experts,
             'num_activated_experts': args.num_activated_experts,
-            'moe_layers': 'Last 2 layers FFN replaced with MoE',
+            'moe_layers': 'All layers FFN replaced with MoE',
             'use_culture_loss': use_culture_loss,
             'culture_loss_weight': args.culture_loss_weight,
             'use_lora': use_lora,
@@ -1110,7 +1110,7 @@ def main():
             },
             'eval_interval': args.eval_interval,
             'best_eval_accuracy': best_eval_accuracy,
-            'architecture': 'simplified_last_two_layers_moe'
+            'architecture': 'simplified_all_layers_moe'
         }
 
         with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
@@ -1126,8 +1126,8 @@ def main():
         print(f"  - generated_answers.json (Generated answers on validation set)")
         print(f"  - config.json (Training configuration)")
         print(f"\nBest validation accuracy: {best_eval_accuracy:.4f}")
-        print(f"Architecture: Simplified Last Two Layers MoE")
-        print(f"MoE layers: Last 2 layers FFN replaced with MoE")
+        print(f"Architecture: Simplified All Layers MoE")
+        print(f"MoE layers: All layers FFN replaced with MoE")
         print(f"MoE experts: {args.num_moe_experts}")
         print(f"Activated experts: {args.num_activated_experts} ({'dense mode' if args.num_activated_experts == args.num_moe_experts else f'top-{args.num_activated_experts}'})")
         print(f"Use LoRA: {use_lora}")
