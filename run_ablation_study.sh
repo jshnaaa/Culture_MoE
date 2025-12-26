@@ -100,6 +100,13 @@ case $DATA_ID in
         USE_PKL_SPLIT=true
         echo "📊 数据模式: 使用pkl划分的测试集（与训练一致）"
         ;;
+    1)
+        # 使用完整数据集模式
+        DATA_FILE="/root/autodl-fs/blend_merge_gen.json"
+        DATASET_TAG="blend"
+        USE_PKL_SPLIT=false
+        echo "📊 数据模式: CulturalBench完整数据集"
+        ;;
     2)
         # 使用完整数据集模式
         DATA_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
