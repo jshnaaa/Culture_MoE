@@ -669,43 +669,39 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
                 outputs = actual_model.generate(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=5,  # 🔧 增加到5个token，确保能生成完整答案
+                    max_new_tokens=2,  # 🔧 减少到2个token，单个数字答案足够
                     min_new_tokens=1,  # 🔧 至少生成1个token
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
                     do_sample=False,  # 🔧 贪心解码
-                    temperature=1.0,  # 🔧 确保temperature设置
-                    repetition_penalty=1.1  # 🔧 轻微的重复惩罚
-                    # 🔧 移除early_stopping=True，该参数在当前transformers版本中不被支持
+                    num_beams=1
+                    # 🔧 移除temperature和repetition_penalty，它们与do_sample=False冲突
                 )
             else:
                 # 使用联合模型的自定义generate方法
                 outputs = model.generate(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=5,  # 🔧 增加到5个token，确保能生成完整答案
+                    max_new_tokens=2,  # 🔧 减少到2个token，单个数字答案足够
                     min_new_tokens=1,  # 🔧 至少生成1个token
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
                     do_sample=False,  # 🔧 贪心解码
-                    temperature=1.0,  # 🔧 确保temperature设置
-                    repetition_penalty=1.1  # 🔧 轻微的重复惩罚
-                    # 🔧 移除early_stopping=True，该参数在当前transformers版本中不被支持
+                    num_beams=1
+                    # 🔧 移除temperature和repetition_penalty，它们与do_sample=False冲突
                 )
         else:
             # 回退到标准generate方法
             # print(f"🔍 Using standard model generate method")  # 注释掉详细调试
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=5,  # 🔧 增加到5个token，确保能生成完整答案
+                max_new_tokens=2,  # 🔧 减少到2个token，单个数字答案足够
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,  # 贪婪解码
-                temperature=1.0,  # 🔧 确保temperature设置
-                repetition_penalty=1.1,  # 🔧 轻微的重复惩罚
                 num_beams=1      # 禁用 beam search
-                # 🔧 移除early_stopping=True，该参数在当前transformers版本中不被支持
+                # 🔧 移除temperature和repetition_penalty，它们与do_sample=False冲突
             )
 
     # 解码

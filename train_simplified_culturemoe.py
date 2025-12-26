@@ -917,9 +917,94 @@ def main():
     # 加载tokenizer
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(args.base_model_path, trust_remote_code=True)
-    if tokenizer.pad_token is None:
+
+    # 🔧 修复Llama 3.1 tokenizer配置问题 - 与推理时保持一致
+    print(f"🔧 原始tokenizer状态: pad_token='{tokenizer.pad_token}', pad_token_id={tokenizer.pad_token_id}")
+
+    # 强制检查和修复pad_token配置，使用Llama 3.1官方的padding token
+    if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id == 128009:
+        # Llama 3.1: 使用官方的finetune_right_pad_id
+        print(f"🔧 检测到Llama 3.1模型，查找官方padding token...")
+
+        # 查找Llama 3.1官方的padding token
+        official_pad_token = "<|finetune_right_pad_id|>"
+        try:
+            pad_token_id = tokenizer.convert_tokens_to_ids(official_pad_token)
+
+            # 检查这个token是否存在且有效
+            if pad_token_id != tokenizer.unk_token_id and pad_token_id is not None:
+                tokenizer.pad_token = official_pad_token
+                tokenizer.pad_token_id = pad_token_id
+                print(f"✅ Llama 3.1: 使用官方padding token: '{official_pad_token}' (id={pad_token_id})")
+            else:
+                raise ValueError("Official pad token not found or invalid")
+
+        except Exception as e:
+            print(f"⚠️ 无法找到官方padding token '{official_pad_token}': {e}")
+            print(f"🔧 使用安全的低频字符作为fallback...")
+
+            # 使用安全的低频字符作为fallback
+            safe_tokens = ['~', '`', '|', '^', '§', '¶', '†', '‡']
+            found_safe_token = False
+            for safe_token in safe_tokens:
+                try:
+                    safe_token_id = tokenizer.convert_tokens_to_ids(safe_token)
+                    if safe_token_id != tokenizer.unk_token_id and safe_token_id != 128009:
+                        tokenizer.pad_token = safe_token
+                        tokenizer.pad_token_id = safe_token_id
+                        print(f"🔧 Llama 3.1: 使用安全字符 '{safe_token}' (id={safe_token_id}) 作为padding")
+                        found_safe_token = True
+                        break
+                except:
+                    continue
+
+            if not found_safe_token:
+                print(f"⚠️ 无法找到合适的padding token，将导致训练问题")
+
+    elif tokenizer.pad_token is None:
+        # 其他模型的标准配置
         tokenizer.pad_token = tokenizer.eos_token
+        print(f"🔧 标准配置: pad_token = eos_token")
+    else:
+        # 对于已经有pad_token但可能配置错误的情况，也要检查
+        if tokenizer.pad_token_id == 128009:
+            print(f"🔧 检测到错误的pad_token配置(使用了<|eot_id|>)，强制修复...")
+
+            # 对于Llama 3.1，优先尝试官方padding token
+            if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id == 128009:
+                official_pad_token = "<|finetune_right_pad_id|>"
+                try:
+                    pad_token_id = tokenizer.convert_tokens_to_ids(official_pad_token)
+                    if pad_token_id != tokenizer.unk_token_id and pad_token_id != 128009:
+                        tokenizer.pad_token = official_pad_token
+                        tokenizer.pad_token_id = pad_token_id
+                        print(f"✅ 强制修复: 使用官方padding token '{official_pad_token}' (id={pad_token_id})")
+                    else:
+                        raise ValueError("Official pad token invalid")
+                except:
+                    # 如果官方token不可用，使用安全字符
+                    safe_tokens = ['~', '`', '|', '^', '§', '¶']
+                    for safe_token in safe_tokens:
+                        try:
+                            safe_token_id = tokenizer.convert_tokens_to_ids(safe_token)
+                            if safe_token_id != tokenizer.unk_token_id and safe_token_id != 128009:
+                                tokenizer.pad_token = safe_token
+                                tokenizer.pad_token_id = safe_token_id
+                                print(f"🔧 强制修复: 使用安全字符 '{safe_token}' (id={safe_token_id}) 作为padding")
+                                break
+                        except:
+                            continue
+
     tokenizer.padding_side = "right"
+
+    # 验证tokenizer配置
+    print(f"✅ Tokenizer配置验证:")
+    print(f"  pad_token: {repr(tokenizer.pad_token)}")
+    print(f"  pad_token_id: {tokenizer.pad_token_id}")
+    print(f"  eos_token: {repr(tokenizer.eos_token)}")
+    print(f"  eos_token_id: {tokenizer.eos_token_id}")
+    print(f"  是否等于<|eot_id|>: {tokenizer.pad_token_id == 128009}")
+
     print("✅ Tokenizer loaded")
 
     # 加载数据 - 使用8:1:1划分（支持多数据集）
