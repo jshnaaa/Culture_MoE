@@ -15,7 +15,7 @@ echo "======================================="
 # 参数设置
 TRAINING_OUTPUT_DIR="$1"     # 训练输出目录（包含data_split_8_1_1.pkl和best_simplified_culturemoe/）
 BACKBONE=${2:-"llama"}        # 默认llama
-DATA_ID=${3:-"2"}            # 默认数据集2
+DATA_ID=${3:-"0"}            # 默认数据集0（使用pkl划分的测试集）
 USE_SHARED=${4:-"true"}      # 默认保留shared专家
 USE_MASK=${5:-"true"}        # 默认保留MASK机制（占位符）
 USE_GATE=${6:-"true"}        # 默认保留gate机制
@@ -31,19 +31,28 @@ if [ "$#" -lt 1 ]; then
     echo "参数说明:"
     echo "  training_output_dir: 训练输出目录（包含data_split_8_1_1.pkl和best_simplified_culturemoe/）（必需）"
     echo "  backbone:            基座模型 (llama/qwen, 默认: llama)"
-    echo "  data_id:             数据集ID (2/3/4, 默认: 2)"
+    echo "  data_id:             数据集模式 (默认: 0)"
+    echo "    0 - 使用pkl划分的测试集（推荐，与训练一致）"
+    echo "    2 - CulturalBench完整数据集"
+    echo "    3 - normad完整数据集"
+    echo "    4 - cultureLLM完整数据集"
     echo "  use_shared:          是否保留shared专家 (true/false, 默认: true)"
     echo "  use_mask:            是否保留MASK机制 (true/false, 默认: true, 占位符)"
     echo "  use_gate:            是否保留gate机制 (true/false, 默认: true)"
     echo "  use_culture_loss:    是否保留文化损失 (true/false, 默认: true)"
     echo ""
     echo "示例:"
-    echo "  # 正确的用法：传入训练输出目录"
+    echo "  # 使用pkl划分的测试集（推荐，默认）"
     echo "  bash run_ablation_study.sh \\"
     echo "    /autodl-fs/data/simplified_culturemoe/llama_blend_20251226_121046"
     echo ""
+    echo "  # 使用CulturalBench完整数据集"
     echo "  bash run_ablation_study.sh \\"
-    echo "    /autodl-fs/data/simplified_culturemoe/llama_blend_20251226_121046 llama 2 false true false true"
+    echo "    /autodl-fs/data/simplified_culturemoe/llama_blend_20251226_121046 llama 2"
+    echo ""
+    echo "  # 完整参数示例"
+    echo "  bash run_ablation_study.sh \\"
+    echo "    /autodl-fs/data/simplified_culturemoe/llama_blend_20251226_121046 llama 0 false true false true"
     echo ""
     echo "目录结构应该是："
     echo "  training_output_dir/"
@@ -73,29 +82,47 @@ if [[ "$BACKBONE" != "llama" && "$BACKBONE" != "qwen" ]]; then
     exit 1
 fi
 
-if [[ "$DATA_ID" != "2" && "$DATA_ID" != "3" && "$DATA_ID" != "4" ]]; then
-    echo "❌ 无效的DATA_ID: $DATA_ID (支持: 2, 3, 4)"
+if [[ "$DATA_ID" != "0" && "$DATA_ID" != "2" && "$DATA_ID" != "3" && "$DATA_ID" != "4" ]]; then
+    echo "❌ 无效的DATA_ID: $DATA_ID (支持: 0, 2, 3, 4)"
+    echo "  0 - 使用pkl划分的测试集（推荐）"
+    echo "  2 - CulturalBench完整数据集"
+    echo "  3 - normad完整数据集"
+    echo "  4 - cultureLLM完整数据集"
     exit 1
 fi
 
-# 设置数据文件路径（与训练脚本一致）
+# 根据DATA_ID设置数据处理模式
 case $DATA_ID in
+    0)
+        # 使用pkl划分的测试集模式
+        DATA_FILE=""  # 将通过pkl文件确定
+        DATASET_TAG="pkl_test_split"
+        USE_PKL_SPLIT=true
+        echo "📊 数据模式: 使用pkl划分的测试集（与训练一致）"
+        ;;
     2)
+        # 使用完整数据集模式
         DATA_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
         DATASET_TAG="CulturalBench"
+        USE_PKL_SPLIT=false
+        echo "📊 数据模式: CulturalBench完整数据集"
         ;;
     3)
         DATA_FILE="/root/autodl-fs/normad_merge_gen.json"
         DATASET_TAG="normad"
+        USE_PKL_SPLIT=false
+        echo "📊 数据模式: normad完整数据集"
         ;;
     4)
         DATA_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
+        USE_PKL_SPLIT=false
+        echo "📊 数据模式: cultureLLM完整数据集"
         ;;
 esac
 
-# 验证数据文件存在
-if [ ! -f "$DATA_FILE" ]; then
+# 验证数据文件存在（仅对完整数据集模式）
+if [ "$USE_PKL_SPLIT" = "false" ] && [ ! -f "$DATA_FILE" ]; then
     echo "❌ 数据文件不存在: $DATA_FILE"
     exit 1
 fi
@@ -192,40 +219,50 @@ fi
 echo "📊 实验配置: $EXPERIMENT_NAME"
 echo "----------------------------------------"
 
-# 查找数据划分文件
+# 查找数据划分文件（仅在使用pkl模式时）
 SPLIT_FILE=""
-# 首先检查训练输出目录中的数据划分文件（这是正确位置）
-if [ -f "$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl" ]; then
-    SPLIT_FILE="$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl"
-    echo "✅ 找到训练输出目录中的数据划分文件: $SPLIT_FILE"
-# 备用：检查模型目录中是否有划分文件（兼容旧版本）
-elif [ -f "$MODEL_PATH/data_split_8_1_1.pkl" ]; then
-    SPLIT_FILE="$MODEL_PATH/data_split_8_1_1.pkl"
-    echo "✅ 找到模型目录中的数据划分文件: $SPLIT_FILE"
-# 备用：检查常见的训练输出目录
-elif [ -f "/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl" ]; then
-    SPLIT_FILE="/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
-    echo "✅ 找到通用目录中的数据划分文件: $SPLIT_FILE"
+if [ "$USE_PKL_SPLIT" = "true" ]; then
+    # 首先检查训练输出目录中的数据划分文件（这是正确位置）
+    if [ -f "$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl" ]; then
+        SPLIT_FILE="$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl"
+        echo "✅ 找到训练输出目录中的数据划分文件: $SPLIT_FILE"
+    # 备用：检查模型目录中是否有划分文件（兼容旧版本）
+    elif [ -f "$MODEL_PATH/data_split_8_1_1.pkl" ]; then
+        SPLIT_FILE="$MODEL_PATH/data_split_8_1_1.pkl"
+        echo "✅ 找到模型目录中的数据划分文件: $SPLIT_FILE"
+    # 备用：检查常见的训练输出目录
+    elif [ -f "/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl" ]; then
+        SPLIT_FILE="/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
+        echo "✅ 找到通用目录中的数据划分文件: $SPLIT_FILE"
+    else
+        echo "❌ 未找到数据划分文件"
+        echo "请确保以下位置之一存在 data_split_8_1_1.pkl 文件："
+        echo "  1. $TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl (推荐)"
+        echo "  2. $MODEL_PATH/data_split_8_1_1.pkl"
+        echo "  3. /root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
+        exit 1
+    fi
 else
-    echo "❌ 未找到数据划分文件"
-    echo "请确保以下位置之一存在 data_split_8_1_1.pkl 文件："
-    echo "  1. $TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl (推荐)"
-    echo "  2. $MODEL_PATH/data_split_8_1_1.pkl"
-    echo "  3. /root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
-    exit 1
+    echo "📊 使用完整数据集模式，跳过数据划分文件查找"
 fi
 
 # 构建eval命令参数
 EVAL_ARGS="--model_path \"$MODEL_PATH\" \
     --base_model_path \"$BASE_MODEL_PATH\" \
-    --data_file \"$DATA_FILE\" \
     --output_dir \"$OUTPUT_DIR\" \
-    --experiment_name \"$EXPERIMENT_NAME\" \
-    --use_fixed_split"
+    --experiment_name \"$EXPERIMENT_NAME\""
 
-# 如果找到了数据划分文件，添加到参数中
-if [ -n "$SPLIT_FILE" ]; then
-    EVAL_ARGS="$EVAL_ARGS --split_file \"$SPLIT_FILE\""
+# 根据数据模式添加不同的参数
+if [ "$USE_PKL_SPLIT" = "true" ]; then
+    # PKL模式：使用数据划分文件和固定分割
+    EVAL_ARGS="$EVAL_ARGS --use_fixed_split"
+    if [ -n "$SPLIT_FILE" ]; then
+        EVAL_ARGS="$EVAL_ARGS --split_file \"$SPLIT_FILE\""
+    fi
+    # DATA_FILE在PKL模式下可能为空，需要通过split文件确定
+else
+    # 完整数据集模式：使用指定的数据文件
+    EVAL_ARGS="$EVAL_ARGS --data_file \"$DATA_FILE\""
 fi
 
 # 根据配置添加disable参数
