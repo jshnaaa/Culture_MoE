@@ -111,6 +111,10 @@ fi
 
 # 设置数据文件路径
 case $DATA_ID in
+    1)
+        TRAIN_FILE="/root/autodl-fs/blend_merge_gen.json"
+        DATASET_TAG="blend"
+        ;;
     2)
         TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
         DATASET_TAG="CulturalBench"
