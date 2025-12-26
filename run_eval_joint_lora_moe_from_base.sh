@@ -11,9 +11,10 @@
 #   3. 保存生成答案、评估指标、模型配置等信息
 #
 # 使用方法：
-#   bash run_eval_joint_lora_moe_from_base.sh <BACKBONE> <DATA_ID>
+#   bash run_eval_joint_lora_moe_from_base.sh <JOINT_MODEL_PATH> <BACKBONE> <DATA_ID>
 #
 # 参数说明：
+#   JOINT_MODEL_PATH: 联合训练模型路径 (必需)
 #   BACKBONE: llama 或 qwen (必需)
 #   DATA_ID: 测试数据集ID (必需)
 #     - 6: moral_stories (NUM_CLASSES=2)
@@ -21,16 +22,17 @@
 #     - 8: culemo (NUM_CLASSES=6)
 #
 # 示例：
-#   bash run_eval_joint_lora_moe_from_base.sh llama 6
-#   bash run_eval_joint_lora_moe_from_base.sh qwen 7
+#   bash run_eval_joint_lora_moe_from_base.sh /path/to/joint_model llama 6
+#   bash run_eval_joint_lora_moe_from_base.sh /path/to/joint_model qwen 7
 # ============================================================
 
 # ✅ 参数检查
-if [ $# -ne 2 ]; then
-    echo "❌ 错误: 需要提供两个参数"
-    echo "用法: bash run_eval_joint_lora_moe_from_base.sh <BACKBONE> <DATA_ID>"
+if [ $# -ne 3 ]; then
+    echo "❌ 错误: 需要提供三个参数"
+    echo "用法: bash run_eval_joint_lora_moe_from_base.sh <JOINT_MODEL_PATH> <BACKBONE> <DATA_ID>"
     echo ""
     echo "参数说明:"
+    echo "  JOINT_MODEL_PATH: 联合训练模型路径"
     echo "  BACKBONE: llama 或 qwen"
     echo "  DATA_ID:"
     echo "    6 - moral_stories (NUM_CLASSES=2)"
@@ -38,26 +40,26 @@ if [ $# -ne 2 ]; then
     echo "    8 - culemo (NUM_CLASSES=6)"
     echo ""
     echo "示例:"
-    echo "  bash run_eval_joint_lora_moe_from_base.sh llama 6"
-    echo "  bash run_eval_joint_lora_moe_from_base.sh qwen 7"
+    echo "  bash run_eval_joint_lora_moe_from_base.sh /path/to/joint_model llama 6"
+    echo "  bash run_eval_joint_lora_moe_from_base.sh /path/to/joint_model qwen 7"
     exit 1
 fi
 
-BACKBONE="$1"
-DATA_ID="$2"
+JOINT_MODEL_PATH="$1"
+BACKBONE="$2"
+DATA_ID="$3"
 
 
-# ✅ 根据 backbone 设置基础模型路径和联合训练模型路径（固定时间戳）
+# ✅ 根据 backbone 设置基础模型路径
 if [ "$BACKBONE" = "llama" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
-    JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/llama_cultureLLM_sharedfalse_gatefalse_20251215_155307/best_joint_model"
-    # JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/llama_unified_sharedfalse_gatefalse_20251205_134336/best_joint_model"
-else
+elif [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
-    JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/qwen_cultureLLM_sharedfalse_gatefalse_20251204_152323/best_joint_model"
-    # JOINT_MODEL_PATH="/autodl-fs/data/joint_lora_moe/qwen_unified_sharedfalse_gatefalse_20251205_154255/best_joint_model"
+else
+    echo "❌ 错误: 不支持的backbone: $BACKBONE (支持: llama, qwen)"
+    exit 1
 fi
 
 # ✅ 根据 DATA_ID 设置测试数据集
