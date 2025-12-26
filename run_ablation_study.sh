@@ -279,8 +279,11 @@ print(split_info.get('data_path', ''))
         exit 1
     fi
 else
-    # 完整数据集模式：使用指定的数据文件
+    # 完整数据集模式：在整个数据集上进行推理测试，不进行划分
     EVAL_ARGS="$EVAL_ARGS --data_file \"$DATA_FILE\""
+    # 通过设置val_split=1.0来使用完整数据集作为验证集
+    EVAL_ARGS="$EVAL_ARGS --val_split 1.0"
+    echo "📊 完整数据集模式：将在全部 $(python -c "import json; print(len(json.load(open('$DATA_FILE'))))" 2>/dev/null || echo "?") 条数据上进行推理测试"
 fi
 
 # 根据配置添加disable参数
