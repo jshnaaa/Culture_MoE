@@ -1,21 +1,21 @@
 #!/bin/bash
 
 # ============================================================
-# 🧪 CULTUREMOE MODEL EVALUATION FROM BASE MODEL
-# 支持Joint LoRA+MoE和Simplified CultureMoE两种模型类型的评估
+# 🧪 SIMPLIFIED CULTUREMOE MODEL EVALUATION
+# 专门用于Simplified CultureMoE模型的评估
 # ============================================================
 #
 # 功能：
-#   1. 自动检测模型类型（Joint vs Simplified）
-#   2. 从基础模型和训练权重还原完整模型
-#   3. 在指定测试集上进行评估，输出详细的评估结果
-#   4. 保存生成答案、评估指标、模型配置等信息
+#   1. 从基础模型和Simplified CultureMoE权重还原完整模型
+#   2. 在指定测试集上进行评估，输出详细的评估结果
+#   3. 保存生成答案、评估指标、模型配置等信息
+#   4. 使用训练时的数据划分确保测试集一致性
 #
 # 使用方法：
-#   bash run_eval_joint_lora_moe_from_base.sh <JOINT_MODEL_PATH> <BACKBONE> <DATA_ID>
+#   bash run_eval_joint_lora_moe_from_base.sh <SIMPLIFIED_MODEL_PATH> <BACKBONE> <DATA_ID>
 #
 # 参数说明：
-#   MODEL_PATH: 训练模型路径 (支持Joint或Simplified模型) (必需)
+#   SIMPLIFIED_MODEL_PATH: Simplified CultureMoE模型路径 (必需)
 #   BACKBONE: llama 或 qwen (必需)
 #   DATA_ID: 测试数据集ID (必需)
 #     - 2: CulturalBench (NUM_CLASSES=2)
@@ -26,37 +26,37 @@
 #     - 8: culemo (NUM_CLASSES=6)
 #
 # 示例：
-#   # Joint模型评估
-#   bash run_eval_joint_lora_moe_from_base.sh /path/to/joint_model llama 6
-#   # Simplified模型评估
-#   bash run_eval_joint_lora_moe_from_base.sh /path/to/simplified_model llama 2
+#   bash run_eval_joint_lora_moe_from_base.sh \
+#     /autodl-fs/data/simplified_culturemoe/llama_blend_20251226_121046/best_simplified_culturemoe \
+#     llama 2
 # ============================================================
 
 # ✅ 参数检查
 if [ $# -ne 3 ]; then
     echo "❌ 错误: 需要提供三个参数"
-    echo "用法: bash run_eval_joint_lora_moe_from_base.sh <JOINT_MODEL_PATH> <BACKBONE> <DATA_ID>"
+    echo "用法: bash run_eval_joint_lora_moe_from_base.sh <SIMPLIFIED_MODEL_PATH> <BACKBONE> <DATA_ID>"
     echo ""
     echo "参数说明:"
-    echo "  JOINT_MODEL_PATH: 联合训练模型路径"
+    echo "  SIMPLIFIED_MODEL_PATH: Simplified CultureMoE模型路径"
     echo "  BACKBONE: llama 或 qwen"
     echo "  DATA_ID:"
+    echo "    2 - CulturalBench (NUM_CLASSES=2)"
+    echo "    3 - normad (NUM_CLASSES=3)"
+    echo "    4 - cultureLLM (NUM_CLASSES=10)"
     echo "    6 - moral_stories (NUM_CLASSES=2)"
     echo "    7 - cultureAtlas (NUM_CLASSES=3)"
     echo "    8 - culemo (NUM_CLASSES=6)"
     echo ""
     echo "示例:"
-    echo "  bash run_eval_joint_lora_moe_from_base.sh /path/to/joint_model llama 6"
-    echo "  bash run_eval_joint_lora_moe_from_base.sh /path/to/joint_model qwen 7"
+    echo "  bash run_eval_joint_lora_moe_from_base.sh \\"
+    echo "    /autodl-fs/data/simplified_culturemoe/llama_blend_20251226_121046/best_simplified_culturemoe \\"
+    echo "    llama 2"
     exit 1
 fi
 
-MODEL_PATH="$1"
+SIMPLIFIED_MODEL_PATH="$1"
 BACKBONE="$2"
 DATA_ID="$3"
-
-# 保持向后兼容性的变量别名
-JOINT_MODEL_PATH="$MODEL_PATH"
 
 
 # ✅ 根据 backbone 设置基础模型路径
@@ -107,10 +107,10 @@ esac
 
 # ✅ 输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/joint_lora_moe_eval_${DATASET_NAME}_${BACKBONE}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/simplified_culturemoe_eval_${DATASET_NAME}_${BACKBONE}_${TIMESTAMP}"
 
 echo "============================================================"
-echo "🧪 CultureMoE Model Evaluation"
+echo "🧪 Simplified CultureMoE Model Evaluation"
 echo "============================================================"
 echo "Backbone: $BACKBONE ($MODEL_NAME)"
 echo "Test Dataset: $DATASET_NAME (ID: $DATA_ID)"
@@ -118,7 +118,7 @@ echo "Number of Classes: $NUM_CLASSES"
 echo ""
 echo "📂 Model Paths:"
 echo "  Base model: $BASE_MODEL_PATH"
-echo "  Joint trained model: $JOINT_MODEL_PATH"
+echo "  Simplified model: $SIMPLIFIED_MODEL_PATH"
 echo ""
 echo "📁 Input/Output:"
 echo "  Test file: $TEST_FILE"
@@ -135,75 +135,55 @@ if [ ! -d "$BASE_MODEL_PATH" ]; then
 fi
 echo "✅ Base model found"
 
-if [ ! -d "$JOINT_MODEL_PATH" ]; then
-    echo "❌ Error: Model not found: $JOINT_MODEL_PATH"
+if [ ! -d "$SIMPLIFIED_MODEL_PATH" ]; then
+    echo "❌ Error: Simplified model not found: $SIMPLIFIED_MODEL_PATH"
     exit 1
 fi
 
-# 🔍 检测模型类型：joint vs simplified
-MODEL_TYPE=""
-if [ -f "$JOINT_MODEL_PATH/joint_config.json" ] && [ -d "$JOINT_MODEL_PATH/lora_weights" ]; then
-    MODEL_TYPE="joint"
-    echo "🔍 Detected: Joint LoRA+MoE model"
-elif [ -f "$JOINT_MODEL_PATH/simplified_culturemoe_config.json" ] && [ -f "$JOINT_MODEL_PATH/moe_weights.pt" ]; then
-    MODEL_TYPE="simplified"
-    echo "🔍 Detected: Simplified CultureMoE model"
-else
-    echo "❌ Error: Unknown model type. Expected either:"
-    echo ""
-    echo "Joint model structure:"
-    echo "  $JOINT_MODEL_PATH/"
-    echo "  ├── lora_weights/"
-    echo "  │   ├── adapter_config.json"
-    echo "  │   └── adapter_model.safetensors"
-    echo "  ├── moe_weights.pt"
-    echo "  ├── joint_config.json"
-    echo "  └── tokenizer files..."
-    echo ""
-    echo "Simplified model structure:"
-    echo "  $JOINT_MODEL_PATH/"
-    echo "  ├── moe_weights.pt"
-    echo "  ├── simplified_culturemoe_config.json"
-    echo "  └── tokenizer files..."
+# 🔍 检查Simplified CultureMoE模型文件
+echo "🔍 Verifying Simplified CultureMoE model structure..."
+
+if [ ! -f "$SIMPLIFIED_MODEL_PATH/moe_weights.pt" ]; then
+    echo "❌ Error: MoE weights file not found: $SIMPLIFIED_MODEL_PATH/moe_weights.pt"
     exit 1
 fi
 
-# 根据模型类型检查必要文件
-if [ "$MODEL_TYPE" = "joint" ]; then
-    if [ ! -d "$JOINT_MODEL_PATH/lora_weights" ]; then
-        echo "❌ Error: LoRA weights directory not found: $JOINT_MODEL_PATH/lora_weights"
-        exit 1
-    fi
-
-    if [ ! -f "$JOINT_MODEL_PATH/moe_weights.pt" ]; then
-        echo "❌ Error: MoE weights file not found: $JOINT_MODEL_PATH/moe_weights.pt"
-        exit 1
-    fi
-
-    if [ ! -f "$JOINT_MODEL_PATH/joint_config.json" ]; then
-        echo "❌ Error: Joint config file not found: $JOINT_MODEL_PATH/joint_config.json"
-        exit 1
-    fi
-    echo "✅ Joint model components found"
-
-elif [ "$MODEL_TYPE" = "simplified" ]; then
-    if [ ! -f "$JOINT_MODEL_PATH/moe_weights.pt" ]; then
-        echo "❌ Error: MoE weights file not found: $JOINT_MODEL_PATH/moe_weights.pt"
-        exit 1
-    fi
-
-    if [ ! -f "$JOINT_MODEL_PATH/simplified_culturemoe_config.json" ]; then
-        echo "❌ Error: Simplified config file not found: $JOINT_MODEL_PATH/simplified_culturemoe_config.json"
-        exit 1
-    fi
-    echo "✅ Simplified model components found"
+if [ ! -f "$SIMPLIFIED_MODEL_PATH/simplified_culturemoe_config.json" ]; then
+    echo "❌ Error: Simplified config file not found: $SIMPLIFIED_MODEL_PATH/simplified_culturemoe_config.json"
+    exit 1
 fi
+
+echo "✅ Simplified CultureMoE model components found"
+echo "  ├── moe_weights.pt"
+echo "  ├── simplified_culturemoe_config.json"
+echo "  └── tokenizer files"
 
 if [ ! -f "$TEST_FILE" ]; then
     echo "❌ Error: Test file not found: $TEST_FILE"
     exit 1
 fi
 echo "✅ Test file found"
+
+# 🔍 查找数据划分文件以确保使用训练时的测试集
+echo "🔍 Looking for data split file..."
+SPLIT_FILE=""
+
+# 推断训练输出目录（模型路径的父目录）
+TRAINING_OUTPUT_DIR="$(dirname "$SIMPLIFIED_MODEL_PATH")"
+
+# 查找数据划分文件的优先级顺序
+if [ -f "$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl" ]; then
+    SPLIT_FILE="$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl"
+    echo "✅ Found data split file: $SPLIT_FILE"
+elif [ -f "$SIMPLIFIED_MODEL_PATH/data_split_8_1_1.pkl" ]; then
+    SPLIT_FILE="$SIMPLIFIED_MODEL_PATH/data_split_8_1_1.pkl"
+    echo "✅ Found data split file in model dir: $SPLIT_FILE"
+else
+    echo "⚠️ Data split file not found. Using default validation split."
+    echo "  Searched locations:"
+    echo "    - $TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl"
+    echo "    - $SIMPLIFIED_MODEL_PATH/data_split_8_1_1.pkl"
+fi
 
 echo ""
 
@@ -217,60 +197,54 @@ echo "  Detected GPUs: $NUM_GPUS"
 echo "  Using: Single-GPU evaluation (for stability)"
 echo ""
 
-# ✅ 根据模型类型运行相应的评估
-if [ "$MODEL_TYPE" = "joint" ]; then
-    echo "🚀 Starting Joint LoRA+MoE model evaluation..."
-    echo ""
+# ✅ 运行Simplified CultureMoE模型评估
+echo "🚀 Starting Simplified CultureMoE model evaluation..."
+echo ""
 
-    python eval_joint_lora_moe_from_base.py \
-        --base_model_path "$BASE_MODEL_PATH" \
-        --joint_model_path "$JOINT_MODEL_PATH" \
-        --test_file "$TEST_FILE" \
-        --output_dir "$OUTPUT_DIR" \
-        --backbone "$BACKBONE" \
-        --num_classes "$NUM_CLASSES" \
-        --device cuda
+# 构建评估命令参数
+EVAL_ARGS="--model_path \"$SIMPLIFIED_MODEL_PATH\" \
+    --base_model_path \"$BASE_MODEL_PATH\" \
+    --data_file \"$TEST_FILE\" \
+    --output_dir \"$OUTPUT_DIR\" \
+    --device cuda \
+    --use_fixed_split"
 
-elif [ "$MODEL_TYPE" = "simplified" ]; then
-    echo "🚀 Starting Simplified CultureMoE model evaluation..."
-    echo ""
-
-    python eval_simplified_culturemoe.py \
-        --model_path "$JOINT_MODEL_PATH" \
-        --base_model_path "$BASE_MODEL_PATH" \
-        --data_file "$TEST_FILE" \
-        --output_dir "$OUTPUT_DIR" \
-        --device cuda \
-        --use_fixed_split
-
+# 如果找到了数据划分文件，添加到参数中
+if [ -n "$SPLIT_FILE" ]; then
+    EVAL_ARGS="$EVAL_ARGS --split_file \"$SPLIT_FILE\""
+    echo "📊 Using training-time data split: $SPLIT_FILE"
 else
-    echo "❌ Error: Unknown model type: $MODEL_TYPE"
-    exit 1
+    echo "📊 Using default validation split"
 fi
+
+echo ""
+
+# 执行评估
+eval "python eval_simplified_culturemoe.py $EVAL_ARGS"
 
 # ✅ 检查评估结果
 if [ $? -eq 0 ]; then
     echo ""
     echo "============================================================"
-    if [ "$MODEL_TYPE" = "joint" ]; then
-        echo "✅ Joint LoRA+MoE Model Evaluation Completed Successfully!"
-    else
-        echo "✅ Simplified CultureMoE Model Evaluation Completed Successfully!"
-    fi
+    echo "✅ Simplified CultureMoE Model Evaluation Completed Successfully!"
     echo "============================================================"
     echo ""
     echo "📊 Model Configuration:"
-    echo "  Model Type: $MODEL_TYPE"
+    echo "  Model Type: Simplified CultureMoE"
     echo "  Backbone: $BACKBONE ($MODEL_NAME)"
     echo "  Test Dataset: $DATASET_NAME"
     echo "  Number of Classes: $NUM_CLASSES"
+    if [ -n "$SPLIT_FILE" ]; then
+        echo "  Data Split: Training-time split (consistent test set)"
+    else
+        echo "  Data Split: Default validation split"
+    fi
     echo ""
     echo "📁 Component Sources:"
     echo "  Base model: $BASE_MODEL_PATH"
-    if [ "$MODEL_TYPE" = "joint" ]; then
-        echo "  Joint trained model: $JOINT_MODEL_PATH"
-    else
-        echo "  Simplified trained model: $JOINT_MODEL_PATH"
+    echo "  Simplified model: $SIMPLIFIED_MODEL_PATH"
+    if [ -n "$SPLIT_FILE" ]; then
+        echo "  Data split file: $SPLIT_FILE"
     fi
     echo ""
     echo "📋 Results saved to: $OUTPUT_DIR"
@@ -294,11 +268,7 @@ if [ $? -eq 0 ]; then
 else
     echo ""
     echo "============================================================"
-    if [ "$MODEL_TYPE" = "joint" ]; then
-        echo "❌ Joint LoRA+MoE Model Evaluation Failed!"
-    else
-        echo "❌ Simplified CultureMoE Model Evaluation Failed!"
-    fi
+    echo "❌ Simplified CultureMoE Model Evaluation Failed!"
     echo "============================================================"
     echo ""
     echo "Please check the error messages above and ensure:"
@@ -306,13 +276,16 @@ else
     echo "  2. CUDA is available and working"
     echo "  3. Required Python packages are installed"
     echo "  4. Sufficient GPU memory is available"
+    echo "  5. Model files are valid and complete"
     echo ""
     echo "For debugging, you can run the Python script directly:"
-    if [ "$MODEL_TYPE" = "joint" ]; then
-        echo "  python eval_joint_lora_moe_from_base.py --help"
-    else
-        echo "  python eval_simplified_culturemoe.py --help"
-    fi
+    echo "  python eval_simplified_culturemoe.py --help"
+    echo ""
+    echo "Model structure should be:"
+    echo "  $SIMPLIFIED_MODEL_PATH/"
+    echo "  ├── moe_weights.pt"
+    echo "  ├── simplified_culturemoe_config.json"
+    echo "  └── tokenizer files..."
     echo "============================================================"
     exit 1
 fi
