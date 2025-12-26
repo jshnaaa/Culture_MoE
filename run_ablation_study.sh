@@ -258,8 +258,26 @@ if [ "$USE_PKL_SPLIT" = "true" ]; then
     EVAL_ARGS="$EVAL_ARGS --use_fixed_split"
     if [ -n "$SPLIT_FILE" ]; then
         EVAL_ARGS="$EVAL_ARGS --split_file \"$SPLIT_FILE\""
+
+        # 从split文件中提取原始数据文件路径
+        ORIGINAL_DATA_FILE=$(python -c "
+import pickle
+with open('$SPLIT_FILE', 'rb') as f:
+    split_info = pickle.load(f)
+print(split_info.get('data_path', ''))
+")
+
+        if [ -n "$ORIGINAL_DATA_FILE" ] && [ -f "$ORIGINAL_DATA_FILE" ]; then
+            EVAL_ARGS="$EVAL_ARGS --data_file \"$ORIGINAL_DATA_FILE\""
+            echo "✅ 从split文件中获取原始数据文件: $ORIGINAL_DATA_FILE"
+        else
+            echo "❌ 无法从split文件中获取有效的数据文件路径"
+            exit 1
+        fi
+    else
+        echo "❌ PKL模式下未找到split文件"
+        exit 1
     fi
-    # DATA_FILE在PKL模式下可能为空，需要通过split文件确定
 else
     # 完整数据集模式：使用指定的数据文件
     EVAL_ARGS="$EVAL_ARGS --data_file \"$DATA_FILE\""
