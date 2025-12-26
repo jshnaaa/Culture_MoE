@@ -266,8 +266,8 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 参考joint版本设置
-BATCH_SIZE=2              # 调整为2，支持culture loss多样本计算
-GRADIENT_ACCUMULATION=16   # 相应增加梯度累积，保持有效batch size
+BATCH_SIZE=4              # 调整为2，支持culture loss多样本计算
+GRADIENT_ACCUMULATION=8   # 相应增加梯度累积，保持有效batch size
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
 NUM_EPOCHS=7              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
