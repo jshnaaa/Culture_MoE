@@ -81,6 +81,126 @@ def is_main_process(rank):
     return rank == 0
 
 
+def load_and_split_multi_datasets_8_1_1(data_path: str, tokenizer, max_length: int = 512,
+                                        output_dir: str = None, force_resplit: bool = False,
+                                        enable_mask: bool = False, mask_prob: float = 0.15):
+    """
+    加载合并数据集并按8:1:1划分，同时为每个原始数据集保存独立的划分文件
+
+    Args:
+        data_path: 合并后的数据文件路径
+        tokenizer: Tokenizer
+        max_length: 最大序列长度
+        output_dir: 输出目录，用于保存划分索引
+        force_resplit: 是否强制重新划分
+
+    Returns:
+        dict: 包含 'train', 'validation', 'test' 的字典
+    """
+    # 检查是否是blend + cultureAtlas的合并数据集
+    if 'blend_cultureAtlas_merged.json' in data_path:
+        # 处理多数据集划分
+        blend_file = "/root/autodl-fs/blend_merge_gen.json"
+        cultureatlas_file = "/autodl-fs/data/cultureAtlas_merge_gen.json"
+
+        # 分别加载两个原始数据集
+        blend_dataset = CultureLLMNewFormatDataset(
+            blend_file, tokenizer, max_length,
+            enable_mask=enable_mask, mask_prob=mask_prob
+        )
+        cultureatlas_dataset = CultureLLMNewFormatDataset(
+            cultureatlas_file, tokenizer, max_length,
+            enable_mask=enable_mask, mask_prob=mask_prob
+        )
+
+        blend_size = len(blend_dataset)
+        cultureatlas_size = len(cultureatlas_dataset)
+        total_size = blend_size + cultureatlas_size
+
+        print(f"🔄 处理多数据集划分:")
+        print(f"  - blend: {blend_size} 样本")
+        print(f"  - cultureAtlas: {cultureatlas_size} 样本")
+        print(f"  - 总计: {total_size} 样本")
+
+        # 分别对每个数据集进行8:1:1划分
+        def split_dataset(dataset, dataset_name, dataset_size):
+            train_size = int(dataset_size * 0.8)
+            val_size = int(dataset_size * 0.1)
+            test_size = dataset_size - train_size - val_size
+
+            np.random.seed(42)  # 固定随机种子
+            indices = np.random.permutation(dataset_size)
+
+            train_indices = indices[:train_size].tolist()
+            val_indices = indices[train_size:train_size + val_size].tolist()
+            test_indices = indices[train_size + val_size:].tolist()
+
+            # 保存独立的划分文件
+            split_info = {
+                'total_size': dataset_size,
+                'train_indices': train_indices,
+                'val_indices': val_indices,
+                'test_indices': test_indices,
+                'train_size': len(train_indices),
+                'val_size': len(val_indices),
+                'test_size': len(test_indices),
+                'data_path': blend_file if dataset_name == 'blend' else cultureatlas_file,
+                'max_length': max_length,
+                'split_method': '8:1:1',
+                'random_seed': 42
+            }
+
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+                split_file = os.path.join(output_dir, f'{dataset_name}_data_split_8_1_1.pkl')
+                with open(split_file, 'wb') as f:
+                    pickle.dump(split_info, f)
+                print(f"✅ 保存{dataset_name}数据划分: {split_file}")
+
+            return train_indices, val_indices, test_indices
+
+        # 分别划分两个数据集
+        blend_train_idx, blend_val_idx, blend_test_idx = split_dataset(blend_dataset, 'blend', blend_size)
+        cultureatlas_train_idx, cultureatlas_val_idx, cultureatlas_test_idx = split_dataset(cultureatlas_dataset, 'cultureatlas', cultureatlas_size)
+
+        # 创建合并的数据集
+        full_dataset = CultureLLMNewFormatDataset(
+            data_path, tokenizer, max_length,
+            enable_mask=enable_mask, mask_prob=mask_prob
+        )
+
+        # 调整cultureAtlas的索引（因为在合并数据集中的偏移）
+        cultureatlas_train_idx_adjusted = [idx + blend_size for idx in cultureatlas_train_idx]
+        cultureatlas_val_idx_adjusted = [idx + blend_size for idx in cultureatlas_val_idx]
+        cultureatlas_test_idx_adjusted = [idx + blend_size for idx in cultureatlas_test_idx]
+
+        # 合并训练集和验证集索引
+        merged_train_indices = blend_train_idx + cultureatlas_train_idx_adjusted
+        merged_val_indices = blend_val_idx + cultureatlas_val_idx_adjusted
+        merged_test_indices = blend_test_idx + cultureatlas_test_idx_adjusted
+
+        print(f"✅ 合并数据集划分完成:")
+        print(f"  - 训练集: {len(merged_train_indices)} 样本 ({len(merged_train_indices)/total_size*100:.1f}%)")
+        print(f"  - 验证集: {len(merged_val_indices)} 样本 ({len(merged_val_indices)/total_size*100:.1f}%)")
+        print(f"  - 测试集: {len(merged_test_indices)} 样本 ({len(merged_test_indices)/total_size*100:.1f}%)")
+
+        # 创建子数据集
+        from torch.utils.data import Subset
+        train_dataset = Subset(full_dataset, merged_train_indices)
+        val_dataset = Subset(full_dataset, merged_val_indices)
+        test_dataset = Subset(full_dataset, merged_test_indices)
+
+        return {
+            'train': train_dataset,
+            'validation': val_dataset,
+            'test': test_dataset,
+            'split_info': None  # 多数据集情况下不返回单一split_info
+        }
+    else:
+        # 单数据集情况，使用原有逻辑
+        return load_and_split_data_8_1_1(data_path, tokenizer, max_length, output_dir, force_resplit, enable_mask, mask_prob)
+
+
 def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
                                output_dir: str = None, force_resplit: bool = False,
                                enable_mask: bool = False, mask_prob: float = 0.15):
@@ -802,9 +922,9 @@ def main():
     tokenizer.padding_side = "right"
     print("✅ Tokenizer loaded")
 
-    # 加载数据 - 使用8:1:1划分
+    # 加载数据 - 使用8:1:1划分（支持多数据集）
     print("\nLoading and processing data with 8:1:1 split...")
-    datasets = load_and_split_data_8_1_1(
+    datasets = load_and_split_multi_datasets_8_1_1(
         args.train_file,
         tokenizer,
         max_length=args.max_length,

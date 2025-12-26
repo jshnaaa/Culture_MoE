@@ -33,6 +33,9 @@ if [ "$#" -lt 1 ]; then
     echo "  backbone:            基座模型 (llama/qwen, 默认: llama)"
     echo "  data_id:             数据集模式 (默认: 0)"
     echo "    0 - 使用pkl划分的测试集（推荐，与训练一致）"
+    echo "        如果训练时使用了多数据集(DATA_ID=15)，会自动检测并分离测试："
+    echo "        - blend_data_split_8_1_1.pkl → evaluation_results_*_blend.json"
+    echo "        - cultureatlas_data_split_8_1_1.pkl → evaluation_results_*_cultureatlas.json"
     echo "    2 - CulturalBench完整数据集"
     echo "    3 - normad完整数据集"
     echo "    4 - cultureLLM完整数据集"
@@ -94,36 +97,41 @@ fi
 # 根据DATA_ID设置数据处理模式
 case $DATA_ID in
     0)
-        # 使用pkl划分的测试集模式
+        # 使用pkl划分的测试集模式 - 支持多数据集
         DATA_FILE=""  # 将通过pkl文件确定
         DATASET_TAG="pkl_test_split"
         USE_PKL_SPLIT=true
-        echo "📊 数据模式: 使用pkl划分的测试集（与训练一致）"
+        USE_MULTI_DATASET_SPLIT=true
+        echo "📊 数据模式: 使用pkl划分的测试集（支持多数据集分离测试）"
         ;;
     1)
         # 使用完整数据集模式
         DATA_FILE="/root/autodl-fs/blend_merge_gen.json"
         DATASET_TAG="blend"
         USE_PKL_SPLIT=false
-        echo "📊 数据模式: CulturalBench完整数据集"
+        USE_MULTI_DATASET_SPLIT=false
+        echo "📊 数据模式: blend完整数据集"
         ;;
     2)
         # 使用完整数据集模式
         DATA_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
         DATASET_TAG="CulturalBench"
         USE_PKL_SPLIT=false
+        USE_MULTI_DATASET_SPLIT=false
         echo "📊 数据模式: CulturalBench完整数据集"
         ;;
     3)
         DATA_FILE="/root/autodl-fs/normad_merge_gen.json"
         DATASET_TAG="normad"
         USE_PKL_SPLIT=false
+        USE_MULTI_DATASET_SPLIT=false
         echo "📊 数据模式: normad完整数据集"
         ;;
     4)
         DATA_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
         USE_PKL_SPLIT=false
+        USE_MULTI_DATASET_SPLIT=false
         echo "📊 数据模式: cultureLLM完整数据集"
         ;;
 esac
@@ -228,26 +236,72 @@ echo "----------------------------------------"
 
 # 查找数据划分文件（仅在使用pkl模式时）
 SPLIT_FILE=""
+BLEND_SPLIT_FILE=""
+CULTUREATLAS_SPLIT_FILE=""
+
 if [ "$USE_PKL_SPLIT" = "true" ]; then
-    # 首先检查训练输出目录中的数据划分文件（这是正确位置）
-    if [ -f "$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl" ]; then
-        SPLIT_FILE="$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl"
-        echo "✅ 找到训练输出目录中的数据划分文件: $SPLIT_FILE"
-    # 备用：检查模型目录中是否有划分文件（兼容旧版本）
-    elif [ -f "$MODEL_PATH/data_split_8_1_1.pkl" ]; then
-        SPLIT_FILE="$MODEL_PATH/data_split_8_1_1.pkl"
-        echo "✅ 找到模型目录中的数据划分文件: $SPLIT_FILE"
-    # 备用：检查常见的训练输出目录
-    elif [ -f "/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl" ]; then
-        SPLIT_FILE="/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
-        echo "✅ 找到通用目录中的数据划分文件: $SPLIT_FILE"
+    if [ "$USE_MULTI_DATASET_SPLIT" = "true" ]; then
+        # 多数据集模式：查找 blend 和 cultureatlas 的分割文件
+        echo "🔍 查找多数据集划分文件..."
+
+        # 查找 blend 数据集划分文件
+        if [ -f "$TRAINING_OUTPUT_DIR/blend_data_split_8_1_1.pkl" ]; then
+            BLEND_SPLIT_FILE="$TRAINING_OUTPUT_DIR/blend_data_split_8_1_1.pkl"
+        elif [ -f "$MODEL_PATH/blend_data_split_8_1_1.pkl" ]; then
+            BLEND_SPLIT_FILE="$MODEL_PATH/blend_data_split_8_1_1.pkl"
+        elif [ -f "/root/autodl-fs/simplified_culturemoe/blend_data_split_8_1_1.pkl" ]; then
+            BLEND_SPLIT_FILE="/root/autodl-fs/simplified_culturemoe/blend_data_split_8_1_1.pkl"
+        fi
+
+        # 查找 cultureatlas 数据集划分文件
+        if [ -f "$TRAINING_OUTPUT_DIR/cultureatlas_data_split_8_1_1.pkl" ]; then
+            CULTUREATLAS_SPLIT_FILE="$TRAINING_OUTPUT_DIR/cultureatlas_data_split_8_1_1.pkl"
+        elif [ -f "$MODEL_PATH/cultureatlas_data_split_8_1_1.pkl" ]; then
+            CULTUREATLAS_SPLIT_FILE="$MODEL_PATH/cultureatlas_data_split_8_1_1.pkl"
+        elif [ -f "/root/autodl-fs/simplified_culturemoe/cultureatlas_data_split_8_1_1.pkl" ]; then
+            CULTUREATLAS_SPLIT_FILE="/root/autodl-fs/simplified_culturemoe/cultureatlas_data_split_8_1_1.pkl"
+        fi
+
+        # 检查是否找到了必要的划分文件
+        if [ -n "$BLEND_SPLIT_FILE" ] && [ -n "$CULTUREATLAS_SPLIT_FILE" ]; then
+            echo "✅ 找到多数据集划分文件:"
+            echo "  - blend: $BLEND_SPLIT_FILE"
+            echo "  - cultureatlas: $CULTUREATLAS_SPLIT_FILE"
+        elif [ -n "$BLEND_SPLIT_FILE" ]; then
+            echo "✅ 找到blend数据划分文件: $BLEND_SPLIT_FILE"
+            echo "⚠️ 未找到cultureatlas数据划分文件，将仅测试blend数据集"
+        elif [ -n "$CULTUREATLAS_SPLIT_FILE" ]; then
+            echo "✅ 找到cultureatlas数据划分文件: $CULTUREATLAS_SPLIT_FILE"
+            echo "⚠️ 未找到blend数据划分文件，将仅测试cultureatlas数据集"
+        else
+            echo "❌ 未找到任何多数据集划分文件"
+            echo "请确保以下位置之一存在 blend_data_split_8_1_1.pkl 和 cultureatlas_data_split_8_1_1.pkl 文件："
+            echo "  1. $TRAINING_OUTPUT_DIR/ (推荐)"
+            echo "  2. $MODEL_PATH/"
+            echo "  3. /root/autodl-fs/simplified_culturemoe/"
+            exit 1
+        fi
     else
-        echo "❌ 未找到数据划分文件"
-        echo "请确保以下位置之一存在 data_split_8_1_1.pkl 文件："
-        echo "  1. $TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl (推荐)"
-        echo "  2. $MODEL_PATH/data_split_8_1_1.pkl"
-        echo "  3. /root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
-        exit 1
+        # 单数据集模式：查找标准的数据划分文件
+        if [ -f "$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl" ]; then
+            SPLIT_FILE="$TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl"
+            echo "✅ 找到训练输出目录中的数据划分文件: $SPLIT_FILE"
+        # 备用：检查模型目录中是否有划分文件（兼容旧版本）
+        elif [ -f "$MODEL_PATH/data_split_8_1_1.pkl" ]; then
+            SPLIT_FILE="$MODEL_PATH/data_split_8_1_1.pkl"
+            echo "✅ 找到模型目录中的数据划分文件: $SPLIT_FILE"
+        # 备用：检查常见的训练输出目录
+        elif [ -f "/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl" ]; then
+            SPLIT_FILE="/root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
+            echo "✅ 找到通用目录中的数据划分文件: $SPLIT_FILE"
+        else
+            echo "❌ 未找到数据划分文件"
+            echo "请确保以下位置之一存在 data_split_8_1_1.pkl 文件："
+            echo "  1. $TRAINING_OUTPUT_DIR/data_split_8_1_1.pkl (推荐)"
+            echo "  2. $MODEL_PATH/data_split_8_1_1.pkl"
+            echo "  3. /root/autodl-fs/simplified_culturemoe/data_split_8_1_1.pkl"
+            exit 1
+        fi
     fi
 else
     echo "📊 使用完整数据集模式，跳过数据划分文件查找"
@@ -259,61 +313,183 @@ EVAL_ARGS="--model_path \"$MODEL_PATH\" \
     --output_dir \"$OUTPUT_DIR\" \
     --experiment_name \"$EXPERIMENT_NAME\""
 
-# 根据数据模式添加不同的参数
-if [ "$USE_PKL_SPLIT" = "true" ]; then
-    # PKL模式：使用数据划分文件和固定分割
-    EVAL_ARGS="$EVAL_ARGS --use_fixed_split"
-    if [ -n "$SPLIT_FILE" ]; then
-        EVAL_ARGS="$EVAL_ARGS --split_file \"$SPLIT_FILE\""
+# 执行评估 - 支持多数据集分离测试
+EXPERIMENT_SUCCESS=0
+
+if [ "$USE_PKL_SPLIT" = "true" ] && [ "$USE_MULTI_DATASET_SPLIT" = "true" ]; then
+    # 多数据集模式：分别对每个数据集进行测试
+    echo "🔄 开始多数据集分离测试..."
+    echo ""
+
+    # 测试 blend 数据集
+    if [ -n "$BLEND_SPLIT_FILE" ]; then
+        echo "📊 测试 blend 数据集..."
+        echo "----------------------------------------"
 
         # 从split文件中提取原始数据文件路径
-        ORIGINAL_DATA_FILE=$(python -c "
+        BLEND_DATA_FILE=$(python -c "
+import pickle
+with open('$BLEND_SPLIT_FILE', 'rb') as f:
+    split_info = pickle.load(f)
+print(split_info.get('data_path', ''))")
+
+        if [ -n "$BLEND_DATA_FILE" ] && [ -f "$BLEND_DATA_FILE" ]; then
+            echo "✅ 从split文件中获取blend数据文件: $BLEND_DATA_FILE"
+
+            # 构建blend评估参数
+            BLEND_EVAL_ARGS="--model_path \"$MODEL_PATH\" \
+                --base_model_path \"$BASE_MODEL_PATH\" \
+                --output_dir \"$OUTPUT_DIR\" \
+                --experiment_name \"${EXPERIMENT_NAME}_blend\" \
+                --use_fixed_split \
+                --split_file \"$BLEND_SPLIT_FILE\" \
+                --data_file \"$BLEND_DATA_FILE\""
+
+            # 根据配置添加disable参数
+            if [ "$USE_SHARED" = "false" ]; then
+                BLEND_EVAL_ARGS="$BLEND_EVAL_ARGS --disable_shared"
+            fi
+            if [ "$USE_MASK" = "false" ]; then
+                BLEND_EVAL_ARGS="$BLEND_EVAL_ARGS --disable_mask"
+            fi
+            if [ "$USE_GATE" = "false" ]; then
+                BLEND_EVAL_ARGS="$BLEND_EVAL_ARGS --disable_gate"
+            fi
+            if [ "$USE_CULTURE_LOSS" = "false" ]; then
+                BLEND_EVAL_ARGS="$BLEND_EVAL_ARGS --disable_culture_loss"
+            fi
+
+            # 执行blend数据集评估
+            eval "python eval_simplified_culturemoe.py $BLEND_EVAL_ARGS"
+            BLEND_SUCCESS=$?
+
+            if [ $BLEND_SUCCESS -eq 0 ]; then
+                echo "✅ blend数据集测试完成"
+            else
+                echo "❌ blend数据集测试失败"
+                EXPERIMENT_SUCCESS=1
+            fi
+        else
+            echo "❌ 无法从blend split文件中获取有效的数据文件路径"
+            EXPERIMENT_SUCCESS=1
+        fi
+        echo ""
+    fi
+
+    # 测试 cultureatlas 数据集
+    if [ -n "$CULTUREATLAS_SPLIT_FILE" ]; then
+        echo "📊 测试 cultureatlas 数据集..."
+        echo "----------------------------------------"
+
+        # 从split文件中提取原始数据文件路径
+        CULTUREATLAS_DATA_FILE=$(python -c "
+import pickle
+with open('$CULTUREATLAS_SPLIT_FILE', 'rb') as f:
+    split_info = pickle.load(f)
+print(split_info.get('data_path', ''))")
+
+        if [ -n "$CULTUREATLAS_DATA_FILE" ] && [ -f "$CULTUREATLAS_DATA_FILE" ]; then
+            echo "✅ 从split文件中获取cultureatlas数据文件: $CULTUREATLAS_DATA_FILE"
+
+            # 构建cultureatlas评估参数
+            CULTUREATLAS_EVAL_ARGS="--model_path \"$MODEL_PATH\" \
+                --base_model_path \"$BASE_MODEL_PATH\" \
+                --output_dir \"$OUTPUT_DIR\" \
+                --experiment_name \"${EXPERIMENT_NAME}_cultureatlas\" \
+                --use_fixed_split \
+                --split_file \"$CULTUREATLAS_SPLIT_FILE\" \
+                --data_file \"$CULTUREATLAS_DATA_FILE\""
+
+            # 根据配置添加disable参数
+            if [ "$USE_SHARED" = "false" ]; then
+                CULTUREATLAS_EVAL_ARGS="$CULTUREATLAS_EVAL_ARGS --disable_shared"
+            fi
+            if [ "$USE_MASK" = "false" ]; then
+                CULTUREATLAS_EVAL_ARGS="$CULTUREATLAS_EVAL_ARGS --disable_mask"
+            fi
+            if [ "$USE_GATE" = "false" ]; then
+                CULTUREATLAS_EVAL_ARGS="$CULTUREATLAS_EVAL_ARGS --disable_gate"
+            fi
+            if [ "$USE_CULTURE_LOSS" = "false" ]; then
+                CULTUREATLAS_EVAL_ARGS="$CULTUREATLAS_EVAL_ARGS --disable_culture_loss"
+            fi
+
+            # 执行cultureatlas数据集评估
+            eval "python eval_simplified_culturemoe.py $CULTUREATLAS_EVAL_ARGS"
+            CULTUREATLAS_SUCCESS=$?
+
+            if [ $CULTUREATLAS_SUCCESS -eq 0 ]; then
+                echo "✅ cultureatlas数据集测试完成"
+            else
+                echo "❌ cultureatlas数据集测试失败"
+                EXPERIMENT_SUCCESS=1
+            fi
+        else
+            echo "❌ 无法从cultureatlas split文件中获取有效的数据文件路径"
+            EXPERIMENT_SUCCESS=1
+        fi
+        echo ""
+    fi
+
+else
+    # 单数据集模式或完整数据集模式
+    echo "🔄 开始单数据集测试..."
+    echo ""
+
+    # 根据数据模式添加不同的参数
+    if [ "$USE_PKL_SPLIT" = "true" ]; then
+        # PKL模式：使用数据划分文件和固定分割
+        EVAL_ARGS="$EVAL_ARGS --use_fixed_split"
+        if [ -n "$SPLIT_FILE" ]; then
+            EVAL_ARGS="$EVAL_ARGS --split_file \"$SPLIT_FILE\""
+
+            # 从split文件中提取原始数据文件路径
+            ORIGINAL_DATA_FILE=$(python -c "
 import pickle
 with open('$SPLIT_FILE', 'rb') as f:
     split_info = pickle.load(f)
-print(split_info.get('data_path', ''))
-")
+print(split_info.get('data_path', ''))")
 
-        if [ -n "$ORIGINAL_DATA_FILE" ] && [ -f "$ORIGINAL_DATA_FILE" ]; then
-            EVAL_ARGS="$EVAL_ARGS --data_file \"$ORIGINAL_DATA_FILE\""
-            echo "✅ 从split文件中获取原始数据文件: $ORIGINAL_DATA_FILE"
+            if [ -n "$ORIGINAL_DATA_FILE" ] && [ -f "$ORIGINAL_DATA_FILE" ]; then
+                EVAL_ARGS="$EVAL_ARGS --data_file \"$ORIGINAL_DATA_FILE\""
+                echo "✅ 从split文件中获取原始数据文件: $ORIGINAL_DATA_FILE"
+            else
+                echo "❌ 无法从split文件中获取有效的数据文件路径"
+                exit 1
+            fi
         else
-            echo "❌ 无法从split文件中获取有效的数据文件路径"
+            echo "❌ PKL模式下未找到split文件"
             exit 1
         fi
     else
-        echo "❌ PKL模式下未找到split文件"
-        exit 1
+        # 完整数据集模式：在整个数据集上进行推理测试，不进行划分
+        EVAL_ARGS="$EVAL_ARGS --data_file \"$DATA_FILE\""
+        # 通过设置val_split=1.0来使用完整数据集作为验证集
+        EVAL_ARGS="$EVAL_ARGS --val_split 1.0"
+        echo "📊 完整数据集模式：将在全部 $(python -c "import json; print(len(json.load(open('$DATA_FILE'))))" 2>/dev/null || echo "?") 条数据上进行推理测试"
     fi
-else
-    # 完整数据集模式：在整个数据集上进行推理测试，不进行划分
-    EVAL_ARGS="$EVAL_ARGS --data_file \"$DATA_FILE\""
-    # 通过设置val_split=1.0来使用完整数据集作为验证集
-    EVAL_ARGS="$EVAL_ARGS --val_split 1.0"
-    echo "📊 完整数据集模式：将在全部 $(python -c "import json; print(len(json.load(open('$DATA_FILE'))))" 2>/dev/null || echo "?") 条数据上进行推理测试"
+
+    # 根据配置添加disable参数
+    if [ "$USE_SHARED" = "false" ]; then
+        EVAL_ARGS="$EVAL_ARGS --disable_shared"
+    fi
+
+    if [ "$USE_MASK" = "false" ]; then
+        EVAL_ARGS="$EVAL_ARGS --disable_mask"
+    fi
+
+    if [ "$USE_GATE" = "false" ]; then
+        EVAL_ARGS="$EVAL_ARGS --disable_gate"
+    fi
+
+    if [ "$USE_CULTURE_LOSS" = "false" ]; then
+        EVAL_ARGS="$EVAL_ARGS --disable_culture_loss"
+    fi
+
+    # 执行评估
+    eval "python eval_simplified_culturemoe.py $EVAL_ARGS"
+    EXPERIMENT_SUCCESS=$?
 fi
-
-# 根据配置添加disable参数
-if [ "$USE_SHARED" = "false" ]; then
-    EVAL_ARGS="$EVAL_ARGS --disable_shared"
-fi
-
-if [ "$USE_MASK" = "false" ]; then
-    EVAL_ARGS="$EVAL_ARGS --disable_mask"
-fi
-
-if [ "$USE_GATE" = "false" ]; then
-    EVAL_ARGS="$EVAL_ARGS --disable_gate"
-fi
-
-if [ "$USE_CULTURE_LOSS" = "false" ]; then
-    EVAL_ARGS="$EVAL_ARGS --disable_culture_loss"
-fi
-
-# 执行评估
-eval "python eval_simplified_culturemoe.py $EVAL_ARGS"
-
-EXPERIMENT_SUCCESS=$?
 if [ $EXPERIMENT_SUCCESS -eq 0 ]; then
     echo "✅ 实验完成"
 else
@@ -326,15 +502,92 @@ echo "======================================="
 echo "📊 消融实验结果汇总"
 echo "======================================="
 
-# 显示实验结果
-RESULT_FILE="$OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}.json"
-
-if [ -f "$RESULT_FILE" ]; then
-    echo "实验配置: $EXPERIMENT_NAME"
+# 根据测试模式显示不同的结果
+if [ "$USE_PKL_SPLIT" = "true" ] && [ "$USE_MULTI_DATASET_SPLIT" = "true" ]; then
+    # 多数据集模式：显示每个数据集的结果
+    echo "实验配置: $EXPERIMENT_NAME (多数据集分离测试)"
     echo "----------------------------------------"
 
-    # 使用Python读取结果
-    python << EOF
+    # 显示blend数据集结果
+    BLEND_RESULT_FILE="$OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}_blend.json"
+    if [ -f "$BLEND_RESULT_FILE" ]; then
+        echo ""
+        echo "📊 Blend数据集结果:"
+        echo "----------------------------------------"
+        python << EOF
+import json
+import os
+
+result_file = "$BLEND_RESULT_FILE"
+if os.path.exists(result_file):
+    with open(result_file, 'r', encoding='utf-8') as f:
+        result = json.load(f)
+
+    accuracy = result.get('accuracy', 0)
+    eval_loss = result.get('eval_loss', 0)
+    culture_loss = result.get('eval_culture_loss', 0)
+    correct = result.get('correct', 0)
+    total = result.get('total', 0)
+
+    print(f"  准确率: {accuracy:.4f} ({correct}/{total})")
+    print(f"  验证损失: {eval_loss:.4f}")
+    print(f"  文化损失: {culture_loss:.4f}")
+else:
+    print("❌ 未找到blend结果文件")
+EOF
+    else
+        echo "❌ 未找到blend数据集结果文件"
+    fi
+
+    # 显示cultureatlas数据集结果
+    CULTUREATLAS_RESULT_FILE="$OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}_cultureatlas.json"
+    if [ -f "$CULTUREATLAS_RESULT_FILE" ]; then
+        echo ""
+        echo "📊 CultureAtlas数据集结果:"
+        echo "----------------------------------------"
+        python << EOF
+import json
+import os
+
+result_file = "$CULTUREATLAS_RESULT_FILE"
+if os.path.exists(result_file):
+    with open(result_file, 'r', encoding='utf-8') as f:
+        result = json.load(f)
+
+    accuracy = result.get('accuracy', 0)
+    eval_loss = result.get('eval_loss', 0)
+    culture_loss = result.get('eval_culture_loss', 0)
+    correct = result.get('correct', 0)
+    total = result.get('total', 0)
+
+    print(f"  准确率: {accuracy:.4f} ({correct}/{total})")
+    print(f"  验证损失: {eval_loss:.4f}")
+    print(f"  文化损失: {culture_loss:.4f}")
+else:
+    print("❌ 未找到cultureatlas结果文件")
+EOF
+    else
+        echo "❌ 未找到cultureatlas数据集结果文件"
+    fi
+
+    # 显示配置信息
+    echo ""
+    echo "🔧 有效配置:"
+    echo "  Shared专家: $([ "$USE_SHARED" = "true" ] && echo "启用" || echo "禁用")"
+    echo "  MASK机制: $([ "$USE_MASK" = "true" ] && echo "启用" || echo "禁用") (占位符)"
+    echo "  Gate网络: $([ "$USE_GATE" = "true" ] && echo "启用" || echo "禁用")"
+    echo "  文化损失: $([ "$USE_CULTURE_LOSS" = "true" ] && echo "启用" || echo "禁用")"
+
+else
+    # 单数据集模式：显示单一结果
+    RESULT_FILE="$OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}.json"
+
+    if [ -f "$RESULT_FILE" ]; then
+        echo "实验配置: $EXPERIMENT_NAME"
+        echo "----------------------------------------"
+
+        # 使用Python读取结果
+        python << EOF
 import json
 import os
 
@@ -367,16 +620,27 @@ else:
     print("❌ 未找到结果文件: $RESULT_FILE")
 
 EOF
-else
-    echo "❌ 实验失败，未生成结果文件"
+    else
+        echo "❌ 实验失败，未生成结果文件"
+    fi
 fi
 
 echo ""
 echo "📁 结果文件位置:"
 echo "  实验目录: $OUTPUT_DIR"
 echo "  配置文件: $OUTPUT_DIR/experiment_config.json"
-echo "  详细结果: $OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}.json"
-echo "  生成答案: $OUTPUT_DIR/generated_answers_${EXPERIMENT_NAME}.json"
+
+if [ "$USE_PKL_SPLIT" = "true" ] && [ "$USE_MULTI_DATASET_SPLIT" = "true" ]; then
+    # 多数据集模式：显示分离的结果文件
+    echo "  Blend结果: $OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}_blend.json"
+    echo "  Blend答案: $OUTPUT_DIR/generated_answers_${EXPERIMENT_NAME}_blend.json"
+    echo "  CultureAtlas结果: $OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}_cultureatlas.json"
+    echo "  CultureAtlas答案: $OUTPUT_DIR/generated_answers_${EXPERIMENT_NAME}_cultureatlas.json"
+else
+    # 单数据集模式：显示单一结果文件
+    echo "  详细结果: $OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}.json"
+    echo "  生成答案: $OUTPUT_DIR/generated_answers_${EXPERIMENT_NAME}.json"
+fi
 echo ""
 
 if [ $EXPERIMENT_SUCCESS -eq 0 ]; then
