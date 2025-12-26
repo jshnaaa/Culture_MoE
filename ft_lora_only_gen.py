@@ -133,8 +133,9 @@ class CultureLLMNewFormatDataset(Dataset):
 
         # 🆕 MASK机制：条件专家激活
         if self.enable_mask:
-            # 随机选择输入类型
-            use_mask = random.random() < 0.5
+            # 🔧 调整概率确保更多样本激活路由专家以产生culture loss
+            # 70%概率使用完整输入（激活路由专家），30%概率使用masked输入（激活shared专家）
+            use_mask = random.random() < 0.3  # 降低mask概率，确保更多路由专家激活
 
             if use_mask:
                 # shared专家路径：使用instruction_mask
@@ -668,43 +669,43 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
                 outputs = actual_model.generate(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=2,  # 🔧 进一步减少到2个token，只生成单个数字
+                    max_new_tokens=5,  # 🔧 增加到5个token，确保能生成完整答案
                     min_new_tokens=1,  # 🔧 至少生成1个token
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
                     do_sample=False,  # 🔧 贪心解码
                     temperature=1.0,  # 🔧 确保temperature设置
-                    repetition_penalty=1.1,  # 🔧 轻微的重复惩罚
-                    early_stopping=True  # 🔧 遇到eos_token立即停止
+                    repetition_penalty=1.1  # 🔧 轻微的重复惩罚
+                    # 🔧 移除early_stopping=True，该参数在当前transformers版本中不被支持
                 )
             else:
                 # 使用联合模型的自定义generate方法
                 outputs = model.generate(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=2,  # 🔧 减少到2个token，只生成数字答案
+                    max_new_tokens=5,  # 🔧 增加到5个token，确保能生成完整答案
                     min_new_tokens=1,  # 🔧 至少生成1个token
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
                     do_sample=False,  # 🔧 贪心解码
                     temperature=1.0,  # 🔧 确保temperature设置
-                    repetition_penalty=1.1,  # 🔧 轻微的重复惩罚
-                    early_stopping=True  # 🔧 遇到eos_token立即停止
+                    repetition_penalty=1.1  # 🔧 轻微的重复惩罚
+                    # 🔧 移除early_stopping=True，该参数在当前transformers版本中不被支持
                 )
         else:
             # 回退到标准generate方法
             # print(f"🔍 Using standard model generate method")  # 注释掉详细调试
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=2,  # 🔧 统一减少到2个token
+                max_new_tokens=5,  # 🔧 增加到5个token，确保能生成完整答案
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,  # 贪婪解码
                 temperature=1.0,  # 🔧 确保temperature设置
                 repetition_penalty=1.1,  # 🔧 轻微的重复惩罚
-                num_beams=1,      # 禁用 beam search
-                early_stopping=True  # 🔧 添加早停
+                num_beams=1      # 禁用 beam search
+                # 🔧 移除early_stopping=True，该参数在当前transformers版本中不被支持
             )
 
     # 解码
