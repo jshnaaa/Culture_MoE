@@ -606,8 +606,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             if hasattr(model_adapter.base_model, 'module'):  # DDP wrapped
                 torch.distributed.barrier()
 
-            # 梯度裁剪防止梯度爆炸
-            torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=1.0)
+            # 梯度裁剪防止梯度爆炸 - 放宽限制让参数有足够更新空间
+            torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=3.0)
 
             optimizer.step()
             optimizer.zero_grad()
