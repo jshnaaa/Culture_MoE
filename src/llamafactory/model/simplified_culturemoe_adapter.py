@@ -395,38 +395,48 @@ class MoEFFNLoRA(nn.Module):
 
     def get_aux_loss(self):
         """计算辅助损失"""
-        if self.latest_expert_weights is None:
-            # 🔧 修复梯度问题：寻找一个requires_grad=True的参数创建连接到计算图的零损失
+        # 🔧 关键修复：优先使用有梯度的current_expert_weights
+        expert_weights_for_loss = None
+        if self.current_expert_weights is not None:
+            expert_weights_for_loss = self.current_expert_weights
+        elif self.latest_expert_weights is not None:
+            # 如果没有current数据，使用latest但要创建梯度连接
+            expert_weights_for_loss = self.latest_expert_weights
+        else:
+            # 完全没有数据，返回零损失
             for param in self.parameters():
                 if param.requires_grad:
                     return param.sum() * 0.0
-            # 如果没有可训练参数，创建一个简单的零tensor，使用float32确保类型一致
-            return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32, requires_grad=True)
+            # 如果没有可训练参数，使用参数创建零损失
+            dummy_param = next(iter(self.parameters()))
+            return dummy_param.sum() * 0.0
 
         try:
-            # 🔧 添加数值稳定性检查：在计算前检查latest_expert_weights
-            if torch.isnan(self.latest_expert_weights).any() or torch.isinf(self.latest_expert_weights).any():
+            # 🔧 添加数值稳定性检查
+            if torch.isnan(expert_weights_for_loss).any() or torch.isinf(expert_weights_for_loss).any():
                 # 如果expert_weights包含NaN或Inf，使用零损失
                 for param in self.parameters():
                     if param.requires_grad:
                         return param.sum() * 0.0
-                return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
+                dummy_param = next(iter(self.parameters()))
+                return dummy_param.sum() * 0.0
 
             # 负载均衡损失
-            expert_usage = self.latest_expert_weights.mean(dim=0)  # [num_experts]
+            expert_usage = expert_weights_for_loss.mean(dim=0)  # [num_experts]
             target_usage = expert_usage * 0.0 + (1.0 / self.num_experts)
             balance_loss = F.mse_loss(expert_usage, target_usage)
 
             # 检查数值稳定性
             if torch.isnan(balance_loss) or torch.isinf(balance_loss):
-                # 🔧 修复梯度问题：寻找一个requires_grad=True的参数创建连接到计算图的零损失
+                # 🔧 修复梯度问题：使用参数创建连接到计算图的零损失
                 for param in self.parameters():
                     if param.requires_grad:
                         balance_loss = param.sum() * 0.0
                         break
                 else:
-                    # 如果没有可训练参数，创建一个简单的零tensor，使用float32确保类型一致
-                    balance_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32, requires_grad=True)
+                    # 如果没有可训练参数，使用任意参数创建零损失
+                    dummy_param = next(iter(self.parameters()))
+                    balance_loss = dummy_param.sum() * 0.0
 
             return balance_loss * 0.01  # 小的权重
 
@@ -811,8 +821,9 @@ class SimplifiedCultureMoEAdapter:
                 if dummy_param is not None:
                     total_aux_loss = dummy_param.sum() * 0.0
                 else:
-                    # 如果没有可训练参数，创建一个简单的零tensor（这种情况不应该发生）
-                    total_aux_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32, requires_grad=True)
+                    # 🔧 修复：如果没有可训练参数，使用任意参数创建零损失
+                    dummy_param = next(iter(self.base_model.parameters()))
+                    total_aux_loss = dummy_param.sum() * 0.0
         elif moe_layer_count > 1:
             total_aux_loss = total_aux_loss / moe_layer_count
 
@@ -828,7 +839,9 @@ class SimplifiedCultureMoEAdapter:
                         total_aux_loss = param.sum() * 0.0
                         break
                 else:
-                    total_aux_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32, requires_grad=True)
+                    # 🔧 修复：使用任意参数创建零损失
+                    dummy_param = next(iter(self.base_model.parameters()))
+                    total_aux_loss = dummy_param.sum() * 0.0
 
         # 🔧 确保返回的损失与主损失类型一致
         if main_loss is not None:
