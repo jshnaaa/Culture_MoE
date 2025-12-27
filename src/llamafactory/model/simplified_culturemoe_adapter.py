@@ -852,6 +852,230 @@ class SimplifiedCultureMoEAdapter:
 
         return total_aux_loss
 
+    def compute_direct_z_loss(self, main_loss=None):
+        """
+        直接计算z-loss，避免torch.stack操作
+        直接从MoE层获取expert_weights并计算，确保梯度连接
+        """
+        layers, target_layers = self._get_target_layers()
+
+        total_z_loss = None
+        moe_layer_count = 0
+
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, MoEFFNLoRA):
+                # 直接使用当前MoE层的current_expert_weights
+                if moe_layer.current_expert_weights is not None:
+                    expert_weights = moe_layer.current_expert_weights  # [B, num_experts] - 有梯度
+
+                    # 检查梯度状态
+                    if expert_weights.requires_grad and expert_weights.grad_fn is not None:
+                        # 计算z-loss
+                        expert_usage = expert_weights.mean(dim=0)  # [num_experts]
+                        num_experts = expert_weights.shape[-1]
+                        target_usage = expert_usage * 0.0 + (1.0 / num_experts)
+                        layer_z_loss = F.mse_loss(expert_usage, target_usage) * 0.01
+
+                        if total_z_loss is None:
+                            total_z_loss = layer_z_loss
+                        else:
+                            total_z_loss = total_z_loss + layer_z_loss
+                        moe_layer_count += 1
+                    else:
+                        print(f"⚠️ Layer {layer_idx}: expert_weights has no gradient, skipping")
+                else:
+                    print(f"⚠️ Layer {layer_idx}: current_expert_weights is None, skipping")
+
+        if total_z_loss is None:
+            # 没有任何有效的expert_weights，使用零损失
+            if main_loss is not None:
+                total_z_loss = main_loss * 0.0
+            else:
+                # 寻找可训练参数创建零损失
+                for param in self.base_model.parameters():
+                    if param.requires_grad:
+                        total_z_loss = param.sum() * 0.0
+                        break
+                else:
+                    dummy_param = next(iter(self.base_model.parameters()))
+                    total_z_loss = dummy_param.sum() * 0.0
+        elif moe_layer_count > 1:
+            # 对多层求平均
+            total_z_loss = total_z_loss / moe_layer_count
+
+        # 确保设备和数据类型一致
+        if main_loss is not None:
+            target_device = main_loss.device
+            target_dtype = main_loss.dtype
+            if total_z_loss.device != target_device or total_z_loss.dtype != target_dtype:
+                total_z_loss = total_z_loss.to(device=target_device, dtype=target_dtype)
+
+        return total_z_loss
+
+    def compute_direct_culture_loss(self, culture_labels, main_loss=None):
+        """
+        直接计算文化损失，避免torch.stack操作
+        直接从MoE层获取expert_weights和shared_outputs并计算，确保梯度连接
+        """
+        layers, target_layers = self._get_target_layers()
+
+        total_culture_losses = []
+
+        # 收集所有有梯度的expert_weights和shared_outputs
+        valid_expert_weights = []
+        valid_shared_outputs = []
+
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, MoEFFNLoRA):
+                # 收集有梯度的expert_weights
+                if (moe_layer.current_expert_weights is not None and
+                    moe_layer.current_expert_weights.requires_grad and
+                    moe_layer.current_expert_weights.grad_fn is not None):
+                    valid_expert_weights.append(moe_layer.current_expert_weights)
+
+                # 收集有梯度的shared_outputs
+                if (moe_layer.current_shared_outputs is not None and
+                    moe_layer.current_shared_outputs.requires_grad and
+                    moe_layer.current_shared_outputs.grad_fn is not None):
+                    valid_shared_outputs.append(moe_layer.current_shared_outputs)
+
+        # 如果有有效的数据，直接计算文化损失，不使用torch.stack
+        if valid_expert_weights or valid_shared_outputs:
+            # 使用第一层的数据作为代表（避免torch.stack）
+            representative_expert_weights = valid_expert_weights[0] if valid_expert_weights else None
+            representative_shared_outputs = valid_shared_outputs[0] if valid_shared_outputs else None
+
+            # 直接计算文化损失，不依赖外部函数
+            device = culture_labels.device
+            total_culture_losses = []
+
+            # 1. Shared专家损失：所有样本的shared专家输出都应该相似（学习文化共性）
+            if representative_shared_outputs is not None and representative_shared_outputs.shape[0] >= 2:
+                shared_losses = []
+                batch_size = representative_shared_outputs.shape[0]
+
+                # 对所有样本对计算shared专家相似度损失
+                for i in range(batch_size):
+                    for j in range(i + 1, batch_size):
+                        vec1 = representative_shared_outputs[i].unsqueeze(0)
+                        vec2 = representative_shared_outputs[j].unsqueeze(0)
+
+                        # 检查向量是否为零向量
+                        norm1 = torch.norm(vec1)
+                        norm2 = torch.norm(vec2)
+                        if norm1 < 1e-8 or norm2 < 1e-8:
+                            continue
+
+                        similarity = F.cosine_similarity(vec1, vec2)
+                        if torch.isnan(similarity) or torch.isinf(similarity):
+                            continue
+
+                        # Shared专家：所有样本都应该相似，所以损失为 1 - similarity
+                        shared_loss_term = 1.0 - similarity
+                        shared_losses.append(shared_loss_term)
+
+                if len(shared_losses) > 0:
+                    shared_culture_loss = torch.stack(shared_losses).mean()
+                    total_culture_losses.append(shared_culture_loss)
+
+            # 2. 路由专家损失：保持原有逻辑（同culture相似，不同culture不同）
+            if representative_expert_weights is not None:
+                expert_weights = representative_expert_weights  # [B, num_experts]
+
+                # 使用对应的culture_labels
+                routing_culture_labels = culture_labels
+                if expert_weights.shape[0] != culture_labels.shape[0]:
+                    # 只对有expert_weights的样本计算文化损失
+                    if expert_weights.shape[0] < 2:
+                        pass  # 激活路由专家的样本少于2个，跳过路由专家损失
+                    else:
+                        routing_culture_labels = culture_labels[:expert_weights.shape[0]]
+
+                if expert_weights.shape[0] >= 2:
+                    routing_losses = []
+                    batch_size = expert_weights.shape[0]
+
+                    # 计算同文化样本间的相似性和不同文化样本间的差异性
+                    for i in range(batch_size):
+                        for j in range(i + 1, batch_size):
+                            if routing_culture_labels[i] == routing_culture_labels[j]:
+                                # 相同文化，鼓励相似的专家权重
+                                vec1 = expert_weights[i].unsqueeze(0)
+                                vec2 = expert_weights[j].unsqueeze(0)
+
+                                # 检查向量是否为零向量，避免cosine_similarity中的NaN
+                                norm1 = torch.norm(vec1)
+                                norm2 = torch.norm(vec2)
+                                if norm1 < 1e-8 or norm2 < 1e-8:
+                                    continue
+
+                                similarity = F.cosine_similarity(vec1, vec2)
+                                if torch.isnan(similarity) or torch.isinf(similarity):
+                                    continue
+
+                                # 相同文化：相似度应该高，损失为 1 - similarity
+                                loss_term = 1.0 - similarity
+                                routing_losses.append(loss_term)
+                            else:
+                                # 不同文化，鼓励不同的专家权重
+                                vec1 = expert_weights[i].unsqueeze(0)
+                                vec2 = expert_weights[j].unsqueeze(0)
+
+                                # 检查向量是否为零向量，避免cosine_similarity中的NaN
+                                norm1 = torch.norm(vec1)
+                                norm2 = torch.norm(vec2)
+                                if norm1 < 1e-8 or norm2 < 1e-8:
+                                    continue
+
+                                similarity = F.cosine_similarity(vec1, vec2)
+                                if torch.isnan(similarity) or torch.isinf(similarity):
+                                    continue
+
+                                # 不同文化：相似度应该低，损失为 similarity
+                                routing_losses.append(similarity)
+
+                    if len(routing_losses) > 0:
+                        routing_culture_loss = torch.stack(routing_losses).mean()
+                        total_culture_losses.append(routing_culture_loss)
+
+            # 计算最终的总文化损失
+            if len(total_culture_losses) > 0:
+                culture_loss = torch.stack(total_culture_losses).mean()
+            else:
+                # 如果没有有效的文化损失，使用主损失*0来创建连接到计算图的零损失
+                if main_loss is not None:
+                    culture_loss = main_loss * 0.0
+                else:
+                    culture_loss = culture_labels.float().sum() * 0.0
+
+            # 检查文化损失是否为NaN/Inf，如果是则返回零损失
+            if torch.isnan(culture_loss) or torch.isinf(culture_loss):
+                if main_loss is not None:
+                    culture_loss = main_loss * 0.0
+                else:
+                    culture_loss = culture_labels.float().sum() * 0.0
+
+            # 确保返回的culture_loss与主损失类型一致
+            if main_loss is not None:
+                target_device = main_loss.device
+                target_dtype = main_loss.dtype
+                if culture_loss.device != target_device or culture_loss.dtype != target_dtype:
+                    culture_loss = culture_loss.to(device=target_device, dtype=target_dtype)
+
+            return culture_loss
+        else:
+            # 没有有效数据，返回零损失
+            if main_loss is not None:
+                return main_loss * 0.0
+            else:
+                for param in self.base_model.parameters():
+                    if param.requires_grad:
+                        return param.sum() * 0.0
+                dummy_param = next(iter(self.base_model.parameters()))
+                return dummy_param.sum() * 0.0
+
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """
         前向传播

@@ -735,63 +735,22 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         loss = outputs.loss
 
-        # 🔧 修复梯度问题：计算文化损失时使用当前batch的有梯度数据
+        # 🔧 修复梯度问题：直接从MoE层计算损失，避免torch.stack操作
         if use_culture_loss != 'false' and culture_labels is not None:
-            # 获取当前batch的shared专家输出（如果有）
-            current_shared_outputs = None
-            print(f"🔍 Shared outputs debug:")
-            print(f"  hasattr(outputs, 'shared_outputs'): {hasattr(outputs, 'shared_outputs')}")
-            if hasattr(outputs, 'shared_outputs'):
-                print(f"  outputs.shared_outputs is not None: {outputs.shared_outputs is not None}")
-                if outputs.shared_outputs is not None:
-                    print(f"  outputs.shared_outputs.requires_grad: {outputs.shared_outputs.requires_grad}")
-                    print(f"  outputs.shared_outputs.grad_fn: {outputs.shared_outputs.grad_fn is not None}")
-                    current_shared_outputs = outputs.shared_outputs
-
-            if current_shared_outputs is None:
-                print(f"  Fallback: getting shared outputs from adapter")
-                current_shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
-                if current_shared_outputs is not None:
-                    print(f"  Fallback shared_outputs.requires_grad: {current_shared_outputs.requires_grad}")
-                    print(f"  Fallback shared_outputs.grad_fn: {current_shared_outputs.grad_fn is not None}")
-
-            # 计算文化损失
-            culture_loss = compute_culture_loss(outputs, culture_labels, current_shared_outputs, main_loss=loss)
-            print(f"🔍 After compute_culture_loss:")
+            # 直接从MoE层获取shared专家输出进行文化损失计算
+            culture_loss = model_adapter.compute_direct_culture_loss(culture_labels, main_loss=loss)
+            print(f"🔍 Direct culture_loss:")
             print(f"  culture_loss.requires_grad: {culture_loss.requires_grad}")
             print(f"  culture_loss.grad_fn: {culture_loss.grad_fn is not None}")
         else:
             # 🔧 修复梯度问题：使用主损失*0来创建连接到计算图的零损失
             culture_loss = loss * 0.0
 
-        # 🔧 修复梯度问题：获取当前batch的expert_weights用于z_loss计算
-        current_expert_weights = None
-        print(f"🔍 Expert weights debug:")
-        print(f"  hasattr(outputs, 'expert_weights'): {hasattr(outputs, 'expert_weights')}")
-        if hasattr(outputs, 'expert_weights'):
-            print(f"  outputs.expert_weights is not None: {outputs.expert_weights is not None}")
-            if outputs.expert_weights is not None:
-                print(f"  outputs.expert_weights.requires_grad: {outputs.expert_weights.requires_grad}")
-                print(f"  outputs.expert_weights.grad_fn: {outputs.expert_weights.grad_fn is not None}")
-                current_expert_weights = outputs.expert_weights
-        else:
-            print(f"  outputs does not have expert_weights attribute")
-
-        # 获取MoE的z-loss用于稳定router - 使用有梯度的expert_weights
-        if current_expert_weights is not None:
-            print(f"🔍 Computing z_loss with current_expert_weights")
-            # 计算有梯度的z_loss
-            expert_usage = current_expert_weights.mean(dim=0)  # [num_experts]
-            target_usage = expert_usage * 0.0 + (1.0 / current_expert_weights.shape[-1])  # 动态获取专家数量
-            z_loss = F.mse_loss(expert_usage, target_usage) * 0.01  # 小的权重
-            print(f"  z_loss.requires_grad: {z_loss.requires_grad}")
-            print(f"  z_loss.grad_fn: {z_loss.grad_fn is not None}")
-        else:
-            print(f"🔍 Fallback: using get_accumulated_z_loss")
-            # fallback到旧方法
-            z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
-            print(f"  fallback z_loss.requires_grad: {z_loss.requires_grad}")
-            print(f"  fallback z_loss.grad_fn: {z_loss.grad_fn is not None}")
+        # 🔧 修复梯度问题：直接从MoE层计算z_loss，避免torch.stack操作
+        z_loss = model_adapter.compute_direct_z_loss(main_loss=loss)
+        print(f"🔍 Direct z_loss:")
+        print(f"  z_loss.requires_grad: {z_loss.requires_grad}")
+        print(f"  z_loss.grad_fn: {z_loss.grad_fn is not None}")
 
         # 🔧 修复数据类型不匹配问题：确保所有损失组件使用相同的设备和数据类型
         target_device = loss.device
@@ -1023,36 +982,16 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
 
             loss = outputs.loss
 
-            # 🔧 修复梯度问题：计算文化损失时使用当前batch的有梯度数据
+            # 🔧 修复梯度问题：直接从MoE层计算损失，避免torch.stack操作
             if use_culture_loss != 'false' and culture_labels is not None:
-                # 获取当前batch的shared专家输出（如果有）
-                current_shared_outputs = None
-                if hasattr(outputs, 'shared_outputs') and outputs.shared_outputs is not None:
-                    current_shared_outputs = outputs.shared_outputs
-                else:
-                    # fallback：尝试从adapter获取
-                    current_shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
-
-                # 计算文化损失
-                culture_loss = compute_culture_loss(outputs, culture_labels, current_shared_outputs, main_loss=loss)
+                # 直接从MoE层获取shared专家输出进行文化损失计算
+                culture_loss = model_adapter.compute_direct_culture_loss(culture_labels, main_loss=loss)
             else:
                 # 🔧 修复梯度问题：使用主损失*0来创建连接到计算图的零损失
                 culture_loss = loss * 0.0
 
-            # 🔧 修复梯度问题：获取当前batch的expert_weights用于z_loss计算
-            current_expert_weights = None
-            if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
-                current_expert_weights = outputs.expert_weights
-
-            # 获取MoE的z-loss用于稳定router - 使用有梯度的expert_weights
-            if current_expert_weights is not None:
-                # 计算有梯度的z_loss
-                expert_usage = current_expert_weights.mean(dim=0)  # [num_experts]
-                target_usage = expert_usage * 0.0 + (1.0 / 4)  # 假设4个专家，均匀分布
-                z_loss = F.mse_loss(expert_usage, target_usage) * 0.01  # 小的权重
-            else:
-                # fallback到旧方法
-                z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
+            # 🔧 修复梯度问题：直接从MoE层计算z_loss，避免torch.stack操作
+            z_loss = model_adapter.compute_direct_z_loss(main_loss=loss)
 
             # 🔧 修复数据类型不匹配问题：确保所有损失组件使用相同的设备和数据类型
             target_device = loss.device
