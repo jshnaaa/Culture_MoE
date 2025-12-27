@@ -735,19 +735,36 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         loss = outputs.loss
 
-        # 计算文化损失 - 统一使用float16节省显存
+        # 🔧 修复梯度问题：计算文化损失时使用当前batch的有梯度数据
         if use_culture_loss != 'false' and culture_labels is not None:
-            # 🆕 获取shared专家输出用于文化损失
-            shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
+            # 获取当前batch的shared专家输出（如果有）
+            current_shared_outputs = None
+            if hasattr(outputs, 'shared_outputs') and outputs.shared_outputs is not None:
+                current_shared_outputs = outputs.shared_outputs
+            else:
+                # fallback：尝试从adapter获取
+                current_shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
 
-            # 🔧 修复梯度问题：传递主损失用于创建连接到计算图的零损失
-            culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, main_loss=loss)
+            # 计算文化损失
+            culture_loss = compute_culture_loss(outputs, culture_labels, current_shared_outputs, main_loss=loss)
         else:
             # 🔧 修复梯度问题：使用主损失*0来创建连接到计算图的零损失
             culture_loss = loss * 0.0
 
-        # 获取MoE的z-loss用于稳定router
-        z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
+        # 🔧 修复梯度问题：获取当前batch的expert_weights用于z_loss计算
+        current_expert_weights = None
+        if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
+            current_expert_weights = outputs.expert_weights
+
+        # 获取MoE的z-loss用于稳定router - 使用有梯度的expert_weights
+        if current_expert_weights is not None:
+            # 计算有梯度的z_loss
+            expert_usage = current_expert_weights.mean(dim=0)  # [num_experts]
+            target_usage = expert_usage * 0.0 + (1.0 / 4)  # 假设4个专家，均匀分布
+            z_loss = F.mse_loss(expert_usage, target_usage) * 0.01  # 小的权重
+        else:
+            # fallback到旧方法
+            z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
 
         # 🔧 修复数据类型不匹配问题：确保所有损失组件使用相同的设备和数据类型
         target_device = loss.device
@@ -979,19 +996,36 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
 
             loss = outputs.loss
 
-            # 计算文化损失 - 统一使用float16节省显存
+            # 🔧 修复梯度问题：计算文化损失时使用当前batch的有梯度数据
             if use_culture_loss != 'false' and culture_labels is not None:
-                # 🆕 获取shared专家输出用于文化损失
-                shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
+                # 获取当前batch的shared专家输出（如果有）
+                current_shared_outputs = None
+                if hasattr(outputs, 'shared_outputs') and outputs.shared_outputs is not None:
+                    current_shared_outputs = outputs.shared_outputs
+                else:
+                    # fallback：尝试从adapter获取
+                    current_shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
 
-                # 🔧 修复梯度问题：传递主损失用于创建连接到计算图的零损失
-                culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, main_loss=loss)
+                # 计算文化损失
+                culture_loss = compute_culture_loss(outputs, culture_labels, current_shared_outputs, main_loss=loss)
             else:
                 # 🔧 修复梯度问题：使用主损失*0来创建连接到计算图的零损失
                 culture_loss = loss * 0.0
 
-            # 获取MoE的z-loss用于稳定router
-            z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
+            # 🔧 修复梯度问题：获取当前batch的expert_weights用于z_loss计算
+            current_expert_weights = None
+            if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
+                current_expert_weights = outputs.expert_weights
+
+            # 获取MoE的z-loss用于稳定router - 使用有梯度的expert_weights
+            if current_expert_weights is not None:
+                # 计算有梯度的z_loss
+                expert_usage = current_expert_weights.mean(dim=0)  # [num_experts]
+                target_usage = expert_usage * 0.0 + (1.0 / 4)  # 假设4个专家，均匀分布
+                z_loss = F.mse_loss(expert_usage, target_usage) * 0.01  # 小的权重
+            else:
+                # fallback到旧方法
+                z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
 
             # 🔧 修复数据类型不匹配问题：确保所有损失组件使用相同的设备和数据类型
             target_device = loss.device
@@ -1165,8 +1199,8 @@ def main():
     # 模型参数 - 与joint版本保持一致
     parser.add_argument("--backbone", type=str, default="llama", choices=["llama", "qwen"],
                         help="Model backbone type")
-    parser.add_argument("--use_shared", type=str, default="false",
-                        help="Whether to use shared expert (placeholder)")
+    parser.add_argument("--use_shared", type=str, default="true",
+                        help="Whether to use shared expert")
     parser.add_argument("--use_gate", type=str, default="false",
                         help="Whether to use MoE gate (placeholder)")
     parser.add_argument("--num_moe_experts", type=int, default=4,
