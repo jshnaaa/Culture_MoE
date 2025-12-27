@@ -261,43 +261,17 @@ class CultureLLMNewFormatDataset(Dataset):
         output_text = item.get('output', '')
         label = item.get('label', '')
 
-        # 🆕 MASK机制：双路并行处理的正确实现
-        if self.enable_mask:
-            # 正确的MASK机制：每个样本同时经过shared专家和路由专家
-            # 方案：在数据集级别创建两个版本，让模型在同一个训练过程中学习两种模式
-
-            # 为当前样本创建两个版本的输入
-            instruction_masked = self.create_instruction_mask(instruction)  # shared专家用
-            instruction_full = instruction  # 路由专家用
-
-            # 构建两个版本的完整输入
-            if input_text:
-                full_input_complete = f"{instruction_full}\n{input_text}"
-                full_input_masked = f"{instruction_masked}\n{input_text}"
-            else:
-                full_input_complete = instruction_full
-                full_input_masked = instruction_masked
-
-            # 🔧 真正的双路并行处理：返回两个版本的数据
-            # 完整版本用于路由专家，masked版本用于shared专家
-            return self._create_dual_input_sample(
-                full_input_complete, full_input_masked, output_text,
-                instruction, input_text, label
-            )
-        else:
-            # MASK机制禁用：只使用路由专家
-            instruction_text = instruction
-            input_type = 1  # 🔧 修复：1表示激活路由专家，0表示shared专家
+        # 🔧 MASK机制已禁用：shared专家和路由专家使用相同输入
+        # 不再区分masked和完整输入，统一使用原始instruction
+        instruction_text = instruction
+        input_type = 1  # 激活路由专家（shared专家也会使用相同输入）
 
         # 构建完整的输入和输出
         # 格式：instruction + input → output
-        if not self.enable_mask:
-            # 非MASK模式：使用原有逻辑
-            if input_text:
-                full_input = f"{instruction_text}\n{input_text}"
-            else:
-                full_input = instruction_text
-        # MASK模式：full_input已经在上面构建好了
+        if input_text:
+            full_input = f"{instruction_text}\n{input_text}"
+        else:
+            full_input = instruction_text
 
         # 完整的文本（用于语言建模）
         full_text = f"{full_input.rstrip()} {output_text}"
@@ -799,7 +773,7 @@ def load_and_process_data(
     tokenizer,
     max_length: int = 512,
     val_split: float = 0.1,
-    enable_mask: bool = True,  # 🆕 默认启用MASK机制
+    enable_mask: bool = False,  # 🔧 默认禁用MASK机制
     mask_prob: float = 0.15
 ):
     """
@@ -838,6 +812,8 @@ def load_and_process_data(
     if enable_mask:
         print(f"✅ MASK机制已启用 (mask_prob={mask_prob})")
         print(f"   每个样本将同时经过shared专家和路由专家")
+    else:
+        print(f"🔧 MASK机制已禁用，shared专家和路由专家使用相同输入")
 
     return {
         'train': train_dataset,
@@ -1478,7 +1454,7 @@ def main():
         tokenizer,
         max_length=args.max_length,
         val_split=args.val_split,
-        enable_mask=True,  # 🆕 启用MASK机制
+        enable_mask=False,  # 🔧 禁用MASK机制
         mask_prob=0.15
     )
     train_dataset = datasets['train']
