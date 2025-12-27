@@ -14,7 +14,7 @@ DATA_ID=${2:-"5"}
 USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
 USE_MASK=${4:-"true"}     # 是否启用MASK机制，默认为true
 USE_GATE=${5:-"true"}     # 是否使用MoE内部融合Gate，默认为true
-USE_CULTURE_LOSS=${6:-"new"}  # ori/new/kl/false，默认为new
+USE_CULTURE_LOSS=${6:-"new"}  # new/false，默认为new
 LAMBDA=${7:-"1.0"}  # 🔧 提升lambda让辅助损失有意义
 ALPHA=${8:-"0.5"}
 BETA=${9:-"5.0"}  # 🔧 进一步提升文化损失权重：强化辅助学习信号
@@ -258,7 +258,7 @@ echo "  MASK机制: $USE_MASK"
 echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
-echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, false=仅L_aux)"
+echo "  文化损失模式: $USE_CULTURE_LOSS (new=文化感知损失, false=仅负载均衡损失)"
 echo "  层次化损失系数: λ=$LAMBDA, α=$ALPHA, β=$BETA"
 echo "  启用LoRA: $USE_LORA"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"

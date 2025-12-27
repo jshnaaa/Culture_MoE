@@ -37,7 +37,7 @@ class SimplifiedCultureMoEConfig:
     ffn_target_modules: List[str] = None
 
     # 文化损失配置
-    use_culture_loss: str = "new"  # 文化损失模式：ori/new/kl/false
+    use_culture_loss: str = "new"  # 文化损失模式：new/false
 
     # LoRA相关配置
     use_lora: bool = True  # 是否启用LoRA微调

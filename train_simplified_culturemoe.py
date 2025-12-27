@@ -450,6 +450,11 @@ def print_expert_activation_stats(model_adapter, epoch):
     """
     统计并打印专家激活分布
 
+    完善版本支持：
+    1. Dense模式和Top-k模式的统计
+    2. MASK机制的shared专家和路由专家区分
+    3. 更全面的统计信息和趋势分析
+
     Args:
         model_adapter: SimplifiedCultureMoEAdapter实例
         epoch: 当前epoch数
@@ -497,6 +502,12 @@ def print_expert_activation_stats(model_adapter, epoch):
 
         total_layers = len(layers)
         moe_layer_count = 0
+        routing_layer_count = 0  # 只统计有路由专家激活的层
+        shared_layer_count = 0   # 只统计有shared专家激活的层
+
+        # 全局统计信息
+        global_expert_usage = defaultdict(int)  # 全局专家使用次数
+        layer_activations = []  # 每层的激活模式
 
         # 遍历所有层，统计MoE层的专家激活
         for layer_idx in range(total_layers):
@@ -506,42 +517,131 @@ def print_expert_activation_stats(model_adapter, epoch):
             if hasattr(moe_layer, 'latest_expert_weights') and moe_layer.latest_expert_weights is not None:
                 expert_weights = moe_layer.latest_expert_weights  # [B, num_experts]
 
-                if expert_weights.shape[0] > 0:  # 确保有数据
-                    # 对于top-2激活，找到每个样本激活的专家对
+                # 检查是否有shared专家输出
+                has_shared = hasattr(moe_layer, 'latest_shared_outputs') and moe_layer.latest_shared_outputs is not None
+
+                if expert_weights.shape[0] > 0:  # 确保有路由专家数据
+                    routing_layer_count += 1
                     batch_size, num_experts = expert_weights.shape
-                    activation_pairs = []
 
-                    for sample_idx in range(batch_size):
-                        # 找到权重最大的top-2专家
-                        top2_values, top2_indices = torch.topk(expert_weights[sample_idx], k=2, dim=0)
+                    # 🆕 检测激活模式（Dense vs Top-k）
+                    # 通过检查MoE层的配置确定激活模式
+                    is_dense_mode = (moe_layer.num_activated_experts == moe_layer.num_experts)
+                    activation_mode = "Dense" if is_dense_mode else f"Top-{moe_layer.num_activated_experts}"
 
-                        # 只统计权重显著大于0的专家（避免统计到微小的数值噪音）
-                        significant_experts = []
-                        for i, (value, idx) in enumerate(zip(top2_values, top2_indices)):
-                            if value.item() > 1e-6:  # 阈值过滤
-                                significant_experts.append(idx.item())
+                    if is_dense_mode:
+                        # Dense模式：统计所有专家的权重分布
+                        expert_avg_weights = expert_weights.mean(dim=0)  # [num_experts]
 
-                        if len(significant_experts) >= 2:
-                            # 排序确保一致性（例如总是0/1而不是1/0）
-                            pair = tuple(sorted(significant_experts[:2]))
-                            activation_pairs.append(pair)
+                        print(f"Layer {layer_idx:2d} ({activation_mode}): ", end="")
+                        weight_stats = []
+                        for expert_idx in range(num_experts):
+                            weight = expert_avg_weights[expert_idx].item()
+                            percentage = weight * 100
+                            weight_stats.append(f"E{expert_idx}:{percentage:5.1f}%")
+                            global_expert_usage[f"expert_{expert_idx}"] += batch_size  # Dense模式下每个专家都被所有样本使用
 
-                    # 统计激活对的频率
-                    if activation_pairs:
-                        pair_counts = Counter(activation_pairs)
-                        total_activations = len(activation_pairs)
+                        print(", ".join(weight_stats))
+                        layer_activations.append({
+                            'layer': layer_idx,
+                            'mode': activation_mode,
+                            'type': 'routing',
+                            'expert_weights': expert_avg_weights.tolist()
+                        })
 
-                        # 打印该层的统计结果
-                        print(f"Layer {layer_idx:2d}: ", end="")
-                        pair_stats = []
-                        for pair, count in sorted(pair_counts.items()):
-                            percentage = (count / total_activations) * 100
-                            pair_stats.append(f"{pair[0]}/{pair[1]}:{percentage:5.1f}%")
-
-                        print(", ".join(pair_stats))
-                        moe_layer_count += 1
                     else:
-                        print(f"Layer {layer_idx:2d}: 无有效激活数据")
+                        # Top-k模式：统计激活对的频率
+                        activation_pairs = []
+                        expert_activation_counts = defaultdict(int)
+
+                        for sample_idx in range(batch_size):
+                            # 找到权重最大的top-k专家
+                            k = min(moe_layer.num_activated_experts, num_experts)
+                            topk_values, topk_indices = torch.topk(expert_weights[sample_idx], k=k, dim=0)
+
+                            # 只统计权重显著大于0的专家（避免统计到微小的数值噪音）
+                            significant_experts = []
+                            for i, (value, idx) in enumerate(zip(topk_values, topk_indices)):
+                                if value.item() > 1e-6:  # 阈值过滤
+                                    expert_id = idx.item()
+                                    significant_experts.append(expert_id)
+                                    expert_activation_counts[expert_id] += 1
+                                    global_expert_usage[f"expert_{expert_id}"] += 1
+
+                            if len(significant_experts) >= 2:
+                                # 排序确保一致性（例如总是0/1而不是1/0）
+                                pair = tuple(sorted(significant_experts[:2]))
+                                activation_pairs.append(pair)
+                            elif len(significant_experts) == 1:
+                                # 单专家激活情况
+                                activation_pairs.append((significant_experts[0],))
+
+                        # 统计激活对的频率
+                        if activation_pairs:
+                            pair_counts = Counter(activation_pairs)
+                            total_activations = len(activation_pairs)
+
+                            # 打印该层的统计结果
+                            print(f"Layer {layer_idx:2d} ({activation_mode}): ", end="")
+                            pair_stats = []
+                            for pair, count in sorted(pair_counts.items()):
+                                percentage = (count / total_activations) * 100
+                                if len(pair) == 2:
+                                    pair_stats.append(f"{pair[0]}/{pair[1]}:{percentage:5.1f}%")
+                                else:
+                                    pair_stats.append(f"{pair[0]}:{percentage:5.1f}%")
+
+                            print(", ".join(pair_stats))
+
+                            layer_activations.append({
+                                'layer': layer_idx,
+                                'mode': activation_mode,
+                                'type': 'routing',
+                                'activation_pairs': dict(pair_counts),
+                                'expert_counts': dict(expert_activation_counts)
+                            })
+                        else:
+                            print(f"Layer {layer_idx:2d} ({activation_mode}): 无有效激活数据")
+
+                elif has_shared:
+                    # 只有shared专家激活的情况（MASK机制）
+                    shared_layer_count += 1
+                    print(f"Layer {layer_idx:2d} (Shared): Shared专家激活")
+                    layer_activations.append({
+                        'layer': layer_idx,
+                        'mode': 'Shared',
+                        'type': 'shared'
+                    })
+                    global_expert_usage['shared_expert'] += 1
+
+                moe_layer_count += 1
+
+        # 🆕 打印总体统计信息
+        print(f"\n📊 总体统计信息:")
+        print(f"   总MoE层数: {moe_layer_count}")
+        print(f"   路由专家激活层数: {routing_layer_count}")
+        print(f"   Shared专家激活层数: {shared_layer_count}")
+
+        if global_expert_usage:
+            print(f"\n🔍 全局专家使用频率:")
+            total_usage = sum(global_expert_usage.values())
+            for expert_name, usage_count in sorted(global_expert_usage.items()):
+                percentage = (usage_count / total_usage) * 100 if total_usage > 0 else 0
+                print(f"   {expert_name}: {usage_count} 次 ({percentage:5.1f}%)")
+
+        # 🆕 简单的负载均衡分析
+        if routing_layer_count > 0:
+            routing_expert_counts = {k: v for k, v in global_expert_usage.items() if k.startswith('expert_')}
+            if len(routing_expert_counts) > 1:
+                usage_values = list(routing_expert_counts.values())
+                max_usage = max(usage_values)
+                min_usage = min(usage_values)
+                balance_ratio = min_usage / max_usage if max_usage > 0 else 0
+                print(f"\n⚖️  路由专家负载均衡:")
+                print(f"   最大使用: {max_usage}, 最小使用: {min_usage}")
+                print(f"   均衡度: {balance_ratio:.3f} (1.0为完全均衡)")
+                if balance_ratio < 0.5:
+                    print(f"   ⚠️  负载不均衡，考虑调整路由策略")
 
         if moe_layer_count == 0:
             print("⚠️ 未找到任何MoE层的激活数据")
@@ -648,35 +748,10 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             # 🆕 获取shared专家输出用于文化损失
             shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
 
-            # 🔧 MASK机制：传递input_type信息以正确处理文化损失
-            if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
-                # 如果有expert_weights，说明有样本激活了路由专家
-                expert_batch_size = outputs.expert_weights.shape[0]
-                full_batch_size = culture_labels.shape[0]
-
-                if expert_batch_size == full_batch_size:
-                    # 所有样本都激活路由专家
-                    culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
-                elif expert_batch_size > 0:
-                    # 部分样本激活路由专家，需要找到对应的culture_labels
-                    # 🔧 MASK机制：根据input_type找到激活路由专家的样本索引
-                    if input_type is not None:
-                        full_indices = (input_type == 1).nonzero(as_tuple=True)[0]
-                        if len(full_indices) == expert_batch_size:
-                            # 提取对应的culture_labels
-                            relevant_culture_labels = culture_labels[full_indices]
-                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs)
-                        else:
-                            # 索引数量不匹配，跳过文化损失计算
-                            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
-                    else:
-                        # 兼容模式，使用前expert_batch_size个
-                        relevant_culture_labels = culture_labels[:expert_batch_size]
-                        culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs)
-            else:
-                # 🆕 即使没有路由专家权重，也可以计算shared专家损失
-                if shared_outputs is not None:
-                    culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
+            # 🔧 简化文化损失计算：直接使用完整的culture_labels
+            # 无论是否有MASK机制，都使用完整batch的文化标签
+            # compute_culture_loss内部会处理expert_weights维度不匹配的情况
+            culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
 
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss()
@@ -832,29 +907,10 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
                 # 🆕 获取shared专家输出用于文化损失
                 shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
 
-                # 🔧 MASK机制：正确处理文化损失
-                if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
-                    expert_batch_size = outputs.expert_weights.shape[0]
-                    full_batch_size = culture_labels.shape[0]
-
-                    if expert_batch_size == full_batch_size:
-                        culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
-                    elif expert_batch_size > 0:
-                        # 🔧 MASK机制：根据input_type找到对应的culture_labels
-                        if input_type is not None:
-                            full_indices = (input_type == 1).nonzero(as_tuple=True)[0]
-                            if len(full_indices) == expert_batch_size:
-                                relevant_culture_labels = culture_labels[full_indices]
-                                culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs)
-                            else:
-                                culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
-                        else:
-                            relevant_culture_labels = culture_labels[:expert_batch_size]
-                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs)
-                else:
-                    # 🆕 即使没有路由专家权重，也可以计算shared专家损失
-                    if shared_outputs is not None:
-                        culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
+                # 🔧 简化文化损失计算：直接使用完整的culture_labels
+                # 无论是否有MASK机制，都使用完整batch的文化标签
+                # compute_culture_loss内部会处理expert_weights维度不匹配的情况
+                culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
 
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss()
@@ -1021,7 +1077,7 @@ def main():
     parser.add_argument("--num_moe_experts", type=int, default=4,
                         help="Number of MoE experts")
     parser.add_argument("--use_culture_loss", type=str, default="new",
-                        help="Culture loss mode: ori/new/kl/false")
+                        help="Culture loss mode: new/false")
     parser.add_argument("--num_activated_experts", type=int, default=2,
                         help="Number of activated experts (top-k), if equal to num_moe_experts then dense mode")
     parser.add_argument("--use_lora", type=str, default="true",
@@ -1054,8 +1110,8 @@ def main():
 
     args = parser.parse_args()
 
-    # 转换字符串参数 - 与joint版本保持一致
-    use_culture_loss = args.use_culture_loss.lower() if args.use_culture_loss.lower() in ['ori', 'new', 'kl', 'false'] else 'new'
+    # 转换字符串参数 - 只支持new和false
+    use_culture_loss = args.use_culture_loss.lower() if args.use_culture_loss.lower() in ['new', 'false'] else 'new'
     use_shared = args.use_shared.lower() == 'true'
     use_gate = args.use_gate.lower() == 'true'
     use_lora = args.use_lora.lower() == 'true'
