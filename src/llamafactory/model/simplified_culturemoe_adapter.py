@@ -567,17 +567,42 @@ class SimplifiedCultureMoEAdapter:
             print(f"⚠️ LoRA application failed: {e}")
 
     def _freeze_non_trainable_parameters(self):
-        """冻结非训练参数"""
+        """冻结非训练参数，但保留计算loss所必需的关键层"""
         model_to_freeze = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
+        # 🔧 关键修复：保留计算loss必需的层和我们要训练的参数
+        trainable_keywords = [
+            'lora',          # LoRA参数
+            'experts',       # MoE专家参数
+            'router',        # MoE路由器参数
+            'lm_head',       # 输出投影层（计算loss必需！）
+            'embed_tokens',  # 词嵌入层
+            'norm',          # 标准化层
+            'embed',         # 其他嵌入层的可能命名
+            'head'           # 其他head层的可能命名
+        ]
+
+        trainable_count = 0
+        frozen_count = 0
+
         for name, param in model_to_freeze.named_parameters():
-            # 只训练LoRA参数和MoE参数
-            if any(keyword in name.lower() for keyword in ['lora', 'experts', 'router']):
+            # 检查参数名是否包含可训练的关键词
+            should_train = any(keyword in name.lower() for keyword in trainable_keywords)
+
+            if should_train:
                 param.requires_grad = True
+                trainable_count += 1
+                # 打印关键层的状态
+                if any(key in name.lower() for key in ['lm_head', 'embed_tokens', 'norm']):
+                    print(f"🔧 Keeping trainable: {name} (critical for loss computation)")
             else:
                 param.requires_grad = False
+                frozen_count += 1
 
-        print("✅ Frozen non-trainable parameters (only LoRA + MoE trainable)")
+        print(f"✅ Parameter freeze completed:")
+        print(f"  - Trainable parameters: {trainable_count}")
+        print(f"  - Frozen parameters: {frozen_count}")
+        print(f"  - Critical layers (lm_head, embed_tokens, norm) kept trainable")
 
     def _ensure_device_consistency(self):
         """确保设备一致性"""
@@ -781,8 +806,12 @@ class SimplifiedCultureMoEAdapter:
         trainable_params = 0
         lora_params = 0
         moe_params = 0
+        critical_params = 0
 
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        print("🔍 Critical layer status check:")
+        critical_layers_found = []
 
         for name, param in model_to_check.named_parameters():
             total_params += param.numel()
@@ -792,14 +821,26 @@ class SimplifiedCultureMoEAdapter:
                     lora_params += param.numel()
                 elif any(keyword in name.lower() for keyword in ['experts', 'router']):
                     moe_params += param.numel()
+                elif any(keyword in name.lower() for keyword in ['lm_head', 'embed_tokens', 'norm']):
+                    critical_params += param.numel()
 
-        print(f"Trainable params: {trainable_params:,} || "
+            # 检查关键层
+            if any(keyword in name.lower() for keyword in ['lm_head', 'embed_tokens', 'norm']):
+                status = "✅ Trainable" if param.requires_grad else "❌ FROZEN"
+                print(f"  {name}: {status} ({param.numel():,} params)")
+                critical_layers_found.append((name, param.requires_grad))
+
+        if not critical_layers_found:
+            print("  ⚠️  No critical layers found! This might cause gradient issues.")
+
+        print(f"\nTrainable params: {trainable_params:,} || "
               f"Total params: {total_params:,} || "
               f"Trainable%: {100 * trainable_params / total_params:.4f}%")
 
         print(f"  - LoRA params (attention): {lora_params:,}")
         print(f"  - MoE params (experts+router): {moe_params:,}")
-        print(f"  - Architecture: Pure LoRA MoE (Last 8 Layers FFN)")
+        print(f"  - Critical params (lm_head, embed, norm): {critical_params:,}")
+        print(f"  - Architecture: Pure LoRA MoE (All Layers FFN)")
         print(f"  - MoE experts: {self.config.num_moe_experts}")
         print(f"  - Activated experts: {self.config.num_activated_experts}")
         print(f"  - LoRA rank: {self.config.lora_rank}")
@@ -808,6 +849,41 @@ class SimplifiedCultureMoEAdapter:
         print(f"  - Gate network: {'enabled' if self.config.use_gate else 'disabled'}")
         if self.config.use_shared and not self.config.use_gate:
             print(f"  - Fusion method: simple addition (shared + routed)")
+
+        # 🔧 关键检查：确保有足够的可训练参数用于loss计算
+        if critical_params == 0:
+            print("❌ WARNING: No critical layers are trainable! This will cause gradient issues.")
+            print("   lm_head layer must be trainable for loss computation.")
+        else:
+            print(f"✅ Critical layers are trainable ({critical_params:,} params)")
+
+    def check_gradient_flow(self):
+        """检查模型的梯度流状态"""
+        print("\n🔍 Gradient flow diagnosis:")
+        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        # 检查关键层的梯度状态
+        critical_layers = ['lm_head', 'embed_tokens', 'norm']
+        for layer_name in critical_layers:
+            found = False
+            for name, param in model_to_check.named_parameters():
+                if layer_name in name.lower():
+                    found = True
+                    print(f"  {name}:")
+                    print(f"    requires_grad: {param.requires_grad}")
+                    print(f"    shape: {param.shape}")
+                    print(f"    device: {param.device}")
+                    print(f"    dtype: {param.dtype}")
+                    break
+            if not found:
+                print(f"  ❌ {layer_name}: NOT FOUND")
+
+        # 统计可训练参数
+        trainable_count = sum(1 for param in model_to_check.parameters() if param.requires_grad)
+        total_count = sum(1 for param in model_to_check.parameters())
+        print(f"\n  📊 Trainable parameters: {trainable_count}/{total_count}")
+
+        return trainable_count > 0
 
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):

@@ -1456,6 +1456,21 @@ def main():
 
     if is_main_process(rank):
         model_adapter.print_trainable_parameters()
+
+        # 🔧 关键诊断：检查梯度流状态
+        print("\n" + "="*60)
+        print("🔍 GRADIENT FLOW DIAGNOSIS")
+        print("="*60)
+        gradient_ok = model_adapter.check_gradient_flow()
+        if not gradient_ok:
+            print("❌ CRITICAL ERROR: No trainable parameters found!")
+            print("   This will cause 'loss has no gradient' errors.")
+            print("   Please check parameter freezing logic.")
+            return
+        else:
+            print("✅ Gradient flow check passed")
+        print("="*60)
+
         print("✅ Simplified CultureMoE configured")
 
     # 启用梯度检查点节省显存
