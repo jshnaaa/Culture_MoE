@@ -726,6 +726,50 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             else:
                 culture_labels = batch['label'].to(device)
 
+        # 🔧 确保模型在训练模式 - 强制设置
+        model_adapter.base_model.train()
+
+        # 🔧 额外检查：确保所有MoE层也在训练模式
+        layers, target_layers = model_adapter._get_target_layers()
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if hasattr(moe_layer, 'router'):
+                moe_layer.router.train()
+            if hasattr(moe_layer, 'experts'):
+                for expert in moe_layer.experts:
+                    expert.train()
+            if hasattr(moe_layer, 'shared_expert') and moe_layer.shared_expert is not None:
+                moe_layer.shared_expert.train()
+            if hasattr(moe_layer, 'gate_network') and moe_layer.gate_network is not None:
+                moe_layer.gate_network.train()
+
+        # 🔧 梯度诊断：检查模型的training状态
+        print(f"🔍 Model Training Mode Check:")
+        print(f"  base_model.training: {model_adapter.base_model.training}")
+
+        # 检查第一个MoE层的训练状态
+        first_moe = layers[0].mlp
+        if hasattr(first_moe, 'router'):
+            print(f"  first_moe.router.training: {first_moe.router.training}")
+
+        # 🔧 关键诊断：检查所有MoE参数的requires_grad状态
+        print(f"🔍 MoE Parameters Requires_Grad Check:")
+        moe_params_trainable = 0
+        moe_params_frozen = 0
+
+        for layer_idx in target_layers[:3]:  # 只检查前3层避免输出太多
+            moe_layer = layers[layer_idx].mlp
+            if hasattr(moe_layer, 'router'):
+                for name, param in moe_layer.router.named_parameters():
+                    if param.requires_grad:
+                        moe_params_trainable += 1
+                        print(f"  Layer {layer_idx} router.{name}: ✅ trainable")
+                    else:
+                        moe_params_frozen += 1
+                        print(f"  Layer {layer_idx} router.{name}: ❌ FROZEN")
+
+        print(f"  MoE params summary: {moe_params_trainable} trainable, {moe_params_frozen} frozen")
+
         # 单路处理
         outputs = model_adapter.forward(
             input_ids=input_ids,

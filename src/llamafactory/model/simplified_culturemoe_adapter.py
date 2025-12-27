@@ -126,27 +126,83 @@ class MoERouter(nn.Module):
         """
         batch_size, seq_len, hidden_dim = x.shape
 
-        # 🔧 更保守的输入限制
-        x = torch.clamp(x, min=-5.0, max=5.0)
+        # 🔧 限制诊断输出
+        if not hasattr(self, '_debug_call_count'):
+            self._debug_call_count = 0
+        self._debug_call_count += 1
+        debug_this_call = self._debug_call_count <= 2
+
+        if debug_this_call:
+            print(f"🔍 Router Forward - Input Diagnosis (Call {self._debug_call_count}):")
+            print(f"  x.requires_grad: {x.requires_grad}")
+            print(f"  x.grad_fn: {x.grad_fn is not None}")
+            print(f"  x.shape: {x.shape}")
+
+        # 🔧 更保守的输入限制，但保持梯度连接
+        x_clamped = torch.clamp(x, min=-5.0, max=5.0)
+
+        if debug_this_call:
+            print(f"🔍 After clamp:")
+            print(f"  x_clamped.requires_grad: {x_clamped.requires_grad}")
+            print(f"  x_clamped.grad_fn: {x_clamped.grad_fn is not None}")
 
         try:
-            # 计算路由logits
-            router_logits = self.router(x)  # [B, L, num_experts]
+            if debug_this_call:
+                # 计算路由logits
+                print(f"🔍 Router Linear Layer Call:")
+                print(f"  self.router.weight.requires_grad: {self.router.weight.requires_grad}")
+                print(f"  self.router.weight.grad_fn: {self.router.weight.grad_fn is not None}")
+
+            router_logits = self.router(x_clamped)  # [B, L, num_experts]
+
+            if debug_this_call:
+                print(f"🔍 Router Linear Output:")
+                print(f"  router_logits.requires_grad: {router_logits.requires_grad}")
+                print(f"  router_logits.grad_fn: {router_logits.grad_fn is not None}")
+
             router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)
+
+            if debug_this_call:
+                print(f"🔍 After router_logits clamp:")
+                print(f"  router_logits.requires_grad: {router_logits.requires_grad}")
+                print(f"  router_logits.grad_fn: {router_logits.grad_fn is not None}")
 
             # 数值稳定的softmax
             max_logits = torch.max(router_logits, dim=-1, keepdim=True)[0]
             shifted_logits = router_logits - max_logits
             shifted_logits = torch.clamp(shifted_logits, min=-10.0, max=0.0)
 
+            if debug_this_call:
+                print(f"🔍 Softmax computation:")
+                print(f"  shifted_logits.requires_grad: {shifted_logits.requires_grad}")
+                print(f"  shifted_logits.grad_fn: {shifted_logits.grad_fn is not None}")
+
             # 计算专家权重
             expert_weights = F.softmax(shifted_logits, dim=-1)
 
+            if debug_this_call:
+                print(f"🔍 Softmax output:")
+                print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
+                print(f"  expert_weights.grad_fn: {expert_weights.grad_fn is not None}")
+
             # 检查结果
             if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+                if debug_this_call:
+                    print(f"🔍 NaN/Inf detected in expert_weights, using uniform fallback")
                 # 使用均匀分布作为fallback
                 expert_weights = expert_weights * 0.0 + (1.0 / self.num_experts)
                 router_logits = router_logits * 0.0
+                if debug_this_call:
+                    print(f"🔍 After fallback:")
+                    print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
+                    print(f"  expert_weights.grad_fn: {expert_weights.grad_fn is not None}")
+
+            # 🔧 简化输出：如果expert_weights没有梯度，报告问题
+            elif not debug_this_call and (not expert_weights.requires_grad or expert_weights.grad_fn is None):
+                print(f"⚠️ Router: expert_weights output has no gradient!")
+                print(f"  Input x.requires_grad: {x.requires_grad}, x.grad_fn: {x.grad_fn is not None}")
+                print(f"  Router weight.requires_grad: {self.router.weight.requires_grad}")
+                print(f"  Output expert_weights.requires_grad: {expert_weights.requires_grad}, grad_fn: {expert_weights.grad_fn is not None}")
 
             return expert_weights, router_logits
 
@@ -270,17 +326,55 @@ class MoEFFNLoRA(nn.Module):
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
+        # 🔧 限制诊断输出：只在前几个调用时输出详细信息
+        if not hasattr(self, '_debug_call_count'):
+            self._debug_call_count = 0
+        self._debug_call_count += 1
+
+        debug_this_call = self._debug_call_count <= 2  # 只在前2次调用时输出详细诊断
+
+        if debug_this_call:
+            print(f"🔍 MoE Forward - Input Gradient Diagnosis (Call {self._debug_call_count}):")
+            print(f"  hidden_states.requires_grad: {hidden_states.requires_grad}")
+            print(f"  hidden_states.grad_fn: {hidden_states.grad_fn is not None}")
+            print(f"  hidden_states.shape: {hidden_states.shape}")
+            print(f"  hidden_states contains NaN/Inf: {torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any()}")
+
         # 检查输入
         if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
             print("⚠️ NaN/Inf in MoE input, using original FFN")
             return self.original_ffn(hidden_states)
+
+        if debug_this_call:
+            # 🔧 详细梯度诊断：检查router参数状态
+            print(f"🔍 Router Parameter Diagnosis:")
+            for name, param in self.router.named_parameters():
+                print(f"  router.{name}: requires_grad={param.requires_grad}, grad_fn={param.grad_fn is not None}, shape={param.shape}")
 
         try:
             # 1. 计算原始FFN输出作为基础
             original_output = self.original_ffn(hidden_states)
 
             # 2. 路由计算（为路由专家）
+            if debug_this_call:
+                print(f"🔍 Before router call:")
+                print(f"  hidden_states.requires_grad: {hidden_states.requires_grad}")
+                print(f"  hidden_states.grad_fn: {hidden_states.grad_fn is not None}")
+
             expert_weights, router_logits = self.router(hidden_states)
+
+            if debug_this_call:
+                print(f"🔍 After router call:")
+                print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
+                print(f"  expert_weights.grad_fn: {expert_weights.grad_fn is not None}")
+                print(f"  router_logits.requires_grad: {router_logits.requires_grad}")
+                print(f"  router_logits.grad_fn: {router_logits.grad_fn is not None}")
+            else:
+                # 简化输出：只在expert_weights没有梯度时报告
+                if not expert_weights.requires_grad or expert_weights.grad_fn is None:
+                    print(f"⚠️ MoE Layer: expert_weights has no gradient!")
+                    print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
+                    print(f"  expert_weights.grad_fn: {expert_weights.grad_fn is not None}")
 
             # 🔧 关键修复：保存当前批次的有梯度expert_weights
             if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
@@ -489,6 +583,9 @@ class SimplifiedCultureMoEAdapter:
         # 5. 确保设备一致性
         self._ensure_device_consistency()
 
+        # 6. 🔧 最终验证：再次确保MoE参数可训练（在所有操作后）
+        self._final_moe_gradient_check()
+
 
     def _get_target_layers(self, force_refresh=False):
         """获取目标层索引（所有层）"""
@@ -616,6 +713,36 @@ class SimplifiedCultureMoEAdapter:
                         moe_param_count += param.numel()
 
         print(f"✅ MoE parameter check completed: {moe_param_count:,} MoE parameters ensured trainable")
+
+    def _final_moe_gradient_check(self):
+        """最终验证MoE参数的梯度状态"""
+        print(f"🔧 Final MoE gradient verification...")
+
+        layers, target_layers = self._get_target_layers()
+        issues_found = 0
+
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, MoEFFNLoRA):
+                # 检查router参数
+                for name, param in moe_layer.router.named_parameters():
+                    if not param.requires_grad:
+                        print(f"❌ CRITICAL: Layer {layer_idx} router.{name} requires_grad=False")
+                        param.requires_grad = True
+                        issues_found += 1
+
+                # 检查expert参数
+                for expert_idx, expert in enumerate(moe_layer.experts):
+                    for name, param in expert.named_parameters():
+                        if not param.requires_grad:
+                            print(f"❌ CRITICAL: Layer {layer_idx} expert_{expert_idx}.{name} requires_grad=False")
+                            param.requires_grad = True
+                            issues_found += 1
+
+        if issues_found > 0:
+            print(f"⚠️ Fixed {issues_found} MoE parameters that were incorrectly frozen")
+        else:
+            print(f"✅ All MoE parameters verified as trainable")
 
     def _apply_attention_lora(self):
         """应用LoRA到注意力层"""
@@ -883,7 +1010,18 @@ class SimplifiedCultureMoEAdapter:
                             total_z_loss = total_z_loss + layer_z_loss
                         moe_layer_count += 1
                     else:
+                        # 🔧 详细诊断expert_weights没有梯度的原因
                         print(f"⚠️ Layer {layer_idx}: expert_weights has no gradient, skipping")
+                        print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
+                        print(f"  expert_weights.grad_fn: {expert_weights.grad_fn}")
+
+                        # 检查router参数状态
+                        router_has_grad = any(p.requires_grad for p in moe_layer.router.parameters())
+                        print(f"  router parameters require_grad: {router_has_grad}")
+
+                        # 检查router权重的详细状态
+                        for name, param in moe_layer.router.named_parameters():
+                            print(f"    router.{name}: requires_grad={param.requires_grad}, grad_fn={param.grad_fn is not None}")
                 else:
                     print(f"⚠️ Layer {layer_idx}: current_expert_weights is None, skipping")
 
