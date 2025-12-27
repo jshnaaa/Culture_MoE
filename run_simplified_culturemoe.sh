@@ -29,8 +29,8 @@ NUM_GPUS=${15:-"2"}
 
 
 # 检查参数
-if [ "$#" -gt 12 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_mask] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 15 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss] [lambda] [alpha] [beta] [num_moe_experts] [num_activated_experts] [lora_rank] [lora_alpha] [use_lora] [num_gpus]"
     exit 1
 fi
 
@@ -263,6 +263,7 @@ echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
 echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, false=仅L_aux)"
+echo "  层次化损失系数: λ=$LAMBDA, α=$ALPHA, β=$BETA"
 echo "  启用LoRA: $USE_LORA"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
 echo "  GPU: $NUM_GPUS卡"
@@ -368,6 +369,9 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
         --memory_efficient \
+        --lambda_balance $LAMBDA \
+        --alpha_z $ALPHA \
+        --beta_culture $BETA \
         $(if [ "$USE_MASK" = "true" ]; then echo "--enable_mask --mask_prob 0.15"; fi) \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 else
@@ -396,6 +400,9 @@ else
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
         --memory_efficient \
+        --lambda_balance $LAMBDA \
+        --alpha_z $ALPHA \
+        --beta_culture $BETA \
         $(if [ "$USE_MASK" = "true" ]; then echo "--enable_mask --mask_prob 0.15"; fi) \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 fi
