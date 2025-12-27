@@ -287,7 +287,7 @@ class CultureLLMNewFormatDataset(Dataset):
         else:
             # MASK机制禁用：只使用路由专家
             instruction_text = instruction
-            input_type = 0  # 标识为只使用路由专家
+            input_type = 1  # 🔧 修复：1表示激活路由专家，0表示shared专家
 
         # 构建完整的输入和输出
         # 格式：instruction + input → output
