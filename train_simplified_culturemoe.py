@@ -2003,15 +2003,12 @@ def main():
             gradient_as_bucket_view=True
         )
 
-        # 🔧 修复DDP参数双重标记问题：使用static_graph作为workaround
-        try:
-            model_adapter.base_model._set_static_graph()
-            if is_main_process(rank):
-                print("✅ DDP configured for MoE (find_unused_parameters=True, static_graph=True)")
-        except Exception as e:
-            if is_main_process(rank):
-                print(f"⚠️ 无法设置static_graph: {e}")
-                print("✅ DDP configured for MoE (find_unused_parameters=True, no static_graph)")
+        # 🔧 MoE动态路由兼容性：禁用static_graph避免与Top-k路由冲突
+        # MoE的Top-k路由机制导致不同迭代中激活不同专家，与static_graph不兼容
+        # static_graph要求每次迭代的计算图完全相同，但MoE路由是动态的
+        if is_main_process(rank):
+            print("✅ DDP configured for MoE (find_unused_parameters=True, static_graph=False)")
+            print("   Reason: MoE Top-k routing causes dynamic computation graphs")
 
         if is_main_process(rank):
             print("✅ Model wrapped with DDP")
