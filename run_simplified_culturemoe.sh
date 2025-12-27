@@ -10,7 +10,7 @@ echo "======================================="
 
 # 参数设置
 BACKBONE=${1:-"llama"}  # 默认使用llama
-DATA_ID=${2:-"3"}
+DATA_ID=${2:-"5"}
 USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
 USE_MASK=${4:-"true"}     # 是否启用MASK机制，默认为true
 USE_GATE=${5:-"true"}     # 是否使用MoE内部融合Gate，默认为true
