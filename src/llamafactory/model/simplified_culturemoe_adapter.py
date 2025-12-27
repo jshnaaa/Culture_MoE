@@ -373,7 +373,9 @@ class MoEFFNLoRA(nn.Module):
     def get_aux_loss(self):
         """计算辅助损失"""
         if self.latest_expert_weights is None:
-            return torch.tensor(0.0, device=next(self.parameters()).device, requires_grad=True)
+            # 🔧 修复梯度问题：使用参数*0来创建连接到计算图的零损失
+            dummy_param = next(self.parameters())
+            return dummy_param.sum() * 0.0
 
         try:
             # 负载均衡损失
@@ -383,13 +385,17 @@ class MoEFFNLoRA(nn.Module):
 
             # 检查数值稳定性
             if torch.isnan(balance_loss) or torch.isinf(balance_loss):
-                balance_loss = torch.tensor(0.0, device=balance_loss.device, requires_grad=True)
+                # 🔧 修复梯度问题：使用参数*0来创建连接到计算图的零损失
+                dummy_param = next(self.parameters())
+                balance_loss = dummy_param.sum() * 0.0
 
             return balance_loss * 0.01  # 小的权重
 
         except Exception as e:
             print(f"⚠️ Aux loss computation failed: {e}")
-            return torch.tensor(0.0, device=next(self.parameters()).device, requires_grad=True)
+            # 🔧 修复梯度问题：使用参数*0来创建连接到计算图的零损失
+            dummy_param = next(self.parameters())
+            return dummy_param.sum() * 0.0
 
 
 
@@ -639,8 +645,9 @@ class SimplifiedCultureMoEAdapter:
             if main_loss is not None:
                 total_aux_loss = main_loss * 0.0
             else:
-                device = next(self.base_model.parameters()).device
-                total_aux_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
+                # 🔧 如果没有main_loss，使用模型参数创建连接到计算图的零损失
+                dummy_param = next(self.base_model.parameters())
+                total_aux_loss = dummy_param.sum() * 0.0
         elif moe_layer_count > 1:
             total_aux_loss = total_aux_loss / moe_layer_count
 

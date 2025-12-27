@@ -438,14 +438,16 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, mai
         if main_loss is not None:
             culture_loss = main_loss * 0.0  # 保持梯度图连接
         else:
-            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
+            # 🔧 如果没有main_loss，使用culture_labels创建连接到计算图的零损失
+            culture_loss = culture_labels.float().sum() * 0.0
 
     # 检查文化损失是否为NaN/Inf，如果是则返回零损失
     if torch.isnan(culture_loss) or torch.isinf(culture_loss):
         if main_loss is not None:
             culture_loss = main_loss * 0.0
         else:
-            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
+            # 🔧 如果没有main_loss，使用culture_labels创建连接到计算图的零损失
+            culture_loss = culture_labels.float().sum() * 0.0
 
     return culture_loss
 
