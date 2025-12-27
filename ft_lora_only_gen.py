@@ -989,29 +989,29 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
     generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
-    # 🔍 详细的生成调试信息（启用调试）
-    print(f"🔍 生成结果调试:")
-    print(f"  输入长度: {inputs['input_ids'].shape[1]}")
-    print(f"  输出总长度: {outputs[0].shape[0]}")
-    print(f"  生成的token数量: {len(generated_ids)}")
-    print(f"  生成的token IDs: {generated_ids.tolist()}")
-    print(f"  生成的文本: {repr(generated_text)}")
-    print(f"  生成文本长度: {len(generated_text)}")
+    # 🔍 详细的生成调试信息（已注释，生成正常后不再需要）
+    # print(f"🔍 生成结果调试:")
+    # print(f"  输入长度: {inputs['input_ids'].shape[1]}")
+    # print(f"  输出总长度: {outputs[0].shape[0]}")
+    # print(f"  生成的token数量: {len(generated_ids)}")
+    # print(f"  生成的token IDs: {generated_ids.tolist()}")
+    # print(f"  生成的文本: {repr(generated_text)}")
+    # print(f"  生成文本长度: {len(generated_text)}")
 
-    # 检查特殊token
-    print(f"  EOS token ID: {tokenizer.eos_token_id}")
-    print(f"  PAD token ID: {tokenizer.pad_token_id}")
-    if len(generated_ids) > 0:
-        print(f"  生成的token中是否包含EOS: {tokenizer.eos_token_id in generated_ids.tolist()}")
+    # # 检查特殊token
+    # print(f"  EOS token ID: {tokenizer.eos_token_id}")
+    # print(f"  PAD token ID: {tokenizer.pad_token_id}")
+    # if len(generated_ids) > 0:
+    #     print(f"  生成的token中是否包含EOS: {tokenizer.eos_token_id in generated_ids.tolist()}")
 
-    # 检查每个生成的token
-    for i, token_id in enumerate(generated_ids.tolist()):
-        try:
-            token_text = tokenizer.decode([token_id], skip_special_tokens=True)
-            token_text_with_special = tokenizer.decode([token_id], skip_special_tokens=False)
-            print(f"    Token {i}: {token_id} -> '{token_text}' (with_special: '{token_text_with_special}')")
-        except Exception as e:
-            print(f"    Token {i}: {token_id} -> 解码失败: {e}")
+    # # 检查每个生成的token
+    # for i, token_id in enumerate(generated_ids.tolist()):
+    #     try:
+    #         token_text = tokenizer.decode([token_id], skip_special_tokens=True)
+    #         token_text_with_special = tokenizer.decode([token_id], skip_special_tokens=False)
+    #         print(f"    Token {i}: {token_id} -> '{token_text}' (with_special: '{token_text_with_special}')")
+    #     except Exception as e:
+    #         print(f"    Token {i}: {token_id} -> 解码失败: {e}")
 
     if len(generated_text.strip()) == 0:
         print(f"⚠️ 生成为空!")
