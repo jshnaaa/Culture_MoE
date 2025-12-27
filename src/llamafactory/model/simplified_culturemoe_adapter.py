@@ -174,11 +174,7 @@ class MoEFFNLoRA(nn.Module):
 
         # 🔧 消融实验控制标志
         self.ablation_disable_shared = False
-        self.ablation_disable_mask = False  # MASK机制占位符
         self.ablation_disable_gate = False
-
-        # 🆕 MASK机制：存储adapter引用以获取input_type
-        self.adapter_ref = None
 
         # 获取原始FFN的参数
         self.hidden_dim = original_ffn.gate_proj.in_features
@@ -247,18 +243,12 @@ class MoEFFNLoRA(nn.Module):
         # 🆕 保存shared专家的输出用于文化损失计算
         self.latest_shared_outputs = None
 
-    def forward(self, hidden_states, input_type=None, masked_hidden_states=None):
+    def forward(self, hidden_states):
         """
-        前向传播
+        前向传播 - 简化版，移除MASK机制
 
         Args:
-            hidden_states: [B, L, H] 输入隐藏状态（完整版或单路输入）
-            input_type: [B] 输入类型标识（MASK机制）
-                       0: masked输入，激活shared专家
-                       1: 完整输入，激活路由专家
-                       2: 双路并行处理
-                       None/-1: 兼容模式，激活所有专家
-            masked_hidden_states: [B, L, H] masked版本隐藏状态（双路并行时使用）
+            hidden_states: [B, L, H] 输入隐藏状态
 
         Returns:
             output: [B, L, H] 输出隐藏状态
@@ -271,31 +261,6 @@ class MoEFFNLoRA(nn.Module):
             return self.original_ffn(hidden_states)
 
         try:
-            # 🆕 MASK机制：从adapter获取input_type
-            if input_type is None and self.adapter_ref is not None:
-                input_type = self.adapter_ref._current_input_type
-
-            # 🆕 MASK机制：检查是否为双路并行处理
-            if masked_hidden_states is not None:
-                # 双路并行处理：同时使用shared专家和路由专家
-                return self._forward_dual_parallel(hidden_states, masked_hidden_states)
-
-            # 🆕 MASK机制：条件专家激活
-            if input_type is not None and input_type.dim() > 0:
-                # 检查batch中的输入类型分布
-                mask_samples = (input_type == 0).sum().item()  # masked输入样本数
-                full_samples = (input_type == 1).sum().item()  # 完整输入样本数
-
-                # 如果batch中只有一种类型的样本，使用对应的专家
-                if mask_samples > 0 and full_samples == 0:
-                    # 全部是masked输入，只激活shared专家
-                    return self._forward_shared_only(hidden_states)
-                elif full_samples > 0 and mask_samples == 0:
-                    # 全部是完整输入，只激活路由专家
-                    return self._forward_routed_only(hidden_states)
-                else:
-                    # 混合batch，需要分别处理
-                    return self._forward_mixed_batch(hidden_states, input_type)
 
             # 1. 计算原始FFN输出作为基础
             original_output = self.original_ffn(hidden_states)
@@ -426,161 +391,6 @@ class MoEFFNLoRA(nn.Module):
             print(f"⚠️ Aux loss computation failed: {e}")
             return torch.tensor(0.0, device=next(self.parameters()).device, requires_grad=True)
 
-    def _forward_dual_parallel(self, hidden_states_complete, hidden_states_masked):
-        """
-        双路并行处理：同时处理完整版和masked版输入
-
-        Args:
-            hidden_states_complete: [B, L, H] 完整版输入（路由专家）
-            hidden_states_masked: [B, L, H] masked版输入（shared专家）
-
-        Returns:
-            output: [B, L, H] 融合后的输出隐藏状态
-        """
-        # 1. 路由专家处理完整版输入
-        routed_output = self._forward_routed_only(hidden_states_complete)
-
-        # 2. Shared专家处理masked版输入
-        shared_output = self._forward_shared_only(hidden_states_masked)
-
-        # 3. 融合两个输出（简单加权平均）
-        # 可以后续改为可学习的融合策略
-        fusion_weight = 0.5  # 可以作为超参数调整
-        fused_output = fusion_weight * routed_output + (1 - fusion_weight) * shared_output
-
-        return fused_output
-
-    def _forward_shared_only(self, hidden_states):
-        """
-        只激活shared专家（用于masked输入）
-
-        Args:
-            hidden_states: [B, L, H] 输入隐藏状态
-
-        Returns:
-            output: [B, L, H] 输出隐藏状态
-        """
-        # 🔧 MASK机制：shared专家不产生expert_weights
-        self.latest_expert_weights = None
-
-        # 计算原始FFN输出
-        original_output = self.original_ffn(hidden_states)
-
-        # 只使用shared专家（如果启用且未被消融）
-        if self.use_shared and not self.ablation_disable_shared:
-            shared_delta = self.shared_expert(hidden_states)  # 🔧 新架构：直接返回LoRA增量
-            final_output = original_output + shared_delta
-
-            # 🆕 保存shared专家输出用于文化损失计算（平均到序列维度）
-            self.latest_shared_outputs = final_output.mean(dim=1)  # [B, H]
-        else:
-            # 如果shared专家被禁用，直接使用原始FFN
-            final_output = original_output
-            self.latest_shared_outputs = None
-
-        return final_output
-
-    def _forward_routed_only(self, hidden_states):
-        """
-        只激活路由专家（用于完整输入）
-
-        Args:
-            hidden_states: [B, L, H] 输入隐藏状态
-
-        Returns:
-            output: [B, L, H] 输出隐藏状态
-        """
-        # 计算原始FFN输出
-        original_output = self.original_ffn(hidden_states)
-
-        # 路由计算
-        expert_weights, router_logits = self.router(hidden_states)
-
-        # 保存专家权重用于文化损失
-        self.latest_expert_weights = expert_weights.mean(dim=1)  # [B, num_experts]
-
-        # Top-k选择
-        if self.num_activated_experts == self.num_experts:
-            # Dense模式：使用所有专家
-            selected_expert_weights = expert_weights
-        else:
-            # Top-k模式
-            k = min(self.num_activated_experts, self.num_experts)
-            top_k_logits, top_k_indices = torch.topk(router_logits, k=k, dim=-1)
-            top_k_weights = F.softmax(top_k_logits, dim=-1)
-            selected_expert_weights = torch.zeros_like(expert_weights)
-            selected_expert_weights.scatter_(-1, top_k_indices, top_k_weights)
-
-        # 计算路由专家的LoRA增量（新架构）
-        if self.num_activated_experts == self.num_experts:
-            # Dense模式
-            expert_deltas = []
-            for expert_idx in range(self.num_experts):
-                expert_lora_delta = self.experts[expert_idx](hidden_states)  # 🔧 新架构：直接返回LoRA增量
-                expert_deltas.append(expert_lora_delta)
-            expert_deltas = torch.stack(expert_deltas, dim=-1)
-            weights = selected_expert_weights.unsqueeze(-2)
-            routed_delta = torch.sum(expert_deltas * weights, dim=-1)
-        else:
-            # Top-k模式
-            routed_delta = torch.zeros_like(hidden_states)
-            hidden_flat = hidden_states.view(-1, self.hidden_dim)
-            delta_flat = routed_delta.view(-1, self.hidden_dim)
-            weights_flat = selected_expert_weights.view(-1, self.num_experts)
-
-            for expert_idx in range(self.num_experts):
-                expert_mask = weights_flat[:, expert_idx] > 1e-8
-                if expert_mask.any():
-                    expert_input = hidden_flat[expert_mask]
-                    # 🔧 新架构：专家直接返回LoRA增量
-                    expert_lora_delta = self.experts[expert_idx](expert_input)
-                    expert_weight = weights_flat[:, expert_idx][expert_mask].unsqueeze(-1)
-                    delta_flat[expert_mask] += expert_lora_delta * expert_weight
-
-            routed_delta = delta_flat.view(-1, hidden_states.shape[1], self.hidden_dim)
-
-        # 最终输出：原始FFN + 路由专家增量
-        final_output = original_output + routed_delta
-
-        return final_output
-
-    def _forward_mixed_batch(self, hidden_states, input_type):
-        """
-        混合batch处理：不同样本激活不同专家
-
-        Args:
-            hidden_states: [B, L, H] 输入隐藏状态
-            input_type: [B] 输入类型标识
-
-        Returns:
-            output: [B, L, H] 输出隐藏状态
-        """
-        batch_size = hidden_states.shape[0]
-        output = torch.zeros_like(hidden_states)
-
-        # 分别处理不同类型的样本
-        mask_indices = (input_type == 0).nonzero(as_tuple=True)[0]  # masked输入的样本索引
-        full_indices = (input_type == 1).nonzero(as_tuple=True)[0]  # 完整输入的样本索引
-
-        # 🔧 MASK机制：混合batch时，expert_weights只包含路由专家的样本
-        self.latest_expert_weights = None
-
-        # 处理masked输入样本（激活shared专家）
-        if len(mask_indices) > 0:
-            mask_hidden = hidden_states[mask_indices]  # [mask_count, L, H]
-            mask_output = self._forward_shared_only(mask_hidden)
-            output[mask_indices] = mask_output
-
-        # 处理完整输入样本（激活路由专家）
-        if len(full_indices) > 0:
-            full_hidden = hidden_states[full_indices]  # [full_count, L, H]
-            full_output = self._forward_routed_only(full_hidden)
-            output[full_indices] = full_output
-
-            # 🔧 只有路由专家产生expert_weights，且只对应路由样本
-            # latest_expert_weights在_forward_routed_only中已设置，形状为[len(full_indices), num_experts]
-
-        return output
 
 
 class SimplifiedCultureMoEAdapter:
@@ -589,9 +399,6 @@ class SimplifiedCultureMoEAdapter:
     def __init__(self, base_model, config: SimplifiedCultureMoEConfig):
         self.base_model = base_model
         self.config = config
-
-        # 🆕 MASK机制：全局状态存储当前batch的input_type
-        self._current_input_type = None
 
         # 🔧 修复架构问题：正确的初始化顺序
         # 1. 先应用LoRA到注意力层（如果启用）
@@ -665,7 +472,6 @@ class SimplifiedCultureMoEAdapter:
         for layer_idx in target_layers:
             original_ffn = layers[layer_idx].mlp
             moe_ffn = MoEFFNLoRA(original_ffn, self.config)
-            moe_ffn.adapter_ref = self  # 🆕 MASK机制：设置adapter引用
             layers[layer_idx].mlp = moe_ffn
 
             # 构建配置信息字符串
@@ -816,41 +622,21 @@ class SimplifiedCultureMoEAdapter:
 
         return total_aux_loss.to(dtype=torch.float16)
 
-    def forward(self, input_ids, attention_mask=None, labels=None, input_type=None,
-                masked_input_ids=None, masked_attention_mask=None, masked_labels=None, **kwargs):
+    def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """
         前向传播
 
         Args:
-            input_ids: 完整版输入token IDs
-            attention_mask: 完整版注意力掩码
-            labels: 完整版标签
-            input_type: 输入类型（0: masked, 1: complete, 2: dual）
-            masked_input_ids: masked版输入token IDs（双路并行时使用）
-            masked_attention_mask: masked版注意力掩码（双路并行时使用）
-            masked_labels: masked版标签（双路并行时使用）
+            input_ids: 输入token IDs
+            attention_mask: 注意力掩码
+            labels: 标签
         """
-        # 🆕 MASK机制：检查是否为双路并行处理
-        if masked_input_ids is not None:
-            # 双路并行处理：需要特殊处理
-            return self._forward_dual_parallel_model(
-                input_ids, attention_mask, labels,
-                masked_input_ids, masked_attention_mask, masked_labels,
-                **kwargs
-            )
-
-        # 🆕 MASK机制：设置当前batch的input_type
-        self._current_input_type = input_type
-
         outputs = self.base_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
             **kwargs
         )
-
-        # 清除input_type状态
-        self._current_input_type = None
 
         # 为文化损失计算收集专家权重
         if hasattr(outputs, 'loss') and outputs.loss is not None:
@@ -860,61 +646,6 @@ class SimplifiedCultureMoEAdapter:
 
         return outputs
 
-    def _forward_dual_parallel_model(self, input_ids, attention_mask, labels,
-                                     masked_input_ids, masked_attention_mask, masked_labels, **kwargs):
-        """
-        双路并行模型处理
-
-        Args:
-            input_ids: 完整版输入
-            attention_mask: 完整版注意力掩码
-            labels: 完整版标签
-            masked_input_ids: masked版输入
-            masked_attention_mask: masked版注意力掩码
-            masked_labels: masked版标签
-        """
-        # 1. 处理完整版输入（路由专家）
-        self._current_input_type = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)  # 1表示路由专家
-        complete_outputs = self.base_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels,
-            **kwargs
-        )
-
-        # 2. 处理masked版输入（shared专家）
-        self._current_input_type = torch.zeros(masked_input_ids.shape[0], dtype=torch.long, device=masked_input_ids.device)  # 0表示shared专家
-        masked_outputs = self.base_model(
-            input_ids=masked_input_ids,
-            attention_mask=masked_attention_mask,
-            labels=masked_labels,
-            **kwargs
-        )
-
-        # 清除input_type状态
-        self._current_input_type = None
-
-        # 3. 融合两个输出
-        # 简单策略：使用完整版的loss，但保留路由专家的expert_weights
-        fused_outputs = complete_outputs
-
-        # 融合logits（如果需要）
-        if hasattr(complete_outputs, 'logits') and hasattr(masked_outputs, 'logits'):
-            fusion_weight = 0.5
-            fused_outputs.logits = fusion_weight * complete_outputs.logits + (1 - fusion_weight) * masked_outputs.logits
-
-        # 融合loss
-        if hasattr(complete_outputs, 'loss') and hasattr(masked_outputs, 'loss'):
-            fusion_weight = 0.5
-            fused_outputs.loss = fusion_weight * complete_outputs.loss + (1 - fusion_weight) * masked_outputs.loss
-
-        # 保留路由专家的expert_weights用于culture loss
-        if hasattr(complete_outputs, 'loss') and complete_outputs.loss is not None:
-            expert_weights = self.get_expert_weights_for_culture_loss()
-            if expert_weights is not None:
-                fused_outputs.expert_weights = expert_weights
-
-        return fused_outputs
 
     def save_model(self, save_path: str):
         """保存模型权重"""

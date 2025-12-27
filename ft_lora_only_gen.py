@@ -65,190 +65,28 @@ class CultureLLMNewFormatDataset(Dataset):
             data_path: 数据文件路径
             tokenizer: Tokenizer
             max_length: 最大序列长度
-            enable_mask: 是否启用MASK机制
-            mask_prob: instruction中token被mask的概率
+            enable_mask: 是否启用MASK机制 (已禁用，仅作为占位符)
+            mask_prob: instruction中token被mask的概率 (已禁用，仅作为占位符)
         """
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.enable_mask = enable_mask
-        self.mask_prob = mask_prob
-
-        # 获取mask token id
-        if hasattr(tokenizer, 'mask_token_id') and tokenizer.mask_token_id is not None:
-            self.mask_token_id = tokenizer.mask_token_id
-        else:
-            # 如果没有mask token，使用unk token
-            self.mask_token_id = tokenizer.unk_token_id
+        # 🔧 MASK机制已禁用，仅保留参数作为占位符
+        self.enable_mask = False  # 强制禁用
+        self.mask_prob = 0.0  # 强制设为0
 
         print(f"Loading data from: {data_path}")
         with open(data_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
 
         print(f"Loaded {len(self.data)} samples")
-        if enable_mask:
-            print(f"✅ MASK mechanism enabled (mask_prob={mask_prob})")
+        print(f"🔧 MASK机制已完全禁用，所有专家使用相同输入")
 
     def __len__(self):
         return len(self.data)
 
-    def create_instruction_mask(self, instruction):
-        """
-        创建instruction的masked版本
+    # 🔧 MASK机制已禁用：删除create_instruction_mask方法
 
-        Args:
-            instruction: 原始instruction文本
-
-        Returns:
-            masked_instruction: mask后的instruction文本
-        """
-        import random
-
-        # 简单的token级别masking
-        # 按空格分割，对每个token随机mask
-        tokens = instruction.split()
-        masked_tokens = []
-
-        for token in tokens:
-            if random.random() < self.mask_prob:
-                # 保留重要的提示词不被mask
-                if token.lower() in ['answer:', '###', 'from', '1', '2', '3', '4', 'to']:
-                    masked_tokens.append(token)
-                else:
-                    masked_tokens.append('[MASK]')
-            else:
-                masked_tokens.append(token)
-
-        return ' '.join(masked_tokens)
-
-    def _create_dual_input_sample(self, full_input_complete, full_input_masked, output_text, instruction, input_text, label):
-        """
-        创建双路输入样本：同时准备完整版和masked版的输入
-
-        Args:
-            full_input_complete: 完整版输入（路由专家用）
-            full_input_masked: masked版输入（shared专家用）
-            output_text: 输出文本
-            instruction: 原始instruction
-            input_text: 原始input
-            label: 原始label
-
-        Returns:
-            dict: 包含双路输入数据的字典
-        """
-        # 1. 构建完整版本（路由专家）
-        full_text_complete = f"{full_input_complete.rstrip()} {output_text}"
-
-        encoded_complete = self.tokenizer(
-            full_text_complete,
-            max_length=self.max_length,
-            truncation=True,
-            padding=False,
-            return_tensors='pt',
-            add_special_tokens=True
-        )
-
-        input_ids_complete = encoded_complete['input_ids'].squeeze(0)
-        attention_mask_complete = encoded_complete['attention_mask'].squeeze(0)
-
-        # 计算完整版的input_length
-        input_encoded_complete = self.tokenizer(
-            full_input_complete,
-            truncation=True,
-            return_tensors='pt',
-            add_special_tokens=True,
-            padding=False
-        )
-
-        separator_encoded = self.tokenizer(
-            " ",
-            truncation=True,
-            return_tensors='pt',
-            add_special_tokens=False,
-            padding=False
-        )
-
-        input_length_complete = len(input_encoded_complete['input_ids'][0]) + len(separator_encoded['input_ids'][0])
-        if input_length_complete >= len(input_ids_complete):
-            input_length_complete = max(0, len(input_ids_complete) - 2)
-
-        # 创建完整版的标签
-        labels_complete = input_ids_complete.clone()
-        labels_complete[:input_length_complete] = -100
-
-        pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
-        padding_mask_complete = (input_ids_complete == pad_token_id)
-        labels_complete[padding_mask_complete] = -100
-
-        # 2. 构建masked版本（shared专家）
-        full_text_masked = f"{full_input_masked.rstrip()} {output_text}"
-
-        encoded_masked = self.tokenizer(
-            full_text_masked,
-            max_length=self.max_length,
-            truncation=True,
-            padding=False,
-            return_tensors='pt',
-            add_special_tokens=True
-        )
-
-        input_ids_masked = encoded_masked['input_ids'].squeeze(0)
-        attention_mask_masked = encoded_masked['attention_mask'].squeeze(0)
-
-        # 计算masked版的input_length
-        input_encoded_masked = self.tokenizer(
-            full_input_masked,
-            truncation=True,
-            return_tensors='pt',
-            add_special_tokens=True,
-            padding=False
-        )
-
-        input_length_masked = len(input_encoded_masked['input_ids'][0]) + len(separator_encoded['input_ids'][0])
-        if input_length_masked >= len(input_ids_masked):
-            input_length_masked = max(0, len(input_ids_masked) - 2)
-
-        # 创建masked版的标签
-        labels_masked = input_ids_masked.clone()
-        labels_masked[:input_length_masked] = -100
-
-        padding_mask_masked = (input_ids_masked == pad_token_id)
-        labels_masked[padding_mask_masked] = -100
-
-        # 计算有效标签数量
-        valid_labels_complete = (labels_complete != -100).sum().item()
-        valid_labels_masked = (labels_masked != -100).sum().item()
-
-        return {
-            # 完整版数据（路由专家）
-            'input_ids_complete': input_ids_complete,
-            'attention_mask_complete': attention_mask_complete,
-            'labels_complete': labels_complete,
-            'input_length_complete': input_length_complete,
-            'valid_labels_complete': valid_labels_complete,
-
-            # Masked版数据（shared专家）
-            'input_ids_masked': input_ids_masked,
-            'attention_mask_masked': attention_mask_masked,
-            'labels_masked': labels_masked,
-            'input_length_masked': input_length_masked,
-            'valid_labels_masked': valid_labels_masked,
-
-            # 元数据
-            'instruction': instruction,
-            'input': input_text,
-            'output': output_text,
-            'label': label,
-            'dual_input': True,  # 标识为双路输入
-            'input_type': 2,  # 新的类型：双路并行处理
-
-            # 兼容性字段（保持现有代码正常工作）
-            'input_ids': input_ids_complete,  # 默认使用完整版
-            'attention_mask': attention_mask_complete,
-            'labels': labels_complete,
-            'valid_labels': valid_labels_complete,
-            'total_tokens': (input_ids_complete != pad_token_id).sum().item(),
-            'input_length': input_length_complete
-        }
+    # 🔧 MASK机制已禁用：删除_create_dual_input_sample方法
 
     def __getitem__(self, idx):
         import random
@@ -261,10 +99,8 @@ class CultureLLMNewFormatDataset(Dataset):
         output_text = item.get('output', '')
         label = item.get('label', '')
 
-        # 🔧 MASK机制已禁用：shared专家和路由专家使用相同输入
-        # 不再区分masked和完整输入，统一使用原始instruction
+        # 🔧 MASK机制已完全禁用：所有专家使用相同输入
         instruction_text = instruction
-        input_type = 1  # 激活路由专家（shared专家也会使用相同输入）
 
         # 构建完整的输入和输出
         # 格式：instruction + input → output
@@ -571,16 +407,15 @@ class CultureLLMNewFormatDataset(Dataset):
             'input': input_text,
             'output': output_text,
             'label': label,
-            'input_type': input_type,  # 🆕 MASK机制：专家激活类型
             'valid_labels': valid_labels,
             'total_tokens': total_tokens,
-            'input_length': input_length  # 添加调试信息
+            'input_length': input_length
         }
 
 
 def dynamic_padding_collate_fn(batch, tokenizer):
     """
-    动态padding collate函数：支持双路输入的MASK机制
+    动态padding collate函数：已简化，删除MASK机制
 
     Args:
         batch: 数据集返回的样本列表
@@ -589,122 +424,11 @@ def dynamic_padding_collate_fn(batch, tokenizer):
     Returns:
         批次数据字典
     """
-    # 检查是否有双路输入样本
-    has_dual_input = any(item.get('dual_input', False) for item in batch)
-
-    if has_dual_input:
-        # 双路输入处理：需要处理complete和masked两个版本
-        return _collate_dual_input_batch(batch, tokenizer)
-    else:
-        # 单路输入处理：原有逻辑
-        return _collate_single_input_batch(batch, tokenizer)
+    # 🔧 MASK机制已禁用：直接使用单路输入处理
+    return _collate_single_input_batch(batch, tokenizer)
 
 
-def _collate_dual_input_batch(batch, tokenizer):
-    """处理双路输入的batch"""
-    # 找到batch内最长的序列长度（考虑complete和masked两个版本）
-    max_length_complete = max(len(item['input_ids_complete']) for item in batch)
-    max_length_masked = max(len(item['input_ids_masked']) for item in batch)
-    max_length = max(max_length_complete, max_length_masked)
-
-    # 双路数据收集
-    batch_input_ids_complete = []
-    batch_attention_mask_complete = []
-    batch_labels_complete = []
-    batch_input_ids_masked = []
-    batch_attention_mask_masked = []
-    batch_labels_masked = []
-
-    # 元数据收集
-    batch_instructions = []
-    batch_inputs = []
-    batch_outputs = []
-    batch_labels_culture = []
-    batch_input_types = []
-
-    for item in batch:
-        # 处理完整版数据
-        input_ids_complete = item['input_ids_complete']
-        attention_mask_complete = item['attention_mask_complete']
-        labels_complete = item['labels_complete']
-
-        # 处理masked版数据
-        input_ids_masked = item['input_ids_masked']
-        attention_mask_masked = item['attention_mask_masked']
-        labels_masked = item['labels_masked']
-
-        # 截断处理
-        if len(input_ids_complete) > 850:
-            input_ids_complete = input_ids_complete[:850]
-            attention_mask_complete = attention_mask_complete[:850]
-            labels_complete = labels_complete[:850]
-
-        if len(input_ids_masked) > 850:
-            input_ids_masked = input_ids_masked[:850]
-            attention_mask_masked = attention_mask_masked[:850]
-            labels_masked = labels_masked[:850]
-
-        # Padding处理
-        pad_length_complete = max_length - len(input_ids_complete)
-        pad_length_masked = max_length - len(input_ids_masked)
-
-        # Complete版本padding
-        if pad_length_complete > 0:
-            padded_input_ids_complete = F.pad(input_ids_complete, (0, pad_length_complete), value=tokenizer.pad_token_id)
-            padded_attention_mask_complete = F.pad(attention_mask_complete, (0, pad_length_complete), value=0)
-            padded_labels_complete = F.pad(labels_complete, (0, pad_length_complete), value=-100)
-        else:
-            padded_input_ids_complete = input_ids_complete
-            padded_attention_mask_complete = attention_mask_complete
-            padded_labels_complete = labels_complete
-
-        # Masked版本padding
-        if pad_length_masked > 0:
-            padded_input_ids_masked = F.pad(input_ids_masked, (0, pad_length_masked), value=tokenizer.pad_token_id)
-            padded_attention_mask_masked = F.pad(attention_mask_masked, (0, pad_length_masked), value=0)
-            padded_labels_masked = F.pad(labels_masked, (0, pad_length_masked), value=-100)
-        else:
-            padded_input_ids_masked = input_ids_masked
-            padded_attention_mask_masked = attention_mask_masked
-            padded_labels_masked = labels_masked
-
-        # 添加到batch
-        batch_input_ids_complete.append(padded_input_ids_complete)
-        batch_attention_mask_complete.append(padded_attention_mask_complete)
-        batch_labels_complete.append(padded_labels_complete)
-        batch_input_ids_masked.append(padded_input_ids_masked)
-        batch_attention_mask_masked.append(padded_attention_mask_masked)
-        batch_labels_masked.append(padded_labels_masked)
-
-        # 元数据
-        batch_instructions.append(item['instruction'])
-        batch_inputs.append(item['input'])
-        batch_outputs.append(item['output'])
-        batch_labels_culture.append(item['label'])
-        batch_input_types.append(item['input_type'])
-
-    return {
-        # 双路输入数据
-        'input_ids_complete': torch.stack(batch_input_ids_complete),
-        'attention_mask_complete': torch.stack(batch_attention_mask_complete),
-        'labels_complete': torch.stack(batch_labels_complete),
-        'input_ids_masked': torch.stack(batch_input_ids_masked),
-        'attention_mask_masked': torch.stack(batch_attention_mask_masked),
-        'labels_masked': torch.stack(batch_labels_masked),
-
-        # 元数据
-        'instruction': batch_instructions,
-        'input': batch_inputs,
-        'output': batch_outputs,
-        'label': batch_labels_culture,
-        'input_type': torch.tensor(batch_input_types, dtype=torch.long),
-        'dual_input': True,  # 标识为双路输入batch
-
-        # 兼容性字段（使用complete版本作为默认）
-        'input_ids': torch.stack(batch_input_ids_complete),
-        'attention_mask': torch.stack(batch_attention_mask_complete),
-        'labels': torch.stack(batch_labels_complete)
-    }
+# 🔧 MASK机制已禁用：删除_collate_dual_input_batch函数
 
 
 def _collate_single_input_batch(batch, tokenizer):
@@ -720,7 +444,6 @@ def _collate_single_input_batch(batch, tokenizer):
     batch_inputs = []
     batch_outputs = []
     batch_labels_culture = []
-    batch_input_types = []
 
     for item in batch:
         input_ids = item['input_ids']
@@ -753,7 +476,6 @@ def _collate_single_input_batch(batch, tokenizer):
         batch_inputs.append(item['input'])
         batch_outputs.append(item['output'])
         batch_labels_culture.append(item['label'])
-        batch_input_types.append(item['input_type'])
 
     # 堆叠成batch张量
     return {
@@ -763,8 +485,7 @@ def _collate_single_input_batch(batch, tokenizer):
         'instruction': batch_instructions,
         'input': batch_inputs,
         'output': batch_outputs,
-        'label': batch_labels_culture,
-        'input_type': torch.tensor(batch_input_types, dtype=torch.long)
+        'label': batch_labels_culture
     }
 
 
@@ -773,8 +494,8 @@ def load_and_process_data(
     tokenizer,
     max_length: int = 512,
     val_split: float = 0.1,
-    enable_mask: bool = False,  # 🔧 默认禁用MASK机制
-    mask_prob: float = 0.15
+    enable_mask: bool = False,  # 🔧 MASK机制已禁用，仅作为占位符
+    mask_prob: float = 0.15     # 🔧 MASK机制已禁用，仅作为占位符
 ):
     """
     加载并处理数据，按 9:1 比例划分训练集和验证集
@@ -784,8 +505,8 @@ def load_and_process_data(
         tokenizer: Tokenizer
         max_length: 最大序列长度
         val_split: 验证集比例
-        enable_mask: 是否启用MASK机制
-        mask_prob: instruction中token被mask的概率
+        enable_mask: 是否启用MASK机制 (已禁用，仅作为占位符)
+        mask_prob: instruction中token被mask的概率 (已禁用，仅作为占位符)
 
     Returns:
         dict: 包含 'train' 和 'validation' 的字典
@@ -794,8 +515,8 @@ def load_and_process_data(
         data_path,
         tokenizer,
         max_length,
-        enable_mask=enable_mask,  # 🆕 启用MASK机制
-        mask_prob=mask_prob
+        enable_mask=False,  # 🔧 强制禁用MASK机制
+        mask_prob=0.0       # 🔧 强制设为0
     )
 
     # 按 9:1 比例划分
@@ -809,11 +530,7 @@ def load_and_process_data(
 
     print(f"Train set size: {len(train_dataset)}")
     print(f"Validation set size: {len(val_dataset)}")
-    if enable_mask:
-        print(f"✅ MASK机制已启用 (mask_prob={mask_prob})")
-        print(f"   每个样本将同时经过shared专家和路由专家")
-    else:
-        print(f"🔧 MASK机制已禁用，shared专家和路由专家使用相同输入")
+    print(f"🔧 MASK机制已完全禁用，所有专家使用相同输入")
 
     return {
         'train': train_dataset,

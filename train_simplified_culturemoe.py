@@ -107,11 +107,11 @@ def load_and_split_multi_datasets_8_1_1(data_path: str, tokenizer, max_length: i
         # 分别加载两个原始数据集
         blend_dataset = CultureLLMNewFormatDataset(
             blend_file, tokenizer, max_length,
-            enable_mask=enable_mask, mask_prob=mask_prob
+            enable_mask=False, mask_prob=0.0  # 🔧 强制禁用MASK机制
         )
         cultureatlas_dataset = CultureLLMNewFormatDataset(
             cultureatlas_file, tokenizer, max_length,
-            enable_mask=enable_mask, mask_prob=mask_prob
+            enable_mask=False, mask_prob=0.0  # 🔧 强制禁用MASK机制
         )
 
         blend_size = len(blend_dataset)
@@ -167,7 +167,7 @@ def load_and_split_multi_datasets_8_1_1(data_path: str, tokenizer, max_length: i
         # 创建合并的数据集
         full_dataset = CultureLLMNewFormatDataset(
             data_path, tokenizer, max_length,
-            enable_mask=enable_mask, mask_prob=mask_prob
+            enable_mask=False, mask_prob=0.0  # 🔧 强制禁用MASK机制
         )
 
         # 调整cultureAtlas的索引（因为在合并数据集中的偏移）
@@ -199,7 +199,7 @@ def load_and_split_multi_datasets_8_1_1(data_path: str, tokenizer, max_length: i
         }
     else:
         # 单数据集情况，使用原有逻辑
-        return load_and_split_data_8_1_1(data_path, tokenizer, max_length, output_dir, force_resplit, enable_mask, mask_prob)
+        return load_and_split_data_8_1_1(data_path, tokenizer, max_length, output_dir, force_resplit, False, 0.0)
 
 
 def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
@@ -221,7 +221,7 @@ def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
     # 创建完整数据集
     full_dataset = CultureLLMNewFormatDataset(
         data_path, tokenizer, max_length,
-        enable_mask=enable_mask, mask_prob=mask_prob
+        enable_mask=False, mask_prob=0.0  # 🔧 强制禁用MASK机制
     )
     total_size = len(full_dataset)
 
@@ -513,14 +513,15 @@ def print_expert_activation_stats(model_adapter, epoch):
         for layer_idx in range(total_layers):
             moe_layer = layers[layer_idx].mlp
 
-            # 检查是否为MoE层
-            if hasattr(moe_layer, 'latest_expert_weights') and moe_layer.latest_expert_weights is not None:
+            # 检查是否为MoE层（通过检查是否有MoE结构）
+            if hasattr(moe_layer, 'experts') and hasattr(moe_layer, 'router'):
                 expert_weights = moe_layer.latest_expert_weights  # [B, num_experts]
 
                 # 检查是否有shared专家输出
                 has_shared = hasattr(moe_layer, 'latest_shared_outputs') and moe_layer.latest_shared_outputs is not None
 
-                if expert_weights.shape[0] > 0:  # 确保有路由专家数据
+                # 🔧 修复：检查expert_weights是否存在且有数据，如果没有则至少统计MoE层存在
+                if expert_weights is not None and expert_weights.shape[0] > 0:  # 确保有路由专家数据
                     routing_layer_count += 1
                     batch_size, num_experts = expert_weights.shape
 
@@ -604,7 +605,7 @@ def print_expert_activation_stats(model_adapter, epoch):
                             print(f"Layer {layer_idx:2d} ({activation_mode}): 无有效激活数据")
 
                 elif has_shared:
-                    # 只有shared专家激活的情况（MASK机制）
+                    # 只有shared专家激活的情况
                     shared_layer_count += 1
                     print(f"Layer {layer_idx:2d} (Shared): Shared专家激活")
                     layer_activations.append({
@@ -613,6 +614,9 @@ def print_expert_activation_stats(model_adapter, epoch):
                         'type': 'shared'
                     })
                     global_expert_usage['shared_expert'] += 1
+                else:
+                    # 🔧 MoE层存在但没有运行时数据（比如训练开始前）
+                    print(f"Layer {layer_idx:2d} (MoE): MoE结构已初始化，等待激活数据")
 
                 moe_layer_count += 1
 
@@ -709,36 +713,12 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             else:
                 culture_labels = batch['label'].to(device)
 
-        # 获取input_type（MASK机制）
-        input_type = batch.get('input_type', None)
-        if input_type is not None:
-            input_type = input_type.to(device)
-
-        # 🆕 检查是否为双路并行输入
-        dual_input = batch.get('dual_input', False)
-        if dual_input:
-            # 双路并行处理
-            masked_input_ids = batch['input_ids_masked'].to(device)
-            masked_attention_mask = batch['attention_mask_masked'].to(device)
-            masked_labels = batch['labels_masked'].to(device)
-
-            outputs = model_adapter.forward(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-                input_type=input_type,
-                masked_input_ids=masked_input_ids,
-                masked_attention_mask=masked_attention_mask,
-                masked_labels=masked_labels
-            )
-        else:
-            # 单路处理（原有逻辑）
-            outputs = model_adapter.forward(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-                input_type=input_type  # 🆕 MASK机制
-            )
+        # 单路处理
+        outputs = model_adapter.forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels
+        )
 
         loss = outputs.loss
 
@@ -886,17 +866,11 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
                 else:
                     culture_labels = batch['label'].to(device)
 
-            # 获取input_type（MASK机制）
-            input_type = batch.get('input_type', None)
-            if input_type is not None:
-                input_type = input_type.to(device)
-
             # 前向传播
             outputs = model_adapter.forward(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                labels=labels,
-                input_type=input_type  # 🆕 MASK机制
+                labels=labels
             )
 
             loss = outputs.loss
@@ -1269,8 +1243,8 @@ def main():
         max_length=args.max_length,
         output_dir=args.output_dir,  # 将划分信息保存到输出目录
         force_resplit=False,
-        enable_mask=False,  # 🔧 MASK机制已禁用
-        mask_prob=args.mask_prob
+        enable_mask=False,  # 🔧 MASK机制已完全禁用
+        mask_prob=0.0       # 🔧 强制设为0
     )
     train_dataset = datasets['train']
     val_dataset = datasets['validation']

@@ -12,7 +12,7 @@ echo "======================================="
 BACKBONE=${1:-"llama"}  # 默认使用llama
 DATA_ID=${2:-"5"}
 USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
-USE_MASK=${4:-"true"}     # 是否启用MASK机制，默认为true
+USE_MASK=${4:-"false"}    # MASK机制已禁用，仅作为占位符保留
 USE_GATE=${5:-"true"}     # 是否使用MoE内部融合Gate，默认为true
 USE_CULTURE_LOSS=${6:-"new"}  # new/false，默认为new
 LAMBDA=${7:-"1.0"}  # 🔧 提升lambda让辅助损失有意义
@@ -254,7 +254,7 @@ else
     echo "  训练模式: 仅所有层LoRA MoE专家训练"
 fi
 echo "  共享专家: $USE_SHARED"
-echo "  MASK机制: $USE_MASK"
+echo "  MASK机制: $USE_MASK (已禁用，仅作占位符)"
 echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
@@ -312,7 +312,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
     "training_config": {
         "training_mode": "simplified_all_layers_moe",
         "use_shared_expert": $USE_SHARED,
-        "use_mask": $USE_MASK,
+        "use_mask_placeholder": $USE_MASK,
         "use_moe_gate": $USE_GATE,
         "moe_experts": $NUM_MOE_EXPERTS,
         "activated_experts": $NUM_ACTIVATED_EXPERTS,
@@ -367,7 +367,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --lambda_balance $LAMBDA \
         --alpha_z $ALPHA \
         --beta_culture $BETA \
-        $(if [ "$USE_MASK" = "true" ]; then echo "--enable_mask --mask_prob 0.15"; fi) \
+        # MASK机制已完全禁用，不传递任何mask相关参数 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 else
     # 多卡训练
@@ -398,7 +398,7 @@ else
         --lambda_balance $LAMBDA \
         --alpha_z $ALPHA \
         --beta_culture $BETA \
-        $(if [ "$USE_MASK" = "true" ]; then echo "--enable_mask --mask_prob 0.15"; fi) \
+        # MASK机制已完全禁用，不传递任何mask相关参数 \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 fi
 
