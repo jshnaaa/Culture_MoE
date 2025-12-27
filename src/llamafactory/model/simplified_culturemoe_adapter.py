@@ -591,7 +591,8 @@ class SimplifiedCultureMoEAdapter:
             if expert_weights_list:
                 # 对所有MoE层的权重求平均
                 avg_expert_weights = torch.stack(expert_weights_list, dim=0).mean(dim=0)
-                return avg_expert_weights.to(dtype=torch.float16)
+                # return avg_expert_weights.to(dtype=torch.float16)  # 🔧 修复：移除类型转换，避免破坏梯度连接
+                return avg_expert_weights
             else:
                 return None
         except Exception as e:
@@ -614,7 +615,8 @@ class SimplifiedCultureMoEAdapter:
             if shared_outputs_list:
                 # 对所有MoE层的shared输出求平均
                 avg_shared_outputs = torch.stack(shared_outputs_list, dim=0).mean(dim=0)
-                return avg_shared_outputs.to(dtype=torch.float16)
+                # return avg_shared_outputs.to(dtype=torch.float16)  # 🔧 修复：移除类型转换，避免破坏梯度连接
+                return avg_shared_outputs
             else:
                 return None
         except Exception as e:
@@ -649,7 +651,8 @@ class SimplifiedCultureMoEAdapter:
         elif moe_layer_count > 1:
             total_aux_loss = total_aux_loss / moe_layer_count
 
-        return total_aux_loss.to(dtype=torch.float16)
+        # return total_aux_loss.to(dtype=torch.float16)  # 🔧 修复：移除类型转换，避免破坏梯度连接
+        return total_aux_loss
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """
