@@ -470,13 +470,31 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         if input_type is not None:
             input_type = input_type.to(device)
 
-        # 前向传播
-        outputs = model_adapter.forward(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels,
-            input_type=input_type  # 🆕 MASK机制
-        )
+        # 🆕 检查是否为双路并行输入
+        dual_input = batch.get('dual_input', False)
+        if dual_input:
+            # 双路并行处理
+            masked_input_ids = batch['input_ids_masked'].to(device)
+            masked_attention_mask = batch['attention_mask_masked'].to(device)
+            masked_labels = batch['labels_masked'].to(device)
+
+            outputs = model_adapter.forward(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                input_type=input_type,
+                masked_input_ids=masked_input_ids,
+                masked_attention_mask=masked_attention_mask,
+                masked_labels=masked_labels
+            )
+        else:
+            # 单路处理（原有逻辑）
+            outputs = model_adapter.forward(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                input_type=input_type  # 🆕 MASK机制
+            )
 
         loss = outputs.loss
 
