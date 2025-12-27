@@ -45,6 +45,28 @@ import numpy as np
 from collections import defaultdict, Counter
 
 
+def handle_nan_loss_synchronized(total_batch_loss, batch_idx, rank, world_size):
+    """同步的NaN损失处理"""
+    is_nan = torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss)
+
+    if world_size > 1:
+        # 收集所有进程的NaN状态
+        nan_tensor = torch.tensor(float(is_nan), device=total_batch_loss.device)
+        dist.all_reduce(nan_tensor, op=dist.ReduceOp.SUM)
+
+        # 如果任何进程检测到NaN，所有进程都跳过
+        any_nan = nan_tensor.item() > 0
+
+        if any_nan and rank == 0:
+            print(f"❌ NaN detected in distributed training at batch {batch_idx}")
+
+        return any_nan
+    else:
+        if is_nan and rank == 0:
+            print(f"❌ NaN detected at batch {batch_idx}")
+        return is_nan
+
+
 def setup_distributed():
     """初始化分布式训练"""
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
@@ -63,7 +85,7 @@ def setup_distributed():
         # 多GPU模式下的内存分配器设置
         torch.cuda.empty_cache()
         # 同步所有进程
-        dist.barrier()
+        safe_barrier(timeout=30.0, operation_name="setup_distributed")
 
         return rank, world_size, local_rank
     else:
@@ -71,10 +93,53 @@ def setup_distributed():
         return 0, 1, 0
 
 
+def safe_barrier(timeout=30.0, operation_name="barrier"):
+    """超时保护的分布式barrier"""
+    if not dist.is_initialized() or dist.get_world_size() <= 1:
+        return True
+
+    import signal
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError(f"Barrier timeout after {timeout}s in {operation_name}")
+
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(int(timeout))
+
+    try:
+        dist.barrier()
+        signal.alarm(0)
+        return True
+    except TimeoutError as e:
+        print(f"❌ {e}")
+        return False
+    except Exception as e:
+        print(f"❌ Barrier error in {operation_name}: {e}")
+        return False
+    finally:
+        signal.signal(signal.SIGALRM, old_handler)
+
+
 def cleanup_distributed():
-    """清理分布式训练"""
-    if dist.is_initialized():
+    """安全的分布式训练清理"""
+    if not dist.is_initialized():
+        return
+
+    try:
+        # 添加超时保护的barrier确保所有进程同步
+        if dist.get_world_size() > 1:
+            safe_barrier(timeout=10.0, operation_name="cleanup_barrier")
+
+        # 销毁进程组
         dist.destroy_process_group()
+        print("✅ 分布式训练清理完成")
+    except Exception as e:
+        print(f"⚠️ 分布式清理时出现异常: {e}")
+        # 强制清理，避免资源泄漏
+        try:
+            dist.destroy_process_group()
+        except:
+            pass
 
 
 def is_main_process(rank):
@@ -855,11 +920,11 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         balance_loss = alpha_z_tensor * z_loss + beta_culture_tensor * culture_loss
         total_batch_loss = loss + lambda_balance_tensor * balance_loss
 
-        # 检查 NaN/Inf loss - 在所有损失计算完成后检查
-        if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
-            print(f"❌ NaN or Inf total loss detected at batch {batch_idx}")
-            print(f"  Main loss: {loss.item()}, Culture loss: {culture_loss.item()}, Z loss: {z_loss.item()}")
-            print(f"  Balance loss: {balance_loss.item()}, Total loss: {total_batch_loss.item()}")
+        # 🔧 使用同步的NaN检查替换原有逻辑
+        if handle_nan_loss_synchronized(total_batch_loss, batch_idx, rank, world_size):
+            if rank == 0:
+                print(f"  Main loss: {loss.item()}, Culture loss: {culture_loss.item()}, Z loss: {z_loss.item()}")
+                print(f"  Balance loss: {balance_loss.item()}, Total loss: {total_batch_loss.item()}")
             continue
 
         # 🔧 添加梯度调试：检查所有损失组件的梯度状态
@@ -955,7 +1020,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         if (batch_idx + 1) % num_accumulation_steps == 0:
             # 在多GPU模式下确保梯度同步完成
             if hasattr(model_adapter.base_model, 'module'):  # DDP wrapped
-                torch.distributed.barrier()
+                safe_barrier(timeout=30.0, operation_name="gradient_sync")
 
             # 🔧 加强梯度裁剪防止数值不稳定 - MoE+LoRA需要更严格的限制
             torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=1.0)
@@ -968,7 +1033,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         if (batch_idx + 1) % cache_clear_interval == 0:
             torch.cuda.empty_cache()
             if hasattr(model_adapter.base_model, 'module'):
-                torch.distributed.barrier()
+                safe_barrier(timeout=30.0, operation_name="cache_clear_sync")
 
         # 更新进度条
         postfix = {'loss': f"{total_batch_loss.item() * num_accumulation_steps:.4f}"}
@@ -1652,186 +1717,201 @@ def main():
         print("Starting training...")
         print("="*80 + "\n")
 
-    best_eval_accuracy = 0.0
-    best_model_dir = os.path.join(args.output_dir, 'best_simplified_culturemoe')
-    epoch_results = []
+    try:
+        best_eval_accuracy = 0.0
+        best_model_dir = os.path.join(args.output_dir, 'best_simplified_culturemoe')
+        epoch_results = []
 
-    for epoch in range(args.num_epochs):
-        # 设置分布式采样器的epoch
-        if train_sampler is not None:
-            train_sampler.set_epoch(epoch)
+        for epoch in range(args.num_epochs):
+            # 设置分布式采样器的epoch
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
 
-        if is_main_process(rank):
-            print(f"Epoch {epoch + 1}/{args.num_epochs}")
+            if is_main_process(rank):
+                print(f"Epoch {epoch + 1}/{args.num_epochs}")
 
-        # 训练
-        train_metrics = train_epoch_simplified(
-            model_adapter, train_loader, optimizer, device, tokenizer,
-            num_accumulation_steps=args.gradient_accumulation_steps,
-            rank=rank,
-            use_culture_loss=use_culture_loss,
-            lambda_balance=args.lambda_balance,
-            alpha_z=args.alpha_z,
-            beta_culture=args.beta_culture,
-            epoch=epoch
-        )
-
-        if is_main_process(rank):
-            print(f"  Train Loss: {train_metrics['loss']:.4f}")
-            if train_metrics['main_loss'] > 0:
-                print(f"    Main Loss: {train_metrics['main_loss']:.4f}")
-                print(f"    Aux Loss: {train_metrics['aux_loss']:.4f}")
-            if use_culture_loss != 'false':
-                print(f"    Culture Loss: {train_metrics['culture_loss']:.4f}")
-
-        # 每eval_interval个epoch进行一次验证
-        if (epoch + 1) % args.eval_interval == 0:
-            # 验证
-            val_metrics = evaluate_simplified(
-                model_adapter, val_loader, device, tokenizer, rank=rank,
+            # 训练
+            train_metrics = train_epoch_simplified(
+                model_adapter, train_loader, optimizer, device, tokenizer,
+                num_accumulation_steps=args.gradient_accumulation_steps,
+                rank=rank,
                 use_culture_loss=use_culture_loss,
                 lambda_balance=args.lambda_balance,
                 alpha_z=args.alpha_z,
-                beta_culture=args.beta_culture
+                beta_culture=args.beta_culture,
+                epoch=epoch
             )
 
-            # 生成答案并评估准确率（只在主进程执行）
             if is_main_process(rank):
-                gen_metrics = generate_and_evaluate_answers_simplified(
-                    model_adapter, val_dataset, tokenizer, device, args.output_dir, epoch=epoch+1, rank=rank
-                )
-            else:
-                gen_metrics = {'accuracy': 0.0, 'correct': 0, 'total': 0}
-
-            # 同步所有进程
-            if world_size > 1:
-                dist.barrier()
-
-            if is_main_process(rank):
-                print(f"  Eval Loss: {val_metrics['loss']:.4f}")
-                if val_metrics['main_loss'] > 0:
-                    print(f"    Main Loss: {val_metrics['main_loss']:.4f}")
-                    print(f"    Aux Loss: {val_metrics['aux_loss']:.4f}")
+                print(f"  Train Loss: {train_metrics['loss']:.4f}")
+                if train_metrics['main_loss'] > 0:
+                    print(f"    Main Loss: {train_metrics['main_loss']:.4f}")
+                    print(f"    Aux Loss: {train_metrics['aux_loss']:.4f}")
                 if use_culture_loss != 'false':
-                    print(f"    Culture Loss: {val_metrics['culture_loss']:.4f}")
-                print(f"  Eval Accuracy: {gen_metrics['accuracy']:.4f} ({gen_metrics['correct']}/{gen_metrics['total']})")
+                    print(f"    Culture Loss: {train_metrics['culture_loss']:.4f}")
 
-                # 根据accuracy保存最好的模型
-                if gen_metrics['accuracy'] > best_eval_accuracy:
-                    best_eval_accuracy = gen_metrics['accuracy']
+            # 每eval_interval个epoch进行一次验证
+            if (epoch + 1) % args.eval_interval == 0:
+                # 验证
+                val_metrics = evaluate_simplified(
+                    model_adapter, val_loader, device, tokenizer, rank=rank,
+                    use_culture_loss=use_culture_loss,
+                    lambda_balance=args.lambda_balance,
+                    alpha_z=args.alpha_z,
+                    beta_culture=args.beta_culture
+                )
 
-                    # 删除旧的最好模型
-                    if os.path.exists(best_model_dir):
-                        import shutil
-                        shutil.rmtree(best_model_dir)
+                # 生成答案并评估准确率（只在主进程执行）
+                if is_main_process(rank):
+                    gen_metrics = generate_and_evaluate_answers_simplified(
+                        model_adapter, val_dataset, tokenizer, device, args.output_dir, epoch=epoch+1, rank=rank
+                    )
+                else:
+                    gen_metrics = {'accuracy': 0.0, 'correct': 0, 'total': 0}
 
-                    # 保存新的最好模型
-                    os.makedirs(best_model_dir, exist_ok=True)
+                # 同步所有进程
+                if world_size > 1:
+                    safe_barrier(timeout=30.0, operation_name="evaluation_sync")
 
-                    # 保存模型权重
-                    model_adapter.save_model(best_model_dir)
+                if is_main_process(rank):
+                    print(f"  Eval Loss: {val_metrics['loss']:.4f}")
+                    if val_metrics['main_loss'] > 0:
+                        print(f"    Main Loss: {val_metrics['main_loss']:.4f}")
+                        print(f"    Aux Loss: {val_metrics['aux_loss']:.4f}")
+                    if use_culture_loss != 'false':
+                        print(f"    Culture Loss: {val_metrics['culture_loss']:.4f}")
+                    print(f"  Eval Accuracy: {gen_metrics['accuracy']:.4f} ({gen_metrics['correct']}/{gen_metrics['total']})")
 
-                    # 保存tokenizer
-                    tokenizer.save_pretrained(best_model_dir)
+                    # 根据accuracy保存最好的模型
+                    if gen_metrics['accuracy'] > best_eval_accuracy:
+                        best_eval_accuracy = gen_metrics['accuracy']
 
-                    print(f"  ✅ Best model saved (accuracy: {best_eval_accuracy:.4f})")
+                        # 删除旧的最好模型
+                        if os.path.exists(best_model_dir):
+                            import shutil
+                            shutil.rmtree(best_model_dir)
 
-            # 记录结果
-            epoch_results.append({
-                'epoch': epoch + 1,
-                'train_loss': train_metrics['loss'],
-                'train_main_loss': train_metrics.get('main_loss', 0),
-                'train_aux_loss': train_metrics.get('aux_loss', 0),
-                'train_culture_loss': train_metrics.get('culture_loss', 0),
-                'eval_loss': val_metrics['loss'],
-                'eval_main_loss': val_metrics.get('main_loss', 0),
-                'eval_aux_loss': val_metrics.get('aux_loss', 0),
-                'eval_culture_loss': val_metrics.get('culture_loss', 0),
-                'eval_accuracy': gen_metrics['accuracy'],
-                'correct': gen_metrics['correct'],
-                'total': gen_metrics['total'],
-                'is_best': gen_metrics['accuracy'] == best_eval_accuracy
-            })
-        else:
-            # 不评估的epoch，只记录训练损失
-            epoch_results.append({
-                'epoch': epoch + 1,
-                'train_loss': train_metrics['loss'],
-                'train_main_loss': train_metrics.get('main_loss', 0),
-                'train_aux_loss': train_metrics.get('aux_loss', 0),
-                'train_culture_loss': train_metrics.get('culture_loss', 0),
-                'eval_loss': None,
-                'eval_main_loss': None,
-                'eval_aux_loss': None,
-                'eval_culture_loss': None,
-                'eval_accuracy': None,
-                'correct': None,
-                'total': None,
-                'is_best': False
-            })
+                        # 保存新的最好模型
+                        os.makedirs(best_model_dir, exist_ok=True)
 
-    # 保存训练结果（只在主进程执行）
-    if is_main_process(rank):
-        with open(os.path.join(args.output_dir, 'epoch_eval_results.json'), 'w', encoding='utf-8') as f:
-            json.dump(epoch_results, f, indent=2, ensure_ascii=False)
+                        # 保存模型权重
+                        model_adapter.save_model(best_model_dir)
 
-        # 保存配置
-        config = {
-            'base_model': args.base_model_path,
-            'backbone': args.backbone,
-            'training_mode': 'simplified_all_layers_moe',
-            'num_epochs': args.num_epochs,
-            'batch_size': args.batch_size,
-            'effective_batch_size': args.batch_size * world_size * args.gradient_accumulation_steps,
-            'world_size': world_size,
-            'learning_rate': args.learning_rate,
-            'max_length': args.max_length,
-            'use_shared_expert': use_shared,
-            'use_moe_gate': use_gate,
-            'num_moe_experts': args.num_moe_experts,
-            'num_activated_experts': args.num_activated_experts,
-            'moe_layers': 'All layers FFN replaced with MoE',
-            'use_culture_loss': use_culture_loss,
-            'hierarchical_loss_config': {
-                'lambda_balance': args.lambda_balance,
-                'alpha_z': args.alpha_z,
-                'beta_culture': args.beta_culture,
-                'formula': 'Total Loss = Main Loss + λ * (α * Z Loss + β * Culture Loss)'
-            },
-            'use_lora': use_lora,
-            'lora_config': {
-                'rank': args.lora_rank,
-                'alpha': args.lora_alpha,
-                'dropout': args.lora_dropout
-            },
-            'eval_interval': args.eval_interval,
-            'best_eval_accuracy': best_eval_accuracy,
-            'architecture': 'simplified_all_layers_moe'
-        }
+                        # 保存tokenizer
+                        tokenizer.save_pretrained(best_model_dir)
 
-        with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+                        print(f"  ✅ Best model saved (accuracy: {best_eval_accuracy:.4f})")
 
-        print("\n" + "="*80)
-        print("✅ Training completed!")
-        print("="*80)
-        print(f"Results saved to: {args.output_dir}")
-        print(f"\nFiles generated:")
-        print(f"  - best_simplified_culturemoe/ (Best model weights)")
-        print(f"  - epoch_eval_results.json (Epoch-by-epoch results)")
-        print(f"  - generated_answers.json (Generated answers on validation set)")
-        print(f"  - config.json (Training configuration)")
-        print(f"\nBest validation accuracy: {best_eval_accuracy:.4f}")
-        print(f"Architecture: Simplified All Layers MoE")
-        print(f"MoE layers: All layers FFN replaced with MoE")
-        print(f"MoE experts: {args.num_moe_experts}")
-        print(f"Activated experts: {args.num_activated_experts} ({'dense mode' if args.num_activated_experts == args.num_moe_experts else f'top-{args.num_activated_experts}'})")
-        print(f"Use LoRA: {use_lora}")
-        print(f"Culture loss: {use_culture_loss}")
-        print("="*80)
+                # 记录结果
+                epoch_results.append({
+                    'epoch': epoch + 1,
+                    'train_loss': train_metrics['loss'],
+                    'train_main_loss': train_metrics.get('main_loss', 0),
+                    'train_aux_loss': train_metrics.get('aux_loss', 0),
+                    'train_culture_loss': train_metrics.get('culture_loss', 0),
+                    'eval_loss': val_metrics['loss'],
+                    'eval_main_loss': val_metrics.get('main_loss', 0),
+                    'eval_aux_loss': val_metrics.get('aux_loss', 0),
+                    'eval_culture_loss': val_metrics.get('culture_loss', 0),
+                    'eval_accuracy': gen_metrics['accuracy'],
+                    'correct': gen_metrics['correct'],
+                    'total': gen_metrics['total'],
+                    'is_best': gen_metrics['accuracy'] == best_eval_accuracy
+                })
+            else:
+                # 不评估的epoch，只记录训练损失
+                epoch_results.append({
+                    'epoch': epoch + 1,
+                    'train_loss': train_metrics['loss'],
+                    'train_main_loss': train_metrics.get('main_loss', 0),
+                    'train_aux_loss': train_metrics.get('aux_loss', 0),
+                    'train_culture_loss': train_metrics.get('culture_loss', 0),
+                    'eval_loss': None,
+                    'eval_main_loss': None,
+                    'eval_aux_loss': None,
+                    'eval_culture_loss': None,
+                    'eval_accuracy': None,
+                    'correct': None,
+                    'total': None,
+                    'is_best': False
+                })
 
-    # 清理分布式训练
-    cleanup_distributed()
+        # 保存训练结果（只在主进程执行）
+        if is_main_process(rank):
+            with open(os.path.join(args.output_dir, 'epoch_eval_results.json'), 'w', encoding='utf-8') as f:
+                json.dump(epoch_results, f, indent=2, ensure_ascii=False)
+
+            # 保存配置
+            config = {
+                'base_model': args.base_model_path,
+                'backbone': args.backbone,
+                'training_mode': 'simplified_all_layers_moe',
+                'num_epochs': args.num_epochs,
+                'batch_size': args.batch_size,
+                'effective_batch_size': args.batch_size * world_size * args.gradient_accumulation_steps,
+                'world_size': world_size,
+                'learning_rate': args.learning_rate,
+                'max_length': args.max_length,
+                'use_shared_expert': use_shared,
+                'use_moe_gate': use_gate,
+                'num_moe_experts': args.num_moe_experts,
+                'num_activated_experts': args.num_activated_experts,
+                'moe_layers': 'All layers FFN replaced with MoE',
+                'use_culture_loss': use_culture_loss,
+                'hierarchical_loss_config': {
+                    'lambda_balance': args.lambda_balance,
+                    'alpha_z': args.alpha_z,
+                    'beta_culture': args.beta_culture,
+                    'formula': 'Total Loss = Main Loss + λ * (α * Z Loss + β * Culture Loss)'
+                },
+                'use_lora': use_lora,
+                'lora_config': {
+                    'rank': args.lora_rank,
+                    'alpha': args.lora_alpha,
+                    'dropout': args.lora_dropout
+                },
+                'eval_interval': args.eval_interval,
+                'best_eval_accuracy': best_eval_accuracy,
+                'architecture': 'simplified_all_layers_moe'
+            }
+
+            with open(os.path.join(args.output_dir, 'config.json'), 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+
+            print("\n" + "="*80)
+            print("✅ Training completed!")
+            print("="*80)
+            print(f"Results saved to: {args.output_dir}")
+            print(f"\nFiles generated:")
+            print(f"  - best_simplified_culturemoe/ (Best model weights)")
+            print(f"  - epoch_eval_results.json (Epoch-by-epoch results)")
+            print(f"  - generated_answers.json (Generated answers on validation set)")
+            print(f"  - config.json (Training configuration)")
+            print(f"\nBest validation accuracy: {best_eval_accuracy:.4f}")
+            print(f"Architecture: Simplified All Layers MoE")
+            print(f"MoE layers: All layers FFN replaced with MoE")
+            print(f"MoE experts: {args.num_moe_experts}")
+            print(f"Activated experts: {args.num_activated_experts} ({'dense mode' if args.num_activated_experts == args.num_moe_experts else f'top-{args.num_activated_experts}'})")
+            print(f"Use LoRA: {use_lora}")
+            print(f"Culture loss: {use_culture_loss}")
+            print("="*80)
+
+    except KeyboardInterrupt:
+        if is_main_process(rank):
+            print("\n⚠️ 训练被用户中断")
+    except Exception as e:
+        if is_main_process(rank):
+            print(f"❌ 训练过程中出现异常: {e}")
+        # 确保异常时其他进程也能感知
+        if world_size > 1:
+            try:
+                safe_barrier(timeout=5.0, operation_name="exception_sync")
+            except:
+                pass
+        raise
+    finally:
+        # 确保cleanup总是执行
+        cleanup_distributed()
 
 
 if __name__ == "__main__":
