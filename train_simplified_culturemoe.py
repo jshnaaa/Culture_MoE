@@ -447,7 +447,8 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, los
 
 
 def train_epoch_simplified(model_adapter, train_loader, optimizer, device, tokenizer,
-                         num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
+                         num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
+                         lambda_balance=1.0, alpha_z=0.1, beta_culture=1.0):
     """
     简化版CultureMoE训练一个epoch
     """
@@ -573,13 +574,16 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         # 将主损失转换为float16以保持一致性和节省显存
         loss = loss.to(dtype=torch.float16)
 
-        # 总损失
-        total_batch_loss = loss + culture_loss + z_loss
+        # 🆕 层次化损失计算：Total Loss = Main Loss + lambda * balance loss
+        # balance loss = alpha * Z Loss + beta * culture loss
+        balance_loss = alpha_z * z_loss + beta_culture * culture_loss
+        total_batch_loss = loss + lambda_balance * balance_loss
 
         # 检查 NaN/Inf loss - 在所有损失计算完成后检查
         if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
             print(f"❌ NaN or Inf total loss detected at batch {batch_idx}")
             print(f"  Main loss: {loss.item()}, Culture loss: {culture_loss.item()}, Z loss: {z_loss.item()}")
+            print(f"  Balance loss: {balance_loss.item()}, Total loss: {total_batch_loss.item()}")
             continue
 
         # 梯度累积
@@ -641,7 +645,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
     }
 
 
-def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
+def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
+                       lambda_balance=1.0, alpha_z=0.1, beta_culture=1.0):
     """
     简化版CultureMoE验证
     """
@@ -743,7 +748,10 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             # 将主损失转换为float16以保持一致性和节省显存
             loss = loss.to(dtype=torch.float16)
 
-            total_batch_loss = loss + culture_loss + z_loss
+            # 🆕 层次化损失计算：Total Loss = Main Loss + lambda * balance loss
+            # balance loss = alpha * Z Loss + beta * culture loss
+            balance_loss = alpha_z * z_loss + beta_culture * culture_loss
+            total_batch_loss = loss + lambda_balance * balance_loss
 
             # 检查总损失是否为NaN/Inf
             if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
@@ -907,6 +915,14 @@ def main():
     parser.add_argument("--culture_loss_weight", type=float, default=0.01,
                         help="Culture loss weight")
 
+    # 🆕 层次化损失系数参数
+    parser.add_argument("--lambda_balance", type=float, default=1.0,
+                        help="Lambda coefficient for balance loss")
+    parser.add_argument("--alpha_z", type=float, default=0.1,
+                        help="Alpha coefficient for Z loss in balance loss")
+    parser.add_argument("--beta_culture", type=float, default=1.0,
+                        help="Beta coefficient for culture loss in balance loss")
+
     # LoRA参数 - 与joint版本保持一致
     parser.add_argument("--lora_rank", type=int, default=16,
                         help="LoRA rank")
@@ -972,6 +988,12 @@ def main():
         print(f"Use culture loss: {use_culture_loss}")
         if use_culture_loss != 'false':
             print(f"Culture loss weight: {args.culture_loss_weight}")
+            print(f"🆕 层次化损失配置:")
+            print(f"  Total Loss = Main Loss + λ * Balance Loss")
+            print(f"  Balance Loss = α * Z Loss + β * Culture Loss")
+            print(f"  λ (lambda_balance): {args.lambda_balance}")
+            print(f"  α (alpha_z): {args.alpha_z}")
+            print(f"  β (beta_culture): {args.beta_culture}")
         print(f"Use LoRA: {use_lora}")
         print(f"LoRA config: rank={args.lora_rank}, alpha={args.lora_alpha}")
         print("="*80 + "\n")
@@ -1254,7 +1276,10 @@ def main():
             num_accumulation_steps=args.gradient_accumulation_steps,
             rank=rank,
             use_culture_loss=use_culture_loss,
-            culture_loss_weight=args.culture_loss_weight
+            culture_loss_weight=args.culture_loss_weight,
+            lambda_balance=args.lambda_balance,
+            alpha_z=args.alpha_z,
+            beta_culture=args.beta_culture
         )
 
         if is_main_process(rank):
@@ -1271,7 +1296,10 @@ def main():
             val_metrics = evaluate_simplified(
                 model_adapter, val_loader, device, tokenizer, rank=rank,
                 use_culture_loss=use_culture_loss,
-                culture_loss_weight=args.culture_loss_weight
+                culture_loss_weight=args.culture_loss_weight,
+                lambda_balance=args.lambda_balance,
+                alpha_z=args.alpha_z,
+                beta_culture=args.beta_culture
             )
 
             # 生成答案并评估准确率（只在主进程执行）
@@ -1372,6 +1400,12 @@ def main():
             'moe_layers': 'All layers FFN replaced with MoE',
             'use_culture_loss': use_culture_loss,
             'culture_loss_weight': args.culture_loss_weight,
+            'hierarchical_loss_config': {
+                'lambda_balance': args.lambda_balance,
+                'alpha_z': args.alpha_z,
+                'beta_culture': args.beta_culture,
+                'formula': 'Total Loss = Main Loss + λ * (α * Z Loss + β * Culture Loss)'
+            },
             'use_lora': use_lora,
             'lora_config': {
                 'rank': args.lora_rank,

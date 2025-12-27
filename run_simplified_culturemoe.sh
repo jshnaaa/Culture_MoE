@@ -16,13 +16,17 @@ DATA_ID=${2:-"2"}
 USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
 USE_MASK=${4:-"true"}     # 是否启用MASK机制，默认为true
 USE_GATE=${5:-"true"}     # 是否使用MoE内部融合Gate，默认为true
-NUM_MOE_EXPERTS=${6:-"4"}  # MoE专家数量
-USE_CULTURE_LOSS=${7:-"new"}  # ori/new/kl/false，默认为new
-NUM_ACTIVATED_EXPERTS=${8:-"2"}  # 激活的专家数量，默认为top-2
-USE_LORA=${9:-"true"}   # 是否启用LoRA，默认为true
-NUM_GPUS=${10:-"2"}
-LORA_RANK=${11:-"16"}   # LoRA rank
-LORA_ALPHA=${12:-"32"}  # LoRA alpha
+USE_CULTURE_LOSS=${6:-"new"}  # ori/new/kl/false，默认为new
+LAMBDA=${7:-"0.1"}
+ALPHA=${8:-"0.1"}
+BETA=${9:-"0.1"}
+NUM_MOE_EXPERTS=${10:-"4"}  # MoE专家数量
+NUM_ACTIVATED_EXPERTS=${11:-"2"}  # 激活的专家数量，默认为top-2
+LORA_RANK=${12:-"16"}   # LoRA rank
+LORA_ALPHA=${13:-"32"}  # LoRA alpha
+USE_LORA=${14:-"true"}   # 是否启用LoRA，默认为true
+NUM_GPUS=${15:-"2"}
+
 
 # 检查参数
 if [ "$#" -gt 12 ]; then
