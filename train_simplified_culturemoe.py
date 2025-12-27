@@ -319,7 +319,7 @@ def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
     }
 
 
-def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None):
+def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, main_loss=None):
     """
     计算文化感知损失
 
@@ -327,6 +327,7 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None):
         model_outputs: 模型输出，应该包含expert_weights等信息
         culture_labels: 文化标签 [B]
         shared_outputs: shared专家输出 [B, H]，可选
+        main_loss: 主损失，用于创建连接到计算图的零损失
 
     Returns:
         culture_loss: 文化损失（原始值，不包含权重）
@@ -433,15 +434,18 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None):
     if len(total_culture_losses) > 0:
         culture_loss = torch.stack(total_culture_losses).mean()
     else:
-        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
-
-    # 🔧 修复：确保返回的tensor有正确的梯度属性
-    if not isinstance(culture_loss, torch.Tensor):
-        culture_loss = torch.tensor(culture_loss, device=device, dtype=torch.float16, requires_grad=True)
+        # 🔧 修复梯度问题：使用主损失*0来创建连接到计算图的零损失
+        if main_loss is not None:
+            culture_loss = main_loss * 0.0  # 保持梯度图连接
+        else:
+            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
 
     # 检查文化损失是否为NaN/Inf，如果是则返回零损失
     if torch.isnan(culture_loss) or torch.isinf(culture_loss):
-        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
+        if main_loss is not None:
+            culture_loss = main_loss * 0.0
+        else:
+            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
 
     return culture_loss
 
@@ -723,15 +727,15 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         loss = outputs.loss
 
         # 计算文化损失 - 统一使用float16节省显存
-        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
         if use_culture_loss != 'false' and culture_labels is not None:
             # 🆕 获取shared专家输出用于文化损失
             shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
 
-            # 🔧 简化文化损失计算：直接使用完整的culture_labels
-            # 无论是否有MASK机制，都使用完整batch的文化标签
-            # compute_culture_loss内部会处理expert_weights维度不匹配的情况
-            culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
+            # 🔧 修复梯度问题：传递主损失用于创建连接到计算图的零损失
+            culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, main_loss=loss)
+        else:
+            # 🔧 修复梯度问题：使用主损失*0来创建连接到计算图的零损失
+            culture_loss = loss * 0.0
 
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss()
@@ -876,15 +880,15 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             loss = outputs.loss
 
             # 计算文化损失 - 统一使用float16节省显存
-            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
             if use_culture_loss != 'false' and culture_labels is not None:
                 # 🆕 获取shared专家输出用于文化损失
                 shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
 
-                # 🔧 简化文化损失计算：直接使用完整的culture_labels
-                # 无论是否有MASK机制，都使用完整batch的文化标签
-                # compute_culture_loss内部会处理expert_weights维度不匹配的情况
-                culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
+                # 🔧 修复梯度问题：传递主损失用于创建连接到计算图的零损失
+                culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, main_loss=loss)
+            else:
+                # 🔧 修复梯度问题：使用主损失*0来创建连接到计算图的零损失
+                culture_loss = loss * 0.0
 
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss()

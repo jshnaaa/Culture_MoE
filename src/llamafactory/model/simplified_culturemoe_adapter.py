@@ -400,6 +400,10 @@ class SimplifiedCultureMoEAdapter:
         self.base_model = base_model
         self.config = config
 
+        # 🔧 缓存解包结果，避免重复调用
+        self._cached_layers = None
+        self._cached_target_layers = None
+
         # 🔧 修复架构问题：正确的初始化顺序
         # 1. 先应用LoRA到注意力层（如果启用）
         if config.use_lora:
@@ -415,38 +419,49 @@ class SimplifiedCultureMoEAdapter:
         self._ensure_device_consistency()
 
 
-    def _get_target_layers(self):
+    def _get_target_layers(self, force_refresh=False):
         """获取目标层索引（所有层）"""
+        # 🔧 使用缓存避免重复解包和打印
+        if not force_refresh and self._cached_layers is not None and self._cached_target_layers is not None:
+            return self._cached_layers, self._cached_target_layers
+
         # 🔧 关键修复：正确处理所有包装层，确保访问到实际的训练模型
         actual_model = self.base_model
 
-        print(f"🔧 开始解包模型，初始类型: {type(actual_model)}")
+        # 只在首次调用或强制刷新时打印调试信息
+        if self._cached_layers is None or force_refresh:
+            print(f"🔧 开始解包模型，初始类型: {type(actual_model)}")
 
         # 处理DDP包装
         if hasattr(actual_model, 'module'):
             actual_model = actual_model.module
-            print(f"🔧 检测到DDP包装，解包后: {type(actual_model)}")
+            if self._cached_layers is None or force_refresh:
+                print(f"🔧 检测到DDP包装，解包后: {type(actual_model)}")
 
         # 处理PeftModel包装（LoRA包装）
         if hasattr(actual_model, 'base_model'):
             if hasattr(actual_model.base_model, 'model'):
                 # PeftModel -> base_model.model
                 actual_model = actual_model.base_model.model
-                print(f"🔧 检测到PeftModel包装，解包到base_model.model: {type(actual_model)}")
+                if self._cached_layers is None or force_refresh:
+                    print(f"🔧 检测到PeftModel包装，解包到base_model.model: {type(actual_model)}")
             else:
                 # PeftModel -> base_model
                 actual_model = actual_model.base_model
-                print(f"🔧 检测到PeftModel包装，解包到base_model: {type(actual_model)}")
+                if self._cached_layers is None or force_refresh:
+                    print(f"🔧 检测到PeftModel包装，解包到base_model: {type(actual_model)}")
 
         # 再次检查是否还有model属性
         if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
             actual_model = actual_model.model
-            print(f"🔧 进一步解包到model属性: {type(actual_model)}")
+            if self._cached_layers is None or force_refresh:
+                print(f"🔧 进一步解包到model属性: {type(actual_model)}")
 
         # 获取layers
         if hasattr(actual_model, 'layers'):
             layers = actual_model.layers
-            print(f"✅ 成功找到layers: {len(layers)} 层 in {type(actual_model)}")
+            if self._cached_layers is None or force_refresh:
+                print(f"✅ 成功找到layers: {len(layers)} 层 in {type(actual_model)}")
         else:
             # 详细诊断
             print(f"❌ 无法找到layers，当前模型类型: {type(actual_model)}")
@@ -458,7 +473,12 @@ class SimplifiedCultureMoEAdapter:
         # 🆕 所有层都嵌入MoE
         target_layers = list(range(total_layers))
 
-        print(f"🔧 目标层范围: {target_layers[:5]}...{target_layers[-5:]} (共{total_layers}层)")
+        if self._cached_layers is None or force_refresh:
+            print(f"🔧 目标层范围: {target_layers[:5]}...{target_layers[-5:]} (共{total_layers}层)")
+
+        # 🔧 缓存结果
+        self._cached_layers = layers
+        self._cached_target_layers = target_layers
 
         return layers, target_layers
 
@@ -597,7 +617,7 @@ class SimplifiedCultureMoEAdapter:
             print(f"⚠️ 获取shared专家输出失败: {e}")
             return None
 
-    def get_accumulated_z_loss(self):
+    def get_accumulated_z_loss(self, main_loss=None):
         """计算累积的z-loss"""
         layers, target_layers = self._get_target_layers()
 
@@ -615,8 +635,12 @@ class SimplifiedCultureMoEAdapter:
                 moe_layer_count += 1
 
         if total_aux_loss is None:
-            device = next(self.base_model.parameters()).device
-            total_aux_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
+            # 🔧 修复梯度问题：使用主损失*0来创建连接到计算图的零损失
+            if main_loss is not None:
+                total_aux_loss = main_loss * 0.0
+            else:
+                device = next(self.base_model.parameters()).device
+                total_aux_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
         elif moe_layer_count > 1:
             total_aux_loss = total_aux_loss / moe_layer_count
 
