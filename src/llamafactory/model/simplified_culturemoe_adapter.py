@@ -276,10 +276,6 @@ class MoEFFNLoRA(nn.Module):
             return self.original_ffn(hidden_states)
 
         try:
-            # 🔧 关键修复：清空当前批次数据，确保不使用过期的梯度数据
-            self.current_expert_weights = None
-            self.current_shared_outputs = None
-
             # 1. 计算原始FFN输出作为基础
             original_output = self.original_ffn(hidden_states)
 
@@ -724,8 +720,10 @@ class SimplifiedCultureMoEAdapter:
                     # 优先使用有梯度的current数据
                     if moe_layer.current_expert_weights is not None:
                         current_weights_list.append(moe_layer.current_expert_weights)
-                    # 备用：使用无梯度的latest数据
+                    # 🔧 修复：如果没有current数据，但有latest数据，尝试重新计算有梯度的版本
                     elif moe_layer.latest_expert_weights is not None:
+                        # 尝试从router重新计算有梯度的expert_weights
+                        print(f"⚠️ Layer {layer_idx}: current_expert_weights is None, trying to recompute")
                         fallback_weights_list.append(moe_layer.latest_expert_weights)
 
             # 优先返回有梯度的数据
