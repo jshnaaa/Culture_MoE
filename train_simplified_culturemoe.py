@@ -113,6 +113,95 @@ def safe_barrier(timeout=30.0, operation_name="barrier", max_retries=3):
     return False
 
 
+def enhanced_memory_monitoring(rank, operation_name="memory_check"):
+    """🔧 增强的GPU内存监控和清理"""
+    if not torch.cuda.is_available():
+        return True
+
+    try:
+        device_id = torch.cuda.current_device()
+        memory_allocated = torch.cuda.memory_allocated(device_id) / 1024**3  # GB
+        memory_reserved = torch.cuda.memory_reserved(device_id) / 1024**3   # GB
+
+        # 获取GPU总容量
+        total_memory = torch.cuda.get_device_properties(device_id).total_memory / 1024**3
+        memory_free = total_memory - memory_reserved
+
+        print(f"💾 GPU Memory Status (rank {rank}, {operation_name}):")
+        print(f"   Allocated: {memory_allocated:.2f}GB / {total_memory:.2f}GB ({memory_allocated/total_memory*100:.1f}%)")
+        print(f"   Reserved: {memory_reserved:.2f}GB ({memory_reserved/total_memory*100:.1f}%)")
+        print(f"   Free: {memory_free:.2f}GB ({memory_free/total_memory*100:.1f}%)")
+
+        # 内存预警和清理
+        if memory_allocated > total_memory * 0.85:  # 超过85%警告
+            print(f"🚨 CRITICAL MEMORY WARNING: {memory_allocated:.2f}GB allocated ({memory_allocated/total_memory*100:.1f}%)")
+            # 强制垃圾回收和内存清理
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            # 再次检查内存
+            memory_allocated_after = torch.cuda.memory_allocated(device_id) / 1024**3
+            memory_freed = memory_allocated - memory_allocated_after
+            print(f"🔧 Emergency cleanup freed {memory_freed:.2f}GB")
+            print(f"   New allocation: {memory_allocated_after:.2f}GB ({memory_allocated_after/total_memory*100:.1f}%)")
+
+            if memory_allocated_after > total_memory * 0.90:  # 清理后仍超过90%
+                print(f"❌ CRITICAL: Memory usage still too high after cleanup!")
+                return False
+
+        elif memory_allocated > total_memory * 0.70:  # 超过70%提醒
+            print(f"⚠️ Memory usage high: {memory_allocated:.2f}GB ({memory_allocated/total_memory*100:.1f}%)")
+            # 轻度清理
+            torch.cuda.empty_cache()
+
+        return True
+
+    except Exception as e:
+        print(f"❌ Memory monitoring failed: {e}")
+        return False
+
+
+def enhanced_distributed_error_handling(rank, world_size, operation_name, max_retries=5):
+    """🔧 增强的分布式错误处理"""
+    print(f"🔧 Enhanced distributed error handling: {operation_name} (rank {rank})")
+
+    # 1. 内存监控
+    memory_ok = enhanced_memory_monitoring(rank, operation_name)
+    if not memory_ok:
+        print(f"❌ Memory check failed during {operation_name}")
+        return False
+
+    # 2. 分布式同步错误处理
+    if world_size > 1:
+        for attempt in range(max_retries):
+            try:
+                success = safe_barrier(timeout=30.0, operation_name=f"{operation_name}_attempt_{attempt+1}")
+                if success:
+                    if attempt > 0:
+                        print(f"✅ Distributed sync successful after {attempt+1} attempts")
+                    return True
+                else:
+                    print(f"⚠️ Distributed sync failed, attempt {attempt+1}/{max_retries}")
+                    if attempt < max_retries - 1:
+                        # 渐进式等待时间
+                        import time
+                        wait_time = min(2.0 ** attempt, 10.0)
+                        print(f"🔄 Waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+
+            except Exception as e:
+                print(f"❌ Distributed sync error (attempt {attempt+1}): {e}")
+                if attempt == max_retries - 1:
+                    print(f"❌ All {max_retries} sync attempts failed, continuing with degraded mode")
+                    return False
+
+        return False
+    else:
+        # 单GPU模式，直接返回成功
+        return True
+
+
 def setup_distributed():
     """🔧 强化版分布式训练初始化"""
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
@@ -558,7 +647,14 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, mai
                 shared_losses.append(shared_loss_term)
 
         if len(shared_losses) > 0:
-            shared_culture_loss = torch.stack(shared_losses).mean()
+            # 🔧 内存优化：使用累积计算替代torch.stack避免大型临时张量
+            if len(shared_losses) == 1:
+                shared_culture_loss = shared_losses[0]
+            else:
+                shared_culture_loss = shared_losses[0]
+                for loss in shared_losses[1:]:
+                    shared_culture_loss = shared_culture_loss + loss
+                shared_culture_loss = shared_culture_loss / len(shared_losses)
             total_culture_losses.append(shared_culture_loss)
 
     # 🔄 2. 路由专家损失：保持原有逻辑（同culture相似，不同culture不同）
@@ -622,12 +718,26 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, mai
                         routing_losses.append(similarity)
 
             if len(routing_losses) > 0:
-                routing_culture_loss = torch.stack(routing_losses).mean()
+                # 🔧 内存优化：使用累积计算替代torch.stack避免大型临时张量
+                if len(routing_losses) == 1:
+                    routing_culture_loss = routing_losses[0]
+                else:
+                    routing_culture_loss = routing_losses[0]
+                    for loss in routing_losses[1:]:
+                        routing_culture_loss = routing_culture_loss + loss
+                    routing_culture_loss = routing_culture_loss / len(routing_losses)
                 total_culture_losses.append(routing_culture_loss)
 
     # 🔧 计算最终的总文化损失
     if len(total_culture_losses) > 0:
-        culture_loss = torch.stack(total_culture_losses).mean()
+        # 🔧 内存优化：使用累积计算替代torch.stack避免大型临时张量
+        if len(total_culture_losses) == 1:
+            culture_loss = total_culture_losses[0]
+        else:
+            culture_loss = total_culture_losses[0]
+            for loss in total_culture_losses[1:]:
+                culture_loss = culture_loss + loss
+            culture_loss = culture_loss / len(total_culture_losses)
     else:
         # 🔧 修复梯度问题：使用主损失*0来创建连接到计算图的零损失
         if main_loss is not None:
@@ -1161,20 +1271,23 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         # 🔧 激进的GPU缓存清理（针对CUDA OOM）
         cache_clear_interval = num_accumulation_steps * 2  # 更频繁的清理
         if (batch_idx + 1) % cache_clear_interval == 0:
-            # 🔧 强制垃圾回收
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
-
-            # 🔧 内存使用监控
-            if torch.cuda.is_available():
-                memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-                memory_reserved = torch.cuda.memory_reserved() / 1024**3   # GB
-                if rank == 0 and batch_idx % (cache_clear_interval * 2) == 0:
-                    print(f"  💾 GPU Memory: {memory_allocated:.2f}GB allocated, {memory_reserved:.2f}GB reserved")
+            # 🔧 使用增强的内存监控和清理
+            memory_ok = enhanced_memory_monitoring(rank, f"training_batch_{batch_idx}")
+            if not memory_ok:
+                print(f"❌ Critical memory issue at batch {batch_idx}, attempting emergency cleanup")
+                # 紧急清理措施
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+                # 再次检查
+                memory_ok_after = enhanced_memory_monitoring(rank, f"emergency_cleanup_batch_{batch_idx}")
+                if not memory_ok_after:
+                    print(f"❌ Emergency cleanup failed, may need to reduce batch size or sequence length")
 
             if hasattr(model_adapter.base_model, 'module'):
-                safe_barrier(timeout=30.0, operation_name="cache_clear_sync")
+                sync_success = enhanced_distributed_error_handling(rank, world_size, "cache_clear_sync")
+                if not sync_success:
+                    print(f"⚠️ Cache clear sync failed at batch {batch_idx}")
 
         # 更新进度条
         postfix = {'loss': f"{total_batch_loss.item() * num_accumulation_steps:.4f}"}
@@ -1495,25 +1608,25 @@ def main():
     use_gate = args.use_gate.lower() == 'true'
     use_lora = args.use_lora.lower() == 'true'
 
-    # 🔧 EXTREME CUDA内存优化（针对严重OOM问题）
+    # 🔧 ULTRA EXTREME CUDA内存优化（针对SimplifiedCultureMoE的OOM问题）
     args.memory_efficient = True  # 强制启用内存优化
 
-    print(f"🔧 Applying EXTREME CUDA memory optimization...")
+    print(f"🔧 Applying ULTRA EXTREME CUDA memory optimization for SimplifiedCultureMoE...")
 
     # 基础CUDA设置
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-    # 🔧 EXTREME内存分配策略
+    # 🔧 ULTRA EXTREME内存分配策略
     if torch.cuda.is_available():
         # 清理所有GPU缓存
         torch.cuda.empty_cache()
 
-        # 🔧 EXTREME：大幅降低内存分配比例（降至0.5）
+        # 🔧 ULTRA EXTREME：进一步降低内存分配比例（降至0.4）
         if hasattr(torch.cuda, 'set_per_process_memory_fraction'):
-            memory_fraction = 0.5 if world_size > 1 else 0.6  # 进一步降低
+            memory_fraction = 0.4 if world_size > 1 else 0.45  # 为MoE架构进一步降低
             torch.cuda.set_per_process_memory_fraction(memory_fraction)
-            print(f"🔧 EXTREME: Set CUDA memory fraction to {memory_fraction}")
+            print(f"🔧 ULTRA EXTREME: Set CUDA memory fraction to {memory_fraction} for MoE")
 
         # 🔧 启用内存映射分配器
         try:
@@ -1924,7 +2037,7 @@ def main():
         # 🔧 关键修复：训练开始前同步所有进程
         if world_size > 1:
             print(f"🔧 Pre-training synchronization (rank {rank})")
-            safe_barrier(timeout=30.0, operation_name="pre_training_sync")
+            enhanced_distributed_error_handling(rank, world_size, "pre_training_sync")
 
         # 🔧 新增：训练前全面梯度诊断
         if is_main_process(rank):
@@ -2023,8 +2136,8 @@ def main():
                 # 🔧 关键修复：评估后同步所有进程，防止进程不同步
                 if world_size > 1:
                     print(f"🔧 Post-evaluation sync (rank {rank}, epoch {epoch+1})")
-                    barrier_success = safe_barrier(timeout=30.0, operation_name="evaluation_sync")
-                    if not barrier_success:
+                    sync_success = enhanced_distributed_error_handling(rank, world_size, "evaluation_sync")
+                    if not sync_success:
                         print(f"⚠️ Post-evaluation sync failed for rank {rank}, continuing...")
 
                 if is_main_process(rank):
@@ -2093,8 +2206,8 @@ def main():
         # 🔧 关键修复：训练完成后同步所有进程
         if world_size > 1:
             print(f"🔧 Post-training sync (rank {rank})")
-            barrier_success = safe_barrier(timeout=30.0, operation_name="post_training_sync")
-            if not barrier_success:
+            sync_success = enhanced_distributed_error_handling(rank, world_size, "post_training_sync")
+            if not sync_success:
                 print(f"⚠️ Post-training sync failed for rank {rank}, continuing...")
 
         # 保存训练结果（只在主进程执行）
