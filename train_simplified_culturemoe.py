@@ -449,6 +449,13 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, mai
             # 🔧 如果没有main_loss，使用culture_labels创建连接到计算图的零损失
             culture_loss = culture_labels.float().sum() * 0.0
 
+    # 🔧 确保返回的culture_loss与主损失类型一致
+    if main_loss is not None:
+        target_device = main_loss.device
+        target_dtype = main_loss.dtype
+        if culture_loss.device != target_device or culture_loss.dtype != target_dtype:
+            culture_loss = culture_loss.to(device=target_device, dtype=target_dtype)
+
     return culture_loss
 
 
@@ -742,8 +749,17 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
 
-        # 🔧 修复梯度问题：移除类型转换，避免破坏梯度连接
-        # loss = loss.to(dtype=torch.float16)  # 这行代码在分布式训练中会破坏梯度连接
+        # 🔧 修复数据类型不匹配问题：确保所有损失组件使用相同的设备和数据类型
+        target_device = loss.device
+        target_dtype = loss.dtype
+
+        # 确保z_loss类型和设备匹配
+        if z_loss.device != target_device or z_loss.dtype != target_dtype:
+            z_loss = z_loss.to(device=target_device, dtype=target_dtype)
+
+        # 确保culture_loss类型和设备匹配
+        if culture_loss.device != target_device or culture_loss.dtype != target_dtype:
+            culture_loss = culture_loss.to(device=target_device, dtype=target_dtype)
 
         # 🆕 层次化损失计算：Total Loss = Main Loss + lambda * balance loss
         # balance loss = alpha * Z Loss + beta * culture loss
@@ -763,11 +779,11 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         if debug_this_batch:
             print(f"🔍 Gradient Debug - Batch {batch_idx}:")
-            print(f"  loss: {loss.item():.6f}, requires_grad: {loss.requires_grad}, grad_fn: {loss.grad_fn is not None}")
-            print(f"  z_loss: {z_loss.item():.6f}, requires_grad: {z_loss.requires_grad}, grad_fn: {z_loss.grad_fn is not None}")
-            print(f"  culture_loss: {culture_loss.item():.6f}, requires_grad: {culture_loss.requires_grad}, grad_fn: {culture_loss.grad_fn is not None}")
-            print(f"  balance_loss: {balance_loss.item():.6f}, requires_grad: {balance_loss.requires_grad}, grad_fn: {balance_loss.grad_fn is not None}")
-            print(f"  total_batch_loss: {total_batch_loss.item():.6f}, requires_grad: {total_batch_loss.requires_grad}, grad_fn: {total_batch_loss.grad_fn is not None}")
+            print(f"  loss: {loss.item():.6f}, device: {loss.device}, dtype: {loss.dtype}, requires_grad: {loss.requires_grad}, grad_fn: {loss.grad_fn is not None}")
+            print(f"  z_loss: {z_loss.item():.6f}, device: {z_loss.device}, dtype: {z_loss.dtype}, requires_grad: {z_loss.requires_grad}, grad_fn: {z_loss.grad_fn is not None}")
+            print(f"  culture_loss: {culture_loss.item():.6f}, device: {culture_loss.device}, dtype: {culture_loss.dtype}, requires_grad: {culture_loss.requires_grad}, grad_fn: {culture_loss.grad_fn is not None}")
+            print(f"  balance_loss: {balance_loss.item():.6f}, device: {balance_loss.device}, dtype: {balance_loss.dtype}, requires_grad: {balance_loss.requires_grad}, grad_fn: {balance_loss.grad_fn is not None}")
+            print(f"  total_batch_loss: {total_batch_loss.item():.6f}, device: {total_batch_loss.device}, dtype: {total_batch_loss.dtype}, requires_grad: {total_batch_loss.requires_grad}, grad_fn: {total_batch_loss.grad_fn is not None}")
 
             # 检查模型参数的requires_grad状态
             trainable_params = sum(p.numel() for p in model_adapter.base_model.parameters() if p.requires_grad)

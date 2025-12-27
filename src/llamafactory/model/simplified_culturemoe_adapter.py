@@ -381,8 +381,8 @@ class MoEFFNLoRA(nn.Module):
             for param in self.parameters():
                 if param.requires_grad:
                     return param.sum() * 0.0
-            # 如果没有可训练参数，创建一个简单的零tensor
-            return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
+            # 如果没有可训练参数，创建一个简单的零tensor，使用float32确保类型一致
+            return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32, requires_grad=True)
 
         try:
             # 🔧 添加数值稳定性检查：在计算前检查latest_expert_weights
@@ -406,8 +406,8 @@ class MoEFFNLoRA(nn.Module):
                         balance_loss = param.sum() * 0.0
                         break
                 else:
-                    # 如果没有可训练参数，创建一个简单的零tensor
-                    balance_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
+                    # 如果没有可训练参数，创建一个简单的零tensor，使用float32确保类型一致
+                    balance_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32, requires_grad=True)
 
             return balance_loss * 0.01  # 小的权重
 
@@ -427,8 +427,8 @@ class MoEFFNLoRA(nn.Module):
             for param in self.parameters():
                 if param.requires_grad:
                     return param.sum() * 0.0
-            # 如果没有可训练参数，创建一个简单的零tensor
-            return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
+            # 如果没有可训练参数，创建一个简单的零tensor，使用float32确保类型一致
+            return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32, requires_grad=True)
 
 
 
@@ -691,7 +691,7 @@ class SimplifiedCultureMoEAdapter:
                     total_aux_loss = dummy_param.sum() * 0.0
                 else:
                     # 如果没有可训练参数，创建一个简单的零tensor（这种情况不应该发生）
-                    total_aux_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
+                    total_aux_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32, requires_grad=True)
         elif moe_layer_count > 1:
             total_aux_loss = total_aux_loss / moe_layer_count
 
@@ -707,9 +707,15 @@ class SimplifiedCultureMoEAdapter:
                         total_aux_loss = param.sum() * 0.0
                         break
                 else:
-                    total_aux_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
+                    total_aux_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32, requires_grad=True)
 
-        # return total_aux_loss.to(dtype=torch.float16)  # 🔧 修复：移除类型转换，避免破坏梯度连接
+        # 🔧 确保返回的损失与主损失类型一致
+        if main_loss is not None:
+            target_device = main_loss.device
+            target_dtype = main_loss.dtype
+            if total_aux_loss.device != target_device or total_aux_loss.dtype != target_dtype:
+                total_aux_loss = total_aux_loss.to(device=target_device, dtype=target_dtype)
+
         return total_aux_loss
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
