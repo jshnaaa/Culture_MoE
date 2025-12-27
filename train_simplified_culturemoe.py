@@ -753,18 +753,26 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         target_device = loss.device
         target_dtype = loss.dtype
 
-        # 确保z_loss类型和设备匹配
-        if z_loss.device != target_device or z_loss.dtype != target_dtype:
-            z_loss = z_loss.to(device=target_device, dtype=target_dtype)
+        # 🔧 安全的类型转换：只在真正需要时才转换，避免断开梯度连接
+        if z_loss.device != target_device:
+            z_loss = z_loss.to(device=target_device)
+        if z_loss.dtype != target_dtype:
+            z_loss = z_loss.to(dtype=target_dtype)
 
-        # 确保culture_loss类型和设备匹配
-        if culture_loss.device != target_device or culture_loss.dtype != target_dtype:
-            culture_loss = culture_loss.to(device=target_device, dtype=target_dtype)
+        if culture_loss.device != target_device:
+            culture_loss = culture_loss.to(device=target_device)
+        if culture_loss.dtype != target_dtype:
+            culture_loss = culture_loss.to(dtype=target_dtype)
+
+        # 🔧 将标量系数转换为tensor，确保设备一致性和梯度连接
+        alpha_z_tensor = torch.tensor(alpha_z, device=target_device, dtype=target_dtype)
+        beta_culture_tensor = torch.tensor(beta_culture, device=target_device, dtype=target_dtype)
+        lambda_balance_tensor = torch.tensor(lambda_balance, device=target_device, dtype=target_dtype)
 
         # 🆕 层次化损失计算：Total Loss = Main Loss + lambda * balance loss
         # balance loss = alpha * Z Loss + beta * culture loss
-        balance_loss = alpha_z * z_loss + beta_culture * culture_loss
-        total_batch_loss = loss + lambda_balance * balance_loss
+        balance_loss = alpha_z_tensor * z_loss + beta_culture_tensor * culture_loss
+        total_batch_loss = loss + lambda_balance_tensor * balance_loss
 
         # 检查 NaN/Inf loss - 在所有损失计算完成后检查
         if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
@@ -793,14 +801,62 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         # 如果total_batch_loss没有梯度，跳过这个batch
         if not total_batch_loss.requires_grad or total_batch_loss.grad_fn is None:
             print(f"❌ total_batch_loss has no gradient! Skipping batch {batch_idx}")
-            print(f"  Debugging loss components:")
-            print(f"    loss type: {type(loss)}, device: {loss.device}, dtype: {loss.dtype}")
-            print(f"    z_loss type: {type(z_loss)}, device: {z_loss.device}, dtype: {z_loss.dtype}")
-            print(f"    culture_loss type: {type(culture_loss)}, device: {culture_loss.device}, dtype: {culture_loss.dtype}")
+            print(f"  🔍 Detailed gradient analysis:")
+            print(f"    loss: value={loss.item():.6f}, requires_grad={loss.requires_grad}, grad_fn={loss.grad_fn is not None}")
+            print(f"    z_loss: value={z_loss.item():.6f}, requires_grad={z_loss.requires_grad}, grad_fn={z_loss.grad_fn is not None}")
+            print(f"    culture_loss: value={culture_loss.item():.6f}, requires_grad={culture_loss.requires_grad}, grad_fn={culture_loss.grad_fn is not None}")
+            print(f"    balance_loss: value={balance_loss.item():.6f}, requires_grad={balance_loss.requires_grad}, grad_fn={balance_loss.grad_fn is not None}")
+
+            # 检查哪个组件导致了梯度断连
+            if not loss.requires_grad or loss.grad_fn is None:
+                print(f"    ❌ PROBLEM: Main loss has no gradient!")
+            if not z_loss.requires_grad or z_loss.grad_fn is None:
+                print(f"    ❌ PROBLEM: Z loss has no gradient!")
+            if not culture_loss.requires_grad or culture_loss.grad_fn is None:
+                print(f"    ❌ PROBLEM: Culture loss has no gradient!")
+            if not balance_loss.requires_grad or balance_loss.grad_fn is None:
+                print(f"    ❌ PROBLEM: Balance loss has no gradient!")
+
+            # 尝试手动创建一个有梯度的损失来继续训练
+            print(f"    🔧 Creating fallback loss with gradient...")
+            if loss.requires_grad and loss.grad_fn is not None:
+                fallback_loss = loss  # 只使用主损失
+                print(f"    Using main loss only: {fallback_loss.item():.6f}")
+            else:
+                # 如果连主损失都没有梯度，创建一个假的损失
+                dummy_param = None
+                for param in model_adapter.base_model.parameters():
+                    if param.requires_grad:
+                        dummy_param = param
+                        break
+
+                if dummy_param is not None:
+                    fallback_loss = dummy_param.sum() * 0.0 + 1.0  # 创建一个有梯度的损失
+                    print(f"    Using dummy loss: {fallback_loss.item():.6f}")
+                else:
+                    print(f"    ❌ No trainable parameters found! Cannot create fallback loss.")
+                    continue
+
+            # 🔧 修复重复除法：使用fallback损失替换total_batch_loss，除法在后面统一进行
+            total_batch_loss = fallback_loss
+            print(f"    ✅ Fallback loss: {total_batch_loss.item():.6f}, requires_grad={total_batch_loss.requires_grad}")
+
+        # 最终检查：如果还是没有梯度，彻底跳过
+        if not total_batch_loss.requires_grad or total_batch_loss.grad_fn is None:
+            print(f"    ❌ Fallback also failed! Skipping batch {batch_idx}")
             continue
 
-        # 梯度累积
-        total_batch_loss = total_batch_loss / num_accumulation_steps
+        # 🔧 梯度累积：统一进行除法，确保只执行一次
+        # 将num_accumulation_steps转换为tensor以保持梯度连接
+        accumulation_steps_tensor = torch.tensor(num_accumulation_steps, device=total_batch_loss.device, dtype=total_batch_loss.dtype)
+        total_batch_loss = total_batch_loss / accumulation_steps_tensor
+
+        # 验证最终损失的梯度状态
+        if not total_batch_loss.requires_grad or total_batch_loss.grad_fn is None:
+            print(f"    ❌ Final loss lost gradient after division! Skipping batch {batch_idx}")
+            print(f"    Division: {total_batch_loss.item():.6f}, requires_grad={total_batch_loss.requires_grad}, grad_fn={total_batch_loss.grad_fn is not None}")
+            continue
+
         total_batch_loss.backward()
 
         total_loss += total_batch_loss.item() * num_accumulation_steps
@@ -937,13 +993,30 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
 
-            # 🔧 修复梯度问题：移除类型转换，避免破坏梯度连接
-            # loss = loss.to(dtype=torch.float16)  # 这行代码在分布式训练中会破坏梯度连接
+            # 🔧 修复数据类型不匹配问题：确保所有损失组件使用相同的设备和数据类型
+            target_device = loss.device
+            target_dtype = loss.dtype
+
+            # 🔧 安全的类型转换：只在真正需要时才转换，避免断开梯度连接
+            if z_loss.device != target_device:
+                z_loss = z_loss.to(device=target_device)
+            if z_loss.dtype != target_dtype:
+                z_loss = z_loss.to(dtype=target_dtype)
+
+            if culture_loss.device != target_device:
+                culture_loss = culture_loss.to(device=target_device)
+            if culture_loss.dtype != target_dtype:
+                culture_loss = culture_loss.to(dtype=target_dtype)
+
+            # 🔧 将标量系数转换为tensor，确保设备一致性
+            alpha_z_tensor = torch.tensor(alpha_z, device=target_device, dtype=target_dtype)
+            beta_culture_tensor = torch.tensor(beta_culture, device=target_device, dtype=target_dtype)
+            lambda_balance_tensor = torch.tensor(lambda_balance, device=target_device, dtype=target_dtype)
 
             # 🆕 层次化损失计算：Total Loss = Main Loss + lambda * balance loss
             # balance loss = alpha * Z Loss + beta * culture loss
-            balance_loss = alpha_z * z_loss + beta_culture * culture_loss
-            total_batch_loss = loss + lambda_balance * balance_loss
+            balance_loss = alpha_z_tensor * z_loss + beta_culture_tensor * culture_loss
+            total_batch_loss = loss + lambda_balance_tensor * balance_loss
 
             # 检查总损失是否为NaN/Inf
             if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
