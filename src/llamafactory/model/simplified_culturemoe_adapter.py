@@ -64,28 +64,28 @@ class LoRAExpert(nn.Module):
             print(f"⚠️ LoRAExpert input NaN/Inf detected, returning zero delta")
             return x * 0.0
 
-        # 限制输入范围
-        x = torch.clamp(x, min=-10.0, max=10.0)
+        # 🔧 更保守的输入范围限制
+        x = torch.clamp(x, min=-5.0, max=5.0)
 
         try:
             # LoRA分支计算 - 只计算增量
             gate_lora = self.gate_lora_B(self.gate_lora_A(x)) * self.scaling
             up_lora = self.up_lora_B(self.up_lora_A(x)) * self.scaling
 
-            # 限制中间结果
-            gate_lora = torch.clamp(gate_lora, min=-15.0, max=15.0)
-            up_lora = torch.clamp(up_lora, min=-15.0, max=15.0)
+            # 🔧 更保守的中间结果限制
+            gate_lora = torch.clamp(gate_lora, min=-8.0, max=8.0)
+            up_lora = torch.clamp(up_lora, min=-8.0, max=8.0)
 
             # FFN的激活和组合（LoRA增量）
             intermediate_lora = self.act_fn(gate_lora) * up_lora
-            intermediate_lora = torch.clamp(intermediate_lora, min=-20.0, max=20.0)
+            intermediate_lora = torch.clamp(intermediate_lora, min=-10.0, max=10.0)
 
             # Dropout
             intermediate_lora = self.dropout(intermediate_lora)
 
             # down_proj LoRA增量
             lora_delta = self.down_lora_B(self.down_lora_A(intermediate_lora)) * self.scaling
-            lora_delta = torch.clamp(lora_delta, min=-10.0, max=10.0)
+            lora_delta = torch.clamp(lora_delta, min=-5.0, max=5.0)
 
             # 检查输出
             if torch.isnan(lora_delta).any() or torch.isinf(lora_delta).any():
@@ -110,8 +110,8 @@ class MoERouter(nn.Module):
         # 路由器网络
         self.router = nn.Linear(hidden_dim, num_experts, bias=False)
 
-        # 保守的初始化
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.01)
+        # 🔧 更保守的初始化，防止数值不稳定
+        nn.init.normal_(self.router.weight, mean=0.0, std=0.005)
 
     def forward(self, x):
         """
@@ -126,18 +126,18 @@ class MoERouter(nn.Module):
         """
         batch_size, seq_len, hidden_dim = x.shape
 
-        # 限制输入
-        x = torch.clamp(x, min=-10.0, max=10.0)
+        # 🔧 更保守的输入限制
+        x = torch.clamp(x, min=-5.0, max=5.0)
 
         try:
             # 计算路由logits
             router_logits = self.router(x)  # [B, L, num_experts]
-            router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
+            router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)
 
             # 数值稳定的softmax
             max_logits = torch.max(router_logits, dim=-1, keepdim=True)[0]
             shifted_logits = router_logits - max_logits
-            shifted_logits = torch.clamp(shifted_logits, min=-20.0, max=0.0)
+            shifted_logits = torch.clamp(shifted_logits, min=-10.0, max=0.0)
 
             # 计算专家权重
             expert_weights = F.softmax(shifted_logits, dim=-1)

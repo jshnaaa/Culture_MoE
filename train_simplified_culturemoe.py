@@ -735,6 +735,11 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         loss = outputs.loss
 
+        # 🔧 检查主损失的数值稳定性
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"❌ Main loss is NaN/Inf at batch {batch_idx}, skipping this batch")
+            continue
+
         # 🔧 修复梯度问题：直接从MoE层计算损失，避免torch.stack操作
         if use_culture_loss != 'false' and culture_labels is not None:
             # 直接从MoE层获取shared专家输出进行文化损失计算
@@ -879,8 +884,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             if hasattr(model_adapter.base_model, 'module'):  # DDP wrapped
                 torch.distributed.barrier()
 
-            # 梯度裁剪防止梯度爆炸 - 放宽限制让参数有足够更新空间
-            torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=3.0)
+            # 🔧 加强梯度裁剪防止数值不稳定 - MoE+LoRA需要更严格的限制
+            torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=1.0)
 
             optimizer.step()
             optimizer.zero_grad()
@@ -1149,7 +1154,7 @@ def main():
                         help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=1,
                         help="Batch size")
-    parser.add_argument("--learning_rate", type=float, default=1e-4,
+    parser.add_argument("--learning_rate", type=float, default=5e-5,
                         help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=0.001,
                         help="Weight decay")
@@ -1183,7 +1188,7 @@ def main():
                         help="Lambda coefficient for balance loss")
     parser.add_argument("--alpha_z", type=float, default=0.1,
                         help="Alpha coefficient for Z loss in balance loss")
-    parser.add_argument("--beta_culture", type=float, default=1.0,
+    parser.add_argument("--beta_culture", type=float, default=0.5,
                         help="Beta coefficient for culture loss in balance loss")
 
     # LoRA参数 - 与joint版本保持一致
