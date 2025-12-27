@@ -875,13 +875,14 @@ def extract_answer_from_text(text: str) -> str:
     return ""
 
 
-def generate_answer(model, tokenizer, instruction: str, input_text: str, device: str = 'cuda', max_new_tokens: int = 10) -> str:
+def generate_answer(model, tokenizer, instruction: str, input_text: str, device: str = 'cuda', max_new_tokens: int = 3) -> str:
     """
     使用模型生成答案
 
     关键改进：
     - 只输入 instruction + input，不输入 output
     - 让模型生成 output
+    - 修复生成为空和重复数字问题
 
     Args:
         model: 模型
@@ -889,7 +890,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
         instruction: 指令
         input_text: 输入文本
         device: 设备
-        max_new_tokens: 最大生成 token 数
+        max_new_tokens: 最大生成 token 数（默认3，足够生成单个数字）
 
     Returns:
         生成的文本
@@ -943,42 +944,45 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
                 outputs = actual_model.generate(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=1,  # 🔧 减少到1个token，单个数字答案
+                    max_new_tokens=max_new_tokens,  # 🔧 使用参数值，默认3个token
                     min_new_tokens=1,  # 🔧 至少生成1个token
                     pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=None,  # 🔧 临时禁用EOS token，强制生成
+                    eos_token_id=tokenizer.eos_token_id,  # 🔧 恢复EOS token，避免无限生成
                     do_sample=False,  # 🔧 贪心解码
                     num_beams=1,
-                    temperature=None,  # 🔧 明确禁用temperature
-                    top_p=None  # 🔧 明确禁用top_p
+                    temperature=1.0,  # 🔧 设置为1.0而不是None
+                    top_p=1.0,  # 🔧 设置为1.0而不是None
+                    repetition_penalty=1.1  # 🔧 添加重复惩罚，避免重复数字
                 )
             else:
                 # 使用联合模型的自定义generate方法
                 outputs = model.generate(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=1,  # 🔧 减少到1个token，单个数字答案
+                    max_new_tokens=max_new_tokens,  # 🔧 使用参数值，默认3个token
                     min_new_tokens=1,  # 🔧 至少生成1个token
                     pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=None,  # 🔧 临时禁用EOS token，强制生成
+                    eos_token_id=tokenizer.eos_token_id,  # 🔧 恢复EOS token，避免无限生成
                     do_sample=False,  # 🔧 贪心解码
                     num_beams=1,
-                    temperature=None,  # 🔧 明确禁用temperature
-                    top_p=None  # 🔧 明确禁用top_p
+                    temperature=1.0,  # 🔧 设置为1.0而不是None
+                    top_p=1.0,  # 🔧 设置为1.0而不是None
+                    repetition_penalty=1.1  # 🔧 添加重复惩罚，避免重复数字
                 )
         else:
             # 回退到标准generate方法
             # print(f"🔍 Using standard model generate method")  # 注释掉详细调试
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=1,  # 🔧 减少到1个token，单个数字答案
+                max_new_tokens=max_new_tokens,  # 🔧 使用参数值，默认3个token
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=None,  # 🔧 临时禁用EOS token，强制生成
+                eos_token_id=tokenizer.eos_token_id,  # 🔧 恢复EOS token，避免无限生成
                 do_sample=False,  # 贪婪解码
                 num_beams=1,     # 禁用 beam search
-                temperature=None,  # 🔧 明确禁用temperature
-                top_p=None       # 🔧 明确禁用top_p
+                temperature=1.0,  # 🔧 设置为1.0而不是None
+                top_p=1.0,       # 🔧 设置为1.0而不是None
+                repetition_penalty=1.1  # 🔧 添加重复惩罚，避免重复数字
             )
 
     # 解码
