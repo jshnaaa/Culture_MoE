@@ -62,7 +62,7 @@ class LoRAExpert(nn.Module):
         # 检查输入
         if torch.isnan(x).any() or torch.isinf(x).any():
             print(f"⚠️ LoRAExpert input NaN/Inf detected, returning zero delta")
-            return torch.zeros_like(x)
+            return x * 0.0
 
         # 限制输入范围
         x = torch.clamp(x, min=-10.0, max=10.0)
@@ -90,13 +90,13 @@ class LoRAExpert(nn.Module):
             # 检查输出
             if torch.isnan(lora_delta).any() or torch.isinf(lora_delta).any():
                 print(f"⚠️ LoRAExpert NaN/Inf detected, returning zero delta")
-                return torch.zeros_like(x)
+                return x * 0.0
 
             return lora_delta
 
         except Exception as e:
             print(f"⚠️ LoRAExpert forward failed: {e}, returning zero delta")
-            return torch.zeros_like(x)
+            return x * 0.0
 
 
 class MoERouter(nn.Module):
@@ -146,17 +146,15 @@ class MoERouter(nn.Module):
             if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
                 # 使用均匀分布作为fallback
                 expert_weights = torch.ones_like(expert_weights) / self.num_experts
-                router_logits = torch.zeros_like(router_logits)
+                router_logits = router_logits * 0.0
 
             return expert_weights, router_logits
 
         except Exception as e:
             print(f"⚠️ Router forward failed: {e}")
-            # 安全的fallback
-            expert_weights = torch.ones(batch_size, seq_len, self.num_experts,
-                                      device=x.device, dtype=x.dtype) / self.num_experts
-            router_logits = torch.zeros(batch_size, seq_len, self.num_experts,
-                                      device=x.device, dtype=x.dtype)
+            # 安全的fallback - 使用x.new_*方法保持梯度连接
+            expert_weights = x.new_ones(batch_size, seq_len, self.num_experts) / self.num_experts
+            router_logits = x.new_zeros(batch_size, seq_len, self.num_experts)
             return expert_weights, router_logits
 
 
