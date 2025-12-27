@@ -1,8 +1,7 @@
 # src/llamafactory/model/simplified_culturemoe_adapter.py
 """
 简化版CultureMoE适配器
-纯MoE架构：在所有层替换FFN为MoE结构
-不使用MixLoRA，在所有层使用MoE专家
+清爽的MoE架构：每层FFN + 4个LoRA路由专家 + 1个LoRA共享专家 + Router + Gate
 """
 
 import torch
@@ -15,234 +14,77 @@ from .simplified_culturemoe import SimplifiedCultureMoEConfig
 
 
 class LoRAExpert(nn.Module):
-    """LoRA专家层 - 标准LoRA实现：output = original + lora_delta"""
+    """LoRA专家层 - 简化实现"""
 
     def __init__(self, hidden_dim: int, intermediate_dim: int, act_fn,
                  lora_rank: int = 16, lora_alpha: int = 32, dropout: float = 0.1):
         super().__init__()
-        self.lora_rank = lora_rank
-        self.lora_alpha = lora_alpha
         self.scaling = lora_alpha / lora_rank
-        self.hidden_dim = hidden_dim
-        self.intermediate_dim = intermediate_dim
+
+        # LoRA分支
+        self.gate_lora_A = nn.Linear(hidden_dim, lora_rank, bias=False)
+        self.gate_lora_B = nn.Linear(lora_rank, intermediate_dim, bias=False)
+        self.up_lora_A = nn.Linear(hidden_dim, lora_rank, bias=False)
+        self.up_lora_B = nn.Linear(lora_rank, intermediate_dim, bias=False)
+        self.down_lora_A = nn.Linear(intermediate_dim, lora_rank, bias=False)
+        self.down_lora_B = nn.Linear(lora_rank, hidden_dim, bias=False)
+
         self.act_fn = act_fn
-
-        # 为每个FFN线性层创建LoRA分支
-        # gate_proj LoRA: hidden_dim -> intermediate_dim
-        self.gate_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
-        self.gate_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
-
-        # up_proj LoRA: hidden_dim -> intermediate_dim
-        self.up_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
-        self.up_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
-
-        # down_proj LoRA: intermediate_dim -> hidden_dim
-        self.down_lora_A = nn.Linear(self.intermediate_dim, lora_rank, bias=False)
-        self.down_lora_B = nn.Linear(lora_rank, self.hidden_dim, bias=False)
-
         self.dropout = nn.Dropout(dropout)
 
-        # LoRA权重初始化
-        self._init_lora_weights()
-
-    def _init_lora_weights(self):
-        """LoRA权重初始化"""
-        # A矩阵使用高斯初始化，B矩阵初始化为0
+        # 初始化
         nn.init.kaiming_uniform_(self.gate_lora_A.weight, a=math.sqrt(5))
         nn.init.zeros_(self.gate_lora_B.weight)
-
         nn.init.kaiming_uniform_(self.up_lora_A.weight, a=math.sqrt(5))
         nn.init.zeros_(self.up_lora_B.weight)
-
         nn.init.kaiming_uniform_(self.down_lora_A.weight, a=math.sqrt(5))
         nn.init.zeros_(self.down_lora_B.weight)
 
     def forward(self, x):
         """前向传播：计算LoRA增量"""
-        # 检查输入
-        if torch.isnan(x).any() or torch.isinf(x).any():
-            print(f"⚠️ LoRAExpert input NaN/Inf detected, returning zero delta")
-            return x * 0.0
+        gate_lora = self.gate_lora_B(self.gate_lora_A(x)) * self.scaling
+        up_lora = self.up_lora_B(self.up_lora_A(x)) * self.scaling
 
-        # 🔧 更保守的输入范围限制
-        x = torch.clamp(x, min=-5.0, max=5.0)
+        intermediate = self.act_fn(gate_lora) * up_lora
+        intermediate = self.dropout(intermediate)
 
-        try:
-            # LoRA分支计算 - 只计算增量
-            gate_lora = self.gate_lora_B(self.gate_lora_A(x)) * self.scaling
-            up_lora = self.up_lora_B(self.up_lora_A(x)) * self.scaling
-
-            # 🔧 更保守的中间结果限制
-            gate_lora = torch.clamp(gate_lora, min=-8.0, max=8.0)
-            up_lora = torch.clamp(up_lora, min=-8.0, max=8.0)
-
-            # FFN的激活和组合（LoRA增量）
-            intermediate_lora = self.act_fn(gate_lora) * up_lora
-            intermediate_lora = torch.clamp(intermediate_lora, min=-10.0, max=10.0)
-
-            # Dropout
-            intermediate_lora = self.dropout(intermediate_lora)
-
-            # down_proj LoRA增量
-            lora_delta = self.down_lora_B(self.down_lora_A(intermediate_lora)) * self.scaling
-            lora_delta = torch.clamp(lora_delta, min=-5.0, max=5.0)
-
-            # 检查输出
-            if torch.isnan(lora_delta).any() or torch.isinf(lora_delta).any():
-                print(f"⚠️ LoRAExpert NaN/Inf detected, returning zero delta")
-                return x * 0.0
-
-            return lora_delta
-
-        except Exception as e:
-            print(f"⚠️ LoRAExpert forward failed: {e}, returning zero delta")
-            return x * 0.0
+        return self.down_lora_B(self.down_lora_A(intermediate)) * self.scaling
 
 
 class MoERouter(nn.Module):
-    """MoE路由器"""
+    """MoE路由器 - 简化实现"""
 
-    def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1):
+    def __init__(self, hidden_dim: int, num_experts: int = 4):
         super().__init__()
         self.num_experts = num_experts
-        self.hidden_dim = hidden_dim
-
-        # 路由器网络
         self.router = nn.Linear(hidden_dim, num_experts, bias=False)
-
-        # 🔧 更保守的初始化，防止数值不稳定
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.005)
+        nn.init.normal_(self.router.weight, mean=0.0, std=0.01)
 
     def forward(self, x):
         """
         路由计算
-
         Args:
             x: [B, L, H] 输入隐藏状态
-
         Returns:
             expert_weights: [B, L, num_experts] 专家权重
-            router_logits: [B, L, num_experts] 路由logits
         """
-        batch_size, seq_len, hidden_dim = x.shape
-
-        # 🔧 限制诊断输出
-        if not hasattr(self, '_debug_call_count'):
-            self._debug_call_count = 0
-        self._debug_call_count += 1
-        debug_this_call = self._debug_call_count <= 2
-
-        if debug_this_call:
-            print(f"🔍 Router Forward - Input Diagnosis (Call {self._debug_call_count}):")
-            print(f"  x.requires_grad: {x.requires_grad}")
-            print(f"  x.grad_fn: {x.grad_fn is not None}")
-            print(f"  x.shape: {x.shape}")
-
-        # 🔧 更保守的输入限制，但保持梯度连接
-        x_clamped = torch.clamp(x, min=-5.0, max=5.0)
-
-        if debug_this_call:
-            print(f"🔍 After clamp:")
-            print(f"  x_clamped.requires_grad: {x_clamped.requires_grad}")
-            print(f"  x_clamped.grad_fn: {x_clamped.grad_fn is not None}")
-
-        try:
-            if debug_this_call:
-                # 计算路由logits
-                print(f"🔍 Router Linear Layer Call:")
-                print(f"  self.router.weight.requires_grad: {self.router.weight.requires_grad}")
-                print(f"  self.router.weight.grad_fn: {self.router.weight.grad_fn is not None}")
-
-            router_logits = self.router(x_clamped)  # [B, L, num_experts]
-
-            if debug_this_call:
-                print(f"🔍 Router Linear Output:")
-                print(f"  router_logits.requires_grad: {router_logits.requires_grad}")
-                print(f"  router_logits.grad_fn: {router_logits.grad_fn is not None}")
-
-            router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)
-
-            if debug_this_call:
-                print(f"🔍 After router_logits clamp:")
-                print(f"  router_logits.requires_grad: {router_logits.requires_grad}")
-                print(f"  router_logits.grad_fn: {router_logits.grad_fn is not None}")
-
-            # 数值稳定的softmax
-            max_logits = torch.max(router_logits, dim=-1, keepdim=True)[0]
-            shifted_logits = router_logits - max_logits
-            shifted_logits = torch.clamp(shifted_logits, min=-10.0, max=0.0)
-
-            if debug_this_call:
-                print(f"🔍 Softmax computation:")
-                print(f"  shifted_logits.requires_grad: {shifted_logits.requires_grad}")
-                print(f"  shifted_logits.grad_fn: {shifted_logits.grad_fn is not None}")
-
-            # 计算专家权重
-            expert_weights = F.softmax(shifted_logits, dim=-1)
-
-            if debug_this_call:
-                print(f"🔍 Softmax output:")
-                print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
-                print(f"  expert_weights.grad_fn: {expert_weights.grad_fn is not None}")
-
-            # 检查结果
-            if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
-                if debug_this_call:
-                    print(f"🔍 NaN/Inf detected in expert_weights, using uniform fallback")
-                # 使用均匀分布作为fallback
-                expert_weights = expert_weights * 0.0 + (1.0 / self.num_experts)
-                router_logits = router_logits * 0.0
-                if debug_this_call:
-                    print(f"🔍 After fallback:")
-                    print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
-                    print(f"  expert_weights.grad_fn: {expert_weights.grad_fn is not None}")
-
-            # 🔧 简化输出：如果expert_weights没有梯度，报告问题
-            elif not debug_this_call and (not expert_weights.requires_grad or expert_weights.grad_fn is None):
-                print(f"⚠️ Router: expert_weights output has no gradient!")
-                print(f"  Input x.requires_grad: {x.requires_grad}, x.grad_fn: {x.grad_fn is not None}")
-                print(f"  Router weight.requires_grad: {self.router.weight.requires_grad}")
-                print(f"  Output expert_weights.requires_grad: {expert_weights.requires_grad}, grad_fn: {expert_weights.grad_fn is not None}")
-
-            return expert_weights, router_logits
-
-        except Exception as e:
-            print(f"⚠️ Router forward failed: {e}")
-            # 安全的fallback - 使用x.new_*方法保持梯度连接
-            expert_weights = x.new_ones(batch_size, seq_len, self.num_experts) / self.num_experts
-            router_logits = x.new_zeros(batch_size, seq_len, self.num_experts)
-            return expert_weights, router_logits
+        # 计算路由logits并归一化
+        router_logits = self.router(x)  # [B, L, num_experts]
+        expert_weights = F.softmax(router_logits, dim=-1)
+        return expert_weights
 
 
 class MoEFFNLoRA(nn.Module):
-    """MoE FFN层 - 使用LoRA专家，支持shared专家和gate机制"""
+    """简化版MoE FFN层：原始FFN + 4个LoRA路由专家 + 1个LoRA共享专家 + Router + Gate"""
 
     def __init__(self, original_ffn, config: SimplifiedCultureMoEConfig):
         super().__init__()
-        self.config = config
-        self.num_experts = config.num_moe_experts
-        self.num_activated_experts = config.num_activated_experts
-        self.original_ffn = original_ffn  # 保持原始FFN（只计算一次）
-        self.use_shared = config.use_shared
-        self.use_gate = config.use_gate
-
-        # 🔧 消融实验控制标志
-        self.ablation_disable_shared = False
-        self.ablation_disable_gate = False
-
-        # 获取原始FFN的参数
+        self.original_ffn = original_ffn
         self.hidden_dim = original_ffn.gate_proj.in_features
         self.intermediate_dim = original_ffn.gate_proj.out_features
 
-        # 创建路由器
-        self.router = MoERouter(
-            hidden_dim=self.hidden_dim,
-            num_experts=self.num_experts,
-            dropout=config.lora_dropout
-        )
-
-        # 🔧 修复：创建独立的路由LoRA专家（不共享original_ffn）
-        self.experts = nn.ModuleList([
+        # 4个路由专家
+        self.routing_experts = nn.ModuleList([
             LoRAExpert(
                 hidden_dim=self.hidden_dim,
                 intermediate_dim=self.intermediate_dim,
@@ -250,317 +92,100 @@ class MoEFFNLoRA(nn.Module):
                 lora_rank=config.lora_rank,
                 lora_alpha=config.lora_alpha,
                 dropout=config.lora_dropout
-            ) for _ in range(self.num_experts)
+            ) for _ in range(4)
         ])
 
-        # 🔧 修复：创建独立的shared专家（如果启用）
-        if self.use_shared:
-            self.shared_expert = LoRAExpert(
-                hidden_dim=self.hidden_dim,
-                intermediate_dim=self.intermediate_dim,
-                act_fn=original_ffn.act_fn,
-                lora_rank=config.lora_rank,
-                lora_alpha=config.lora_alpha,
-                dropout=config.lora_dropout
-            )
+        # 1个共享专家
+        self.shared_expert = LoRAExpert(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.intermediate_dim,
+            act_fn=original_ffn.act_fn,
+            lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+            dropout=config.lora_dropout
+        )
 
-        # 创建gate网络（如果启用）
-        if self.use_gate:
-            # gate网络：输入两个专家输出，输出融合权重
-            self.gate_network = nn.Sequential(
-                nn.Linear(self.hidden_dim * 2, self.hidden_dim, bias=False),
-                nn.ReLU(),
-                nn.Linear(self.hidden_dim, 2, bias=False),  # 输出2个权重：[shared_weight, routed_weight]
-                nn.Softmax(dim=-1)
-            )
-            # Gate网络权重初始化
-            for layer in self.gate_network:
-                if isinstance(layer, nn.Linear):
-                    nn.init.xavier_uniform_(layer.weight)
+        # Router网络
+        self.router = MoERouter(hidden_dim=self.hidden_dim, num_experts=4)
 
-        # 🔧 获取原始FFN的数据类型和设备，统一设置所有MoE组件
-        target_dtype = original_ffn.gate_proj.weight.dtype
-        target_device = original_ffn.gate_proj.weight.device
+        # Gate网络：融合共享专家和路由专家输出
+        self.gate_network = nn.Sequential(
+            nn.Linear(self.hidden_dim * 2, self.hidden_dim, bias=False),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, 2, bias=False),
+            nn.Softmax(dim=-1)
+        )
 
-        # 将所有MoE组件移动到正确设备和数据类型
-        self.router.to(device=target_device, dtype=target_dtype)
-        for expert in self.experts:
-            expert.to(device=target_device, dtype=target_dtype)
-        if self.use_shared:
-            self.shared_expert.to(device=target_device, dtype=target_dtype)
-        if self.use_gate:
-            self.gate_network.to(device=target_device, dtype=target_dtype)
+        # 初始化Gate网络
+        for layer in self.gate_network:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
 
-        # 🔧 关键修复：确保所有MoE参数从创建时就是可训练的
-        for param in self.router.parameters():
-            param.requires_grad = True
-        for expert in self.experts:
-            for param in expert.parameters():
-                param.requires_grad = True
-        if self.use_shared:
-            for param in self.shared_expert.parameters():
-                param.requires_grad = True
-        if self.use_gate:
-            for param in self.gate_network.parameters():
-                param.requires_grad = True
-
-        # 保存最新的专家权重用于文化损失
-        self.latest_expert_weights = None
-
-        # 🆕 保存shared专家的输出用于文化损失计算
-        self.latest_shared_outputs = None
-
-        # 🔧 关键修复：保存当前批次的梯度连接数据
-        self.current_expert_weights = None
-        self.current_shared_outputs = None
+        # 保存专家权重和输出用于文化损失
+        self.latest_routing_weights = None
+        self.latest_shared_output = None
 
     def forward(self, hidden_states):
         """
-        前向传播 - 简化版，移除MASK机制
-
-        Args:
-            hidden_states: [B, L, H] 输入隐藏状态
-
-        Returns:
-            output: [B, L, H] 输出隐藏状态
+        前向传播：原始FFN + 4个路由专家(Top-2) + 1个共享专家 + Gate融合
         """
-        batch_size, seq_len, hidden_dim = hidden_states.shape
+        # 1. 原始FFN输出
+        original_output = self.original_ffn(hidden_states)
 
-        # 🔧 限制诊断输出：只在前几个调用时输出详细信息
-        if not hasattr(self, '_debug_call_count'):
-            self._debug_call_count = 0
-        self._debug_call_count += 1
+        # 2. 路由计算：获取4个专家的权重
+        routing_weights = self.router(hidden_states)  # [B, L, 4]
 
-        debug_this_call = self._debug_call_count <= 2  # 只在前2次调用时输出详细诊断
+        # 3. Top-2激活：选择权重最高的2个专家
+        top2_values, top2_indices = torch.topk(routing_weights, k=2, dim=-1)  # [B, L, 2]
 
-        if debug_this_call:
-            print(f"🔍 MoE Forward - Input Gradient Diagnosis (Call {self._debug_call_count}):")
-            print(f"  hidden_states.requires_grad: {hidden_states.requires_grad}")
-            print(f"  hidden_states.grad_fn: {hidden_states.grad_fn is not None}")
-            print(f"  hidden_states.shape: {hidden_states.shape}")
-            print(f"  hidden_states contains NaN/Inf: {torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any()}")
+        # 4. 权重重新归一化
+        top2_weights = F.softmax(top2_values, dim=-1)  # [B, L, 2]
 
-        # 🔧 梯度状态诊断（不进行修复，让梯度自然流动）
-        if not hidden_states.requires_grad:
-            print(f"⚠️ MoE input hidden_states has no gradient!")
-            print(f"  requires_grad={hidden_states.requires_grad}, grad_fn={hidden_states.grad_fn is not None}")
-            print(f"  This indicates upstream gradient propagation issue - need to fix upstream layers")
-        else:
-            if debug_this_call:
-                print(f"✅ MoE input has gradient: requires_grad={hidden_states.requires_grad}, grad_fn={hidden_states.grad_fn is not None}")
+        # 5. 计算路由专家输出
+        routing_output = hidden_states * 0.0  # 初始化
+        for i in range(2):  # Top-2
+            expert_indices = top2_indices[:, :, i]  # [B, L]
+            expert_weights = top2_weights[:, :, i].unsqueeze(-1)  # [B, L, 1]
 
-        # 检查输入
-        if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
-            print("⚠️ NaN/Inf in MoE input, using original FFN")
-            return self.original_ffn(hidden_states)
+            # 为每个位置选择对应的专家
+            for expert_idx in range(4):
+                mask = (expert_indices == expert_idx)  # [B, L]
+                if mask.any():
+                    expert_input = hidden_states[mask]  # [N, H]
+                    expert_delta = self.routing_experts[expert_idx](expert_input)
+                    routing_output[mask] += expert_delta * expert_weights[mask]
 
-        if debug_this_call:
-            # 🔧 详细梯度诊断：检查router参数状态
-            print(f"🔍 Router Parameter Diagnosis:")
-            for name, param in self.router.named_parameters():
-                print(f"  router.{name}: requires_grad={param.requires_grad}, grad_fn={param.grad_fn is not None}, shape={param.shape}")
+        # 6. 共享专家输出
+        shared_delta = self.shared_expert(hidden_states)
+        shared_output = original_output + shared_delta
 
-        try:
-            # 1. 计算原始FFN输出作为基础
-            original_output = self.original_ffn(hidden_states)
+        # 7. 路由专家最终输出
+        routed_output = original_output + routing_output
 
-            # 2. 路由计算（为路由专家）
-            if debug_this_call:
-                print(f"🔍 Before router call:")
-                print(f"  hidden_states.requires_grad: {hidden_states.requires_grad}")
-                print(f"  hidden_states.grad_fn: {hidden_states.grad_fn is not None}")
+        # 8. Gate网络融合
+        gate_input = torch.cat([shared_output, routed_output], dim=-1)  # [B, L, 2*H]
+        gate_weights = self.gate_network(gate_input)  # [B, L, 2]
 
-            expert_weights, router_logits = self.router(hidden_states)
+        final_output = (gate_weights[..., 0:1] * shared_output +
+                       gate_weights[..., 1:2] * routed_output)
 
-            if debug_this_call:
-                print(f"🔍 After router call:")
-                print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
-                print(f"  expert_weights.grad_fn: {expert_weights.grad_fn is not None}")
-                print(f"  router_logits.requires_grad: {router_logits.requires_grad}")
-                print(f"  router_logits.grad_fn: {router_logits.grad_fn is not None}")
-            else:
-                # 简化输出：只在expert_weights没有梯度时报告
-                if not expert_weights.requires_grad or expert_weights.grad_fn is None:
-                    print(f"⚠️ MoE Layer: expert_weights has no gradient!")
-                    print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
-                    print(f"  expert_weights.grad_fn: {expert_weights.grad_fn is not None}")
+        # 9. 保存用于文化损失计算
+        self.latest_routing_weights = routing_weights.mean(dim=1).detach()  # [B, 4]
+        self.latest_shared_output = shared_output.mean(dim=1).detach()  # [B, H]
 
-            # 🔧 关键修复：保存当前批次的有梯度expert_weights
-            if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
-                # 如果包含NaN，使用均匀分布（保持梯度连接）
-                uniform_weights = expert_weights * 0.0 + (1.0 / expert_weights.shape[2])
-                self.current_expert_weights = uniform_weights.mean(dim=1)  # [B, num_experts] - 有梯度
-                self.latest_expert_weights = uniform_weights.mean(dim=1).detach()  # 无梯度版本用于统计
-            else:
-                self.current_expert_weights = expert_weights.mean(dim=1)  # [B, num_experts] - 有梯度
-                self.latest_expert_weights = expert_weights.mean(dim=1).detach()  # 无梯度版本用于统计
-
-            # 3. Top-k选择（路由专家）
-            if self.num_activated_experts == self.num_experts:
-                # Dense模式：使用所有专家
-                selected_expert_weights = expert_weights
-            else:
-                # Top-k模式
-                k = min(self.num_activated_experts, self.num_experts)
-                top_k_logits, top_k_indices = torch.topk(router_logits, k=k, dim=-1)  # [B, L, k]
-
-                # 重新归一化top-k权重
-                top_k_weights = F.softmax(top_k_logits, dim=-1)  # [B, L, k]
-
-                # 创建稀疏权重矩阵
-                selected_expert_weights = expert_weights * 0.0  # [B, L, num_experts]
-                selected_expert_weights.scatter_(-1, top_k_indices, top_k_weights)
-
-            # 4. 计算路由专家的LoRA增量（新架构：专家只计算LoRA增量）
-            if self.num_activated_experts == self.num_experts:
-                # Dense模式：计算所有专家的LoRA增量
-                expert_deltas = []
-                for expert_idx in range(self.num_experts):
-                    expert_lora_delta = self.experts[expert_idx](hidden_states)  # 专家直接返回LoRA增量
-                    expert_deltas.append(expert_lora_delta)
-                expert_deltas = torch.stack(expert_deltas, dim=-1)  # [B, L, H, num_experts]
-
-                # 加权组合LoRA增量
-                weights = selected_expert_weights.unsqueeze(-2)  # [B, L, 1, num_experts]
-                routed_delta = torch.sum(expert_deltas * weights, dim=-1)  # [B, L, H]
-            else:
-                # Top-k模式：只计算被选中专家的LoRA增量
-                routed_delta = hidden_states * 0.0
-
-                # 重塑为[B*L, H]便于处理
-                hidden_flat = hidden_states.view(-1, self.hidden_dim)
-                delta_flat = routed_delta.view(-1, self.hidden_dim)
-                weights_flat = selected_expert_weights.view(-1, self.num_experts)
-
-                # 对每个专家计算LoRA增量
-                for expert_idx in range(self.num_experts):
-                    expert_mask = weights_flat[:, expert_idx] > 1e-8
-
-                    if expert_mask.any():
-                        expert_input = hidden_flat[expert_mask]
-                        # 🔧 新架构：专家直接返回LoRA增量，无需减去原始输出
-                        expert_lora_delta = self.experts[expert_idx](expert_input)
-
-                        expert_weight = weights_flat[:, expert_idx][expert_mask].unsqueeze(-1)
-                        delta_flat[expert_mask] += expert_lora_delta * expert_weight
-
-                routed_delta = delta_flat.view(batch_size, seq_len, self.hidden_dim)
-
-            # 5. 计算shared专家LoRA增量（如果启用且未被消融）
-            if self.use_shared and not self.ablation_disable_shared:
-                shared_delta = self.shared_expert(hidden_states)  # 🔧 新架构：shared专家直接返回LoRA增量
-
-                # 🔧 关键修复：保存当前批次的有梯度shared_outputs
-                # shared专家的"输出"实际是原始FFN + LoRA增量
-                shared_output_for_culture_loss = original_output + shared_delta
-                self.current_shared_outputs = shared_output_for_culture_loss.mean(dim=1)  # [B, H] - 有梯度
-                self.latest_shared_outputs = shared_output_for_culture_loss.mean(dim=1).detach()  # 无梯度版本用于统计
-            else:
-                shared_delta = hidden_states * 0.0
-                self.current_shared_outputs = None
-                self.latest_shared_outputs = None
-
-            # 6. 融合shared专家和路由专家的输出
-            use_shared_effective = self.use_shared and not self.ablation_disable_shared
-            use_gate_effective = self.use_gate and not self.ablation_disable_gate
-
-            if use_shared_effective and use_gate_effective:
-                # 使用gate网络进行融合
-                shared_final = original_output + shared_delta
-                routed_final = original_output + routed_delta
-
-                # 将两个专家输出拼接作为gate输入
-                gate_input = torch.cat([shared_final, routed_final], dim=-1)  # [B, L, 2*H]
-                gate_weights = self.gate_network(gate_input)  # [B, L, 2]
-
-                # 加权融合
-                final_output = (gate_weights[..., 0:1] * shared_final +
-                              gate_weights[..., 1:2] * routed_final)
-
-            elif use_shared_effective:
-                # 当有shared专家但没有gate时，使用简单相加（按照用户要求）
-                final_output = original_output + shared_delta + routed_delta
-
-            else:
-                # 仅使用路由专家
-                final_output = original_output + routed_delta
-
-            # 7. 最终检查
-            if torch.isnan(final_output).any() or torch.isinf(final_output).any():
-                print("⚠️ NaN/Inf in MoE output, using original FFN")
-                final_output = self.original_ffn(hidden_states)
-
-            return final_output
-
-        except Exception as e:
-            print(f"⚠️ MoE forward failed: {e}, using original FFN")
-            return self.original_ffn(hidden_states)
+        return final_output
 
     def get_aux_loss(self):
-        """计算辅助损失"""
-        # 🔧 关键修复：优先使用有梯度的current_expert_weights
-        expert_weights_for_loss = None
-        if self.current_expert_weights is not None:
-            expert_weights_for_loss = self.current_expert_weights
-        elif self.latest_expert_weights is not None:
-            # 如果没有current数据，使用latest但要创建梯度连接
-            expert_weights_for_loss = self.latest_expert_weights
-        else:
-            # 完全没有数据，返回零损失
-            for param in self.parameters():
-                if param.requires_grad:
-                    return param.sum() * 0.0
-            # 如果没有可训练参数，使用参数创建零损失
-            dummy_param = next(iter(self.parameters()))
-            return dummy_param.sum() * 0.0
+        """计算负载均衡损失"""
+        if self.latest_routing_weights is None:
+            return torch.tensor(0.0, device=next(self.parameters()).device, requires_grad=True)
 
-        try:
-            # 🔧 添加数值稳定性检查
-            if torch.isnan(expert_weights_for_loss).any() or torch.isinf(expert_weights_for_loss).any():
-                # 如果expert_weights包含NaN或Inf，使用零损失
-                for param in self.parameters():
-                    if param.requires_grad:
-                        return param.sum() * 0.0
-                dummy_param = next(iter(self.parameters()))
-                return dummy_param.sum() * 0.0
+        # 负载均衡损失：鼓励专家使用均匀分布
+        expert_usage = self.latest_routing_weights.mean(dim=0)  # [4]
+        uniform_usage = torch.ones_like(expert_usage) / 4  # [4]
+        balance_loss = F.mse_loss(expert_usage, uniform_usage)
 
-            # 负载均衡损失
-            expert_usage = expert_weights_for_loss.mean(dim=0)  # [num_experts]
-            target_usage = expert_usage * 0.0 + (1.0 / self.num_experts)
-            balance_loss = F.mse_loss(expert_usage, target_usage)
-
-            # 检查数值稳定性
-            if torch.isnan(balance_loss) or torch.isinf(balance_loss):
-                # 🔧 修复梯度问题：使用参数创建连接到计算图的零损失
-                for param in self.parameters():
-                    if param.requires_grad:
-                        balance_loss = param.sum() * 0.0
-                        break
-                else:
-                    # 如果没有可训练参数，使用任意参数创建零损失
-                    dummy_param = next(iter(self.parameters()))
-                    balance_loss = dummy_param.sum() * 0.0
-
-            return balance_loss * 0.01  # 小的权重
-
-        except Exception as e:
-            # 🔧 减少重复打印：使用类属性来限制错误信息打印次数
-            if not hasattr(self.__class__, '_aux_loss_error_count'):
-                self.__class__._aux_loss_error_count = 0
-
-            if self.__class__._aux_loss_error_count < 5:  # 只打印前5次错误
-                print(f"⚠️ Aux loss computation failed: {e}")
-                self.__class__._aux_loss_error_count += 1
-            elif self.__class__._aux_loss_error_count == 5:
-                print(f"⚠️ Aux loss computation failed (suppressing further similar errors): {e}")
-                self.__class__._aux_loss_error_count += 1
-
-            # 🔧 修复梯度问题：寻找一个requires_grad=True的参数创建连接到计算图的零损失
-            for param in self.parameters():
-                if param.requires_grad:
-                    return param.sum() * 0.0
-            # 如果没有可训练参数，创建一个简单的零tensor，使用float32确保类型一致
-            return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32, requires_grad=True)
+        return balance_loss * 0.01
 
 
 
@@ -571,94 +196,37 @@ class SimplifiedCultureMoEAdapter:
         self.base_model = base_model
         self.config = config
 
-        # 🔧 缓存解包结果，避免重复调用
-        self._cached_layers = None
-        self._cached_target_layers = None
-
-        # 🔧 修复架构问题：正确的初始化顺序
-        # 1. 先应用LoRA到注意力层（如果启用）
+        # 应用LoRA到注意力层（如果启用）
         if config.use_lora:
             self._apply_attention_lora()
 
-        # 2. 先冻结非训练参数（在MoE创建之前）
-        self._freeze_non_trainable_parameters()
-
-        # 3. 然后在包装后的模型上替换FFN为MoE
+        # 替换所有FFN层为MoE
         self._replace_all_layers_with_moe()
 
-        # 4. 🔧 关键修复：MoE创建后，确保所有MoE参数都是可训练的
-        self._ensure_moe_parameters_trainable()
-
-        # 5. 确保设备一致性
+        # 确保设备一致性
         self._ensure_device_consistency()
 
-        # 6. 🔧 最终验证：再次确保MoE参数可训练（在所有操作后）
-        self._final_moe_gradient_check()
 
-        # 7. 🔧 新增：实时梯度流测试
-        self._test_gradient_flow()
-
-
-    def _get_target_layers(self, force_refresh=False):
+    def _get_target_layers(self):
         """获取目标层索引（所有层）"""
-        # 🔧 使用缓存避免重复解包和打印
-        if not force_refresh and self._cached_layers is not None and self._cached_target_layers is not None:
-            return self._cached_layers, self._cached_target_layers
-
-        # 🔧 关键修复：正确处理所有包装层，确保访问到实际的训练模型
+        # 处理模型包装
         actual_model = self.base_model
-
-        # 只在首次调用或强制刷新时打印调试信息
-        if self._cached_layers is None or force_refresh:
-            print(f"🔧 开始解包模型，初始类型: {type(actual_model)}")
-
-        # 处理DDP包装
         if hasattr(actual_model, 'module'):
             actual_model = actual_model.module
-            if self._cached_layers is None or force_refresh:
-                print(f"🔧 检测到DDP包装，解包后: {type(actual_model)}")
-
-        # 处理PeftModel包装（LoRA包装）
         if hasattr(actual_model, 'base_model'):
             if hasattr(actual_model.base_model, 'model'):
-                # PeftModel -> base_model.model
                 actual_model = actual_model.base_model.model
-                if self._cached_layers is None or force_refresh:
-                    print(f"🔧 检测到PeftModel包装，解包到base_model.model: {type(actual_model)}")
             else:
-                # PeftModel -> base_model
                 actual_model = actual_model.base_model
-                if self._cached_layers is None or force_refresh:
-                    print(f"🔧 检测到PeftModel包装，解包到base_model: {type(actual_model)}")
-
-        # 再次检查是否还有model属性
         if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
             actual_model = actual_model.model
-            if self._cached_layers is None or force_refresh:
-                print(f"🔧 进一步解包到model属性: {type(actual_model)}")
 
         # 获取layers
-        if hasattr(actual_model, 'layers'):
-            layers = actual_model.layers
-            if self._cached_layers is None or force_refresh:
-                print(f"✅ 成功找到layers: {len(layers)} 层 in {type(actual_model)}")
-        else:
-            # 详细诊断
-            print(f"❌ 无法找到layers，当前模型类型: {type(actual_model)}")
-            print(f"   模型属性: {[attr for attr in dir(actual_model) if not attr.startswith('_')]}")
-            raise AttributeError(f"Cannot find layers in actual model type: {type(actual_model)}")
+        if not hasattr(actual_model, 'layers'):
+            raise AttributeError(f"Cannot find layers in model type: {type(actual_model)}")
 
-        total_layers = len(layers)
-
-        # 🆕 所有层都嵌入MoE
-        target_layers = list(range(total_layers))
-
-        if self._cached_layers is None or force_refresh:
-            print(f"🔧 目标层范围: {target_layers[:5]}...{target_layers[-5:]} (共{total_layers}层)")
-
-        # 🔧 缓存结果
-        self._cached_layers = layers
-        self._cached_target_layers = target_layers
+        layers = actual_model.layers
+        target_layers = list(range(len(layers)))  # 所有层都使用MoE
 
         return layers, target_layers
 
@@ -683,78 +251,6 @@ class SimplifiedCultureMoEAdapter:
 
             print(f"✅ Replaced layer {layer_idx} FFN with LoRA MoE ({config_info})")
 
-    def _ensure_moe_parameters_trainable(self):
-        """确保所有MoE参数都是可训练的"""
-        print(f"🔧 Ensuring all MoE parameters are trainable...")
-
-        layers, target_layers = self._get_target_layers()
-        moe_param_count = 0
-
-        for layer_idx in target_layers:
-            moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFNLoRA):
-                # 确保router参数可训练
-                for name, param in moe_layer.router.named_parameters():
-                    if not param.requires_grad:
-                        param.requires_grad = True
-                        print(f"🔧 Fixed: Set layer {layer_idx} router.{name} to trainable")
-                    moe_param_count += param.numel()
-
-                # 确保expert参数可训练
-                for expert_idx, expert in enumerate(moe_layer.experts):
-                    for name, param in expert.named_parameters():
-                        if not param.requires_grad:
-                            param.requires_grad = True
-                            print(f"🔧 Fixed: Set layer {layer_idx} expert_{expert_idx}.{name} to trainable")
-                        moe_param_count += param.numel()
-
-                # 确保shared expert参数可训练（如果有）
-                if hasattr(moe_layer, 'shared_expert') and moe_layer.shared_expert is not None:
-                    for name, param in moe_layer.shared_expert.named_parameters():
-                        if not param.requires_grad:
-                            param.requires_grad = True
-                            print(f"🔧 Fixed: Set layer {layer_idx} shared_expert.{name} to trainable")
-                        moe_param_count += param.numel()
-
-                # 确保gate网络参数可训练（如果有）
-                if hasattr(moe_layer, 'gate_network') and moe_layer.gate_network is not None:
-                    for name, param in moe_layer.gate_network.named_parameters():
-                        if not param.requires_grad:
-                            param.requires_grad = True
-                            print(f"🔧 Fixed: Set layer {layer_idx} gate_network.{name} to trainable")
-                        moe_param_count += param.numel()
-
-        print(f"✅ MoE parameter check completed: {moe_param_count:,} MoE parameters ensured trainable")
-
-    def _final_moe_gradient_check(self):
-        """最终验证MoE参数的梯度状态"""
-        print(f"🔧 Final MoE gradient verification...")
-
-        layers, target_layers = self._get_target_layers()
-        issues_found = 0
-
-        for layer_idx in target_layers:
-            moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFNLoRA):
-                # 检查router参数
-                for name, param in moe_layer.router.named_parameters():
-                    if not param.requires_grad:
-                        print(f"❌ CRITICAL: Layer {layer_idx} router.{name} requires_grad=False")
-                        param.requires_grad = True
-                        issues_found += 1
-
-                # 检查expert参数
-                for expert_idx, expert in enumerate(moe_layer.experts):
-                    for name, param in expert.named_parameters():
-                        if not param.requires_grad:
-                            print(f"❌ CRITICAL: Layer {layer_idx} expert_{expert_idx}.{name} requires_grad=False")
-                            param.requires_grad = True
-                            issues_found += 1
-
-        if issues_found > 0:
-            print(f"⚠️ Fixed {issues_found} MoE parameters that were incorrectly frozen")
-        else:
-            print(f"✅ All MoE parameters verified as trainable")
 
     def _apply_attention_lora(self):
         """应用LoRA到注意力层"""
@@ -780,60 +276,6 @@ class SimplifiedCultureMoEAdapter:
         except Exception as e:
             print(f"⚠️ LoRA application failed: {e}")
 
-    def _freeze_non_trainable_parameters(self):
-        """🔧 修复版参数冻结：确保关键梯度传播路径畅通"""
-        model_to_freeze = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
-
-        print(f"🔧 CRITICAL GRADIENT PATH parameter management...")
-
-        # 🔧 关键梯度传播路径：这些参数必须可训练，否则梯度无法流动
-        critical_gradient_keywords = [
-            'embed_tokens',      # 词嵌入层 - 梯度起点
-            'lm_head',           # 输出头 - 损失计算点
-            'norm',              # 所有norm层 - 梯度传播关键节点
-            'layernorm', 'layer_norm', 'input_layernorm', 'post_attention_layernorm',
-            'lora',              # LoRA参数 - 注意力层梯度
-            'experts', 'router', # MoE参数 - FFN层梯度
-        ]
-
-        # 🔧 可以安全冻结的参数（不影响梯度传播）
-        safe_to_freeze_keywords = [
-            'position_embeddings',  # 位置编码（通常是固定的）
-            'rotary_emb',          # 旋转位置编码
-        ]
-
-        trainable_count = 0
-        frozen_count = 0
-        critical_fixed = 0
-
-        print(f"🔧 Applying GRADIENT-AWARE parameter freezing strategy...")
-
-        for name, param in model_to_freeze.named_parameters():
-            # 检查是否是关键梯度传播路径
-            is_critical = any(keyword in name.lower() for keyword in critical_gradient_keywords)
-            is_safe_to_freeze = any(keyword in name.lower() for keyword in safe_to_freeze_keywords)
-
-            if is_critical:
-                # 关键路径：必须可训练
-                if not param.requires_grad:
-                    param.requires_grad = True
-                    critical_fixed += 1
-                    print(f"🔧 CRITICAL FIX: {name} -> trainable (gradient path)")
-                trainable_count += 1
-            elif is_safe_to_freeze:
-                # 安全冻结：不影响梯度传播
-                param.requires_grad = False
-                frozen_count += 1
-            else:
-                # 其他参数：保持可训练以确保安全
-                param.requires_grad = True
-                trainable_count += 1
-
-        print(f"✅ GRADIENT-AWARE parameter management completed:")
-        print(f"  - Trainable parameters: {trainable_count}")
-        print(f"  - Frozen parameters: {frozen_count}")
-        print(f"  - Critical gradient fixes: {critical_fixed}")
-        print(f"  - Strategy: Ensure gradient flow while optimizing memory")
 
     def _ensure_device_consistency(self):
         """确保设备一致性"""
@@ -870,34 +312,15 @@ class SimplifiedCultureMoEAdapter:
         """获取专家权重用于文化损失计算"""
         try:
             layers, target_layers = self._get_target_layers()
-
-            # 🔧 关键修复：优先收集有梯度的current数据
-            current_weights_list = []
-            fallback_weights_list = []
+            expert_weights_list = []
 
             for layer_idx in target_layers:
                 moe_layer = layers[layer_idx].mlp
-                if isinstance(moe_layer, MoEFFNLoRA):
-                    # 优先使用有梯度的current数据
-                    if moe_layer.current_expert_weights is not None:
-                        current_weights_list.append(moe_layer.current_expert_weights)
-                    # 🔧 修复：如果没有current数据，但有latest数据，尝试重新计算有梯度的版本
-                    elif moe_layer.latest_expert_weights is not None:
-                        # 尝试从router重新计算有梯度的expert_weights
-                        print(f"⚠️ Layer {layer_idx}: current_expert_weights is None, trying to recompute")
-                        fallback_weights_list.append(moe_layer.latest_expert_weights)
-
-            # 优先返回有梯度的数据
-            if current_weights_list:
-                expert_weights_list = current_weights_list
-            else:
-                expert_weights_list = fallback_weights_list
+                if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_routing_weights is not None:
+                    expert_weights_list.append(moe_layer.latest_routing_weights)
 
             if expert_weights_list:
-                # 对所有MoE层的权重求平均
-                avg_expert_weights = torch.stack(expert_weights_list, dim=0).mean(dim=0)
-                # return avg_expert_weights.to(dtype=torch.float16)  # 🔧 修复：移除类型转换，避免破坏梯度连接
-                return avg_expert_weights
+                return torch.stack(expert_weights_list, dim=0).mean(dim=0)
             else:
                 return None
         except Exception as e:
@@ -908,32 +331,15 @@ class SimplifiedCultureMoEAdapter:
         """获取shared专家输出用于文化损失计算"""
         try:
             layers, target_layers = self._get_target_layers()
-
-            # 🔧 关键修复：优先收集有梯度的current数据
-            current_outputs_list = []
-            fallback_outputs_list = []
+            shared_outputs_list = []
 
             for layer_idx in target_layers:
                 moe_layer = layers[layer_idx].mlp
-                if isinstance(moe_layer, MoEFFNLoRA):
-                    # 优先使用有梯度的current数据
-                    if moe_layer.current_shared_outputs is not None:
-                        current_outputs_list.append(moe_layer.current_shared_outputs)
-                    # 备用：使用无梯度的latest数据
-                    elif moe_layer.latest_shared_outputs is not None:
-                        fallback_outputs_list.append(moe_layer.latest_shared_outputs)
-
-            # 优先返回有梯度的数据
-            if current_outputs_list:
-                shared_outputs_list = current_outputs_list
-            else:
-                shared_outputs_list = fallback_outputs_list
+                if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_shared_output is not None:
+                    shared_outputs_list.append(moe_layer.latest_shared_output)
 
             if shared_outputs_list:
-                # 对所有MoE层的shared输出求平均
-                avg_shared_outputs = torch.stack(shared_outputs_list, dim=0).mean(dim=0)
-                # return avg_shared_outputs.to(dtype=torch.float16)  # 🔧 修复：移除类型转换，避免破坏梯度连接
-                return avg_shared_outputs
+                return torch.stack(shared_outputs_list, dim=0).mean(dim=0)
             else:
                 return None
         except Exception as e:
@@ -958,784 +364,164 @@ class SimplifiedCultureMoEAdapter:
                 moe_layer_count += 1
 
         if total_aux_loss is None:
-            # 🔧 修复梯度问题：使用主损失*0来创建连接到计算图的零损失
             if main_loss is not None:
                 total_aux_loss = main_loss * 0.0
             else:
-                # 🔧 如果没有main_loss，寻找一个requires_grad=True的参数创建连接到计算图的零损失
-                dummy_param = None
-                for param in self.base_model.parameters():
-                    if param.requires_grad:
-                        dummy_param = param
-                        break
-
-                if dummy_param is not None:
-                    total_aux_loss = dummy_param.sum() * 0.0
-                else:
-                    # 🔧 修复：如果没有可训练参数，使用任意参数创建零损失
-                    dummy_param = next(iter(self.base_model.parameters()))
-                    total_aux_loss = dummy_param.sum() * 0.0
+                dummy_param = next(iter(self.base_model.parameters()))
+                total_aux_loss = dummy_param.sum() * 0.0
         elif moe_layer_count > 1:
             total_aux_loss = total_aux_loss / moe_layer_count
 
-        # 🔧 添加最终的NaN检查
-        if torch.isnan(total_aux_loss).any() or torch.isinf(total_aux_loss).any():
-            # 如果最终结果包含NaN，使用主损失创建零损失
-            if main_loss is not None:
-                total_aux_loss = main_loss * 0.0
-            else:
-                # 寻找可训练参数
-                for param in self.base_model.parameters():
-                    if param.requires_grad:
-                        total_aux_loss = param.sum() * 0.0
-                        break
-                else:
-                    # 🔧 修复：使用任意参数创建零损失
-                    dummy_param = next(iter(self.base_model.parameters()))
-                    total_aux_loss = dummy_param.sum() * 0.0
-
-        # 🔧 确保返回的损失与主损失类型一致
-        if main_loss is not None:
-            target_device = main_loss.device
-            target_dtype = main_loss.dtype
-            if total_aux_loss.device != target_device or total_aux_loss.dtype != target_dtype:
-                total_aux_loss = total_aux_loss.to(device=target_device, dtype=target_dtype)
-
         return total_aux_loss
 
-    def compute_direct_z_loss(self, main_loss=None):
+
+    def compute_culture_loss(self, culture_labels):
         """
-        直接计算z-loss，避免torch.stack操作
-        直接从MoE层获取expert_weights并计算，确保梯度连接
+        简化的文化损失计算：基于路由权重和共享输出
         """
-        layers, target_layers = self._get_target_layers()
+        try:
+            layers, target_layers = self._get_target_layers()
 
-        total_z_loss = None
-        moe_layer_count = 0
+            # 收集路由权重和共享输出
+            routing_weights = []
+            shared_outputs = []
 
-        for layer_idx in target_layers:
-            moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFNLoRA):
-                # 直接使用当前MoE层的current_expert_weights
-                if moe_layer.current_expert_weights is not None:
-                    expert_weights = moe_layer.current_expert_weights  # [B, num_experts] - 有梯度
+            for layer_idx in target_layers:
+                moe_layer = layers[layer_idx].mlp
+                if isinstance(moe_layer, MoEFFNLoRA):
+                    if moe_layer.latest_routing_weights is not None:
+                        routing_weights.append(moe_layer.latest_routing_weights)
+                    if moe_layer.latest_shared_output is not None:
+                        shared_outputs.append(moe_layer.latest_shared_output)
 
-                    # 检查梯度状态
-                    if expert_weights.requires_grad and expert_weights.grad_fn is not None:
-                        # 计算z-loss
-                        expert_usage = expert_weights.mean(dim=0)  # [num_experts]
-                        num_experts = expert_weights.shape[-1]
-                        target_usage = expert_usage * 0.0 + (1.0 / num_experts)
-                        layer_z_loss = F.mse_loss(expert_usage, target_usage) * 0.01
+            if not routing_weights and not shared_outputs:
+                return torch.tensor(0.0, device=culture_labels.device, requires_grad=True)
 
-                        if total_z_loss is None:
-                            total_z_loss = layer_z_loss
-                        else:
-                            total_z_loss = total_z_loss + layer_z_loss
-                        moe_layer_count += 1
-                    else:
-                        # 🔧 详细诊断expert_weights没有梯度的原因
-                        print(f"⚠️ Layer {layer_idx}: expert_weights has no gradient, skipping")
-                        print(f"  expert_weights.requires_grad: {expert_weights.requires_grad}")
-                        print(f"  expert_weights.grad_fn: {expert_weights.grad_fn}")
+            culture_loss = torch.tensor(0.0, device=culture_labels.device, requires_grad=True)
 
-                        # 检查router参数状态
-                        router_has_grad = any(p.requires_grad for p in moe_layer.router.parameters())
-                        print(f"  router parameters require_grad: {router_has_grad}")
+            # 1. 路由专家文化对比损失
+            if routing_weights:
+                expert_weights = routing_weights[0]  # 使用第一层作为代表
+                batch_size = expert_weights.shape[0]
 
-                        # 检查router权重的详细状态
-                        for name, param in moe_layer.router.named_parameters():
-                            print(f"    router.{name}: requires_grad={param.requires_grad}, grad_fn={param.grad_fn is not None}")
-                else:
-                    print(f"⚠️ Layer {layer_idx}: current_expert_weights is None, skipping")
-
-        if total_z_loss is None:
-            # 没有任何有效的expert_weights，使用零损失
-            if main_loss is not None:
-                total_z_loss = main_loss * 0.0
-            else:
-                # 寻找可训练参数创建零损失
-                for param in self.base_model.parameters():
-                    if param.requires_grad:
-                        total_z_loss = param.sum() * 0.0
-                        break
-                else:
-                    dummy_param = next(iter(self.base_model.parameters()))
-                    total_z_loss = dummy_param.sum() * 0.0
-        elif moe_layer_count > 1:
-            # 对多层求平均
-            total_z_loss = total_z_loss / moe_layer_count
-
-        # 确保设备和数据类型一致
-        if main_loss is not None:
-            target_device = main_loss.device
-            target_dtype = main_loss.dtype
-            if total_z_loss.device != target_device or total_z_loss.dtype != target_dtype:
-                total_z_loss = total_z_loss.to(device=target_device, dtype=target_dtype)
-
-        return total_z_loss
-
-    def compute_direct_culture_loss(self, culture_labels, main_loss=None):
-        """
-        直接计算文化损失，避免torch.stack操作
-        直接从MoE层获取expert_weights和shared_outputs并计算，确保梯度连接
-        """
-        layers, target_layers = self._get_target_layers()
-
-        total_culture_losses = []
-
-        # 收集所有有梯度的expert_weights和shared_outputs
-        valid_expert_weights = []
-        valid_shared_outputs = []
-
-        for layer_idx in target_layers:
-            moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFNLoRA):
-                # 收集有梯度的expert_weights
-                if (moe_layer.current_expert_weights is not None and
-                    moe_layer.current_expert_weights.requires_grad and
-                    moe_layer.current_expert_weights.grad_fn is not None):
-                    valid_expert_weights.append(moe_layer.current_expert_weights)
-
-                # 收集有梯度的shared_outputs
-                if (moe_layer.current_shared_outputs is not None and
-                    moe_layer.current_shared_outputs.requires_grad and
-                    moe_layer.current_shared_outputs.grad_fn is not None):
-                    valid_shared_outputs.append(moe_layer.current_shared_outputs)
-
-        # 如果有有效的数据，直接计算文化损失，不使用torch.stack
-        if valid_expert_weights or valid_shared_outputs:
-            # 使用第一层的数据作为代表（避免torch.stack）
-            representative_expert_weights = valid_expert_weights[0] if valid_expert_weights else None
-            representative_shared_outputs = valid_shared_outputs[0] if valid_shared_outputs else None
-
-            # 直接计算文化损失，不依赖外部函数
-            device = culture_labels.device
-            total_culture_losses = []
-
-            # 1. Shared专家损失：所有样本的shared专家输出都应该相似（学习文化共性）
-            if representative_shared_outputs is not None and representative_shared_outputs.shape[0] >= 2:
-                shared_losses = []
-                batch_size = representative_shared_outputs.shape[0]
-
-                # 对所有样本对计算shared专家相似度损失
                 for i in range(batch_size):
                     for j in range(i + 1, batch_size):
-                        vec1 = representative_shared_outputs[i].unsqueeze(0)
-                        vec2 = representative_shared_outputs[j].unsqueeze(0)
-
-                        # 检查向量是否为零向量
-                        norm1 = torch.norm(vec1)
-                        norm2 = torch.norm(vec2)
-                        if norm1 < 1e-8 or norm2 < 1e-8:
-                            continue
-
-                        similarity = F.cosine_similarity(vec1, vec2)
-                        if torch.isnan(similarity) or torch.isinf(similarity):
-                            continue
-
-                        # Shared专家：所有样本都应该相似，所以损失为 1 - similarity
-                        shared_loss_term = 1.0 - similarity
-                        shared_losses.append(shared_loss_term)
-
-                if len(shared_losses) > 0:
-                    shared_culture_loss = torch.stack(shared_losses).mean()
-                    total_culture_losses.append(shared_culture_loss)
-
-            # 2. 路由专家损失：保持原有逻辑（同culture相似，不同culture不同）
-            if representative_expert_weights is not None:
-                expert_weights = representative_expert_weights  # [B, num_experts]
-
-                # 使用对应的culture_labels
-                routing_culture_labels = culture_labels
-                if expert_weights.shape[0] != culture_labels.shape[0]:
-                    # 只对有expert_weights的样本计算文化损失
-                    if expert_weights.shape[0] < 2:
-                        pass  # 激活路由专家的样本少于2个，跳过路由专家损失
-                    else:
-                        routing_culture_labels = culture_labels[:expert_weights.shape[0]]
-
-                if expert_weights.shape[0] >= 2:
-                    routing_losses = []
-                    batch_size = expert_weights.shape[0]
-
-                    # 计算同文化样本间的相似性和不同文化样本间的差异性
-                    for i in range(batch_size):
-                        for j in range(i + 1, batch_size):
-                            if routing_culture_labels[i] == routing_culture_labels[j]:
-                                # 相同文化，鼓励相似的专家权重
-                                vec1 = expert_weights[i].unsqueeze(0)
-                                vec2 = expert_weights[j].unsqueeze(0)
-
-                                # 检查向量是否为零向量，避免cosine_similarity中的NaN
-                                norm1 = torch.norm(vec1)
-                                norm2 = torch.norm(vec2)
-                                if norm1 < 1e-8 or norm2 < 1e-8:
-                                    continue
-
-                                similarity = F.cosine_similarity(vec1, vec2)
-                                if torch.isnan(similarity) or torch.isinf(similarity):
-                                    continue
-
-                                # 相同文化：相似度应该高，损失为 1 - similarity
-                                loss_term = 1.0 - similarity
-                                routing_losses.append(loss_term)
-                            else:
-                                # 不同文化，鼓励不同的专家权重
-                                vec1 = expert_weights[i].unsqueeze(0)
-                                vec2 = expert_weights[j].unsqueeze(0)
-
-                                # 检查向量是否为零向量，避免cosine_similarity中的NaN
-                                norm1 = torch.norm(vec1)
-                                norm2 = torch.norm(vec2)
-                                if norm1 < 1e-8 or norm2 < 1e-8:
-                                    continue
-
-                                similarity = F.cosine_similarity(vec1, vec2)
-                                if torch.isnan(similarity) or torch.isinf(similarity):
-                                    continue
-
-                                # 不同文化：相似度应该低，损失为 similarity
-                                routing_losses.append(similarity)
-
-                    if len(routing_losses) > 0:
-                        routing_culture_loss = torch.stack(routing_losses).mean()
-                        total_culture_losses.append(routing_culture_loss)
-
-            # 计算最终的总文化损失
-            if len(total_culture_losses) > 0:
-                culture_loss = torch.stack(total_culture_losses).mean()
-            else:
-                # 如果没有有效的文化损失，使用主损失*0来创建连接到计算图的零损失
-                if main_loss is not None:
-                    culture_loss = main_loss * 0.0
-                else:
-                    culture_loss = culture_labels.float().sum() * 0.0
-
-            # 检查文化损失是否为NaN/Inf，如果是则返回零损失
-            if torch.isnan(culture_loss) or torch.isinf(culture_loss):
-                if main_loss is not None:
-                    culture_loss = main_loss * 0.0
-                else:
-                    culture_loss = culture_labels.float().sum() * 0.0
-
-            # 确保返回的culture_loss与主损失类型一致
-            if main_loss is not None:
-                target_device = main_loss.device
-                target_dtype = main_loss.dtype
-                if culture_loss.device != target_device or culture_loss.dtype != target_dtype:
-                    culture_loss = culture_loss.to(device=target_device, dtype=target_dtype)
-
-            return culture_loss
-        else:
-            # 没有有效数据，返回零损失
-            if main_loss is not None:
-                return main_loss * 0.0
-            else:
-                for param in self.base_model.parameters():
-                    if param.requires_grad:
-                        return param.sum() * 0.0
-                dummy_param = next(iter(self.base_model.parameters()))
-                return dummy_param.sum() * 0.0
-
-    def emergency_gradient_fix(self):
-        """🔧 全面重写：智能梯度修复系统"""
-        print(f"🚨 INTELLIGENT Gradient Fix: Analyzing and repairing gradient propagation...")
-
-        fixed_count = 0
-        model_to_fix = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
-
-        # 🔧 第一步：检测并修复embed_tokens
-        embed_layer = self._find_embed_tokens_layer(model_to_fix)
-        if embed_layer and hasattr(embed_layer, 'weight'):
-            if not embed_layer.weight.requires_grad:
-                embed_layer.weight.requires_grad = True
-                fixed_count += 1
-                print(f"  🔧 CRITICAL FIX: embed_tokens.weight -> trainable")
-            else:
-                print(f"  ✅ embed_tokens.weight already trainable")
-        else:
-            print(f"  ❌ CRITICAL ERROR: Cannot find embed_tokens layer!")
-
-        # 🔧 第二步：修复lm_head（输出层）
-        lm_head_fixed = False
-        for name, param in model_to_fix.named_parameters():
-            if 'lm_head' in name.lower():
-                if not param.requires_grad:
-                    param.requires_grad = True
-                    fixed_count += 1
-                    print(f"  🔧 CRITICAL FIX: {name} -> trainable")
-                else:
-                    print(f"  ✅ {name} already trainable")
-                lm_head_fixed = True
-                break
-
-        if not lm_head_fixed:
-            print(f"  ❌ CRITICAL ERROR: Cannot find lm_head layer!")
-
-        # 🔧 第三步：修复关键传播节点（norm层）
-        norm_fixed_count = 0
-        norm_params = [(name, param) for name, param in model_to_fix.named_parameters()
-                      if any(keyword in name.lower() for keyword in ['norm', 'layernorm', 'layer_norm'])]
-
-        for name, param in norm_params:
-            if not param.requires_grad:
-                param.requires_grad = True
-                norm_fixed_count += 1
-                fixed_count += 1
-                if norm_fixed_count <= 3:  # 只打印前3个
-                    print(f"  🔧 NORM FIX: {name} -> trainable")
-
-        if norm_fixed_count > 3:
-            print(f"  🔧 NORM FIX: ... and {norm_fixed_count - 3} more norm layers")
-
-        if norm_fixed_count == 0:
-            print(f"  ✅ All norm layers already trainable")
-
-        # 🔧 第四步：修复MoE组件
-        moe_fixed_count = 0
-        try:
-            layers, target_layers = self._get_target_layers()
-
-            for layer_idx in target_layers[:5]:  # 检查前5层
-                moe_layer = layers[layer_idx].mlp
-                if hasattr(moe_layer, 'router'):
-                    # 修复router参数
-                    for name, param in moe_layer.router.named_parameters():
-                        if not param.requires_grad:
-                            param.requires_grad = True
-                            moe_fixed_count += 1
-                            fixed_count += 1
-
-                # 修复expert参数
-                if hasattr(moe_layer, 'experts'):
-                    for expert_idx, expert in enumerate(moe_layer.experts):
-                        for name, param in expert.named_parameters():
-                            if not param.requires_grad:
-                                param.requires_grad = True
-                                moe_fixed_count += 1
-                                fixed_count += 1
-
-        except Exception as e:
-            print(f"  ⚠️ MoE fix error: {e}")
-
-        if moe_fixed_count > 0:
-            print(f"  🔧 MoE FIX: {moe_fixed_count} MoE parameters -> trainable")
-        else:
-            print(f"  ✅ All MoE parameters already trainable")
-
-        # 🔧 第五步：修复LoRA参数（如果存在）
-        lora_fixed_count = 0
-        lora_params = [(name, param) for name, param in model_to_fix.named_parameters() if 'lora' in name.lower()]
-
-        for name, param in lora_params:
-            if not param.requires_grad:
-                param.requires_grad = True
-                lora_fixed_count += 1
-                fixed_count += 1
-
-        if lora_fixed_count > 0:
-            print(f"  🔧 LORA FIX: {lora_fixed_count} LoRA parameters -> trainable")
-        elif lora_params:
-            print(f"  ✅ All LoRA parameters already trainable")
-
-        print(f"🚨 Intelligent gradient fix completed: {fixed_count} parameters fixed")
-        return fixed_count
-
-    def force_gradient_propagation_repair(self, input_ids, attention_mask):
-        """🔧 新增：强制梯度传播修复 - 检测问题并自动修复"""
-        print(f"🔧 FORCE Gradient Propagation Repair - Starting comprehensive fix...")
-
-        # 🔧 第一步：运行诊断
-        gradient_ok = self.diagnose_gradient_flow(input_ids, attention_mask)
-
-        if gradient_ok:
-            print(f"✅ Gradient propagation is healthy - no repair needed")
-            return True
-
-        print(f"❌ Gradient propagation issues detected - starting repair...")
-
-        # 🔧 第二步：执行紧急修复
-        fixed_count = self.emergency_gradient_fix()
-
-        # 🔧 第三步：重新验证
-        print(f"\n🔧 Re-verifying gradient propagation after fix...")
-        gradient_ok_after_fix = self.diagnose_gradient_flow(input_ids, attention_mask)
-
-        if gradient_ok_after_fix:
-            print(f"✅ REPAIR SUCCESSFUL: Gradient propagation restored!")
-            print(f"   Fixed {fixed_count} parameters")
-            return True
-        else:
-            print(f"❌ REPAIR FAILED: Gradient propagation still broken")
-            print(f"   This indicates a deeper architectural issue")
-
-            # 🔧 第四步：最后的诊断和建议
-            print(f"\n🔧 Final diagnostic suggestions:")
-            print(f"   1. Check if model architecture is compatible")
-            print(f"   2. Verify that DDP wrapping is not interfering")
-            print(f"   3. Check if there are custom forward hooks")
-            print(f"   4. Verify that model is in training mode")
-
-            return False
-
-    def _find_embed_tokens_layer(self, model):
-        """🔧 全面重写：强健的embed_tokens查找和解包逻辑"""
-        print(f"🔍 开始全面模型解包和embed_tokens查找...")
-
-        # 🔧 第一步：完整解包到实际训练模型
-        actual_model = self._get_actual_training_model(model)
-        print(f"✅ 解包完成，实际模型类型: {type(actual_model)}")
-
-        # 🔧 第二步：系统化路径搜索
-        embed_layer = self._systematic_embed_search(actual_model)
-
-        if embed_layer is not None:
-            print(f"✅ 成功找到embed_tokens层: {type(embed_layer)}")
-            print(f"   权重形状: {embed_layer.weight.shape}")
-            print(f"   设备: {embed_layer.weight.device}")
-            print(f"   数据类型: {embed_layer.weight.dtype}")
-            print(f"   requires_grad: {embed_layer.weight.requires_grad}")
-            return embed_layer
-        else:
-            print(f"❌ 无法找到embed_tokens层")
-            self._debug_model_structure(actual_model)
-            return None
-
-    def _get_actual_training_model(self, model):
-        """🔧 系统化模型解包：处理所有可能的包装层"""
-        current_model = model
-        unwrap_steps = []
-
-        # 记录解包过程
-        unwrap_steps.append(f"Initial: {type(current_model)}")
-
-        # 🔧 处理DDP包装
-        if hasattr(current_model, 'module'):
-            current_model = current_model.module
-            unwrap_steps.append(f"After DDP unwrap: {type(current_model)}")
-
-        # 🔧 处理PeftModel包装（多层嵌套）
-        while hasattr(current_model, 'base_model'):
-            if hasattr(current_model.base_model, 'model'):
-                # PeftModel -> base_model.model
-                current_model = current_model.base_model.model
-                unwrap_steps.append(f"After PeftModel.base_model.model: {type(current_model)}")
-            else:
-                # PeftModel -> base_model
-                current_model = current_model.base_model
-                unwrap_steps.append(f"After PeftModel.base_model: {type(current_model)}")
-
-            # 防止无限循环
-            if len(unwrap_steps) > 10:
-                print(f"⚠️ 解包深度超过10层，可能存在循环引用")
-                break
-
-        # 🔧 处理其他可能的包装
-        if hasattr(current_model, 'model') and hasattr(current_model.model, 'layers'):
-            current_model = current_model.model
-            unwrap_steps.append(f"After .model unwrap: {type(current_model)}")
-
-        # 打印解包过程
-        print(f"🔧 模型解包过程:")
-        for step in unwrap_steps:
-            print(f"   {step}")
-
-        return current_model
-
-    def _systematic_embed_search(self, model):
-        """🔧 系统化embed_tokens搜索策略"""
-
-        # 🔧 策略1: 直接属性访问（最常见）
-        direct_paths = [
-            'embed_tokens',
-            'embeddings.word_embeddings',
-            'transformer.wte',
-            'transformer.word_embeddings'
-        ]
-
-        for path in direct_paths:
-            try:
-                layer = model
-                for attr in path.split('.'):
-                    layer = getattr(layer, attr)
-                if self._is_valid_embedding_layer(layer):
-                    print(f"✅ 直接路径找到: {path}")
-                    return layer
-            except AttributeError:
-                continue
-
-        # 🔧 策略2: 通过named_modules搜索（更全面）
-        print(f"🔍 通过named_modules进行全面搜索...")
-        for name, module in model.named_modules():
-            if self._is_embedding_module_by_name(name) and self._is_valid_embedding_layer(module):
-                print(f"✅ named_modules找到: {name}")
-                return module
-
-        # 🔧 策略3: 通过模块类型搜索
-        print(f"🔍 通过模块类型搜索...")
-        for name, module in model.named_modules():
-            if self._is_embedding_module_by_type(module):
-                print(f"✅ 类型匹配找到: {name} ({type(module)})")
-                return module
-
-        # 🔧 策略4: 递归深度搜索（最后手段）
-        print(f"🔍 进行递归深度搜索...")
-        return self._recursive_embed_search(model)
-
-    def _is_valid_embedding_layer(self, layer):
-        """检查是否是有效的embedding层"""
-        if layer is None:
-            return False
-        if not hasattr(layer, 'weight'):
-            return False
-        if not hasattr(layer.weight, 'shape'):
-            return False
-        if len(layer.weight.shape) != 2:
-            return False
-        # 检查形状是否合理（词汇表大小通常 > 1000）
-        vocab_size, embed_dim = layer.weight.shape
-        if vocab_size < 1000 or embed_dim < 100:
-            return False
-        return True
-
-    def _is_embedding_module_by_name(self, name):
-        """通过名称判断是否是embedding模块"""
-        embed_keywords = [
-            'embed_tokens', 'embeddings', 'word_embeddings',
-            'token_embeddings', 'wte', 'embed'
-        ]
-        name_lower = name.lower()
-        return any(keyword in name_lower for keyword in embed_keywords)
-
-    def _is_embedding_module_by_type(self, module):
-        """通过类型判断是否是embedding模块"""
-        import torch.nn as nn
-        if isinstance(module, nn.Embedding):
-            return self._is_valid_embedding_layer(module)
-        return False
-
-    def _recursive_embed_search(self, model, max_depth=3):
-        """递归搜索embedding层"""
-        def search_recursive(current_model, depth=0):
-            if depth > max_depth:
-                return None
-
-            # 检查当前层的所有子模块
-            for name, child in current_model.named_children():
-                # 检查是否是embedding层
-                if self._is_embedding_module_by_name(name) and self._is_valid_embedding_layer(child):
-                    return child
-
-                # 递归搜索
-                result = search_recursive(child, depth + 1)
-                if result is not None:
-                    return result
-
-            return None
-
-        return search_recursive(model)
-
-    def _debug_model_structure(self, model):
-        """调试模型结构，帮助定位问题"""
-        print(f"🔍 模型结构调试信息:")
-        print(f"   模型类型: {type(model)}")
-        print(f"   模型属性: {[attr for attr in dir(model) if not attr.startswith('_')][:10]}")
-
-        print(f"\n🔍 前10个named_modules:")
-        for i, (name, module) in enumerate(model.named_modules()):
-            if i >= 10:
-                break
-            print(f"   {name}: {type(module)}")
-
-        print(f"\n🔍 查找可能的embedding相关模块:")
-        embed_candidates = []
-        for name, module in model.named_modules():
-            name_lower = name.lower()
-            if any(keyword in name_lower for keyword in ['embed', 'token', 'word']):
-                embed_candidates.append((name, type(module)))
-
-        if embed_candidates:
-            print(f"   找到候选模块:")
-            for name, module_type in embed_candidates[:5]:
-                print(f"     {name}: {module_type}")
-        else:
-            print(f"   未找到embedding相关候选模块")
-
-    def diagnose_gradient_flow(self, input_ids, attention_mask):
-        """🔧 全面重写：诊断梯度流，检查从input到MoE层的整个路径"""
-        print(f"🔍 COMPREHENSIVE Gradient Flow Diagnosis:")
-
-        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
-
-        # 🔧 1. 使用新的embed_tokens查找逻辑
-        print(f"\n📍 Step 1: Embedding Layer Analysis")
-        embed_layer = self._find_embed_tokens_layer(model_to_check)
-
-        embedding_gradient_ok = False
-        if embed_layer:
-            embed_params_trainable = sum(1 for p in embed_layer.parameters() if p.requires_grad)
-            embed_params_total = sum(1 for p in embed_layer.parameters())
-            print(f"  ✅ Embedding: {embed_params_trainable}/{embed_params_total} params trainable")
-
-            if hasattr(embed_layer, 'weight'):
-                embedding_gradient_ok = embed_layer.weight.requires_grad
-                status = "✅" if embedding_gradient_ok else "❌"
-                print(f"    {status} Weight requires_grad: {embed_layer.weight.requires_grad}")
-                print(f"    Weight shape: {embed_layer.weight.shape}")
-                print(f"    Weight device: {embed_layer.weight.device}")
-        else:
-            print(f"  ❌ CRITICAL: Cannot find embed_tokens layer!")
-            print(f"    This will completely break gradient propagation")
-
-        # 🔧 2. 检查关键梯度传播路径
-        print(f"\n📍 Step 2: Critical Gradient Path Analysis")
-        critical_layers_status = {}
-
-        # 检查lm_head（输出层）
-        lm_head_ok = False
-        for name, param in model_to_check.named_parameters():
-            if 'lm_head' in name.lower():
-                lm_head_ok = param.requires_grad
-                status = "✅" if lm_head_ok else "❌"
-                print(f"  {status} lm_head: {name} requires_grad={param.requires_grad}")
-                break
-
-        if not lm_head_ok:
-            print(f"  ❌ CRITICAL: lm_head not found or frozen!")
-
-        # 检查norm层（关键传播节点）
-        norm_params = [(name, param) for name, param in model_to_check.named_parameters()
-                      if any(keyword in name.lower() for keyword in ['norm', 'layernorm', 'layer_norm'])]
-        norm_trainable = sum(1 for _, param in norm_params if param.requires_grad)
-        norm_total = len(norm_params)
-
-        norm_ok = norm_trainable > 0
-        status = "✅" if norm_ok else "❌"
-        print(f"  {status} Norm layers: {norm_trainable}/{norm_total} params trainable")
-
-        if not norm_ok:
-            print(f"  ❌ CRITICAL: All norm layers frozen - gradient flow broken!")
-            for name, param in norm_params[:3]:
-                print(f"    ❌ {name}: requires_grad={param.requires_grad}")
-
-        # 🔧 3. 检查MoE层状态
-        print(f"\n📍 Step 3: MoE Layer Analysis")
-        moe_gradient_ok = False
-        try:
-            layers, target_layers = self._get_target_layers()
-            first_moe = layers[0].mlp
-
-            if hasattr(first_moe, 'router'):
-                router_params = list(first_moe.router.parameters())
-                router_trainable = sum(1 for p in router_params if p.requires_grad)
-                router_total = len(router_params)
-
-                moe_gradient_ok = router_trainable > 0
-                status = "✅" if moe_gradient_ok else "❌"
-                print(f"  {status} First MoE Router: {router_trainable}/{router_total} params trainable")
-
-                if router_params:
-                    router_weight = router_params[0]
-                    print(f"    Router weight device: {router_weight.device}")
-                    print(f"    Router weight dtype: {router_weight.dtype}")
-            else:
-                print(f"  ❌ First MoE layer has no router!")
-
-        except Exception as e:
-            print(f"  ❌ Cannot check MoE router: {e}")
-
-        # 🔧 4. 执行实际梯度传播测试
-        print(f"\n📍 Step 4: Live Gradient Propagation Test")
-        gradient_test_passed = False
-
-        try:
-            with torch.enable_grad():
-                # 创建小的测试输入
-                test_input = input_ids[:1, :5].clone()  # 更小的测试输入
-
-                # 🔧 确保输入需要梯度
-                if not test_input.requires_grad:
-                    test_input = test_input.detach().requires_grad_(True)
-
-                print(f"  🔬 Test input: shape={test_input.shape}, requires_grad={test_input.requires_grad}")
-
-                # 测试embedding层
-                if embed_layer:
-                    embeddings = embed_layer(test_input)
-                    embed_has_grad = embeddings.requires_grad and embeddings.grad_fn is not None
-
-                    status = "✅" if embed_has_grad else "❌"
-                    print(f"  {status} Embeddings: requires_grad={embeddings.requires_grad}, grad_fn={embeddings.grad_fn is not None}")
-
-                    if embed_has_grad:
-                        # 测试简单的反向传播
-                        test_loss = embeddings.sum()
-                        test_loss.backward()
-
-                        # 检查梯度是否成功传播到embedding权重
-                        if embed_layer.weight.grad is not None:
-                            gradient_test_passed = True
-                            print(f"  ✅ Gradient successfully propagated to embedding weights")
+                        similarity = F.cosine_similarity(
+                            expert_weights[i].unsqueeze(0),
+                            expert_weights[j].unsqueeze(0)
+                        )
+
+                        if culture_labels[i] == culture_labels[j]:
+                            # 同文化：鼓励相似
+                            culture_loss = culture_loss + (1.0 - similarity)
                         else:
-                            print(f"  ❌ Gradient did not reach embedding weights")
+                            # 不同文化：鼓励不同
+                            culture_loss = culture_loss + similarity
 
-                    # 清理测试梯度
-                    if hasattr(embed_layer, 'zero_grad'):
-                        embed_layer.zero_grad()
-                else:
-                    print(f"  ❌ Cannot test - no embedding layer found")
+            # 2. 共享专家一致性损失
+            if shared_outputs and len(shared_outputs[0]) >= 2:
+                shared_output = shared_outputs[0]  # 使用第一层作为代表
+                batch_size = shared_output.shape[0]
+
+                for i in range(batch_size):
+                    for j in range(i + 1, batch_size):
+                        similarity = F.cosine_similarity(
+                            shared_output[i].unsqueeze(0),
+                            shared_output[j].unsqueeze(0)
+                        )
+                        # 共享专家：总是鼓励相似
+                        culture_loss = culture_loss + (1.0 - similarity)
+
+            return culture_loss / max(1, batch_size * (batch_size - 1) // 2)
 
         except Exception as e:
-            print(f"  ❌ Gradient test failed: {e}")
+            print(f"⚠️ 文化损失计算失败: {e}")
+            return torch.tensor(0.0, device=culture_labels.device, requires_grad=True)
 
-        # 🔧 5. 综合诊断结果
-        print(f"\n📍 Step 5: Comprehensive Diagnosis Summary")
+    def ensure_trainable_parameters(self):
+        """严格参数冻结：只训练LoRA和MoE参数，冻结所有基座参数"""
+        try:
+            model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        critical_issues = []
-        if not embedding_gradient_ok:
-            critical_issues.append("Embedding layer frozen or missing")
-        if not lm_head_ok:
-            critical_issues.append("lm_head layer frozen or missing")
-        if not norm_ok:
-            critical_issues.append("All norm layers frozen")
-        if not moe_gradient_ok:
-            critical_issues.append("MoE router parameters frozen")
-        if not gradient_test_passed:
-            critical_issues.append("Live gradient test failed")
+            # 验证模型是否存在
+            if model_to_check is None:
+                print("❌ 参数冻结失败: 未找到模型")
+                return
 
-        if critical_issues:
-            print(f"  ❌ CRITICAL ISSUES FOUND ({len(critical_issues)}):")
-            for issue in critical_issues:
-                print(f"    - {issue}")
-            print(f"  🔧 These issues MUST be fixed for training to work")
-            return False
-        else:
-            print(f"  ✅ ALL GRADIENT CHECKS PASSED")
-            print(f"  ✅ Gradient propagation pathway is healthy")
-            return True
+            # 第一步：冻结所有参数
+            all_params_count = 0
+            for param in model_to_check.parameters():
+                param.requires_grad = False
+                all_params_count += 1
+
+            if all_params_count == 0:
+                print("⚠️ 参数冻结警告: 未找到任何模型参数")
+                return
+
+            # 第二步：只解冻LoRA和MoE相关参数
+            trainable_count = 0
+            frozen_count = 0
+            trainable_param_names = []
+
+            for name, param in model_to_check.named_parameters():
+                # 只有以下参数可训练：
+                # 1. LoRA参数（注意力层和MoE专家层）
+                # 2. Router网络参数
+                # 3. Gate网络参数
+                should_train = any(keyword in name.lower() for keyword in [
+                    'lora',           # LoRA参数（注意力层和MoE专家层）
+                    'routing_experts', # 路由专家LoRA参数
+                    'shared_expert',   # 共享专家LoRA参数
+                    'router',         # Router网络参数
+                    'gate_network'    # Gate网络参数
+                ])
+
+                if should_train:
+                    param.requires_grad = True
+                    trainable_count += param.numel()
+                    trainable_param_names.append(name)
+                else:
+                    frozen_count += param.numel()
+
+            total_params = trainable_count + frozen_count
+            if total_params > 0:
+                frozen_ratio = (frozen_count / total_params) * 100
+            else:
+                frozen_ratio = 0.0
+
+            print(f"✅ 参数冻结完成:")
+            print(f"  - 可训练参数: {trainable_count:,} (LoRA + MoE结构)")
+            print(f"  - 冻结参数: {frozen_count:,} (基座模型)")
+            print(f"  - 冻结比例: {frozen_ratio:.2f}%")
+
+            # 验证是否找到了预期的可训练参数
+            if trainable_count == 0:
+                print("⚠️ 警告: 未找到任何可训练的LoRA或MoE参数")
+                print("   请检查模型是否正确初始化了MoE结构")
+            elif len(trainable_param_names) > 0:
+                print(f"  - 可训练参数类型数: {len(trainable_param_names)}")
+
+        except Exception as e:
+            print(f"❌ 参数冻结过程出现异常: {e}")
+            print("   将尝试基本的参数冻结...")
+            # 备用方案：至少确保基础参数被冻结
+            try:
+                model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+                for param in model_to_check.parameters():
+                    param.requires_grad = False
+                print("✅ 基本参数冻结完成（所有参数已冻结）")
+            except Exception as backup_error:
+                print(f"❌ 基本参数冻结也失败: {backup_error}")
+
+
+
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
-        """
-        🔧 全面重写：前向传播 + 智能梯度修复
-
-        Args:
-            input_ids: 输入token IDs
-            attention_mask: 注意力掩码
-            labels: 标签
-        """
-        # 🔧 智能梯度修复系统（只在前几次调用时执行）
-        if not hasattr(self, '_gradient_repair_done'):
-            self._gradient_repair_done = True
-            print(f"🔧 Starting intelligent gradient repair system...")
-
-            # 使用新的强制梯度传播修复
-            repair_success = self.force_gradient_propagation_repair(input_ids, attention_mask)
-
-            if not repair_success:
-                print(f"❌ CRITICAL: Gradient repair failed - training may not work correctly")
-            else:
-                print(f"✅ Gradient repair completed successfully")
+        """简化的前向传播"""
+        # 确保关键参数可训练（仅在第一次调用时）
+        if not hasattr(self, '_parameters_checked'):
+            self._parameters_checked = True
+            self.ensure_trainable_parameters()
 
         outputs = self.base_model(
             input_ids=input_ids,
@@ -1744,14 +530,12 @@ class SimplifiedCultureMoEAdapter:
             **kwargs
         )
 
-        # 🔧 关键修复：为文化损失计算收集有梯度的数据
+        # 为文化损失计算收集数据
         if hasattr(outputs, 'loss') and outputs.loss is not None:
-            # 收集有梯度的expert_weights
             expert_weights = self.get_expert_weights_for_culture_loss()
             if expert_weights is not None:
                 outputs.expert_weights = expert_weights
 
-            # 收集有梯度的shared_outputs
             shared_outputs = self.get_shared_outputs_for_culture_loss()
             if shared_outputs is not None:
                 outputs.shared_outputs = shared_outputs
@@ -1792,191 +576,90 @@ class SimplifiedCultureMoEAdapter:
         print(f"✅ Simplified CultureMoE (Pure MoE) weights saved to {save_path}")
 
     def print_trainable_parameters(self):
-        """打印可训练参数统计"""
-        total_params = 0
-        trainable_params = 0
-        lora_params = 0
-        moe_params = 0
-        critical_params = 0
-
-        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
-
-        print("🔍 Critical layer status check:")
-        critical_layers_found = []
-
-        for name, param in model_to_check.named_parameters():
-            total_params += param.numel()
-            if param.requires_grad:
-                trainable_params += param.numel()
-                if 'lora' in name.lower():
-                    lora_params += param.numel()
-                elif any(keyword in name.lower() for keyword in ['experts', 'router']):
-                    moe_params += param.numel()
-                elif any(keyword in name.lower() for keyword in ['lm_head', 'embed_tokens', 'norm']):
-                    critical_params += param.numel()
-
-            # 检查关键层
-            if any(keyword in name.lower() for keyword in ['lm_head', 'embed_tokens', 'norm']):
-                status = "✅ Trainable" if param.requires_grad else "❌ FROZEN"
-                print(f"  {name}: {status} ({param.numel():,} params)")
-                critical_layers_found.append((name, param.requires_grad))
-
-        if not critical_layers_found:
-            print("  ⚠️  No critical layers found! This might cause gradient issues.")
-
-        print(f"\nTrainable params: {trainable_params:,} || "
-              f"Total params: {total_params:,} || "
-              f"Trainable%: {100 * trainable_params / total_params:.4f}%")
-
-        print(f"  - LoRA params (attention): {lora_params:,}")
-        print(f"  - MoE params (experts+router): {moe_params:,}")
-        print(f"  - Critical params (lm_head, embed, norm): {critical_params:,}")
-        print(f"  - Architecture: Pure LoRA MoE (All Layers FFN)")
-        print(f"  - MoE experts: {self.config.num_moe_experts}")
-        print(f"  - Activated experts: {self.config.num_activated_experts}")
-        print(f"  - LoRA rank: {self.config.lora_rank}")
-        print(f"  - LoRA alpha: {self.config.lora_alpha}")
-        print(f"  - Shared expert: {'enabled' if self.config.use_shared else 'disabled'}")
-        print(f"  - Gate network: {'enabled' if self.config.use_gate else 'disabled'}")
-        if self.config.use_shared and not self.config.use_gate:
-            print(f"  - Fusion method: simple addition (shared + routed)")
-
-        # 🔧 关键检查：确保有足够的可训练参数用于loss计算
-        if critical_params == 0:
-            print("❌ WARNING: No critical layers are trainable! This will cause gradient issues.")
-            print("   lm_head layer must be trainable for loss computation.")
-        else:
-            print(f"✅ Critical layers are trainable ({critical_params:,} params)")
-
-    def check_gradient_flow(self):
-        """检查模型的梯度流状态"""
-        print("\n🔍 Gradient flow diagnosis:")
-        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
-
-        # 检查关键层的梯度状态
-        critical_layers = ['lm_head', 'embed_tokens', 'norm']
-        for layer_name in critical_layers:
-            found = False
-            for name, param in model_to_check.named_parameters():
-                if layer_name in name.lower():
-                    found = True
-                    print(f"  {name}:")
-                    print(f"    requires_grad: {param.requires_grad}")
-                    print(f"    shape: {param.shape}")
-                    print(f"    device: {param.device}")
-                    print(f"    dtype: {param.dtype}")
-                    break
-            if not found:
-                print(f"  ❌ {layer_name}: NOT FOUND")
-
-        # 统计可训练参数
-        trainable_count = sum(1 for param in model_to_check.parameters() if param.requires_grad)
-        total_count = sum(1 for param in model_to_check.parameters())
-        print(f"\n  📊 Trainable parameters: {trainable_count}/{total_count}")
-
-        return trainable_count > 0
-
-    def _test_gradient_flow(self):
-        """🔧 实时梯度流测试：确保从embedding到MoE的完整梯度传播"""
-        print(f"\n🔬 GRADIENT FLOW TEST - Testing end-to-end gradient propagation")
-
+        """打印可训练参数统计并验证冻结状态"""
         try:
-            # 获取模型设备
-            model_to_test = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
-            device = next(model_to_test.parameters()).device
+            total_params = 0
+            trainable_params = 0
+            lora_params = 0
+            moe_params = 0
+            frozen_base_params = 0
 
-            # 创建小的测试输入
-            test_input_ids = torch.tensor([[1, 2, 3, 4, 5]], device=device, dtype=torch.long)
-            test_attention_mask = torch.ones_like(test_input_ids)
-            test_labels = test_input_ids.clone()
+            model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-            # 设置为训练模式
-            model_to_test.train()
+            if model_to_check is None:
+                print("❌ 无法检查参数: 未找到模型")
+                return
 
-            print(f"  📍 Testing with input shape: {test_input_ids.shape} on device: {device}")
+            print("🔍 参数训练状态检查:")
 
-            # 前向传播测试
-            with torch.enable_grad():
-                outputs = model_to_test(
-                    input_ids=test_input_ids,
-                    attention_mask=test_attention_mask,
-                    labels=test_labels
-                )
+            # 检查关键基座参数是否正确冻结
+            base_param_status = []
+            param_count = 0
 
-                if hasattr(outputs, 'loss') and outputs.loss is not None:
-                    test_loss = outputs.loss
-                    print(f"  📍 Forward pass successful, loss: {test_loss.item():.6f}")
-                    print(f"  📍 Loss requires_grad: {test_loss.requires_grad}, grad_fn: {test_loss.grad_fn is not None}")
+            for name, param in model_to_check.named_parameters():
+                param_count += 1
+                total_params += param.numel()
 
-                    # 反向传播测试
-                    test_loss.backward()
-
-                    # 检查关键层的梯度
-                    gradient_check_results = []
-
-                    # 检查embedding层梯度
-                    embed_grad_ok = False
-                    if hasattr(model_to_test, 'embed_tokens'):
-                        if model_to_test.embed_tokens.weight.grad is not None:
-                            embed_grad_ok = True
-                            gradient_check_results.append("✅ embed_tokens: has gradient")
-                        else:
-                            gradient_check_results.append("❌ embed_tokens: NO gradient")
-
-                    # 检查lm_head梯度
-                    lm_head_grad_ok = False
-                    if hasattr(model_to_test, 'lm_head'):
-                        if model_to_test.lm_head.weight.grad is not None:
-                            lm_head_grad_ok = True
-                            gradient_check_results.append("✅ lm_head: has gradient")
-                        else:
-                            gradient_check_results.append("❌ lm_head: NO gradient")
-
-                    # 检查第一个MoE层的梯度
-                    moe_grad_ok = False
-                    try:
-                        layers, target_layers = self._get_target_layers()
-                        first_moe = layers[0].mlp
-                        if hasattr(first_moe, 'router'):
-                            if first_moe.router.router.weight.grad is not None:
-                                moe_grad_ok = True
-                                gradient_check_results.append("✅ first_moe_router: has gradient")
-                            else:
-                                gradient_check_results.append("❌ first_moe_router: NO gradient")
-                    except Exception as e:
-                        gradient_check_results.append(f"❌ MoE gradient check failed: {e}")
-
-                    # 报告结果
-                    print(f"  🔬 Gradient Check Results:")
-                    for result in gradient_check_results:
-                        print(f"    {result}")
-
-                    # 总体评估
-                    if embed_grad_ok and lm_head_grad_ok and moe_grad_ok:
-                        print(f"  ✅ GRADIENT FLOW TEST PASSED: End-to-end gradient propagation working")
-                        return True
-                    else:
-                        print(f"  ❌ GRADIENT FLOW TEST FAILED: Gradient propagation broken")
-
-                        # 自动修复尝试
-                        print(f"  🔧 Attempting automatic gradient fix...")
-                        self._emergency_gradient_fix()
-                        return False
+                if param.requires_grad:
+                    trainable_params += param.numel()
+                    if 'lora' in name.lower():
+                        lora_params += param.numel()
+                    elif any(keyword in name.lower() for keyword in ['routing_experts', 'shared_expert', 'router', 'gate_network']):
+                        moe_params += param.numel()
                 else:
-                    print(f"  ❌ Forward pass failed: no loss output")
-                    return False
+                    frozen_base_params += param.numel()
+
+                # 检查关键基座参数状态
+                if any(keyword in name.lower() for keyword in ['lm_head', 'embed_tokens', 'norm', 'gate_proj', 'up_proj', 'down_proj']):
+                    status = "❌ TRAINABLE" if param.requires_grad else "✅ FROZEN"
+                    base_param_status.append(f"  {name}: {status}")
+
+            if param_count == 0:
+                print("⚠️ 未找到任何模型参数")
+                return
+
+            # 显示关键参数状态（只显示前5个，避免输出过多）
+            for status in base_param_status[:5]:
+                print(status)
+            if len(base_param_status) > 5:
+                print(f"  ... 和其他 {len(base_param_status)-5} 个基座参数: 均已冻结")
+
+            print(f"\n📊 参数统计:")
+            print(f"  总参数: {total_params:,}")
+            if total_params > 0:
+                print(f"  可训练: {trainable_params:,} ({100 * trainable_params / total_params:.2f}%)")
+                print(f"  冻结: {frozen_base_params:,} ({100 * frozen_base_params / total_params:.2f}%)")
+            else:
+                print(f"  可训练: {trainable_params:,}")
+                print(f"  冻结: {frozen_base_params:,}")
+
+            print(f"\n📋 可训练参数详情:")
+            print(f"  - LoRA参数: {lora_params:,}")
+            print(f"  - MoE参数: {moe_params:,}")
+            print(f"  - 架构: Pure LoRA MoE (所有FFN层)")
+
+            # 安全地访问配置属性
+            try:
+                print(f"  - MoE专家数: {self.config.num_moe_experts}")
+                print(f"  - 激活专家数: {self.config.num_activated_experts}")
+            except AttributeError:
+                print(f"  - MoE配置: 无法访问配置信息")
+
+            # 验证参数冻结是否正确
+            if total_params > 0:
+                frozen_ratio = frozen_base_params / total_params
+                if frozen_ratio > 0.8:  # 基座参数应该占大部分（>80%）且被冻结
+                    print(f"\n✅ 参数冻结验证: 成功 (基座参数已正确冻结)")
+                else:
+                    print(f"\n❌ 参数冻结验证: 失败 (基座参数未正确冻结)")
+                    print(f"   冻结参数占比: {frozen_ratio*100:.1f}% (应该 > 80%)")
+            else:
+                print(f"\n⚠️ 参数冻结验证: 无法验证 (未找到参数)")
 
         except Exception as e:
-            print(f"  ❌ Gradient flow test failed with exception: {e}")
-            print(f"  🔧 Attempting emergency gradient fix...")
-            self._emergency_gradient_fix()
-            return False
-        finally:
-            # 清理测试产生的梯度
-            try:
-                model_to_test.zero_grad()
-            except:
-                pass
+            print(f"❌ 参数统计过程出现异常: {e}")
+            print("   请检查模型是否正确初始化")
+
 
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):
