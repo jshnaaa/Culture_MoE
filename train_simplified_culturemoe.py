@@ -912,8 +912,8 @@ def main():
                         help="Number of activated experts (top-k), if equal to num_moe_experts then dense mode")
     parser.add_argument("--use_lora", type=str, default="true",
                         help="Whether to enable LoRA fine-tuning")
-    parser.add_argument("--culture_loss_weight", type=float, default=0.01,
-                        help="Culture loss weight")
+    parser.add_argument("--culture_loss_weight", type=float, default=0.1,
+                        help="Culture loss weight (🔧 提升权重使文化损失更有效)")
 
     # 🆕 层次化损失系数参数
     parser.add_argument("--lambda_balance", type=float, default=1.0,

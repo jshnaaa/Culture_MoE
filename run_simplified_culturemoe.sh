@@ -15,13 +15,13 @@ USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
 USE_MASK=${4:-"true"}     # 是否启用MASK机制，默认为true
 USE_GATE=${5:-"true"}     # 是否使用MoE内部融合Gate，默认为true
 USE_CULTURE_LOSS=${6:-"new"}  # ori/new/kl/false，默认为new
-LAMBDA=${7:-"0.1"}
+LAMBDA=${7:-"1.0"}  # 🔧 提升lambda让辅助损失有意义
 ALPHA=${8:-"0.5"}
-BETA=${9:-"0.5"}
+BETA=${9:-"2.0"}  # 🔧 大幅提升文化损失权重
 NUM_MOE_EXPERTS=${10:-"4"}  # MoE专家数量
 NUM_ACTIVATED_EXPERTS=${11:-"2"}  # 激活的专家数量，默认为top-2
 LORA_RANK=${12:-"16"}   # LoRA rank
-LORA_ALPHA=${13:-"32"}  # LoRA alpha
+LORA_ALPHA=${13:-"16"}  # 🔧 降低LoRA alpha：避免scaling过大破坏预训练知识
 USE_LORA=${14:-"true"}   # 是否启用LoRA，默认为true
 NUM_GPUS=${15:-"2"}
 
@@ -269,7 +269,7 @@ echo ""
 # 内存优化的训练参数
 BATCH_SIZE=2              # 恢复到2以支持文化对比损失
 GRADIENT_ACCUMULATION=8   # 相应调整梯度累积，保持有效batch size=16
-LEARNING_RATE=1e-4        # 简化版使用单一学习率
+LEARNING_RATE=5e-4        # 🔧 进一步提升学习率：解决模型不学习问题
 NUM_EPOCHS=7              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
 # 动态设置max_seq_len：参考joint版本逻辑
