@@ -758,17 +758,21 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             continue
 
         # 🔧 添加梯度调试：检查所有损失组件的梯度状态
-        print(f"🔍 Gradient Debug - Batch {batch_idx}:")
-        print(f"  loss.requires_grad: {loss.requires_grad}, grad_fn: {loss.grad_fn is not None}")
-        print(f"  z_loss.requires_grad: {z_loss.requires_grad}, grad_fn: {z_loss.grad_fn is not None}")
-        print(f"  culture_loss.requires_grad: {culture_loss.requires_grad}, grad_fn: {culture_loss.grad_fn is not None}")
-        print(f"  balance_loss.requires_grad: {balance_loss.requires_grad}, grad_fn: {balance_loss.grad_fn is not None}")
-        print(f"  total_batch_loss.requires_grad: {total_batch_loss.requires_grad}, grad_fn: {total_batch_loss.grad_fn is not None}")
+        # 只在前5个batch或出现问题时打印详细信息
+        debug_this_batch = batch_idx < 5 or torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss)
 
-        # 检查模型参数的requires_grad状态
-        trainable_params = sum(p.numel() for p in model_adapter.base_model.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in model_adapter.base_model.parameters())
-        print(f"  Model params: {trainable_params}/{total_params} trainable")
+        if debug_this_batch:
+            print(f"🔍 Gradient Debug - Batch {batch_idx}:")
+            print(f"  loss: {loss.item():.6f}, requires_grad: {loss.requires_grad}, grad_fn: {loss.grad_fn is not None}")
+            print(f"  z_loss: {z_loss.item():.6f}, requires_grad: {z_loss.requires_grad}, grad_fn: {z_loss.grad_fn is not None}")
+            print(f"  culture_loss: {culture_loss.item():.6f}, requires_grad: {culture_loss.requires_grad}, grad_fn: {culture_loss.grad_fn is not None}")
+            print(f"  balance_loss: {balance_loss.item():.6f}, requires_grad: {balance_loss.requires_grad}, grad_fn: {balance_loss.grad_fn is not None}")
+            print(f"  total_batch_loss: {total_batch_loss.item():.6f}, requires_grad: {total_batch_loss.requires_grad}, grad_fn: {total_batch_loss.grad_fn is not None}")
+
+            # 检查模型参数的requires_grad状态
+            trainable_params = sum(p.numel() for p in model_adapter.base_model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in model_adapter.base_model.parameters())
+            print(f"  Model params: {trainable_params}/{total_params} trainable")
 
         # 如果total_batch_loss没有梯度，跳过这个batch
         if not total_batch_loss.requires_grad or total_batch_loss.grad_fn is None:

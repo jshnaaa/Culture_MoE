@@ -267,7 +267,13 @@ class MoEFFNLoRA(nn.Module):
             expert_weights, router_logits = self.router(hidden_states)
 
             # 保存专家权重用于文化损失（平均到序列维度）
-            self.latest_expert_weights = expert_weights.mean(dim=1)  # [B, num_experts]
+            # 🔧 添加数值稳定性检查：确保expert_weights不包含NaN
+            if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
+                # 如果包含NaN，使用均匀分布
+                self.latest_expert_weights = torch.ones(expert_weights.shape[0], expert_weights.shape[2],
+                                                        device=expert_weights.device, dtype=expert_weights.dtype) / expert_weights.shape[2]
+            else:
+                self.latest_expert_weights = expert_weights.mean(dim=1)  # [B, num_experts]
 
             # 3. Top-k选择（路由专家）
             if self.num_activated_experts == self.num_experts:
@@ -376,10 +382,17 @@ class MoEFFNLoRA(nn.Module):
                 if param.requires_grad:
                     return param.sum() * 0.0
             # 如果没有可训练参数，创建一个简单的零tensor
-            import torch
             return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
 
         try:
+            # 🔧 添加数值稳定性检查：在计算前检查latest_expert_weights
+            if torch.isnan(self.latest_expert_weights).any() or torch.isinf(self.latest_expert_weights).any():
+                # 如果expert_weights包含NaN或Inf，使用零损失
+                for param in self.parameters():
+                    if param.requires_grad:
+                        return param.sum() * 0.0
+                return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
+
             # 负载均衡损失
             expert_usage = self.latest_expert_weights.mean(dim=0)  # [num_experts]
             target_usage = expert_usage * 0.0 + (1.0 / self.num_experts)
@@ -394,19 +407,27 @@ class MoEFFNLoRA(nn.Module):
                         break
                 else:
                     # 如果没有可训练参数，创建一个简单的零tensor
-                    import torch
                     balance_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
 
             return balance_loss * 0.01  # 小的权重
 
         except Exception as e:
-            print(f"⚠️ Aux loss computation failed: {e}")
+            # 🔧 减少重复打印：使用类属性来限制错误信息打印次数
+            if not hasattr(self.__class__, '_aux_loss_error_count'):
+                self.__class__._aux_loss_error_count = 0
+
+            if self.__class__._aux_loss_error_count < 5:  # 只打印前5次错误
+                print(f"⚠️ Aux loss computation failed: {e}")
+                self.__class__._aux_loss_error_count += 1
+            elif self.__class__._aux_loss_error_count == 5:
+                print(f"⚠️ Aux loss computation failed (suppressing further similar errors): {e}")
+                self.__class__._aux_loss_error_count += 1
+
             # 🔧 修复梯度问题：寻找一个requires_grad=True的参数创建连接到计算图的零损失
             for param in self.parameters():
                 if param.requires_grad:
                     return param.sum() * 0.0
             # 如果没有可训练参数，创建一个简单的零tensor
-            import torch
             return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
 
 
@@ -670,10 +691,23 @@ class SimplifiedCultureMoEAdapter:
                     total_aux_loss = dummy_param.sum() * 0.0
                 else:
                     # 如果没有可训练参数，创建一个简单的零tensor（这种情况不应该发生）
-                    import torch
                     total_aux_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
         elif moe_layer_count > 1:
             total_aux_loss = total_aux_loss / moe_layer_count
+
+        # 🔧 添加最终的NaN检查
+        if torch.isnan(total_aux_loss).any() or torch.isinf(total_aux_loss).any():
+            # 如果最终结果包含NaN，使用主损失创建零损失
+            if main_loss is not None:
+                total_aux_loss = main_loss * 0.0
+            else:
+                # 寻找可训练参数
+                for param in self.base_model.parameters():
+                    if param.requires_grad:
+                        total_aux_loss = param.sum() * 0.0
+                        break
+                else:
+                    total_aux_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
 
         # return total_aux_loss.to(dtype=torch.float16)  # 🔧 修复：移除类型转换，避免破坏梯度连接
         return total_aux_loss
