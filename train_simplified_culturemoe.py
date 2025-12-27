@@ -1233,9 +1233,15 @@ def main():
             gradient_as_bucket_view=True
         )
 
-        # 不设置static_graph，因为MoE的动态路由与static_graph不兼容
-        if is_main_process(rank):
-            print("✅ DDP configured for MoE (find_unused_parameters=True, no static_graph)")
+        # 🔧 修复DDP参数双重标记问题：使用static_graph作为workaround
+        try:
+            model_adapter.base_model._set_static_graph()
+            if is_main_process(rank):
+                print("✅ DDP configured for MoE (find_unused_parameters=True, static_graph=True)")
+        except Exception as e:
+            if is_main_process(rank):
+                print(f"⚠️ 无法设置static_graph: {e}")
+                print("✅ DDP configured for MoE (find_unused_parameters=True, no static_graph)")
 
         if is_main_process(rank):
             print("✅ Model wrapped with DDP")

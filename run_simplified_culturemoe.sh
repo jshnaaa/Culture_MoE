@@ -267,8 +267,8 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数
-BATCH_SIZE=2              # 降低batch size解决OOM问题
-GRADIENT_ACCUMULATION=8   # 相应增加梯度累积，保持有效batch size
+BATCH_SIZE=1              # 进一步降低batch size解决严重OOM问题
+GRADIENT_ACCUMULATION=16  # 相应增加梯度累积，保持有效batch size
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
 NUM_EPOCHS=7              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
@@ -333,7 +333,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 EOF
 
 # 设置内存优化环境变量（与MixLoRA一致）
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32,expandable_segments:True
 export CUDA_LAUNCH_BLOCKING=0
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1

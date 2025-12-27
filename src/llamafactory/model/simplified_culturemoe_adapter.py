@@ -69,7 +69,8 @@ class LoRAExpert(nn.Module):
         """前向传播：原始FFN输出 + LoRA输出"""
         # 检查输入
         if torch.isnan(x).any() or torch.isinf(x).any():
-            return torch.zeros_like(x)
+            print(f"⚠️ LoRAExpert input NaN/Inf detected, using original FFN")
+            return self.original_ffn(x)
 
         # 限制输入范围
         x = torch.clamp(x, min=-10.0, max=10.0)
@@ -107,13 +108,14 @@ class LoRAExpert(nn.Module):
 
             # 检查输出
             if torch.isnan(output).any() or torch.isinf(output).any():
-                return torch.zeros_like(x)
+                print(f"⚠️ LoRAExpert NaN/Inf detected, using original FFN")
+                return self.original_ffn(x)
 
             return output
 
         except Exception as e:
-            print(f"⚠️ LoRAExpert forward failed: {e}")
-            return torch.zeros_like(x)
+            print(f"⚠️ LoRAExpert forward failed: {e}, using original FFN")
+            return self.original_ffn(x)
 
 
 class MoERouter(nn.Module):
