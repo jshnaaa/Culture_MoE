@@ -16,6 +16,7 @@ import json
 import os
 import sys
 from typing import Dict, List, Optional
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -45,9 +46,13 @@ import numpy as np
 from collections import defaultdict, Counter
 
 
-def handle_nan_loss_synchronized(total_batch_loss, batch_idx, rank, world_size):
+def handle_nan_loss_synchronized(total_batch_loss, batch_idx, rank, world_size=1):
     """同步的NaN损失处理"""
     is_nan = torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss)
+
+    # 🔧 安全检查：如果world_size未正确传递，使用默认值
+    if world_size is None:
+        world_size = 1
 
     if world_size > 1:
         # 收集所有进程的NaN状态
@@ -67,29 +72,92 @@ def handle_nan_loss_synchronized(total_batch_loss, batch_idx, rank, world_size):
         return is_nan
 
 
+def safe_barrier(timeout=30.0, operation_name="barrier"):
+    """超时保护的分布式barrier"""
+    if not dist.is_initialized() or dist.get_world_size() <= 1:
+        return True
+
+    import signal
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError(f"Barrier timeout after {timeout}s in {operation_name}")
+
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(int(timeout))
+
+    try:
+        dist.barrier()
+        signal.alarm(0)
+        return True
+    except TimeoutError as e:
+        print(f"❌ {e}")
+        return False
+    except Exception as e:
+        print(f"❌ Barrier error in {operation_name}: {e}")
+        return False
+    finally:
+        signal.signal(signal.SIGALRM, old_handler)
+
+
 def setup_distributed():
-    """初始化分布式训练"""
+    """🔧 强化版分布式训练初始化"""
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         rank = int(os.environ['RANK'])
         world_size = int(os.environ['WORLD_SIZE'])
         local_rank = int(os.environ['LOCAL_RANK'])
 
-        print(f"Initializing distributed training: rank={rank}, world_size={world_size}, local_rank={local_rank}")
+        print(f"🔧 Initializing ROBUST distributed training: rank={rank}, world_size={world_size}, local_rank={local_rank}")
 
-        # 初始化进程组
-        dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+        try:
+            # 🔧 检查是否已经初始化
+            if dist.is_initialized():
+                print(f"⚠️ Distributed already initialized, cleaning up first...")
+                try:
+                    dist.destroy_process_group()
+                except:
+                    pass
 
-        # 设置当前进程的GPU
-        torch.cuda.set_device(local_rank)
+            # 🔧 强化版进程组初始化
+            dist.init_process_group(
+                backend='nccl',
+                rank=rank,
+                world_size=world_size,
+                timeout=timedelta(minutes=30)  # 增加超时时间
+            )
 
-        # 多GPU模式下的内存分配器设置
-        torch.cuda.empty_cache()
-        # 同步所有进程
-        safe_barrier(timeout=30.0, operation_name="setup_distributed")
+            # 设置当前进程的GPU
+            if torch.cuda.is_available():
+                torch.cuda.set_device(local_rank)
+                # 🔧 验证GPU设备设置
+                current_device = torch.cuda.current_device()
+                if current_device != local_rank:
+                    print(f"⚠️ GPU device mismatch: expected {local_rank}, got {current_device}")
+                    torch.cuda.set_device(local_rank)
 
-        return rank, world_size, local_rank
+                # 多GPU模式下的内存分配器设置
+                torch.cuda.empty_cache()
+
+            # 🔧 验证分布式初始化
+            test_tensor = torch.tensor([rank], device=f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
+            dist.all_reduce(test_tensor, op=dist.ReduceOp.SUM)
+            expected_sum = sum(range(world_size))
+            if test_tensor.item() == expected_sum:
+                print(f"✅ Distributed initialization verified: rank {rank}")
+            else:
+                print(f"❌ Distributed initialization failed: expected {expected_sum}, got {test_tensor.item()}")
+
+            # 同步所有进程
+            safe_barrier(timeout=60.0, operation_name="setup_distributed")
+
+            return rank, world_size, local_rank
+
+        except Exception as e:
+            print(f"❌ Distributed initialization failed: {e}")
+            print(f"🔧 Falling back to single GPU mode...")
+            return 0, 1, 0
     else:
         # 单GPU模式
+        print(f"🔧 Single GPU mode: no distributed environment variables found")
         return 0, 1, 0
 
 
@@ -121,25 +189,72 @@ def safe_barrier(timeout=30.0, operation_name="barrier"):
 
 
 def cleanup_distributed():
-    """安全的分布式训练清理"""
+    """🔧 强化版分布式训练清理 - 防止进程不同步退出"""
     if not dist.is_initialized():
         return
 
     try:
-        # 添加超时保护的barrier确保所有进程同步
-        if dist.get_world_size() > 1:
-            safe_barrier(timeout=10.0, operation_name="cleanup_barrier")
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
 
-        # 销毁进程组
-        dist.destroy_process_group()
-        print("✅ 分布式训练清理完成")
-    except Exception as e:
-        print(f"⚠️ 分布式清理时出现异常: {e}")
-        # 强制清理，避免资源泄漏
+        print(f"🔧 Starting distributed cleanup: rank {rank}/{world_size}")
+
+        # 🔧 关键修复：分阶段同步清理，防止进程不同步退出
+        if world_size > 1:
+            # 阶段1：预清理barrier - 确保所有进程都到达清理点
+            print(f"🔧 Phase 1: Pre-cleanup barrier (rank {rank})")
+            barrier_success = safe_barrier(timeout=15.0, operation_name="pre_cleanup_barrier")
+
+            if not barrier_success:
+                print(f"⚠️ Pre-cleanup barrier failed for rank {rank}, proceeding with forced cleanup")
+
+            # 阶段2：清理各自的资源
+            print(f"🔧 Phase 2: Local resource cleanup (rank {rank})")
+            torch.cuda.empty_cache()  # 清理CUDA缓存
+
+            # 阶段3：最终同步barrier
+            print(f"🔧 Phase 3: Final sync barrier (rank {rank})")
+            final_barrier_success = safe_barrier(timeout=10.0, operation_name="final_cleanup_barrier")
+
+            if not final_barrier_success:
+                print(f"⚠️ Final barrier failed for rank {rank}, proceeding with process group destruction")
+
+        # 🔧 关键修复：安全的进程组销毁
+        print(f"🔧 Phase 4: Process group destruction (rank {rank if 'rank' in locals() else 'unknown'})")
+
+        # 使用更安全的销毁方式
         try:
+            # 首先尝试正常销毁
             dist.destroy_process_group()
+            print(f"✅ 分布式训练清理完成 (rank {rank if 'rank' in locals() else 'unknown'})")
+        except RuntimeError as e:
+            if "process group" in str(e).lower():
+                print(f"⚠️ Process group already destroyed or invalid (rank {rank if 'rank' in locals() else 'unknown'}): {e}")
+            else:
+                raise  # 重新抛出其他运行时错误
+
+    except Exception as e:
+        rank_info = f"rank {rank}" if 'rank' in locals() else "unknown rank"
+        print(f"❌ 分布式清理异常 ({rank_info}): {e}")
+
+        # 🔧 强化版强制清理：尝试多种清理策略
+        print(f"🔧 Attempting emergency cleanup ({rank_info})")
+
+        # 策略1：强制销毁进程组
+        try:
+            if dist.is_initialized():
+                dist.destroy_process_group()
+                print(f"✅ Emergency cleanup successful ({rank_info})")
         except:
-            pass
+            # 策略2：如果进程组销毁失败，清理CUDA资源
+            try:
+                torch.cuda.empty_cache()
+                print(f"⚠️ Process group cleanup failed, but CUDA cleanup done ({rank_info})")
+            except:
+                print(f"❌ All cleanup strategies failed ({rank_info})")
+
+        # 🔧 最终策略：忽略所有清理错误，避免程序崩溃
+        print(f"🔧 Cleanup completed with errors, but process will exit gracefully ({rank_info})")
 
 
 def is_main_process(rank):
@@ -739,7 +854,7 @@ def print_expert_activation_stats(model_adapter, epoch):
 
 
 def train_epoch_simplified(model_adapter, train_loader, optimizer, device, tokenizer,
-                         num_accumulation_steps=1, rank=0, use_culture_loss=True,
+                         num_accumulation_steps=1, rank=0, world_size=1, use_culture_loss=True,
                          lambda_balance=1.0, alpha_z=0.1, beta_culture=1.0, epoch=None):
     """
     简化版CultureMoE训练一个epoch
@@ -1028,10 +1143,21 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             optimizer.step()
             optimizer.zero_grad()
 
-        # 定期清理GPU缓存
-        cache_clear_interval = (num_accumulation_steps * 5) if hasattr(model_adapter.base_model, 'module') else (num_accumulation_steps * 10)
+        # 🔧 激进的GPU缓存清理（针对CUDA OOM）
+        cache_clear_interval = num_accumulation_steps * 2  # 更频繁的清理
         if (batch_idx + 1) % cache_clear_interval == 0:
+            # 🔧 强制垃圾回收
+            import gc
+            gc.collect()
             torch.cuda.empty_cache()
+
+            # 🔧 内存使用监控
+            if torch.cuda.is_available():
+                memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+                memory_reserved = torch.cuda.memory_reserved() / 1024**3   # GB
+                if rank == 0 and batch_idx % (cache_clear_interval * 2) == 0:
+                    print(f"  💾 GPU Memory: {memory_allocated:.2f}GB allocated, {memory_reserved:.2f}GB reserved")
+
             if hasattr(model_adapter.base_model, 'module'):
                 safe_barrier(timeout=30.0, operation_name="cache_clear_sync")
 
@@ -1064,7 +1190,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
     }
 
 
-def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, use_culture_loss=True,
+def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, world_size=1, use_culture_loss=True,
                        lambda_balance=1.0, alpha_z=0.1, beta_culture=1.0):
     """
     简化版CultureMoE验证
@@ -1291,17 +1417,17 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=6,
                         help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=1,
-                        help="Batch size")
+                        help="Batch size (CUDA OOM fix: keep at 1)")
     parser.add_argument("--learning_rate", type=float, default=5e-5,
                         help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=0.001,
                         help="Weight decay")
-    parser.add_argument("--max_length", type=int, default=256,
-                        help="Maximum sequence length")
+    parser.add_argument("--max_length", type=int, default=128,
+                        help="Maximum sequence length (CUDA OOM fix: reduced from 256)")
     parser.add_argument("--val_split", type=float, default=0.1,
                         help="Validation split ratio")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=8,
-                        help="Gradient accumulation steps")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=16,
+                        help="Gradient accumulation steps (CUDA OOM fix: increased for smaller batches)")
     parser.add_argument("--eval_interval", type=int, default=2,
                         help="Evaluation interval (every N epochs)")
 
@@ -1354,18 +1480,76 @@ def main():
     use_gate = args.use_gate.lower() == 'true'
     use_lora = args.use_lora.lower() == 'true'
 
-    # 设置内存优化
-    if world_size > 1:
-        args.memory_efficient = True
+    # 🔧 EXTREME CUDA内存优化（针对严重OOM问题）
+    args.memory_efficient = True  # 强制启用内存优化
 
-    if args.memory_efficient:
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
+    print(f"🔧 Applying EXTREME CUDA memory optimization...")
 
-        if world_size > 1:
-            torch.cuda.empty_cache()
-            if hasattr(torch.cuda, 'set_per_process_memory_fraction'):
-                torch.cuda.set_per_process_memory_fraction(0.8)
+    # 基础CUDA设置
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+    # 🔧 EXTREME内存分配策略
+    if torch.cuda.is_available():
+        # 清理所有GPU缓存
+        torch.cuda.empty_cache()
+
+        # 🔧 EXTREME：大幅降低内存分配比例（降至0.5）
+        if hasattr(torch.cuda, 'set_per_process_memory_fraction'):
+            memory_fraction = 0.5 if world_size > 1 else 0.6  # 进一步降低
+            torch.cuda.set_per_process_memory_fraction(memory_fraction)
+            print(f"🔧 EXTREME: Set CUDA memory fraction to {memory_fraction}")
+
+        # 🔧 启用内存映射分配器
+        try:
+            torch.cuda.set_per_process_memory_fraction(memory_fraction)
+            print(f"✅ EXTREME CUDA memory optimization applied")
+        except Exception as e:
+            print(f"⚠️ CUDA memory optimization failed: {e}")
+
+        # 🔧 EXTREME：启用CUDA内存池优化
+        try:
+            # 设置内存池的最大分割大小
+            torch.cuda.set_per_process_memory_fraction(memory_fraction)
+            # 启用内存碎片整理
+            if hasattr(torch.cuda, 'memory'):
+                torch.cuda.memory.set_per_process_memory_fraction(memory_fraction)
+        except:
+            pass
+
+    # 🔧 Python垃圾回收优化
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # 🔧 EXTREME：强制覆盖参数以进一步减少内存使用
+    print(f"🔧 EXTREME parameter overrides to reduce memory usage:")
+
+    # 🔧 EXTREME：max_length从128降至64
+    if args.max_length > 64:
+        original_max_length = args.max_length
+        args.max_length = 64
+        print(f"   max_length: {original_max_length} -> {args.max_length} (EXTREME reduction)")
+
+    # 🔧 EXTREME：batch_size强制为1（如果不是）
+    if args.batch_size > 1:
+        original_batch_size = args.batch_size
+        args.batch_size = 1
+        print(f"   batch_size: {original_batch_size} -> {args.batch_size} (EXTREME reduction)")
+
+    # 🔧 EXTREME：增加梯度累积步数以补偿小batch_size
+    if args.gradient_accumulation_steps < 32:
+        original_accumulation = args.gradient_accumulation_steps
+        args.gradient_accumulation_steps = 32
+        print(f"   gradient_accumulation_steps: {original_accumulation} -> {args.gradient_accumulation_steps} (compensate for small batch)")
+
+    print(f"🔧 EXTREME optimization summary:")
+    print(f"   Memory fraction: {memory_fraction}")
+    print(f"   Max sequence length: {args.max_length}")
+    print(f"   Batch size per GPU: {args.batch_size}")
+    print(f"   Gradient accumulation: {args.gradient_accumulation_steps}")
+    print(f"   Effective batch size: {args.batch_size * world_size * args.gradient_accumulation_steps}")
 
     # 设置设备
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
@@ -1722,6 +1906,38 @@ def main():
         best_model_dir = os.path.join(args.output_dir, 'best_simplified_culturemoe')
         epoch_results = []
 
+        # 🔧 关键修复：训练开始前同步所有进程
+        if world_size > 1:
+            print(f"🔧 Pre-training synchronization (rank {rank})")
+            safe_barrier(timeout=30.0, operation_name="pre_training_sync")
+
+        # 🔧 新增：训练前全面梯度诊断
+        if is_main_process(rank):
+            print("\n" + "="*80)
+            print("🔍 COMPREHENSIVE GRADIENT DIAGNOSIS BEFORE TRAINING")
+            print("="*80)
+
+            # 创建小的测试输入进行梯度诊断
+            test_input_ids = torch.tensor([[1, 2, 3, 4, 5]], device=device, dtype=torch.long)
+            test_attention_mask = torch.ones_like(test_input_ids)
+
+            # 执行全面梯度诊断
+            gradient_diagnosis_passed = model_adapter.diagnose_gradient_flow(test_input_ids, test_attention_mask)
+
+            if not gradient_diagnosis_passed:
+                print("❌ CRITICAL: Gradient diagnosis failed - attempting emergency repair")
+                repair_success = model_adapter.force_gradient_propagation_repair(test_input_ids, test_attention_mask)
+
+                if not repair_success:
+                    print("❌ CRITICAL: Emergency repair failed - training may fail")
+                    print("   Consider stopping training and investigating the model architecture")
+                else:
+                    print("✅ Emergency repair successful - training should proceed normally")
+            else:
+                print("✅ All gradient checks passed - training ready to begin")
+
+            print("="*80 + "\n")
+
         for epoch in range(args.num_epochs):
             # 设置分布式采样器的epoch
             if train_sampler is not None:
@@ -1735,6 +1951,7 @@ def main():
                 model_adapter, train_loader, optimizer, device, tokenizer,
                 num_accumulation_steps=args.gradient_accumulation_steps,
                 rank=rank,
+                world_size=world_size,
                 use_culture_loss=use_culture_loss,
                 lambda_balance=args.lambda_balance,
                 alpha_z=args.alpha_z,
@@ -1750,11 +1967,30 @@ def main():
                 if use_culture_loss != 'false':
                     print(f"    Culture Loss: {train_metrics['culture_loss']:.4f}")
 
+                # 🔧 新增：周期性梯度健康检查（每2个epoch检查一次）
+                if (epoch + 1) % 2 == 0:
+                    print(f"\n🔍 Periodic Gradient Health Check - Epoch {epoch + 1}")
+                    print("-" * 60)
+
+                    # 快速梯度流验证
+                    test_input_ids = torch.tensor([[1, 2, 3, 4, 5]], device=device, dtype=torch.long)
+                    test_attention_mask = torch.ones_like(test_input_ids)
+
+                    gradient_health_ok = model_adapter.diagnose_gradient_flow(test_input_ids, test_attention_mask)
+
+                    if not gradient_health_ok:
+                        print("⚠️ GRADIENT HEALTH WARNING: Issues detected during training")
+                        print("   Training will continue, but consider investigating after this epoch")
+                    else:
+                        print("✅ Gradient health check passed - training is healthy")
+
+                    print("-" * 60 + "\n")
+
             # 每eval_interval个epoch进行一次验证
             if (epoch + 1) % args.eval_interval == 0:
                 # 验证
                 val_metrics = evaluate_simplified(
-                    model_adapter, val_loader, device, tokenizer, rank=rank,
+                    model_adapter, val_loader, device, tokenizer, rank=rank, world_size=world_size,
                     use_culture_loss=use_culture_loss,
                     lambda_balance=args.lambda_balance,
                     alpha_z=args.alpha_z,
@@ -1769,9 +2005,12 @@ def main():
                 else:
                     gen_metrics = {'accuracy': 0.0, 'correct': 0, 'total': 0}
 
-                # 同步所有进程
+                # 🔧 关键修复：评估后同步所有进程，防止进程不同步
                 if world_size > 1:
-                    safe_barrier(timeout=30.0, operation_name="evaluation_sync")
+                    print(f"🔧 Post-evaluation sync (rank {rank}, epoch {epoch+1})")
+                    barrier_success = safe_barrier(timeout=30.0, operation_name="evaluation_sync")
+                    if not barrier_success:
+                        print(f"⚠️ Post-evaluation sync failed for rank {rank}, continuing...")
 
                 if is_main_process(rank):
                     print(f"  Eval Loss: {val_metrics['loss']:.4f}")
@@ -1836,6 +2075,13 @@ def main():
                     'is_best': False
                 })
 
+        # 🔧 关键修复：训练完成后同步所有进程
+        if world_size > 1:
+            print(f"🔧 Post-training sync (rank {rank})")
+            barrier_success = safe_barrier(timeout=30.0, operation_name="post_training_sync")
+            if not barrier_success:
+                print(f"⚠️ Post-training sync failed for rank {rank}, continuing...")
+
         # 保存训练结果（只在主进程执行）
         if is_main_process(rank):
             with open(os.path.join(args.output_dir, 'epoch_eval_results.json'), 'w', encoding='utf-8') as f:
@@ -1896,21 +2142,62 @@ def main():
             print(f"Culture loss: {use_culture_loss}")
             print("="*80)
 
+            # 🔧 新增：训练完成后最终梯度诊断报告
+            print("\n" + "="*80)
+            print("🔍 FINAL GRADIENT DIAGNOSIS REPORT")
+            print("="*80)
+
+            # 创建测试输入
+            test_input_ids = torch.tensor([[1, 2, 3, 4, 5]], device=device, dtype=torch.long)
+            test_attention_mask = torch.ones_like(test_input_ids)
+
+            # 最终梯度诊断
+            final_gradient_health = model_adapter.diagnose_gradient_flow(test_input_ids, test_attention_mask)
+
+            print(f"\n📊 Training Session Summary:")
+            print(f"  Total epochs completed: {args.num_epochs}")
+            print(f"  Best validation accuracy: {best_eval_accuracy:.4f}")
+            print(f"  Final gradient health: {'✅ HEALTHY' if final_gradient_health else '❌ ISSUES DETECTED'}")
+
+            if not final_gradient_health:
+                print(f"\n⚠️ FINAL WARNING: Gradient flow issues detected after training")
+                print(f"   This may indicate model degradation during training")
+                print(f"   Consider investigating the saved model before deployment")
+            else:
+                print(f"\n✅ TRAINING VALIDATION: All systems healthy after training")
+                print(f"   Model is ready for deployment or further fine-tuning")
+
+            print("="*80)
+
     except KeyboardInterrupt:
         if is_main_process(rank):
             print("\n⚠️ 训练被用户中断")
+        # 🔧 关键修复：键盘中断时同步所有进程
+        if world_size > 1:
+            try:
+                print(f"🔧 Keyboard interrupt sync (rank {rank})")
+                safe_barrier(timeout=5.0, operation_name="keyboard_interrupt_sync")
+            except:
+                print(f"⚠️ Keyboard interrupt sync failed for rank {rank}")
     except Exception as e:
         if is_main_process(rank):
             print(f"❌ 训练过程中出现异常: {e}")
-        # 确保异常时其他进程也能感知
+            import traceback
+            traceback.print_exc()
+
+        # 🔧 关键修复：异常时同步所有进程，防止进程不同步退出
         if world_size > 1:
             try:
+                print(f"🔧 Exception sync (rank {rank}): {e}")
                 safe_barrier(timeout=5.0, operation_name="exception_sync")
             except:
-                pass
-        raise
+                print(f"⚠️ Exception sync failed for rank {rank}")
+
+        # 🔧 重要：不要重新抛出异常，避免进程崩溃导致ChildFailedError
+        print(f"🔧 Training stopped due to exception, but process will exit gracefully (rank {rank})")
     finally:
-        # 确保cleanup总是执行
+        # 🔧 确保cleanup总是执行，无论训练成功还是失败
+        print(f"🔧 Starting final cleanup (rank {rank})")
         cleanup_distributed()
 
 

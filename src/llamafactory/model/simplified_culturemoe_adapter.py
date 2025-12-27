@@ -595,6 +595,9 @@ class SimplifiedCultureMoEAdapter:
         # 6. 🔧 最终验证：再次确保MoE参数可训练（在所有操作后）
         self._final_moe_gradient_check()
 
+        # 7. 🔧 新增：实时梯度流测试
+        self._test_gradient_flow()
+
 
     def _get_target_layers(self, force_refresh=False):
         """获取目标层索引（所有层）"""
@@ -778,53 +781,59 @@ class SimplifiedCultureMoEAdapter:
             print(f"⚠️ LoRA application failed: {e}")
 
     def _freeze_non_trainable_parameters(self):
-        """🔧 修复版参数冻结：使用保守策略，只冻结明确不需要的参数"""
+        """🔧 修复版参数冻结：确保关键梯度传播路径畅通"""
         model_to_freeze = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        print(f"🔧 Using CONSERVATIVE parameter freezing strategy...")
+        print(f"🔧 CRITICAL GRADIENT PATH parameter management...")
 
-        # 🔧 新策略：只冻结明确不需要训练的参数，而不是冻结除白名单外的所有参数
-        freeze_keywords = [
-            # 🔧 极其保守：暂时不冻结任何参数，让所有参数都可训练
-            # 这样可以确保梯度传播不会被意外中断
+        # 🔧 关键梯度传播路径：这些参数必须可训练，否则梯度无法流动
+        critical_gradient_keywords = [
+            'embed_tokens',      # 词嵌入层 - 梯度起点
+            'lm_head',           # 输出头 - 损失计算点
+            'norm',              # 所有norm层 - 梯度传播关键节点
+            'layernorm', 'layer_norm', 'input_layernorm', 'post_attention_layernorm',
+            'lora',              # LoRA参数 - 注意力层梯度
+            'experts', 'router', # MoE参数 - FFN层梯度
         ]
 
-        # 🔧 关键修复：确保这些参数绝对可训练
-        must_trainable_keywords = [
-            'lora',              # LoRA参数
-            'experts',           # MoE专家参数
-            'router',            # MoE路由器参数
-            'lm_head',           # 输出投影层
-            'embed_tokens',      # 词嵌入层
-            'norm',              # 所有norm层
-            'layernorm',         # 所有layernorm层
-            'layer_norm',        # 所有layer_norm层
-            'input_layernorm',   # 输入层归一化
-            'post_attention_layernorm',  # 注意力后归一化
-            'self_attn',         # 自注意力层（关键的梯度传播路径）
-            'q_proj', 'k_proj', 'v_proj', 'o_proj',  # 注意力投影层
+        # 🔧 可以安全冻结的参数（不影响梯度传播）
+        safe_to_freeze_keywords = [
+            'position_embeddings',  # 位置编码（通常是固定的）
+            'rotary_emb',          # 旋转位置编码
         ]
 
         trainable_count = 0
         frozen_count = 0
+        critical_fixed = 0
 
-        print(f"🔧 ULTRA-CONSERVATIVE MODE: Making ALL parameters trainable to ensure gradient flow")
+        print(f"🔧 Applying GRADIENT-AWARE parameter freezing strategy...")
 
         for name, param in model_to_freeze.named_parameters():
-            # 🔧 超保守策略：暂时让所有参数都可训练
-            # 这样可以确保不会有任何梯度传播中断
-            param.requires_grad = True
-            trainable_count += 1
+            # 检查是否是关键梯度传播路径
+            is_critical = any(keyword in name.lower() for keyword in critical_gradient_keywords)
+            is_safe_to_freeze = any(keyword in name.lower() for keyword in safe_to_freeze_keywords)
 
-            # 特别标记关键的梯度传播参数
-            if any(keyword in name.lower() for keyword in must_trainable_keywords):
-                print(f"🔧 Critical parameter kept trainable: {name}")
+            if is_critical:
+                # 关键路径：必须可训练
+                if not param.requires_grad:
+                    param.requires_grad = True
+                    critical_fixed += 1
+                    print(f"🔧 CRITICAL FIX: {name} -> trainable (gradient path)")
+                trainable_count += 1
+            elif is_safe_to_freeze:
+                # 安全冻结：不影响梯度传播
+                param.requires_grad = False
+                frozen_count += 1
+            else:
+                # 其他参数：保持可训练以确保安全
+                param.requires_grad = True
+                trainable_count += 1
 
-        print(f"✅ ULTRA-CONSERVATIVE parameter freeze completed:")
+        print(f"✅ GRADIENT-AWARE parameter management completed:")
         print(f"  - Trainable parameters: {trainable_count}")
         print(f"  - Frozen parameters: {frozen_count}")
-        print(f"  - Strategy: ALL parameters trainable to ensure gradient flow")
-        print(f"  - This ensures no gradient disconnection at any layer")
+        print(f"  - Critical gradient fixes: {critical_fixed}")
+        print(f"  - Strategy: Ensure gradient flow while optimizing memory")
 
     def _ensure_device_consistency(self):
         """确保设备一致性"""
@@ -1230,123 +1239,503 @@ class SimplifiedCultureMoEAdapter:
                 return dummy_param.sum() * 0.0
 
     def emergency_gradient_fix(self):
-        """紧急梯度修复：强制设置所有关键参数为可训练"""
-        print(f"🚨 Emergency Gradient Fix: Forcing critical parameters to be trainable...")
+        """🔧 全面重写：智能梯度修复系统"""
+        print(f"🚨 INTELLIGENT Gradient Fix: Analyzing and repairing gradient propagation...")
 
         fixed_count = 0
         model_to_fix = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        # 强制设置所有关键参数为可训练
-        critical_keywords = [
-            'embed_tokens',      # 词嵌入层
-            'lora',             # 所有LoRA参数
-            'norm',             # 所有norm层
-            'layernorm',        # 所有layernorm层
-            'layer_norm',       # 所有layer_norm层
-            'input_layernorm',  # 输入层归一化
-            'post_attention_layernorm',  # 注意力后归一化
-            'experts',          # MoE专家参数
-            'router',           # MoE路由器参数
-            'lm_head'           # 输出头
-        ]
+        # 🔧 第一步：检测并修复embed_tokens
+        embed_layer = self._find_embed_tokens_layer(model_to_fix)
+        if embed_layer and hasattr(embed_layer, 'weight'):
+            if not embed_layer.weight.requires_grad:
+                embed_layer.weight.requires_grad = True
+                fixed_count += 1
+                print(f"  🔧 CRITICAL FIX: embed_tokens.weight -> trainable")
+            else:
+                print(f"  ✅ embed_tokens.weight already trainable")
+        else:
+            print(f"  ❌ CRITICAL ERROR: Cannot find embed_tokens layer!")
 
+        # 🔧 第二步：修复lm_head（输出层）
+        lm_head_fixed = False
         for name, param in model_to_fix.named_parameters():
-            if any(keyword in name.lower() for keyword in critical_keywords):
+            if 'lm_head' in name.lower():
                 if not param.requires_grad:
                     param.requires_grad = True
                     fixed_count += 1
-                    print(f"  🔧 Fixed: {name}")
+                    print(f"  🔧 CRITICAL FIX: {name} -> trainable")
+                else:
+                    print(f"  ✅ {name} already trainable")
+                lm_head_fixed = True
+                break
 
-        print(f"🚨 Emergency fix completed: {fixed_count} parameters fixed")
+        if not lm_head_fixed:
+            print(f"  ❌ CRITICAL ERROR: Cannot find lm_head layer!")
+
+        # 🔧 第三步：修复关键传播节点（norm层）
+        norm_fixed_count = 0
+        norm_params = [(name, param) for name, param in model_to_fix.named_parameters()
+                      if any(keyword in name.lower() for keyword in ['norm', 'layernorm', 'layer_norm'])]
+
+        for name, param in norm_params:
+            if not param.requires_grad:
+                param.requires_grad = True
+                norm_fixed_count += 1
+                fixed_count += 1
+                if norm_fixed_count <= 3:  # 只打印前3个
+                    print(f"  🔧 NORM FIX: {name} -> trainable")
+
+        if norm_fixed_count > 3:
+            print(f"  🔧 NORM FIX: ... and {norm_fixed_count - 3} more norm layers")
+
+        if norm_fixed_count == 0:
+            print(f"  ✅ All norm layers already trainable")
+
+        # 🔧 第四步：修复MoE组件
+        moe_fixed_count = 0
+        try:
+            layers, target_layers = self._get_target_layers()
+
+            for layer_idx in target_layers[:5]:  # 检查前5层
+                moe_layer = layers[layer_idx].mlp
+                if hasattr(moe_layer, 'router'):
+                    # 修复router参数
+                    for name, param in moe_layer.router.named_parameters():
+                        if not param.requires_grad:
+                            param.requires_grad = True
+                            moe_fixed_count += 1
+                            fixed_count += 1
+
+                # 修复expert参数
+                if hasattr(moe_layer, 'experts'):
+                    for expert_idx, expert in enumerate(moe_layer.experts):
+                        for name, param in expert.named_parameters():
+                            if not param.requires_grad:
+                                param.requires_grad = True
+                                moe_fixed_count += 1
+                                fixed_count += 1
+
+        except Exception as e:
+            print(f"  ⚠️ MoE fix error: {e}")
+
+        if moe_fixed_count > 0:
+            print(f"  🔧 MoE FIX: {moe_fixed_count} MoE parameters -> trainable")
+        else:
+            print(f"  ✅ All MoE parameters already trainable")
+
+        # 🔧 第五步：修复LoRA参数（如果存在）
+        lora_fixed_count = 0
+        lora_params = [(name, param) for name, param in model_to_fix.named_parameters() if 'lora' in name.lower()]
+
+        for name, param in lora_params:
+            if not param.requires_grad:
+                param.requires_grad = True
+                lora_fixed_count += 1
+                fixed_count += 1
+
+        if lora_fixed_count > 0:
+            print(f"  🔧 LORA FIX: {lora_fixed_count} LoRA parameters -> trainable")
+        elif lora_params:
+            print(f"  ✅ All LoRA parameters already trainable")
+
+        print(f"🚨 Intelligent gradient fix completed: {fixed_count} parameters fixed")
         return fixed_count
 
+    def force_gradient_propagation_repair(self, input_ids, attention_mask):
+        """🔧 新增：强制梯度传播修复 - 检测问题并自动修复"""
+        print(f"🔧 FORCE Gradient Propagation Repair - Starting comprehensive fix...")
+
+        # 🔧 第一步：运行诊断
+        gradient_ok = self.diagnose_gradient_flow(input_ids, attention_mask)
+
+        if gradient_ok:
+            print(f"✅ Gradient propagation is healthy - no repair needed")
+            return True
+
+        print(f"❌ Gradient propagation issues detected - starting repair...")
+
+        # 🔧 第二步：执行紧急修复
+        fixed_count = self.emergency_gradient_fix()
+
+        # 🔧 第三步：重新验证
+        print(f"\n🔧 Re-verifying gradient propagation after fix...")
+        gradient_ok_after_fix = self.diagnose_gradient_flow(input_ids, attention_mask)
+
+        if gradient_ok_after_fix:
+            print(f"✅ REPAIR SUCCESSFUL: Gradient propagation restored!")
+            print(f"   Fixed {fixed_count} parameters")
+            return True
+        else:
+            print(f"❌ REPAIR FAILED: Gradient propagation still broken")
+            print(f"   This indicates a deeper architectural issue")
+
+            # 🔧 第四步：最后的诊断和建议
+            print(f"\n🔧 Final diagnostic suggestions:")
+            print(f"   1. Check if model architecture is compatible")
+            print(f"   2. Verify that DDP wrapping is not interfering")
+            print(f"   3. Check if there are custom forward hooks")
+            print(f"   4. Verify that model is in training mode")
+
+            return False
+
+    def _find_embed_tokens_layer(self, model):
+        """🔧 全面重写：强健的embed_tokens查找和解包逻辑"""
+        print(f"🔍 开始全面模型解包和embed_tokens查找...")
+
+        # 🔧 第一步：完整解包到实际训练模型
+        actual_model = self._get_actual_training_model(model)
+        print(f"✅ 解包完成，实际模型类型: {type(actual_model)}")
+
+        # 🔧 第二步：系统化路径搜索
+        embed_layer = self._systematic_embed_search(actual_model)
+
+        if embed_layer is not None:
+            print(f"✅ 成功找到embed_tokens层: {type(embed_layer)}")
+            print(f"   权重形状: {embed_layer.weight.shape}")
+            print(f"   设备: {embed_layer.weight.device}")
+            print(f"   数据类型: {embed_layer.weight.dtype}")
+            print(f"   requires_grad: {embed_layer.weight.requires_grad}")
+            return embed_layer
+        else:
+            print(f"❌ 无法找到embed_tokens层")
+            self._debug_model_structure(actual_model)
+            return None
+
+    def _get_actual_training_model(self, model):
+        """🔧 系统化模型解包：处理所有可能的包装层"""
+        current_model = model
+        unwrap_steps = []
+
+        # 记录解包过程
+        unwrap_steps.append(f"Initial: {type(current_model)}")
+
+        # 🔧 处理DDP包装
+        if hasattr(current_model, 'module'):
+            current_model = current_model.module
+            unwrap_steps.append(f"After DDP unwrap: {type(current_model)}")
+
+        # 🔧 处理PeftModel包装（多层嵌套）
+        while hasattr(current_model, 'base_model'):
+            if hasattr(current_model.base_model, 'model'):
+                # PeftModel -> base_model.model
+                current_model = current_model.base_model.model
+                unwrap_steps.append(f"After PeftModel.base_model.model: {type(current_model)}")
+            else:
+                # PeftModel -> base_model
+                current_model = current_model.base_model
+                unwrap_steps.append(f"After PeftModel.base_model: {type(current_model)}")
+
+            # 防止无限循环
+            if len(unwrap_steps) > 10:
+                print(f"⚠️ 解包深度超过10层，可能存在循环引用")
+                break
+
+        # 🔧 处理其他可能的包装
+        if hasattr(current_model, 'model') and hasattr(current_model.model, 'layers'):
+            current_model = current_model.model
+            unwrap_steps.append(f"After .model unwrap: {type(current_model)}")
+
+        # 打印解包过程
+        print(f"🔧 模型解包过程:")
+        for step in unwrap_steps:
+            print(f"   {step}")
+
+        return current_model
+
+    def _systematic_embed_search(self, model):
+        """🔧 系统化embed_tokens搜索策略"""
+
+        # 🔧 策略1: 直接属性访问（最常见）
+        direct_paths = [
+            'embed_tokens',
+            'embeddings.word_embeddings',
+            'transformer.wte',
+            'transformer.word_embeddings'
+        ]
+
+        for path in direct_paths:
+            try:
+                layer = model
+                for attr in path.split('.'):
+                    layer = getattr(layer, attr)
+                if self._is_valid_embedding_layer(layer):
+                    print(f"✅ 直接路径找到: {path}")
+                    return layer
+            except AttributeError:
+                continue
+
+        # 🔧 策略2: 通过named_modules搜索（更全面）
+        print(f"🔍 通过named_modules进行全面搜索...")
+        for name, module in model.named_modules():
+            if self._is_embedding_module_by_name(name) and self._is_valid_embedding_layer(module):
+                print(f"✅ named_modules找到: {name}")
+                return module
+
+        # 🔧 策略3: 通过模块类型搜索
+        print(f"🔍 通过模块类型搜索...")
+        for name, module in model.named_modules():
+            if self._is_embedding_module_by_type(module):
+                print(f"✅ 类型匹配找到: {name} ({type(module)})")
+                return module
+
+        # 🔧 策略4: 递归深度搜索（最后手段）
+        print(f"🔍 进行递归深度搜索...")
+        return self._recursive_embed_search(model)
+
+    def _is_valid_embedding_layer(self, layer):
+        """检查是否是有效的embedding层"""
+        if layer is None:
+            return False
+        if not hasattr(layer, 'weight'):
+            return False
+        if not hasattr(layer.weight, 'shape'):
+            return False
+        if len(layer.weight.shape) != 2:
+            return False
+        # 检查形状是否合理（词汇表大小通常 > 1000）
+        vocab_size, embed_dim = layer.weight.shape
+        if vocab_size < 1000 or embed_dim < 100:
+            return False
+        return True
+
+    def _is_embedding_module_by_name(self, name):
+        """通过名称判断是否是embedding模块"""
+        embed_keywords = [
+            'embed_tokens', 'embeddings', 'word_embeddings',
+            'token_embeddings', 'wte', 'embed'
+        ]
+        name_lower = name.lower()
+        return any(keyword in name_lower for keyword in embed_keywords)
+
+    def _is_embedding_module_by_type(self, module):
+        """通过类型判断是否是embedding模块"""
+        import torch.nn as nn
+        if isinstance(module, nn.Embedding):
+            return self._is_valid_embedding_layer(module)
+        return False
+
+    def _recursive_embed_search(self, model, max_depth=3):
+        """递归搜索embedding层"""
+        def search_recursive(current_model, depth=0):
+            if depth > max_depth:
+                return None
+
+            # 检查当前层的所有子模块
+            for name, child in current_model.named_children():
+                # 检查是否是embedding层
+                if self._is_embedding_module_by_name(name) and self._is_valid_embedding_layer(child):
+                    return child
+
+                # 递归搜索
+                result = search_recursive(child, depth + 1)
+                if result is not None:
+                    return result
+
+            return None
+
+        return search_recursive(model)
+
+    def _debug_model_structure(self, model):
+        """调试模型结构，帮助定位问题"""
+        print(f"🔍 模型结构调试信息:")
+        print(f"   模型类型: {type(model)}")
+        print(f"   模型属性: {[attr for attr in dir(model) if not attr.startswith('_')][:10]}")
+
+        print(f"\n🔍 前10个named_modules:")
+        for i, (name, module) in enumerate(model.named_modules()):
+            if i >= 10:
+                break
+            print(f"   {name}: {type(module)}")
+
+        print(f"\n🔍 查找可能的embedding相关模块:")
+        embed_candidates = []
+        for name, module in model.named_modules():
+            name_lower = name.lower()
+            if any(keyword in name_lower for keyword in ['embed', 'token', 'word']):
+                embed_candidates.append((name, type(module)))
+
+        if embed_candidates:
+            print(f"   找到候选模块:")
+            for name, module_type in embed_candidates[:5]:
+                print(f"     {name}: {module_type}")
+        else:
+            print(f"   未找到embedding相关候选模块")
+
     def diagnose_gradient_flow(self, input_ids, attention_mask):
-        """诊断梯度流：检查从input到MoE层的整个路径"""
-        print(f"🔍 Full Gradient Flow Diagnosis:")
+        """🔧 全面重写：诊断梯度流，检查从input到MoE层的整个路径"""
+        print(f"🔍 COMPREHENSIVE Gradient Flow Diagnosis:")
 
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        # 1. 检查embedding层
-        if hasattr(model_to_check, 'embed_tokens'):
-            embed_params_trainable = sum(1 for p in model_to_check.embed_tokens.parameters() if p.requires_grad)
-            embed_params_total = sum(1 for p in model_to_check.embed_tokens.parameters())
-            print(f"  📍 Embedding: {embed_params_trainable}/{embed_params_total} params trainable")
+        # 🔧 1. 使用新的embed_tokens查找逻辑
+        print(f"\n📍 Step 1: Embedding Layer Analysis")
+        embed_layer = self._find_embed_tokens_layer(model_to_check)
 
-        # 2. 检查LoRA参数
-        lora_params = [(name, param) for name, param in model_to_check.named_parameters() if 'lora' in name.lower()]
-        lora_trainable = sum(1 for _, param in lora_params if param.requires_grad)
-        print(f"  📍 LoRA: {lora_trainable}/{len(lora_params)} params trainable")
+        embedding_gradient_ok = False
+        if embed_layer:
+            embed_params_trainable = sum(1 for p in embed_layer.parameters() if p.requires_grad)
+            embed_params_total = sum(1 for p in embed_layer.parameters())
+            print(f"  ✅ Embedding: {embed_params_trainable}/{embed_params_total} params trainable")
 
-        # 3. 检查norm层
+            if hasattr(embed_layer, 'weight'):
+                embedding_gradient_ok = embed_layer.weight.requires_grad
+                status = "✅" if embedding_gradient_ok else "❌"
+                print(f"    {status} Weight requires_grad: {embed_layer.weight.requires_grad}")
+                print(f"    Weight shape: {embed_layer.weight.shape}")
+                print(f"    Weight device: {embed_layer.weight.device}")
+        else:
+            print(f"  ❌ CRITICAL: Cannot find embed_tokens layer!")
+            print(f"    This will completely break gradient propagation")
+
+        # 🔧 2. 检查关键梯度传播路径
+        print(f"\n📍 Step 2: Critical Gradient Path Analysis")
+        critical_layers_status = {}
+
+        # 检查lm_head（输出层）
+        lm_head_ok = False
+        for name, param in model_to_check.named_parameters():
+            if 'lm_head' in name.lower():
+                lm_head_ok = param.requires_grad
+                status = "✅" if lm_head_ok else "❌"
+                print(f"  {status} lm_head: {name} requires_grad={param.requires_grad}")
+                break
+
+        if not lm_head_ok:
+            print(f"  ❌ CRITICAL: lm_head not found or frozen!")
+
+        # 检查norm层（关键传播节点）
         norm_params = [(name, param) for name, param in model_to_check.named_parameters()
                       if any(keyword in name.lower() for keyword in ['norm', 'layernorm', 'layer_norm'])]
         norm_trainable = sum(1 for _, param in norm_params if param.requires_grad)
-        print(f"  📍 Norm layers: {norm_trainable}/{len(norm_params)} params trainable")
+        norm_total = len(norm_params)
 
-        # 🆕 详细检查norm层状态
-        if norm_trainable < len(norm_params):
-            print(f"  ⚠️ Some norm layers are frozen - this will break gradient flow!")
-            for name, param in norm_params[:5]:  # 显示前5个
-                status = "✅" if param.requires_grad else "❌"
-                print(f"    {status} {name}: requires_grad={param.requires_grad}")
+        norm_ok = norm_trainable > 0
+        status = "✅" if norm_ok else "❌"
+        print(f"  {status} Norm layers: {norm_trainable}/{norm_total} params trainable")
 
-        # 4. 检查attention层
-        attn_params = [(name, param) for name, param in model_to_check.named_parameters()
-                      if any(keyword in name.lower() for keyword in ['self_attn', 'q_proj', 'k_proj', 'v_proj', 'o_proj'])]
-        attn_trainable = sum(1 for _, param in attn_params if param.requires_grad)
-        print(f"  📍 Attention layers: {attn_trainable}/{len(attn_params)} params trainable")
+        if not norm_ok:
+            print(f"  ❌ CRITICAL: All norm layers frozen - gradient flow broken!")
+            for name, param in norm_params[:3]:
+                print(f"    ❌ {name}: requires_grad={param.requires_grad}")
 
-        # 5. 检查第一个MoE层的router
+        # 🔧 3. 检查MoE层状态
+        print(f"\n📍 Step 3: MoE Layer Analysis")
+        moe_gradient_ok = False
         try:
             layers, target_layers = self._get_target_layers()
             first_moe = layers[0].mlp
+
             if hasattr(first_moe, 'router'):
-                router_params_trainable = sum(1 for p in first_moe.router.parameters() if p.requires_grad)
-                router_params_total = sum(1 for p in first_moe.router.parameters())
-                print(f"  📍 First MoE Router: {router_params_trainable}/{router_params_total} params trainable")
+                router_params = list(first_moe.router.parameters())
+                router_trainable = sum(1 for p in router_params if p.requires_grad)
+                router_total = len(router_params)
+
+                moe_gradient_ok = router_trainable > 0
+                status = "✅" if moe_gradient_ok else "❌"
+                print(f"  {status} First MoE Router: {router_trainable}/{router_total} params trainable")
+
+                if router_params:
+                    router_weight = router_params[0]
+                    print(f"    Router weight device: {router_weight.device}")
+                    print(f"    Router weight dtype: {router_weight.dtype}")
+            else:
+                print(f"  ❌ First MoE layer has no router!")
+
         except Exception as e:
             print(f"  ❌ Cannot check MoE router: {e}")
 
-        # 🆕 6. 测试梯度传播路径
-        print(f"  🔬 Testing gradient propagation with small forward pass...")
+        # 🔧 4. 执行实际梯度传播测试
+        print(f"\n📍 Step 4: Live Gradient Propagation Test")
+        gradient_test_passed = False
+
         try:
             with torch.enable_grad():
-                # 创建一个小的测试输入
-                test_input = input_ids[:1, :10].clone()  # 取第一个样本的前10个token
-                test_mask = attention_mask[:1, :10].clone()
+                # 创建小的测试输入
+                test_input = input_ids[:1, :5].clone()  # 更小的测试输入
 
-                # 前向传播到embedding
-                if hasattr(model_to_check, 'embed_tokens'):
-                    embeddings = model_to_check.embed_tokens(test_input)
-                    print(f"    Embeddings: requires_grad={embeddings.requires_grad}, grad_fn={embeddings.grad_fn is not None}")
+                # 🔧 确保输入需要梯度
+                if not test_input.requires_grad:
+                    test_input = test_input.detach().requires_grad_(True)
 
-                    # 检查第一个transformer层的输出
-                    if hasattr(model_to_check, 'layers') and len(model_to_check.layers) > 0:
-                        # 这里只能做简单测试，不能完整运行transformer层（太复杂）
-                        print(f"    ✅ Embedding layer produces tensors with gradient connection")
+                print(f"  🔬 Test input: shape={test_input.shape}, requires_grad={test_input.requires_grad}")
+
+                # 测试embedding层
+                if embed_layer:
+                    embeddings = embed_layer(test_input)
+                    embed_has_grad = embeddings.requires_grad and embeddings.grad_fn is not None
+
+                    status = "✅" if embed_has_grad else "❌"
+                    print(f"  {status} Embeddings: requires_grad={embeddings.requires_grad}, grad_fn={embeddings.grad_fn is not None}")
+
+                    if embed_has_grad:
+                        # 测试简单的反向传播
+                        test_loss = embeddings.sum()
+                        test_loss.backward()
+
+                        # 检查梯度是否成功传播到embedding权重
+                        if embed_layer.weight.grad is not None:
+                            gradient_test_passed = True
+                            print(f"  ✅ Gradient successfully propagated to embedding weights")
+                        else:
+                            print(f"  ❌ Gradient did not reach embedding weights")
+
+                    # 清理测试梯度
+                    if hasattr(embed_layer, 'zero_grad'):
+                        embed_layer.zero_grad()
                 else:
-                    print(f"    ❌ Cannot find embed_tokens layer")
+                    print(f"  ❌ Cannot test - no embedding layer found")
 
         except Exception as e:
-            print(f"    ❌ Gradient propagation test failed: {e}")
+            print(f"  ❌ Gradient test failed: {e}")
+
+        # 🔧 5. 综合诊断结果
+        print(f"\n📍 Step 5: Comprehensive Diagnosis Summary")
+
+        critical_issues = []
+        if not embedding_gradient_ok:
+            critical_issues.append("Embedding layer frozen or missing")
+        if not lm_head_ok:
+            critical_issues.append("lm_head layer frozen or missing")
+        if not norm_ok:
+            critical_issues.append("All norm layers frozen")
+        if not moe_gradient_ok:
+            critical_issues.append("MoE router parameters frozen")
+        if not gradient_test_passed:
+            critical_issues.append("Live gradient test failed")
+
+        if critical_issues:
+            print(f"  ❌ CRITICAL ISSUES FOUND ({len(critical_issues)}):")
+            for issue in critical_issues:
+                print(f"    - {issue}")
+            print(f"  🔧 These issues MUST be fixed for training to work")
+            return False
+        else:
+            print(f"  ✅ ALL GRADIENT CHECKS PASSED")
+            print(f"  ✅ Gradient propagation pathway is healthy")
+            return True
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """
-        前向传播
+        🔧 全面重写：前向传播 + 智能梯度修复
 
         Args:
             input_ids: 输入token IDs
             attention_mask: 注意力掩码
             labels: 标签
         """
-        # 🔧 紧急诊断和修复（只在前几次调用时执行）
-        if not hasattr(self, '_emergency_fix_done'):
-            self._emergency_fix_done = True
-            self.diagnose_gradient_flow(input_ids, attention_mask)
-            fixed_count = self.emergency_gradient_fix()
-            if fixed_count > 0:
-                print(f"🚨 Applied emergency gradient fix, re-diagnosing...")
-                self.diagnose_gradient_flow(input_ids, attention_mask)
+        # 🔧 智能梯度修复系统（只在前几次调用时执行）
+        if not hasattr(self, '_gradient_repair_done'):
+            self._gradient_repair_done = True
+            print(f"🔧 Starting intelligent gradient repair system...")
+
+            # 使用新的强制梯度传播修复
+            repair_success = self.force_gradient_propagation_repair(input_ids, attention_mask)
+
+            if not repair_success:
+                print(f"❌ CRITICAL: Gradient repair failed - training may not work correctly")
+            else:
+                print(f"✅ Gradient repair completed successfully")
 
         outputs = self.base_model(
             input_ids=input_ids,
@@ -1486,6 +1875,108 @@ class SimplifiedCultureMoEAdapter:
         print(f"\n  📊 Trainable parameters: {trainable_count}/{total_count}")
 
         return trainable_count > 0
+
+    def _test_gradient_flow(self):
+        """🔧 实时梯度流测试：确保从embedding到MoE的完整梯度传播"""
+        print(f"\n🔬 GRADIENT FLOW TEST - Testing end-to-end gradient propagation")
+
+        try:
+            # 获取模型设备
+            model_to_test = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+            device = next(model_to_test.parameters()).device
+
+            # 创建小的测试输入
+            test_input_ids = torch.tensor([[1, 2, 3, 4, 5]], device=device, dtype=torch.long)
+            test_attention_mask = torch.ones_like(test_input_ids)
+            test_labels = test_input_ids.clone()
+
+            # 设置为训练模式
+            model_to_test.train()
+
+            print(f"  📍 Testing with input shape: {test_input_ids.shape} on device: {device}")
+
+            # 前向传播测试
+            with torch.enable_grad():
+                outputs = model_to_test(
+                    input_ids=test_input_ids,
+                    attention_mask=test_attention_mask,
+                    labels=test_labels
+                )
+
+                if hasattr(outputs, 'loss') and outputs.loss is not None:
+                    test_loss = outputs.loss
+                    print(f"  📍 Forward pass successful, loss: {test_loss.item():.6f}")
+                    print(f"  📍 Loss requires_grad: {test_loss.requires_grad}, grad_fn: {test_loss.grad_fn is not None}")
+
+                    # 反向传播测试
+                    test_loss.backward()
+
+                    # 检查关键层的梯度
+                    gradient_check_results = []
+
+                    # 检查embedding层梯度
+                    embed_grad_ok = False
+                    if hasattr(model_to_test, 'embed_tokens'):
+                        if model_to_test.embed_tokens.weight.grad is not None:
+                            embed_grad_ok = True
+                            gradient_check_results.append("✅ embed_tokens: has gradient")
+                        else:
+                            gradient_check_results.append("❌ embed_tokens: NO gradient")
+
+                    # 检查lm_head梯度
+                    lm_head_grad_ok = False
+                    if hasattr(model_to_test, 'lm_head'):
+                        if model_to_test.lm_head.weight.grad is not None:
+                            lm_head_grad_ok = True
+                            gradient_check_results.append("✅ lm_head: has gradient")
+                        else:
+                            gradient_check_results.append("❌ lm_head: NO gradient")
+
+                    # 检查第一个MoE层的梯度
+                    moe_grad_ok = False
+                    try:
+                        layers, target_layers = self._get_target_layers()
+                        first_moe = layers[0].mlp
+                        if hasattr(first_moe, 'router'):
+                            if first_moe.router.router.weight.grad is not None:
+                                moe_grad_ok = True
+                                gradient_check_results.append("✅ first_moe_router: has gradient")
+                            else:
+                                gradient_check_results.append("❌ first_moe_router: NO gradient")
+                    except Exception as e:
+                        gradient_check_results.append(f"❌ MoE gradient check failed: {e}")
+
+                    # 报告结果
+                    print(f"  🔬 Gradient Check Results:")
+                    for result in gradient_check_results:
+                        print(f"    {result}")
+
+                    # 总体评估
+                    if embed_grad_ok and lm_head_grad_ok and moe_grad_ok:
+                        print(f"  ✅ GRADIENT FLOW TEST PASSED: End-to-end gradient propagation working")
+                        return True
+                    else:
+                        print(f"  ❌ GRADIENT FLOW TEST FAILED: Gradient propagation broken")
+
+                        # 自动修复尝试
+                        print(f"  🔧 Attempting automatic gradient fix...")
+                        self._emergency_gradient_fix()
+                        return False
+                else:
+                    print(f"  ❌ Forward pass failed: no loss output")
+                    return False
+
+        except Exception as e:
+            print(f"  ❌ Gradient flow test failed with exception: {e}")
+            print(f"  🔧 Attempting emergency gradient fix...")
+            self._emergency_gradient_fix()
+            return False
+        finally:
+            # 清理测试产生的梯度
+            try:
+                model_to_test.zero_grad()
+            except:
+                pass
 
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):
