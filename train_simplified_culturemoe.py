@@ -742,8 +742,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
 
-        # 将主损失转换为float16以保持一致性和节省显存
-        loss = loss.to(dtype=torch.float16)
+        # 🔧 修复梯度问题：移除类型转换，避免破坏梯度连接
+        # loss = loss.to(dtype=torch.float16)  # 这行代码在分布式训练中会破坏梯度连接
 
         # 🆕 层次化损失计算：Total Loss = Main Loss + lambda * balance loss
         # balance loss = alpha * Z Loss + beta * culture loss
@@ -895,8 +895,8 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
 
-            # 将主损失转换为float16以保持一致性和节省显存
-            loss = loss.to(dtype=torch.float16)
+            # 🔧 修复梯度问题：移除类型转换，避免破坏梯度连接
+            # loss = loss.to(dtype=torch.float16)  # 这行代码在分布式训练中会破坏梯度连接
 
             # 🆕 层次化损失计算：Total Loss = Main Loss + lambda * balance loss
             # balance loss = alpha * Z Loss + beta * culture loss
