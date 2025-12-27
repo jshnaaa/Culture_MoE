@@ -2,17 +2,15 @@
 
 # 简化版FFN CultureMoE训练脚本
 # 纯LoRA MoE架构，在所有层替换FFN为LoRA MoE，添加文化损失
-# 针对48GB×2卡优化
 
 echo "======================================="
-echo "简化版FFN CultureMoE训练"
+echo "FFN CultureMoE训练"
 echo "纯LoRA MoE架构，在所有层FFN替换为LoRA MoE"
-echo "针对48GB×2卡优化"
 echo "======================================="
 
 # 参数设置
 BACKBONE=${1:-"llama"}  # 默认使用llama
-DATA_ID=${2:-"2"}
+DATA_ID=${2:-"5"}
 USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
 USE_MASK=${4:-"true"}     # 是否启用MASK机制，默认为true
 USE_GATE=${5:-"true"}     # 是否使用MoE内部融合Gate，默认为true
@@ -56,7 +54,6 @@ if [ "$BACKBONE" = "llama" ]; then
     # 尝试多个可能的路径
     POSSIBLE_PATHS=(
         "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-        "/Users/yzl/models/Meta-Llama-3.1-8B-Instruct"
         "meta-llama/Meta-Llama-3.1-8B-Instruct"
         "microsoft/DialoGPT-medium"  # fallback for testing
     )
@@ -84,7 +81,6 @@ elif [ "$BACKBONE" = "qwen" ]; then
     # 尝试多个可能的路径
     POSSIBLE_PATHS=(
         "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-        "/Users/yzl/models/Meta-Qwen-2.5-7B-Instruct"
         "Qwen/Qwen2.5-7B-Instruct"
         "microsoft/DialoGPT-medium"  # fallback for testing
     )
@@ -283,7 +279,7 @@ if [ "$DATA_ID" = "3" ] || [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
     echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=850"
 else
     MAX_SEQ_LEN=384       # 其他数据集使用384
-    echo "🔧 使用标准序列长度MAX_SEQ_LEN=384"
+    echo "🔧 使用标准序列长度MAX_SEQ_LEN=512"
 fi
 
 echo "训练参数:"
@@ -412,7 +408,7 @@ TRAINING_SUCCESS=$?
 # 检查训练结果
 echo "======================================="
 if [ $TRAINING_SUCCESS -eq 0 ]; then
-    echo "✅ 简化版FFN CultureMoE训练成功！"
+    echo "✅ FFN CultureMoE训练成功！"
 
     # 检查最佳模型
     BEST_MODEL="$OUTPUT_DIR/best_simplified_culturemoe"
