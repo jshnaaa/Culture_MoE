@@ -235,6 +235,19 @@ class MoEFFNLoRA(nn.Module):
         if self.use_gate:
             self.gate_network.to(device=target_device, dtype=target_dtype)
 
+        # 🔧 关键修复：确保所有MoE参数从创建时就是可训练的
+        for param in self.router.parameters():
+            param.requires_grad = True
+        for expert in self.experts:
+            for param in expert.parameters():
+                param.requires_grad = True
+        if self.use_shared:
+            for param in self.shared_expert.parameters():
+                param.requires_grad = True
+        if self.use_gate:
+            for param in self.gate_network.parameters():
+                param.requires_grad = True
+
         # 保存最新的专家权重用于文化损失
         self.latest_expert_weights = None
 
@@ -279,15 +292,9 @@ class MoEFFNLoRA(nn.Module):
                 uniform_weights = expert_weights * 0.0 + (1.0 / expert_weights.shape[2])
                 self.current_expert_weights = uniform_weights.mean(dim=1)  # [B, num_experts] - 有梯度
                 self.latest_expert_weights = uniform_weights.mean(dim=1).detach()  # 无梯度版本用于统计
-                print(f"🔍 MoE forward debug (NaN case): current_expert_weights set, requires_grad: {self.current_expert_weights.requires_grad}")
             else:
                 self.current_expert_weights = expert_weights.mean(dim=1)  # [B, num_experts] - 有梯度
                 self.latest_expert_weights = expert_weights.mean(dim=1).detach()  # 无梯度版本用于统计
-                print(f"🔍 MoE forward debug: current_expert_weights set, shape: {self.current_expert_weights.shape}, requires_grad: {self.current_expert_weights.requires_grad}")
-
-            # 验证expert_weights的梯度状态
-            print(f"  original expert_weights: requires_grad: {expert_weights.requires_grad}, grad_fn: {expert_weights.grad_fn is not None}")
-            print(f"  current_expert_weights: requires_grad: {self.current_expert_weights.requires_grad}, grad_fn: {self.current_expert_weights.grad_fn is not None}")
 
             # 3. Top-k选择（路由专家）
             if self.num_activated_experts == self.num_experts:
@@ -464,13 +471,16 @@ class SimplifiedCultureMoEAdapter:
         if config.use_lora:
             self._apply_attention_lora()
 
-        # 2. 然后在包装后的模型上替换FFN为MoE
-        self._replace_all_layers_with_moe()
-
-        # 3. 冻结非训练参数
+        # 2. 先冻结非训练参数（在MoE创建之前）
         self._freeze_non_trainable_parameters()
 
-        # 4. 确保设备一致性
+        # 3. 然后在包装后的模型上替换FFN为MoE
+        self._replace_all_layers_with_moe()
+
+        # 4. 🔧 关键修复：MoE创建后，确保所有MoE参数都是可训练的
+        self._ensure_moe_parameters_trainable()
+
+        # 5. 确保设备一致性
         self._ensure_device_consistency()
 
 
@@ -558,6 +568,49 @@ class SimplifiedCultureMoEAdapter:
 
             print(f"✅ Replaced layer {layer_idx} FFN with LoRA MoE ({config_info})")
 
+    def _ensure_moe_parameters_trainable(self):
+        """确保所有MoE参数都是可训练的"""
+        print(f"🔧 Ensuring all MoE parameters are trainable...")
+
+        layers, target_layers = self._get_target_layers()
+        moe_param_count = 0
+
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, MoEFFNLoRA):
+                # 确保router参数可训练
+                for name, param in moe_layer.router.named_parameters():
+                    if not param.requires_grad:
+                        param.requires_grad = True
+                        print(f"🔧 Fixed: Set layer {layer_idx} router.{name} to trainable")
+                    moe_param_count += param.numel()
+
+                # 确保expert参数可训练
+                for expert_idx, expert in enumerate(moe_layer.experts):
+                    for name, param in expert.named_parameters():
+                        if not param.requires_grad:
+                            param.requires_grad = True
+                            print(f"🔧 Fixed: Set layer {layer_idx} expert_{expert_idx}.{name} to trainable")
+                        moe_param_count += param.numel()
+
+                # 确保shared expert参数可训练（如果有）
+                if hasattr(moe_layer, 'shared_expert') and moe_layer.shared_expert is not None:
+                    for name, param in moe_layer.shared_expert.named_parameters():
+                        if not param.requires_grad:
+                            param.requires_grad = True
+                            print(f"🔧 Fixed: Set layer {layer_idx} shared_expert.{name} to trainable")
+                        moe_param_count += param.numel()
+
+                # 确保gate网络参数可训练（如果有）
+                if hasattr(moe_layer, 'gate_network') and moe_layer.gate_network is not None:
+                    for name, param in moe_layer.gate_network.named_parameters():
+                        if not param.requires_grad:
+                            param.requires_grad = True
+                            print(f"🔧 Fixed: Set layer {layer_idx} gate_network.{name} to trainable")
+                        moe_param_count += param.numel()
+
+        print(f"✅ MoE parameter check completed: {moe_param_count:,} MoE parameters ensured trainable")
+
     def _apply_attention_lora(self):
         """应用LoRA到注意力层"""
         try:
@@ -609,11 +662,16 @@ class SimplifiedCultureMoEAdapter:
                 param.requires_grad = True
                 trainable_count += 1
                 # 打印关键层的状态
-                if any(key in name.lower() for key in ['lm_head', 'embed_tokens', 'norm']):
-                    print(f"🔧 Keeping trainable: {name} (critical for loss computation)")
+                if any(key in name.lower() for key in ['lm_head', 'embed_tokens', 'norm', 'router', 'experts']):
+                    print(f"🔧 Keeping trainable: {name} (MoE/critical layer)")
             else:
                 param.requires_grad = False
                 frozen_count += 1
+                # 打印被冻结的router相关参数（这不应该发生）
+                if 'router' in name.lower():
+                    print(f"❌ WARNING: Router parameter frozen: {name}")
+                if 'experts' in name.lower():
+                    print(f"❌ WARNING: Expert parameter frozen: {name}")
 
         print(f"✅ Parameter freeze completed:")
         print(f"  - Trainable parameters: {trainable_count}")
@@ -671,16 +729,10 @@ class SimplifiedCultureMoEAdapter:
                         fallback_weights_list.append(moe_layer.latest_expert_weights)
 
             # 优先返回有梯度的数据
-            print(f"🔍 get_expert_weights debug:")
-            print(f"  current_weights_list: {len(current_weights_list)} items")
-            print(f"  fallback_weights_list: {len(fallback_weights_list)} items")
-
             if current_weights_list:
                 expert_weights_list = current_weights_list
-                print(f"  using current_weights_list (有梯度)")
             else:
                 expert_weights_list = fallback_weights_list
-                print(f"  using fallback_weights_list (无梯度)")
 
             if expert_weights_list:
                 # 对所有MoE层的权重求平均
@@ -809,17 +861,12 @@ class SimplifiedCultureMoEAdapter:
         if hasattr(outputs, 'loss') and outputs.loss is not None:
             # 收集有梯度的expert_weights
             expert_weights = self.get_expert_weights_for_culture_loss()
-            print(f"🔍 Adapter forward debug:")
-            print(f"  expert_weights: {expert_weights is not None}")
             if expert_weights is not None:
-                print(f"    shape: {expert_weights.shape}, requires_grad: {expert_weights.requires_grad}, grad_fn: {expert_weights.grad_fn is not None}")
                 outputs.expert_weights = expert_weights
 
             # 收集有梯度的shared_outputs
             shared_outputs = self.get_shared_outputs_for_culture_loss()
-            print(f"  shared_outputs: {shared_outputs is not None}")
             if shared_outputs is not None:
-                print(f"    shape: {shared_outputs.shape}, requires_grad: {shared_outputs.requires_grad}, grad_fn: {shared_outputs.grad_fn is not None}")
                 outputs.shared_outputs = shared_outputs
 
         return outputs
