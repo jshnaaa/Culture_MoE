@@ -774,9 +774,21 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         critical_layers_fixed = 0
         model_to_check = model_adapter.base_model.module if hasattr(model_adapter.base_model, 'module') else model_adapter.base_model
 
+        # 🔧 扩展关键梯度传播层列表
+        critical_gradient_keywords = [
+            'norm', 'layernorm', 'layer_norm', 'input_layernorm', 'post_attention_layernorm',
+            'embed_tokens',  # 词嵌入层
+            'self_attn',     # 自注意力层
+            'q_proj', 'k_proj', 'v_proj', 'o_proj',  # 注意力投影层
+            'lm_head',       # 输出头
+            'lora',          # LoRA参数
+            'router',        # MoE路由器
+            'experts'        # MoE专家
+        ]
+
         for name, param in model_to_check.named_parameters():
             # 检查关键的梯度传播层
-            if any(keyword in name.lower() for keyword in ['norm', 'layernorm', 'layer_norm', 'input_layernorm', 'post_attention_layernorm']):
+            if any(keyword in name.lower() for keyword in critical_gradient_keywords):
                 if not param.requires_grad:
                     print(f"🔧 FORCE FIX: Setting {name} to trainable (critical for gradient propagation)")
                     param.requires_grad = True
@@ -784,6 +796,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         if critical_layers_fixed > 0:
             print(f"🔧 Fixed {critical_layers_fixed} critical layers for gradient propagation")
+        else:
+            print(f"✅ All critical gradient propagation layers already trainable")
 
         # 单路处理
         outputs = model_adapter.forward(

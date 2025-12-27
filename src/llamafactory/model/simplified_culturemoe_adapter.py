@@ -778,65 +778,53 @@ class SimplifiedCultureMoEAdapter:
             print(f"⚠️ LoRA application failed: {e}")
 
     def _freeze_non_trainable_parameters(self):
-        """冻结非训练参数，但保留计算loss所必需的关键层"""
+        """🔧 修复版参数冻结：使用保守策略，只冻结明确不需要的参数"""
         model_to_freeze = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        # 🔧 关键修复：扩展可训练参数列表，确保梯度能传播到MoE层
-        trainable_keywords = [
-            'lora',          # LoRA参数
-            'experts',       # MoE专家参数
-            'router',        # MoE路由器参数
-            'lm_head',       # 输出投影层（计算loss必需！）
-            'embed_tokens',  # 词嵌入层
-            'norm',          # 标准化层（梯度传播必需！）
-            'embed',         # 其他嵌入层的可能命名
-            'head',          # 其他head层的可能命名
-            'input_layernorm',   # 输入层归一化（梯度传播必需！）
-            'post_attention_layernorm',  # 注意力后归一化（梯度传播必需！）
-            'layernorm',     # 通用层归一化
-            'layer_norm'     # 另一种层归一化命名
+        print(f"🔧 Using CONSERVATIVE parameter freezing strategy...")
+
+        # 🔧 新策略：只冻结明确不需要训练的参数，而不是冻结除白名单外的所有参数
+        freeze_keywords = [
+            # 🔧 极其保守：暂时不冻结任何参数，让所有参数都可训练
+            # 这样可以确保梯度传播不会被意外中断
+        ]
+
+        # 🔧 关键修复：确保这些参数绝对可训练
+        must_trainable_keywords = [
+            'lora',              # LoRA参数
+            'experts',           # MoE专家参数
+            'router',            # MoE路由器参数
+            'lm_head',           # 输出投影层
+            'embed_tokens',      # 词嵌入层
+            'norm',              # 所有norm层
+            'layernorm',         # 所有layernorm层
+            'layer_norm',        # 所有layer_norm层
+            'input_layernorm',   # 输入层归一化
+            'post_attention_layernorm',  # 注意力后归一化
+            'self_attn',         # 自注意力层（关键的梯度传播路径）
+            'q_proj', 'k_proj', 'v_proj', 'o_proj',  # 注意力投影层
         ]
 
         trainable_count = 0
         frozen_count = 0
 
-        # 🔧 关键诊断：首先检查哪些关键层会被冻结
-        critical_layers_to_check = ['norm', 'layernorm', 'layer_norm', 'input_layernorm', 'post_attention_layernorm', 'embed_tokens', 'lm_head']
-
-        print(f"🔍 Critical Layer Analysis Before Freezing:")
-        for name, param in model_to_freeze.named_parameters():
-            if any(critical in name.lower() for critical in critical_layers_to_check):
-                should_train = any(keyword in name.lower() for keyword in trainable_keywords)
-                status = "✅ WILL BE TRAINABLE" if should_train else "❌ WILL BE FROZEN"
-                print(f"  {name}: {status}")
+        print(f"🔧 ULTRA-CONSERVATIVE MODE: Making ALL parameters trainable to ensure gradient flow")
 
         for name, param in model_to_freeze.named_parameters():
-            # 检查参数名是否包含可训练的关键词
-            should_train = any(keyword in name.lower() for keyword in trainable_keywords)
+            # 🔧 超保守策略：暂时让所有参数都可训练
+            # 这样可以确保不会有任何梯度传播中断
+            param.requires_grad = True
+            trainable_count += 1
 
-            if should_train:
-                param.requires_grad = True
-                trainable_count += 1
-                # 打印关键层的状态
-                if any(key in name.lower() for key in ['lm_head', 'embed_tokens', 'norm', 'router', 'experts', 'layernorm']):
-                    print(f"🔧 Keeping trainable: {name} (gradient propagation critical)")
-            else:
-                param.requires_grad = False
-                frozen_count += 1
-                # 🔧 重要警告：检查是否意外冻结了梯度传播关键层
-                if any(critical in name.lower() for critical in ['norm', 'layernorm', 'layer_norm']):
-                    print(f"❌ CRITICAL WARNING: Gradient propagation layer frozen: {name}")
-                    print(f"   This will break gradient flow to MoE layers!")
-                # 打印被冻结的router相关参数（这不应该发生）
-                if 'router' in name.lower():
-                    print(f"❌ WARNING: Router parameter frozen: {name}")
-                if 'experts' in name.lower():
-                    print(f"❌ WARNING: Expert parameter frozen: {name}")
+            # 特别标记关键的梯度传播参数
+            if any(keyword in name.lower() for keyword in must_trainable_keywords):
+                print(f"🔧 Critical parameter kept trainable: {name}")
 
-        print(f"✅ Parameter freeze completed:")
+        print(f"✅ ULTRA-CONSERVATIVE parameter freeze completed:")
         print(f"  - Trainable parameters: {trainable_count}")
         print(f"  - Frozen parameters: {frozen_count}")
-        print(f"  - Critical layers (lm_head, embed_tokens, norm) kept trainable")
+        print(f"  - Strategy: ALL parameters trainable to ensure gradient flow")
+        print(f"  - This ensures no gradient disconnection at any layer")
 
     def _ensure_device_consistency(self):
         """确保设备一致性"""
@@ -1241,6 +1229,71 @@ class SimplifiedCultureMoEAdapter:
                 dummy_param = next(iter(self.base_model.parameters()))
                 return dummy_param.sum() * 0.0
 
+    def emergency_gradient_fix(self):
+        """紧急梯度修复：强制设置所有关键参数为可训练"""
+        print(f"🚨 Emergency Gradient Fix: Forcing critical parameters to be trainable...")
+
+        fixed_count = 0
+        model_to_fix = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        # 强制设置所有关键参数为可训练
+        critical_keywords = [
+            'embed_tokens',      # 词嵌入层
+            'lora',             # 所有LoRA参数
+            'norm',             # 所有norm层
+            'layernorm',        # 所有layernorm层
+            'layer_norm',       # 所有layer_norm层
+            'input_layernorm',  # 输入层归一化
+            'post_attention_layernorm',  # 注意力后归一化
+            'experts',          # MoE专家参数
+            'router',           # MoE路由器参数
+            'lm_head'           # 输出头
+        ]
+
+        for name, param in model_to_fix.named_parameters():
+            if any(keyword in name.lower() for keyword in critical_keywords):
+                if not param.requires_grad:
+                    param.requires_grad = True
+                    fixed_count += 1
+                    print(f"  🔧 Fixed: {name}")
+
+        print(f"🚨 Emergency fix completed: {fixed_count} parameters fixed")
+        return fixed_count
+
+    def diagnose_gradient_flow(self, input_ids, attention_mask):
+        """诊断梯度流：检查从input到MoE层的整个路径"""
+        print(f"🔍 Full Gradient Flow Diagnosis:")
+
+        model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        # 1. 检查embedding层
+        if hasattr(model_to_check, 'embed_tokens'):
+            embed_params_trainable = sum(1 for p in model_to_check.embed_tokens.parameters() if p.requires_grad)
+            embed_params_total = sum(1 for p in model_to_check.embed_tokens.parameters())
+            print(f"  📍 Embedding: {embed_params_trainable}/{embed_params_total} params trainable")
+
+        # 2. 检查LoRA参数
+        lora_params = [(name, param) for name, param in model_to_check.named_parameters() if 'lora' in name.lower()]
+        lora_trainable = sum(1 for _, param in lora_params if param.requires_grad)
+        print(f"  📍 LoRA: {lora_trainable}/{len(lora_params)} params trainable")
+
+        # 3. 检查norm层
+        norm_params = [(name, param) for name, param in model_to_check.named_parameters()
+                      if any(keyword in name.lower() for keyword in ['norm', 'layernorm', 'layer_norm'])]
+        norm_trainable = sum(1 for _, param in norm_params if param.requires_grad)
+        print(f"  📍 Norm layers: {norm_trainable}/{len(norm_params)} params trainable")
+
+        # 4. 检查第一个MoE层的router
+        try:
+            layers, target_layers = self._get_target_layers()
+            first_moe = layers[0].mlp
+            if hasattr(first_moe, 'router'):
+                router_params_trainable = sum(1 for p in first_moe.router.parameters() if p.requires_grad)
+                router_params_total = sum(1 for p in first_moe.router.parameters())
+                print(f"  📍 First MoE Router: {router_params_trainable}/{router_params_total} params trainable")
+        except Exception as e:
+            print(f"  ❌ Cannot check MoE router: {e}")
+
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """
         前向传播
@@ -1250,6 +1303,15 @@ class SimplifiedCultureMoEAdapter:
             attention_mask: 注意力掩码
             labels: 标签
         """
+        # 🔧 紧急诊断和修复（只在前几次调用时执行）
+        if not hasattr(self, '_emergency_fix_done'):
+            self._emergency_fix_done = True
+            self.diagnose_gradient_flow(input_ids, attention_mask)
+            fixed_count = self.emergency_gradient_fix()
+            if fixed_count > 0:
+                print(f"🚨 Applied emergency gradient fix, re-diagnosing...")
+                self.diagnose_gradient_flow(input_ids, attention_mask)
+
         outputs = self.base_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
