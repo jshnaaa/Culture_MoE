@@ -757,6 +757,28 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             print(f"  Balance loss: {balance_loss.item()}, Total loss: {total_batch_loss.item()}")
             continue
 
+        # 🔧 添加梯度调试：检查所有损失组件的梯度状态
+        print(f"🔍 Gradient Debug - Batch {batch_idx}:")
+        print(f"  loss.requires_grad: {loss.requires_grad}, grad_fn: {loss.grad_fn is not None}")
+        print(f"  z_loss.requires_grad: {z_loss.requires_grad}, grad_fn: {z_loss.grad_fn is not None}")
+        print(f"  culture_loss.requires_grad: {culture_loss.requires_grad}, grad_fn: {culture_loss.grad_fn is not None}")
+        print(f"  balance_loss.requires_grad: {balance_loss.requires_grad}, grad_fn: {balance_loss.grad_fn is not None}")
+        print(f"  total_batch_loss.requires_grad: {total_batch_loss.requires_grad}, grad_fn: {total_batch_loss.grad_fn is not None}")
+
+        # 检查模型参数的requires_grad状态
+        trainable_params = sum(p.numel() for p in model_adapter.base_model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in model_adapter.base_model.parameters())
+        print(f"  Model params: {trainable_params}/{total_params} trainable")
+
+        # 如果total_batch_loss没有梯度，跳过这个batch
+        if not total_batch_loss.requires_grad or total_batch_loss.grad_fn is None:
+            print(f"❌ total_batch_loss has no gradient! Skipping batch {batch_idx}")
+            print(f"  Debugging loss components:")
+            print(f"    loss type: {type(loss)}, device: {loss.device}, dtype: {loss.dtype}")
+            print(f"    z_loss type: {type(z_loss)}, device: {z_loss.device}, dtype: {z_loss.dtype}")
+            print(f"    culture_loss type: {type(culture_loss)}, device: {culture_loss.device}, dtype: {culture_loss.dtype}")
+            continue
+
         # 梯度累积
         total_batch_loss = total_batch_loss / num_accumulation_steps
         total_batch_loss.backward()
@@ -1403,24 +1425,40 @@ def main():
         if is_main_process(rank):
             print("✅ Ensured dtype consistency after DDP wrapping")
 
-    # 优化器 - 使用8-bit优化器节省显存
+    # 🔧 修复参数管理：确保优化器只包含需要训练的参数
+    # 收集所有requires_grad=True的参数
+    trainable_params = []
+    param_names = []
+    for name, param in model_adapter.base_model.named_parameters():
+        if param.requires_grad:
+            trainable_params.append(param)
+            param_names.append(name)
+
+    if is_main_process(rank):
+        print(f"🔧 Trainable parameters ({len(trainable_params)} params):")
+        for name in param_names[:10]:  # 只显示前10个
+            print(f"  {name}")
+        if len(param_names) > 10:
+            print(f"  ... and {len(param_names) - 10} more")
+
+    # 优化器 - 使用8-bit优化器节省显存，只包含可训练参数
     try:
         import bitsandbytes as bnb
         optimizer = bnb.optim.AdamW8bit(
-            model_adapter.base_model.parameters(),
+            trainable_params,  # 只优化可训练参数
             lr=args.learning_rate,
             weight_decay=args.weight_decay
         )
         if is_main_process(rank):
-            print("✅ Using 8-bit AdamW optimizer (saves ~16GB memory)")
+            print("✅ Using 8-bit AdamW optimizer with filtered parameters (saves ~16GB memory)")
     except ImportError:
         optimizer = torch.optim.AdamW(
-            model_adapter.base_model.parameters(),
+            trainable_params,  # 只优化可训练参数
             lr=args.learning_rate,
             weight_decay=args.weight_decay
         )
         if is_main_process(rank):
-            print("⚠️ bitsandbytes not available, using standard AdamW")
+            print("⚠️ bitsandbytes not available, using standard AdamW with filtered parameters")
 
     # 训练循环
     if is_main_process(rank):

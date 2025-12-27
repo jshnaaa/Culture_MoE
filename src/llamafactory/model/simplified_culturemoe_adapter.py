@@ -371,9 +371,13 @@ class MoEFFNLoRA(nn.Module):
     def get_aux_loss(self):
         """计算辅助损失"""
         if self.latest_expert_weights is None:
-            # 🔧 修复梯度问题：使用参数*0来创建连接到计算图的零损失
-            dummy_param = next(self.parameters())
-            return dummy_param.sum() * 0.0
+            # 🔧 修复梯度问题：寻找一个requires_grad=True的参数创建连接到计算图的零损失
+            for param in self.parameters():
+                if param.requires_grad:
+                    return param.sum() * 0.0
+            # 如果没有可训练参数，创建一个简单的零tensor
+            import torch
+            return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
 
         try:
             # 负载均衡损失
@@ -383,17 +387,27 @@ class MoEFFNLoRA(nn.Module):
 
             # 检查数值稳定性
             if torch.isnan(balance_loss) or torch.isinf(balance_loss):
-                # 🔧 修复梯度问题：使用参数*0来创建连接到计算图的零损失
-                dummy_param = next(self.parameters())
-                balance_loss = dummy_param.sum() * 0.0
+                # 🔧 修复梯度问题：寻找一个requires_grad=True的参数创建连接到计算图的零损失
+                for param in self.parameters():
+                    if param.requires_grad:
+                        balance_loss = param.sum() * 0.0
+                        break
+                else:
+                    # 如果没有可训练参数，创建一个简单的零tensor
+                    import torch
+                    balance_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
 
             return balance_loss * 0.01  # 小的权重
 
         except Exception as e:
             print(f"⚠️ Aux loss computation failed: {e}")
-            # 🔧 修复梯度问题：使用参数*0来创建连接到计算图的零损失
-            dummy_param = next(self.parameters())
-            return dummy_param.sum() * 0.0
+            # 🔧 修复梯度问题：寻找一个requires_grad=True的参数创建连接到计算图的零损失
+            for param in self.parameters():
+                if param.requires_grad:
+                    return param.sum() * 0.0
+            # 如果没有可训练参数，创建一个简单的零tensor
+            import torch
+            return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
 
 
 
@@ -645,9 +659,19 @@ class SimplifiedCultureMoEAdapter:
             if main_loss is not None:
                 total_aux_loss = main_loss * 0.0
             else:
-                # 🔧 如果没有main_loss，使用模型参数创建连接到计算图的零损失
-                dummy_param = next(self.base_model.parameters())
-                total_aux_loss = dummy_param.sum() * 0.0
+                # 🔧 如果没有main_loss，寻找一个requires_grad=True的参数创建连接到计算图的零损失
+                dummy_param = None
+                for param in self.base_model.parameters():
+                    if param.requires_grad:
+                        dummy_param = param
+                        break
+
+                if dummy_param is not None:
+                    total_aux_loss = dummy_param.sum() * 0.0
+                else:
+                    # 如果没有可训练参数，创建一个简单的零tensor（这种情况不应该发生）
+                    import torch
+                    total_aux_loss = torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
         elif moe_layer_count > 1:
             total_aux_loss = total_aux_loss / moe_layer_count
 
