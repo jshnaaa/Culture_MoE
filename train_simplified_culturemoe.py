@@ -42,6 +42,7 @@ from ft_lora_only_gen import (
 )
 import pickle
 import numpy as np
+from collections import defaultdict, Counter
 
 
 def setup_distributed():
@@ -445,9 +446,96 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None):
     return culture_loss
 
 
+def print_expert_activation_stats(model_adapter, epoch):
+    """
+    统计并打印专家激活分布
+
+    Args:
+        model_adapter: SimplifiedCultureMoEAdapter实例
+        epoch: 当前epoch数
+    """
+    print(f"\n🔍 专家激活统计 - Epoch {epoch}")
+    print("=" * 80)
+
+    # 获取模型的MoE层
+    try:
+        # 从adapter获取layers
+        if hasattr(model_adapter, 'backbone_model'):
+            if hasattr(model_adapter.backbone_model, 'layers'):
+                layers = model_adapter.backbone_model.layers
+            elif hasattr(model_adapter.backbone_model, 'model') and hasattr(model_adapter.backbone_model.model, 'layers'):
+                layers = model_adapter.backbone_model.model.layers
+            else:
+                print("⚠️ 无法找到模型layers")
+                return
+        else:
+            print("⚠️ 无法找到backbone_model")
+            return
+
+        total_layers = len(layers)
+        moe_layer_count = 0
+
+        # 遍历所有层，统计MoE层的专家激活
+        for layer_idx in range(total_layers):
+            moe_layer = layers[layer_idx].mlp
+
+            # 检查是否为MoE层
+            if hasattr(moe_layer, 'latest_expert_weights') and moe_layer.latest_expert_weights is not None:
+                expert_weights = moe_layer.latest_expert_weights  # [B, num_experts]
+
+                if expert_weights.shape[0] > 0:  # 确保有数据
+                    # 对于top-2激活，找到每个样本激活的专家对
+                    batch_size, num_experts = expert_weights.shape
+                    activation_pairs = []
+
+                    for sample_idx in range(batch_size):
+                        # 找到权重最大的top-2专家
+                        top2_values, top2_indices = torch.topk(expert_weights[sample_idx], k=2, dim=0)
+
+                        # 只统计权重显著大于0的专家（避免统计到微小的数值噪音）
+                        significant_experts = []
+                        for i, (value, idx) in enumerate(zip(top2_values, top2_indices)):
+                            if value.item() > 1e-6:  # 阈值过滤
+                                significant_experts.append(idx.item())
+
+                        if len(significant_experts) >= 2:
+                            # 排序确保一致性（例如总是0/1而不是1/0）
+                            pair = tuple(sorted(significant_experts[:2]))
+                            activation_pairs.append(pair)
+
+                    # 统计激活对的频率
+                    if activation_pairs:
+                        pair_counts = Counter(activation_pairs)
+                        total_activations = len(activation_pairs)
+
+                        # 打印该层的统计结果
+                        print(f"Layer {layer_idx:2d}: ", end="")
+                        pair_stats = []
+                        for pair, count in sorted(pair_counts.items()):
+                            percentage = (count / total_activations) * 100
+                            pair_stats.append(f"{pair[0]}/{pair[1]}:{percentage:5.1f}%")
+
+                        print(", ".join(pair_stats))
+                        moe_layer_count += 1
+                    else:
+                        print(f"Layer {layer_idx:2d}: 无有效激活数据")
+
+        if moe_layer_count == 0:
+            print("⚠️ 未找到任何MoE层的激活数据")
+        else:
+            print(f"\n✅ 统计完成，共{moe_layer_count}个MoE层")
+
+    except Exception as e:
+        print(f"❌ 专家激活统计失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print("=" * 80)
+
+
 def train_epoch_simplified(model_adapter, train_loader, optimizer, device, tokenizer,
                          num_accumulation_steps=1, rank=0, use_culture_loss=True,
-                         lambda_balance=1.0, alpha_z=0.1, beta_culture=1.0):
+                         lambda_balance=1.0, alpha_z=0.1, beta_culture=1.0, epoch=None):
     """
     简化版CultureMoE训练一个epoch
     """
@@ -634,6 +722,10 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
     avg_main_loss = total_main_loss / num_batches if num_batches > 0 else 0
     avg_aux_loss = total_aux_loss / num_batches if num_batches > 0 else 0
     avg_culture_loss = total_culture_loss / num_batches if num_batches > 0 else 0
+
+    # 🆕 在epoch结束后统计专家激活分布
+    if rank == 0 and epoch is not None:  # 只在主进程打印
+        print_expert_activation_stats(model_adapter, epoch)
 
     return {
         'loss': avg_loss,
@@ -1297,7 +1389,8 @@ def main():
             use_culture_loss=use_culture_loss,
             lambda_balance=args.lambda_balance,
             alpha_z=args.alpha_z,
-            beta_culture=args.beta_culture
+            beta_culture=args.beta_culture,
+            epoch=epoch
         )
 
         if is_main_process(rank):
