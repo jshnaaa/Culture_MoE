@@ -266,7 +266,7 @@ echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
 echo ""
 
-# 内存优化的训练参数 - 参考joint版本设置
+# 内存优化的训练参数
 BATCH_SIZE=2              # 降低batch size解决OOM问题
 GRADIENT_ACCUMULATION=8   # 相应增加梯度累积，保持有效batch size
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
