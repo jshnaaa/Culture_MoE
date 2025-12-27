@@ -17,17 +17,17 @@ class LoRAExpert(nn.Module):
     """LoRA专家层 - 简化实现"""
 
     def __init__(self, hidden_dim: int, intermediate_dim: int, act_fn,
-                 lora_rank: int = 16, lora_alpha: int = 32, dropout: float = 0.1):
+                 lora_rank: int = 16, lora_alpha: int = 32, dropout: float = 0.1, dtype=None):
         super().__init__()
         self.scaling = lora_alpha / lora_rank
 
         # LoRA分支
-        self.gate_lora_A = nn.Linear(hidden_dim, lora_rank, bias=False)
-        self.gate_lora_B = nn.Linear(lora_rank, intermediate_dim, bias=False)
-        self.up_lora_A = nn.Linear(hidden_dim, lora_rank, bias=False)
-        self.up_lora_B = nn.Linear(lora_rank, intermediate_dim, bias=False)
-        self.down_lora_A = nn.Linear(intermediate_dim, lora_rank, bias=False)
-        self.down_lora_B = nn.Linear(lora_rank, hidden_dim, bias=False)
+        self.gate_lora_A = nn.Linear(hidden_dim, lora_rank, bias=False, dtype=dtype)
+        self.gate_lora_B = nn.Linear(lora_rank, intermediate_dim, bias=False, dtype=dtype)
+        self.up_lora_A = nn.Linear(hidden_dim, lora_rank, bias=False, dtype=dtype)
+        self.up_lora_B = nn.Linear(lora_rank, intermediate_dim, bias=False, dtype=dtype)
+        self.down_lora_A = nn.Linear(intermediate_dim, lora_rank, bias=False, dtype=dtype)
+        self.down_lora_B = nn.Linear(lora_rank, hidden_dim, bias=False, dtype=dtype)
 
         self.act_fn = act_fn
         self.dropout = nn.Dropout(dropout)
@@ -54,10 +54,10 @@ class LoRAExpert(nn.Module):
 class MoERouter(nn.Module):
     """MoE路由器 - 简化实现"""
 
-    def __init__(self, hidden_dim: int, num_experts: int = 4):
+    def __init__(self, hidden_dim: int, num_experts: int = 4, dtype=None):
         super().__init__()
         self.num_experts = num_experts
-        self.router = nn.Linear(hidden_dim, num_experts, bias=False)
+        self.router = nn.Linear(hidden_dim, num_experts, bias=False, dtype=dtype)
         nn.init.normal_(self.router.weight, mean=0.0, std=0.01)
 
     def forward(self, x):
@@ -83,6 +83,9 @@ class MoEFFNLoRA(nn.Module):
         self.hidden_dim = original_ffn.gate_proj.in_features
         self.intermediate_dim = original_ffn.gate_proj.out_features
 
+        # 🔧 获取原始FFN的dtype以确保一致性
+        original_dtype = next(original_ffn.parameters()).dtype
+
         # 4个路由专家
         self.routing_experts = nn.ModuleList([
             LoRAExpert(
@@ -91,7 +94,8 @@ class MoEFFNLoRA(nn.Module):
                 act_fn=original_ffn.act_fn,
                 lora_rank=config.lora_rank,
                 lora_alpha=config.lora_alpha,
-                dropout=config.lora_dropout
+                dropout=config.lora_dropout,
+                dtype=original_dtype
             ) for _ in range(4)
         ])
 
@@ -102,17 +106,18 @@ class MoEFFNLoRA(nn.Module):
             act_fn=original_ffn.act_fn,
             lora_rank=config.lora_rank,
             lora_alpha=config.lora_alpha,
-            dropout=config.lora_dropout
+            dropout=config.lora_dropout,
+            dtype=original_dtype
         )
 
         # Router网络
-        self.router = MoERouter(hidden_dim=self.hidden_dim, num_experts=4)
+        self.router = MoERouter(hidden_dim=self.hidden_dim, num_experts=4, dtype=original_dtype)
 
         # Gate网络：融合共享专家和路由专家输出
         self.gate_network = nn.Sequential(
-            nn.Linear(self.hidden_dim * 2, self.hidden_dim, bias=False),
+            nn.Linear(self.hidden_dim * 2, self.hidden_dim, bias=False, dtype=original_dtype),
             nn.ReLU(),
-            nn.Linear(self.hidden_dim, 2, bias=False),
+            nn.Linear(self.hidden_dim, 2, bias=False, dtype=original_dtype),
             nn.Softmax(dim=-1)
         )
 
