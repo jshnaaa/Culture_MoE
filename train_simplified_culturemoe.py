@@ -433,7 +433,7 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, los
     if len(total_culture_losses) > 0:
         culture_loss = torch.stack(total_culture_losses).mean()
     else:
-        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
+        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
 
     # 🔧 修复：确保返回的tensor有正确的梯度属性
     if not isinstance(culture_loss, torch.Tensor):
@@ -533,7 +533,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         loss = outputs.loss
 
         # 计算文化损失 - 统一使用float16节省显存
-        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
+        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
         if use_culture_loss != 'false' and culture_labels is not None:
             # 🆕 获取shared专家输出用于文化损失
             shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
@@ -558,7 +558,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
                             culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
                         else:
                             # 索引数量不匹配，跳过文化损失计算
-                            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
+                            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
                     else:
                         # 兼容模式，使用前expert_batch_size个
                         relevant_culture_labels = culture_labels[:expert_batch_size]
@@ -713,7 +713,7 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             loss = outputs.loss
 
             # 计算文化损失 - 统一使用float16节省显存
-            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
+            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
             if use_culture_loss != 'false' and culture_labels is not None:
                 # 🆕 获取shared专家输出用于文化损失
                 shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
@@ -733,7 +733,7 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
                                 relevant_culture_labels = culture_labels[full_indices]
                                 culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
                             else:
-                                culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
+                                culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
                         else:
                             relevant_culture_labels = culture_labels[:expert_batch_size]
                             culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
