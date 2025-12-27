@@ -333,7 +333,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 EOF
 
 # 设置内存优化环境变量（与MixLoRA一致）
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32,expandable_segments:True
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 export CUDA_LAUNCH_BLOCKING=0
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
