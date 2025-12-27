@@ -821,7 +821,7 @@ class SimplifiedCultureMoEAdapter:
                 if total_aux_loss is None:
                     total_aux_loss = aux_loss
                 else:
-                    total_aux_loss += aux_loss
+                    total_aux_loss = total_aux_loss + aux_loss
                 moe_layer_count += 1
 
         if total_aux_loss is None:
