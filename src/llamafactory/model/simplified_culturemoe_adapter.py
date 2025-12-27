@@ -145,7 +145,7 @@ class MoERouter(nn.Module):
             # 检查结果
             if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
                 # 使用均匀分布作为fallback
-                expert_weights = torch.ones_like(expert_weights) / self.num_experts
+                expert_weights = expert_weights * 0.0 + (1.0 / self.num_experts)
                 router_logits = router_logits * 0.0
 
             return expert_weights, router_logits
@@ -282,7 +282,7 @@ class MoEFFNLoRA(nn.Module):
                 top_k_weights = F.softmax(top_k_logits, dim=-1)  # [B, L, k]
 
                 # 创建稀疏权重矩阵
-                selected_expert_weights = torch.zeros_like(expert_weights)  # [B, L, num_experts]
+                selected_expert_weights = expert_weights * 0.0  # [B, L, num_experts]
                 selected_expert_weights.scatter_(-1, top_k_indices, top_k_weights)
 
             # 4. 计算路由专家的LoRA增量（新架构：专家只计算LoRA增量）
@@ -299,7 +299,7 @@ class MoEFFNLoRA(nn.Module):
                 routed_delta = torch.sum(expert_deltas * weights, dim=-1)  # [B, L, H]
             else:
                 # Top-k模式：只计算被选中专家的LoRA增量
-                routed_delta = torch.zeros_like(hidden_states)
+                routed_delta = hidden_states * 0.0
 
                 # 重塑为[B*L, H]便于处理
                 hidden_flat = hidden_states.view(-1, self.hidden_dim)
@@ -329,7 +329,7 @@ class MoEFFNLoRA(nn.Module):
                 shared_output_for_culture_loss = original_output + shared_delta
                 self.latest_shared_outputs = shared_output_for_culture_loss.mean(dim=1)  # [B, H]
             else:
-                shared_delta = torch.zeros_like(hidden_states)
+                shared_delta = hidden_states * 0.0
                 self.latest_shared_outputs = None
 
             # 6. 融合shared专家和路由专家的输出
@@ -378,7 +378,7 @@ class MoEFFNLoRA(nn.Module):
         try:
             # 负载均衡损失
             expert_usage = self.latest_expert_weights.mean(dim=0)  # [num_experts]
-            target_usage = torch.ones_like(expert_usage) / self.num_experts
+            target_usage = expert_usage * 0.0 + (1.0 / self.num_experts)
             balance_loss = F.mse_loss(expert_usage, target_usage)
 
             # 检查数值稳定性
