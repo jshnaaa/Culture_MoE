@@ -318,97 +318,130 @@ def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
     }
 
 
-def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
+def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, loss_weight=0.01):
     """
     计算文化感知损失
 
     Args:
         model_outputs: 模型输出，应该包含expert_weights等信息
         culture_labels: 文化标签 [B]
+        shared_outputs: shared专家输出 [B, H]，可选
         loss_weight: 损失权重
 
     Returns:
         culture_loss: 文化损失
     """
-    if not hasattr(model_outputs, 'expert_weights') or model_outputs.expert_weights is None:
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=False)
+    device = culture_labels.device
+    total_culture_losses = []
 
-    expert_weights = model_outputs.expert_weights  # [B_expert, num_experts]
+    # 🆕 1. Shared专家损失：所有样本的shared专家输出都应该相似（学习文化共性）
+    if shared_outputs is not None and shared_outputs.shape[0] >= 2:
+        shared_losses = []
+        batch_size = shared_outputs.shape[0]
 
-    # 🔧 MASK机制修复：expert_weights可能只包含激活路由专家的样本
-    # 如果维度不匹配，说明部分样本使用了shared专家，没有expert_weights
-    if expert_weights.shape[0] != culture_labels.shape[0]:
-        # 只对有expert_weights的样本计算文化损失
-        if expert_weights.shape[0] < 2:
-            # 激活路由专家的样本少于2个，无法计算文化损失
-            return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=False)
+        # 对所有样本对计算shared专家相似度损失
+        for i in range(batch_size):
+            for j in range(i + 1, batch_size):
+                vec1 = shared_outputs[i].unsqueeze(0)
+                vec2 = shared_outputs[j].unsqueeze(0)
 
-        # 使用前expert_weights.shape[0]个culture_labels
-        culture_labels = culture_labels[:expert_weights.shape[0]]
-
-    batch_size = expert_weights.shape[0]
-
-    # 🔧 修复：避免in-place操作，收集所有损失然后求和
-    culture_losses = []
-
-    # 计算同文化样本间的相似性和不同文化样本间的差异性
-    for i in range(batch_size):
-        for j in range(i + 1, batch_size):
-            if culture_labels[i] == culture_labels[j]:
-                # 相同文化，鼓励相似的专家权重
-                vec1 = expert_weights[i].unsqueeze(0)
-                vec2 = expert_weights[j].unsqueeze(0)
-
-                # 检查向量是否为零向量，避免cosine_similarity中的NaN
+                # 检查向量是否为零向量
                 norm1 = torch.norm(vec1)
                 norm2 = torch.norm(vec2)
                 if norm1 < 1e-8 or norm2 < 1e-8:
-                    # 如果任一向量接近零向量，跳过这对比较
                     continue
 
                 similarity = F.cosine_similarity(vec1, vec2)
-                # 确保similarity使用float16并检查数值稳定性
                 similarity = similarity.to(dtype=torch.float16)
                 if torch.isnan(similarity) or torch.isinf(similarity):
-                    continue  # 跳过无效的相似度计算
+                    continue
 
-                # 🔧 修复：避免in-place操作，直接使用tensor
-                loss_term = 1.0 - similarity
-                culture_losses.append(loss_term)
+                # Shared专家：所有样本都应该相似，所以损失为 1 - similarity
+                # 相似度越高，损失越小
+                shared_loss_term = 1.0 - similarity
+                shared_losses.append(shared_loss_term)
+
+        if len(shared_losses) > 0:
+            shared_culture_loss = torch.stack(shared_losses).mean() * loss_weight
+            total_culture_losses.append(shared_culture_loss)
+
+    # 🔄 2. 路由专家损失：保持原有逻辑（同culture相似，不同culture不同）
+    if hasattr(model_outputs, 'expert_weights') and model_outputs.expert_weights is not None:
+        expert_weights = model_outputs.expert_weights  # [B_expert, num_experts]
+
+        # 🔧 MASK机制修复：expert_weights可能只包含激活路由专家的样本
+        routing_culture_labels = culture_labels
+        if expert_weights.shape[0] != culture_labels.shape[0]:
+            # 只对有expert_weights的样本计算文化损失
+            if expert_weights.shape[0] < 2:
+                # 激活路由专家的样本少于2个，跳过路由专家损失
+                pass
             else:
-                # 不同文化，鼓励不同的专家权重
-                vec1 = expert_weights[i].unsqueeze(0)
-                vec2 = expert_weights[j].unsqueeze(0)
+                # 使用前expert_weights.shape[0]个culture_labels
+                routing_culture_labels = culture_labels[:expert_weights.shape[0]]
 
-                # 检查向量是否为零向量，避免cosine_similarity中的NaN
-                norm1 = torch.norm(vec1)
-                norm2 = torch.norm(vec2)
-                if norm1 < 1e-8 or norm2 < 1e-8:
-                    # 如果任一向量接近零向量，跳过这对比较
-                    continue
+        if expert_weights.shape[0] >= 2:
+            routing_losses = []
+            batch_size = expert_weights.shape[0]
 
-                similarity = F.cosine_similarity(vec1, vec2)
-                # 确保similarity使用float16并检查数值稳定性
-                similarity = similarity.to(dtype=torch.float16)
-                if torch.isnan(similarity) or torch.isinf(similarity):
-                    continue  # 跳过无效的相似度计算
+            # 计算同文化样本间的相似性和不同文化样本间的差异性
+            for i in range(batch_size):
+                for j in range(i + 1, batch_size):
+                    if routing_culture_labels[i] == routing_culture_labels[j]:
+                        # 相同文化，鼓励相似的专家权重
+                        vec1 = expert_weights[i].unsqueeze(0)
+                        vec2 = expert_weights[j].unsqueeze(0)
 
-                # 🔧 修复：避免in-place操作，直接使用tensor
-                culture_losses.append(similarity)
+                        # 检查向量是否为零向量，避免cosine_similarity中的NaN
+                        norm1 = torch.norm(vec1)
+                        norm2 = torch.norm(vec2)
+                        if norm1 < 1e-8 or norm2 < 1e-8:
+                            continue
 
-    # 🔧 修复：计算最终的culture_loss
-    if len(culture_losses) > 0:
-        culture_loss = torch.stack(culture_losses).mean() * loss_weight
+                        similarity = F.cosine_similarity(vec1, vec2)
+                        similarity = similarity.to(dtype=torch.float16)
+                        if torch.isnan(similarity) or torch.isinf(similarity):
+                            continue
+
+                        # 相同文化：相似度应该高，损失为 1 - similarity
+                        loss_term = 1.0 - similarity
+                        routing_losses.append(loss_term)
+                    else:
+                        # 不同文化，鼓励不同的专家权重
+                        vec1 = expert_weights[i].unsqueeze(0)
+                        vec2 = expert_weights[j].unsqueeze(0)
+
+                        # 检查向量是否为零向量，避免cosine_similarity中的NaN
+                        norm1 = torch.norm(vec1)
+                        norm2 = torch.norm(vec2)
+                        if norm1 < 1e-8 or norm2 < 1e-8:
+                            continue
+
+                        similarity = F.cosine_similarity(vec1, vec2)
+                        similarity = similarity.to(dtype=torch.float16)
+                        if torch.isnan(similarity) or torch.isinf(similarity):
+                            continue
+
+                        # 不同文化：相似度应该低，损失为 similarity
+                        routing_losses.append(similarity)
+
+            if len(routing_losses) > 0:
+                routing_culture_loss = torch.stack(routing_losses).mean() * loss_weight
+                total_culture_losses.append(routing_culture_loss)
+
+    # 🔧 计算最终的总文化损失
+    if len(total_culture_losses) > 0:
+        culture_loss = torch.stack(total_culture_losses).mean()
     else:
-        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
 
     # 🔧 修复：确保返回的tensor有正确的梯度属性
     if not isinstance(culture_loss, torch.Tensor):
-        culture_loss = torch.tensor(culture_loss, device=culture_labels.device, dtype=torch.float16, requires_grad=True)
+        culture_loss = torch.tensor(culture_loss, device=device, dtype=torch.float16, requires_grad=True)
 
     # 检查文化损失是否为NaN/Inf，如果是则返回零损失
     if torch.isnan(culture_loss) or torch.isinf(culture_loss):
-        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=True)
+        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
 
     return culture_loss
 
@@ -501,6 +534,9 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         # 计算文化损失 - 统一使用float16节省显存
         culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
         if use_culture_loss != 'false' and culture_labels is not None:
+            # 🆕 获取shared专家输出用于文化损失
+            shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
+
             # 🔧 MASK机制：传递input_type信息以正确处理文化损失
             if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
                 # 如果有expert_weights，说明有样本激活了路由专家
@@ -509,7 +545,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
                 if expert_batch_size == full_batch_size:
                     # 所有样本都激活路由专家
-                    culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
+                    culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, culture_loss_weight)
                 elif expert_batch_size > 0:
                     # 部分样本激活路由专家，需要找到对应的culture_labels
                     # 🔧 MASK机制：根据input_type找到激活路由专家的样本索引
@@ -518,14 +554,18 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
                         if len(full_indices) == expert_batch_size:
                             # 提取对应的culture_labels
                             relevant_culture_labels = culture_labels[full_indices]
-                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
+                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
                         else:
                             # 索引数量不匹配，跳过文化损失计算
                             culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
                     else:
                         # 兼容模式，使用前expert_batch_size个
                         relevant_culture_labels = culture_labels[:expert_batch_size]
-                        culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
+                        culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
+            else:
+                # 🆕 即使没有路由专家权重，也可以计算shared专家损失
+                if shared_outputs is not None:
+                    culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, culture_loss_weight)
 
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss()
@@ -670,25 +710,32 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             # 计算文化损失 - 统一使用float16节省显存
             culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
             if use_culture_loss != 'false' and culture_labels is not None:
+                # 🆕 获取shared专家输出用于文化损失
+                shared_outputs = model_adapter.get_shared_outputs_for_culture_loss()
+
                 # 🔧 MASK机制：正确处理文化损失
                 if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
                     expert_batch_size = outputs.expert_weights.shape[0]
                     full_batch_size = culture_labels.shape[0]
 
                     if expert_batch_size == full_batch_size:
-                        culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
+                        culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, culture_loss_weight)
                     elif expert_batch_size > 0:
                         # 🔧 MASK机制：根据input_type找到对应的culture_labels
                         if input_type is not None:
                             full_indices = (input_type == 1).nonzero(as_tuple=True)[0]
                             if len(full_indices) == expert_batch_size:
                                 relevant_culture_labels = culture_labels[full_indices]
-                                culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
+                                culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
                             else:
                                 culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
                         else:
                             relevant_culture_labels = culture_labels[:expert_batch_size]
-                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
+                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
+                else:
+                    # 🆕 即使没有路由专家权重，也可以计算shared专家损失
+                    if shared_outputs is not None:
+                        culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, culture_loss_weight)
 
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss()

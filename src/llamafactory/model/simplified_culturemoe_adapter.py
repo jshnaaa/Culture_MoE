@@ -257,6 +257,9 @@ class MoEFFNLoRA(nn.Module):
         # 保存最新的专家权重用于文化损失
         self.latest_expert_weights = None
 
+        # 🆕 保存shared专家的输出用于文化损失计算
+        self.latest_shared_outputs = None
+
     def forward(self, hidden_states, input_type=None, masked_hidden_states=None):
         """
         前向传播
@@ -374,8 +377,12 @@ class MoEFFNLoRA(nn.Module):
             if self.use_shared and not self.ablation_disable_shared:
                 shared_output = self.shared_expert(hidden_states)
                 shared_delta = shared_output - original_output
+
+                # 🆕 保存shared专家输出用于文化损失计算（平均到序列维度）
+                self.latest_shared_outputs = shared_output.mean(dim=1)  # [B, H]
             else:
                 shared_delta = torch.zeros_like(hidden_states)
+                self.latest_shared_outputs = None
 
             # 6. 融合shared专家和路由专家的输出
             use_shared_effective = self.use_shared and not self.ablation_disable_shared
@@ -479,9 +486,13 @@ class MoEFFNLoRA(nn.Module):
             shared_output = self.shared_expert(hidden_states)
             shared_delta = shared_output - original_output
             final_output = original_output + shared_delta
+
+            # 🆕 保存shared专家输出用于文化损失计算（平均到序列维度）
+            self.latest_shared_outputs = shared_output.mean(dim=1)  # [B, H]
         else:
             # 如果shared专家被禁用，直接使用原始FFN
             final_output = original_output
+            self.latest_shared_outputs = None
 
         return final_output
 
@@ -772,6 +783,25 @@ class SimplifiedCultureMoEAdapter:
             # 对所有MoE层的权重求平均
             avg_expert_weights = torch.stack(expert_weights_list, dim=0).mean(dim=0)
             return avg_expert_weights.to(dtype=torch.float16)
+        else:
+            return None
+
+    def get_shared_outputs_for_culture_loss(self):
+        """获取shared专家输出用于文化损失计算"""
+        layers, target_layers = self._get_target_layers()
+
+        # 收集MoE层的shared专家输出
+        shared_outputs_list = []
+
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_shared_outputs is not None:
+                shared_outputs_list.append(moe_layer.latest_shared_outputs)
+
+        if shared_outputs_list:
+            # 对所有MoE层的shared输出求平均
+            avg_shared_outputs = torch.stack(shared_outputs_list, dim=0).mean(dim=0)
+            return avg_shared_outputs.to(dtype=torch.float16)
         else:
             return None
 
