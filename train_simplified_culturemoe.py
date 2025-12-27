@@ -1197,6 +1197,12 @@ def main():
         model_adapter.print_trainable_parameters()
         print("✅ Simplified CultureMoE configured")
 
+    # 启用梯度检查点节省显存
+    if hasattr(model_adapter.base_model, 'gradient_checkpointing_enable'):
+        model_adapter.base_model.gradient_checkpointing_enable()
+        if is_main_process(rank):
+            print("✅ Gradient checkpointing enabled (saves 3-5GB memory)")
+
     # 确保所有参数在正确设备上（在DDP包装前）
     torch.cuda.empty_cache()
 
@@ -1251,12 +1257,24 @@ def main():
         if is_main_process(rank):
             print("✅ Ensured dtype consistency after DDP wrapping")
 
-    # 优化器
-    optimizer = torch.optim.AdamW(
-        model_adapter.base_model.parameters(),
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay
-    )
+    # 优化器 - 使用8-bit优化器节省显存
+    try:
+        import bitsandbytes as bnb
+        optimizer = bnb.optim.AdamW8bit(
+            model_adapter.base_model.parameters(),
+            lr=args.learning_rate,
+            weight_decay=args.weight_decay
+        )
+        if is_main_process(rank):
+            print("✅ Using 8-bit AdamW optimizer (saves ~16GB memory)")
+    except ImportError:
+        optimizer = torch.optim.AdamW(
+            model_adapter.base_model.parameters(),
+            lr=args.learning_rate,
+            weight_decay=args.weight_decay
+        )
+        if is_main_process(rank):
+            print("⚠️ bitsandbytes not available, using standard AdamW")
 
     # 训练循环
     if is_main_process(rank):

@@ -631,7 +631,7 @@ def _collate_dual_input_batch(batch, tokenizer):
     # 找到batch内最长的序列长度（考虑complete和masked两个版本）
     max_length_complete = max(len(item['input_ids_complete']) for item in batch)
     max_length_masked = max(len(item['input_ids_masked']) for item in batch)
-    max_length = min(max(max_length_complete, max_length_masked), 850)
+    max_length = max(max_length_complete, max_length_masked)
 
     # 双路数据收集
     batch_input_ids_complete = []

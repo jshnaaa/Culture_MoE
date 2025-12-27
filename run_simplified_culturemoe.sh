@@ -267,8 +267,8 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数
-BATCH_SIZE=1              # 进一步降低batch size解决严重OOM问题
-GRADIENT_ACCUMULATION=16  # 相应增加梯度累积，保持有效batch size
+BATCH_SIZE=2              # 恢复到2以支持文化对比损失
+GRADIENT_ACCUMULATION=8   # 相应调整梯度累积，保持有效batch size=16
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
 NUM_EPOCHS=7              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
@@ -279,7 +279,7 @@ if [ "$DATA_ID" = "3" ] || [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
     echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=850"
 else
     MAX_SEQ_LEN=384       # 其他数据集使用384
-    echo "🔧 使用标准序列长度MAX_SEQ_LEN=512"
+    echo "🔧 使用标准序列长度MAX_SEQ_LEN=384"
 fi
 
 echo "训练参数:"
