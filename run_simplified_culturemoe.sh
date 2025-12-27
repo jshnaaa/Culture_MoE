@@ -268,7 +268,7 @@ echo ""
 # 内存优化的训练参数
 BATCH_SIZE=4              # 恢复到2以支持文化对比损失
 GRADIENT_ACCUMULATION=8   # 相应调整梯度累积，保持有效batch size=16
-LEARNING_RATE=1e-3        # 🔧 大幅提升学习率：解决偏向性崩塌问题
+LEARNING_RATE=2e-4        # 🔧 大幅提升学习率：解决偏向性崩塌问题
 NUM_EPOCHS=7              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
 # 动态设置max_seq_len：参考joint版本逻辑
