@@ -262,7 +262,6 @@ echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_
 echo "  层次化损失系数: λ=$LAMBDA, α=$ALPHA, β=$BETA"
 echo "  启用LoRA: $USE_LORA"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
-echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
 echo ""
 
