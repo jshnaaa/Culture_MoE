@@ -425,7 +425,7 @@ class MoEFFNLoRA(nn.Module):
     def get_aux_loss(self):
         """计算辅助损失"""
         if self.latest_expert_weights is None:
-            return torch.tensor(0.0, device=next(self.parameters()).device)
+            return torch.tensor(0.0, device=next(self.parameters()).device, requires_grad=True)
 
         try:
             # 负载均衡损失
@@ -435,13 +435,13 @@ class MoEFFNLoRA(nn.Module):
 
             # 检查数值稳定性
             if torch.isnan(balance_loss) or torch.isinf(balance_loss):
-                balance_loss = torch.tensor(0.0, device=balance_loss.device)
+                balance_loss = torch.tensor(0.0, device=balance_loss.device, requires_grad=True)
 
             return balance_loss * 0.01  # 小的权重
 
         except Exception as e:
             print(f"⚠️ Aux loss computation failed: {e}")
-            return torch.tensor(0.0, device=next(self.parameters()).device)
+            return torch.tensor(0.0, device=next(self.parameters()).device, requires_grad=True)
 
     def _forward_dual_parallel(self, hidden_states_complete, hidden_states_masked):
         """
@@ -826,7 +826,7 @@ class SimplifiedCultureMoEAdapter:
 
         if total_aux_loss is None:
             device = next(self.base_model.parameters()).device
-            total_aux_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+            total_aux_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
         elif moe_layer_count > 1:
             total_aux_loss = total_aux_loss / moe_layer_count
 
