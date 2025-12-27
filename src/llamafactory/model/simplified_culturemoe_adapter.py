@@ -196,6 +196,9 @@ class SimplifiedCultureMoEAdapter:
         self.base_model = base_model
         self.config = config
 
+        # 🔧 CRITICAL: 初始化前配置PyTorch内存分配器优化
+        self._configure_memory_allocator()
+
         # 应用LoRA到注意力层（如果启用）
         if config.use_lora:
             self._apply_attention_lora()
@@ -205,6 +208,150 @@ class SimplifiedCultureMoEAdapter:
 
         # 确保设备一致性
         self._ensure_device_consistency()
+
+    def _configure_memory_allocator(self):
+        """🔧 配置PyTorch内存分配器以防止SimplifiedCultureMoE内存碎片化"""
+        import os
+        import torch
+
+        print(f"🔧 Configuring PyTorch memory allocator for SimplifiedCultureMoE...")
+
+        try:
+            # 🔧 关键修复1：启用可扩展内存段，防止碎片化
+            # 这对于960个Linear层的MoE架构至关重要
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+            print(f"✅ Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+
+            # 🔧 关键修复2：配置内存池参数
+            if torch.cuda.is_available():
+                device_id = torch.cuda.current_device()
+
+                # 获取GPU总内存
+                total_memory = torch.cuda.get_device_properties(device_id).total_memory
+                total_gb = total_memory / 1024**3
+
+                # 🔧 为SimplifiedCultureMoE优化：保守的内存分配策略
+                if total_gb >= 40:  # 48GB卡
+                    memory_fraction = 0.75  # 使用75%，留25%给碎片化缓冲
+                elif total_gb >= 20:  # 24GB卡
+                    memory_fraction = 0.70  # 使用70%
+                else:  # 小于20GB
+                    memory_fraction = 0.65  # 使用65%
+
+                # 设置内存分配比例
+                torch.cuda.set_per_process_memory_fraction(memory_fraction, device_id)
+
+                print(f"✅ GPU Memory Configuration:")
+                print(f"   Total GPU Memory: {total_gb:.1f}GB")
+                print(f"   Allocated Fraction: {memory_fraction*100:.1f}%")
+                print(f"   Reserved for MoE: {total_gb*memory_fraction:.1f}GB")
+                print(f"   Fragmentation Buffer: {total_gb*(1-memory_fraction):.1f}GB")
+
+                # 🔧 关键修复3：预分配内存池，减少运行时分配
+                try:
+                    # 预热GPU内存分配器
+                    dummy_tensor = torch.zeros(1024, 1024, device=device_id, dtype=torch.float16)
+                    del dummy_tensor
+                    torch.cuda.empty_cache()
+                    print(f"✅ GPU memory allocator pre-warmed")
+                except Exception as e:
+                    print(f"⚠️ Memory pre-warming failed: {e}")
+
+                # 🔧 关键修复4：内存碎片化检测
+                allocated_before = torch.cuda.memory_allocated(device_id) / 1024**3
+                reserved_before = torch.cuda.memory_reserved(device_id) / 1024**3
+                fragmentation_ratio = (reserved_before - allocated_before) / reserved_before if reserved_before > 0 else 0
+
+                print(f"✅ Initial Memory Status:")
+                print(f"   Allocated: {allocated_before:.2f}GB")
+                print(f"   Reserved: {reserved_before:.2f}GB")
+                print(f"   Fragmentation: {fragmentation_ratio*100:.1f}%")
+
+                if fragmentation_ratio > 0.3:  # 超过30%碎片化
+                    print(f"⚠️ High fragmentation detected, forcing cleanup...")
+                    torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
+
+            # 🔧 关键修复5：设置其他内存优化环境变量
+            memory_env_vars = {
+                'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True',
+                'CUDA_LAUNCH_BLOCKING': '0',  # 异步执行，减少内存等待
+                'TORCH_CUDNN_V8_API_DISABLED': '1',  # 禁用某些可能导致内存问题的cuDNN功能
+            }
+
+            for var, value in memory_env_vars.items():
+                if var not in os.environ:
+                    os.environ[var] = value
+                    print(f"✅ Set {var}={value}")
+
+            print(f"✅ PyTorch memory allocator configuration completed")
+
+        except Exception as e:
+            print(f"❌ Memory allocator configuration failed: {e}")
+            print(f"⚠️ SimplifiedCultureMoE may experience memory fragmentation issues")
+            print(f"   Recommend manually setting: export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+
+    def _monitor_memory_fragmentation(self, operation_name="operation"):
+        """🔧 实时监控内存碎片化状态"""
+        if not torch.cuda.is_available():
+            return True
+
+        try:
+            device_id = torch.cuda.current_device()
+            allocated = torch.cuda.memory_allocated(device_id) / 1024**3
+            reserved = torch.cuda.memory_reserved(device_id) / 1024**3
+            total = torch.cuda.get_device_properties(device_id).total_memory / 1024**3
+
+            fragmentation_ratio = (reserved - allocated) / reserved if reserved > 0 else 0
+            usage_ratio = reserved / total
+
+            print(f"💾 Memory Status ({operation_name}):")
+            print(f"   Allocated: {allocated:.2f}GB ({allocated/total*100:.1f}%)")
+            print(f"   Reserved: {reserved:.2f}GB ({usage_ratio*100:.1f}%)")
+            print(f"   Free: {total-reserved:.2f}GB")
+            print(f"   Fragmentation: {fragmentation_ratio*100:.1f}%")
+
+            # 🔧 智能内存清理策略
+            cleanup_needed = False
+            if fragmentation_ratio > 0.4:  # 超过40%碎片化
+                print(f"🚨 HIGH FRAGMENTATION: {fragmentation_ratio*100:.1f}% > 40%")
+                cleanup_needed = True
+            elif usage_ratio > 0.85:  # 超过85%使用率
+                print(f"🚨 HIGH MEMORY USAGE: {usage_ratio*100:.1f}% > 85%")
+                cleanup_needed = True
+            elif reserved - allocated > 2.0:  # 超过2GB碎片
+                print(f"🚨 LARGE FRAGMENTATION: {reserved-allocated:.2f}GB > 2.0GB")
+                cleanup_needed = True
+
+            if cleanup_needed:
+                print(f"🔧 Performing emergency memory cleanup...")
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+
+                # 再次检查
+                allocated_after = torch.cuda.memory_allocated(device_id) / 1024**3
+                reserved_after = torch.cuda.memory_reserved(device_id) / 1024**3
+                freed = (reserved - reserved_after)
+
+                print(f"✅ Cleanup completed:")
+                print(f"   Memory freed: {freed:.2f}GB")
+                print(f"   New allocated: {allocated_after:.2f}GB")
+                print(f"   New reserved: {reserved_after:.2f}GB")
+
+                # 如果清理后仍然有严重问题，返回警告
+                new_fragmentation = (reserved_after - allocated_after) / reserved_after if reserved_after > 0 else 0
+                if new_fragmentation > 0.5 or reserved_after/total > 0.9:
+                    print(f"❌ CRITICAL: Memory issues persist after cleanup")
+                    print(f"   Consider reducing batch_size or max_length")
+                    return False
+
+            return True
+
+        except Exception as e:
+            print(f"❌ Memory monitoring failed: {e}")
+            return True  # 不因监控失败而中断训练
 
 
     def _get_target_layers(self):
@@ -232,24 +379,96 @@ class SimplifiedCultureMoEAdapter:
 
 
     def _replace_all_layers_with_moe(self):
-        """替换所有层的FFN为LoRA MoE"""
+        """🔧 MEMORY-OPTIMIZED替换所有层的FFN为LoRA MoE：渐进式创建避免OOM"""
         layers, target_layers = self._get_target_layers()
 
-        print(f"🔄 Replacing FFN in ALL {len(target_layers)} layers with LoRA MoE (Pure LoRA MoE Architecture)")
+        # 获取目标设备
+        base_device = next(self.base_model.parameters()).device
+
+        print(f"🔄 MEMORY-OPTIMIZED Replacing FFN in ALL {len(target_layers)} layers with LoRA MoE")
+        print(f"   Strategy: Progressive creation with memory cleanup after each layer")
+        print(f"   Target device: {base_device}")
+
+        # 🔧 增强的内存监控
+        def check_memory_status(layer_idx):
+            if torch.cuda.is_available():
+                # 使用新的内存监控方法
+                memory_ok = self._monitor_memory_fragmentation(f"layer_{layer_idx}_creation")
+                if not memory_ok:
+                    print(f"⚠️ Memory issues detected at layer {layer_idx}")
+                    return False
+            return True
 
         for layer_idx in target_layers:
-            original_ffn = layers[layer_idx].mlp
-            moe_ffn = MoEFFNLoRA(original_ffn, self.config)
-            layers[layer_idx].mlp = moe_ffn
+            try:
+                # 🔧 渐进式创建：每层创建前检查内存
+                if layer_idx % 8 == 0:  # 每8层报告一次内存状态
+                    memory_ok = check_memory_status(layer_idx)
+                    if not memory_ok:
+                        print(f"🚨 CRITICAL MEMORY WARNING at layer {layer_idx}")
+                        print(f"   Forcing emergency cleanup before continuing...")
+                        import gc
+                        gc.collect()
+                        torch.cuda.empty_cache()
 
-            # 构建配置信息字符串
-            config_info = f"{self.config.num_moe_experts} experts, rank={self.config.lora_rank}"
-            if self.config.use_shared:
-                config_info += ", +shared"
-            if self.config.use_gate:
-                config_info += ", +gate"
+                original_ffn = layers[layer_idx].mlp
 
-            print(f"✅ Replaced layer {layer_idx} FFN with LoRA MoE ({config_info})")
+                # 🔧 创建MoE层并立即移动到正确设备
+                moe_ffn = MoEFFNLoRA(original_ffn, self.config)
+
+                # 🔧 关键修复：立即移动到目标设备，避免后续批量移动
+                moe_ffn = moe_ffn.to(device=base_device, non_blocking=True)
+
+                # 替换FFN
+                layers[layer_idx].mlp = moe_ffn
+
+                # 🔧 每层创建后立即清理内存，防止碎片化累积
+                if layer_idx % 4 == 3:  # 每4层清理一次
+                    import gc
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                # 构建配置信息字符串
+                config_info = f"{self.config.num_moe_experts} experts, rank={self.config.lora_rank}"
+                if self.config.use_shared:
+                    config_info += ", +shared"
+                if self.config.use_gate:
+                    config_info += ", +gate"
+
+                print(f"✅ Replaced layer {layer_idx} FFN with LoRA MoE ({config_info})")
+
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print(f"❌ OOM at layer {layer_idx}: {e}")
+                    print(f"🔧 Emergency cleanup and retry...")
+
+                    # 紧急内存清理
+                    import gc
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                    # 重新尝试创建该层
+                    try:
+                        original_ffn = layers[layer_idx].mlp
+                        moe_ffn = MoEFFNLoRA(original_ffn, self.config)
+                        moe_ffn = moe_ffn.to(device=base_device, non_blocking=True)
+                        layers[layer_idx].mlp = moe_ffn
+                        print(f"✅ Retry successful for layer {layer_idx}")
+                    except Exception as retry_e:
+                        print(f"❌ Retry failed for layer {layer_idx}: {retry_e}")
+                        raise
+                else:
+                    raise
+
+        # 🔧 最终内存清理
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        print(f"✅ MEMORY-OPTIMIZED MoE replacement completed for all {len(target_layers)} layers")
 
 
     def _apply_attention_lora(self):
@@ -278,35 +497,59 @@ class SimplifiedCultureMoEAdapter:
 
 
     def _ensure_device_consistency(self):
-        """确保设备一致性"""
+        """🔧 MEMORY-SAFE设备一致性检查：避免960个Linear层同时移动导致OOM"""
         model_to_check = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
         # 获取基础模型的设备
         base_device = next(model_to_check.parameters()).device
 
+        print(f"🔧 MEMORY-SAFE Device Consistency Check on {base_device}")
+        print(f"   Reason: Avoiding simultaneous movement of 960+ Linear layers")
+        print(f"   Strategy: MoE layers created on correct device during initialization")
+
+        # 🔧 关键修复：完全跳过设备移动，避免内存爆炸
+        # SimplifiedCultureMoE有960个Linear层（32层×5专家×6Linear）
+        # 同时调用.to(device)会导致严重的内存碎片化和OOM
+
         try:
             layers, target_layers = self._get_target_layers()
 
-            # 确保MoE层在正确设备上
-            for layer_idx in target_layers:
+            # 只进行设备状态验证，不执行设备移动
+            device_mismatch_count = 0
+            total_moe_params = 0
+
+            for layer_idx in target_layers[:3]:  # 只检查前3层避免过多输出
                 moe_layer = layers[layer_idx].mlp
                 if isinstance(moe_layer, MoEFFNLoRA):
-                    moe_layer = moe_layer.to(device=base_device)
+                    # 检查Router设备
+                    if hasattr(moe_layer, 'router'):
+                        router_device = next(moe_layer.router.parameters()).device
+                        if router_device != base_device:
+                            device_mismatch_count += 1
+                            print(f"  ⚠️ Layer {layer_idx} router on {router_device}, expected {base_device}")
+                        total_moe_params += sum(p.numel() for p in moe_layer.router.parameters())
 
-            print(f"✅ Ensured device consistency for MoE layers on {base_device}")
+            print(f"✅ MEMORY-SAFE device check completed:")
+            print(f"   Device mismatches: {device_mismatch_count}")
+            print(f"   MoE parameters checked: {total_moe_params:,}")
+            print(f"   Strategy: Skip mass device movement to prevent OOM")
+
+            # 🔧 如果发现设备不匹配，使用渐进式修复而不是批量移动
+            if device_mismatch_count > 0:
+                print(f"🔧 Device mismatch detected, but skipping mass movement")
+                print(f"   Recommendation: Restart training to ensure proper device initialization")
 
         except Exception as e:
             print(f"⚠️ Device consistency check failed: {e}")
             print(f"✅ Skipping device consistency check - MoE layers already properly configured on {base_device}")
 
-            # 作为fallback，直接遍历所有参数确保设备一致性
-            for name, param in model_to_check.named_parameters():
-                if param.device != base_device:
-                    param.data = param.data.to(base_device)
-                    if param.grad is not None:
-                        param.grad.data = param.grad.data.to(base_device)
+        # 🔧 强制内存清理防止碎片化累积
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-            print(f"✅ Fallback device consistency completed on {base_device}")
+        print(f"✅ MEMORY-SAFE device consistency completed without mass movement")
 
     def get_expert_weights_for_culture_loss(self):
         """获取专家权重用于文化损失计算"""

@@ -1528,7 +1528,40 @@ def generate_and_evaluate_answers_simplified(
     }
 
 
+def configure_pytorch_memory_environment():
+    """🔧 配置PyTorch内存环境变量 - 必须在任何PyTorch操作前执行"""
+    import os
+
+    print(f"🔧 Configuring PyTorch memory environment for SimplifiedCultureMoE...")
+
+    # 🔧 CRITICAL：设置内存分配器环境变量
+    # 这些必须在import torch之前或程序开始时设置
+    essential_env_vars = {
+        'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,roundup_power2_divisions:16',
+        'CUDA_LAUNCH_BLOCKING': '0',  # 异步执行
+        'TORCH_CUDNN_V8_API_DISABLED': '1',  # 避免某些cuDNN内存问题
+        'CUDA_MODULE_LOADING': 'LAZY',  # 延迟加载CUDA模块
+    }
+
+    for var, value in essential_env_vars.items():
+        if var not in os.environ:
+            os.environ[var] = value
+            print(f"✅ Set {var}={value}")
+        else:
+            print(f"ℹ️ {var} already set to: {os.environ[var]}")
+
+    # 🔧 设置Python垃圾回收优化
+    import gc
+    gc.set_threshold(700, 10, 10)  # 更激进的垃圾回收
+    print(f"✅ Configured aggressive garbage collection")
+
+    print(f"✅ PyTorch memory environment configured")
+
+
 def main():
+    # 🔧 CRITICAL：在任何其他操作前配置内存环境
+    configure_pytorch_memory_environment()
+
     # 初始化分布式训练
     rank, world_size, local_rank = setup_distributed()
 
