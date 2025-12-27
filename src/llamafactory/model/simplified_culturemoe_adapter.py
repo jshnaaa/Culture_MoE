@@ -340,14 +340,14 @@ class MoEFFNLoRA(nn.Module):
             print(f"  hidden_states.shape: {hidden_states.shape}")
             print(f"  hidden_states contains NaN/Inf: {torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any()}")
 
-        # 🔧 关键修复：如果输入没有梯度，尝试重新启用梯度
+        # 🔧 梯度状态诊断（不进行修复，让梯度自然流动）
         if not hidden_states.requires_grad:
-            print(f"⚠️ MoE input hidden_states has no gradient! Attempting to fix...")
-            print(f"  Original: requires_grad={hidden_states.requires_grad}, grad_fn={hidden_states.grad_fn is not None}")
-
-            # 尝试重新启用梯度
-            hidden_states = hidden_states.detach().requires_grad_(True)
-            print(f"  After fix: requires_grad={hidden_states.requires_grad}, grad_fn={hidden_states.grad_fn is not None}")
+            print(f"⚠️ MoE input hidden_states has no gradient!")
+            print(f"  requires_grad={hidden_states.requires_grad}, grad_fn={hidden_states.grad_fn is not None}")
+            print(f"  This indicates upstream gradient propagation issue - need to fix upstream layers")
+        else:
+            if debug_this_call:
+                print(f"✅ MoE input has gradient: requires_grad={hidden_states.requires_grad}, grad_fn={hidden_states.grad_fn is not None}")
 
         # 检查输入
         if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
@@ -1283,7 +1283,20 @@ class SimplifiedCultureMoEAdapter:
         norm_trainable = sum(1 for _, param in norm_params if param.requires_grad)
         print(f"  📍 Norm layers: {norm_trainable}/{len(norm_params)} params trainable")
 
-        # 4. 检查第一个MoE层的router
+        # 🆕 详细检查norm层状态
+        if norm_trainable < len(norm_params):
+            print(f"  ⚠️ Some norm layers are frozen - this will break gradient flow!")
+            for name, param in norm_params[:5]:  # 显示前5个
+                status = "✅" if param.requires_grad else "❌"
+                print(f"    {status} {name}: requires_grad={param.requires_grad}")
+
+        # 4. 检查attention层
+        attn_params = [(name, param) for name, param in model_to_check.named_parameters()
+                      if any(keyword in name.lower() for keyword in ['self_attn', 'q_proj', 'k_proj', 'v_proj', 'o_proj'])]
+        attn_trainable = sum(1 for _, param in attn_params if param.requires_grad)
+        print(f"  📍 Attention layers: {attn_trainable}/{len(attn_params)} params trainable")
+
+        # 5. 检查第一个MoE层的router
         try:
             layers, target_layers = self._get_target_layers()
             first_moe = layers[0].mlp
@@ -1293,6 +1306,29 @@ class SimplifiedCultureMoEAdapter:
                 print(f"  📍 First MoE Router: {router_params_trainable}/{router_params_total} params trainable")
         except Exception as e:
             print(f"  ❌ Cannot check MoE router: {e}")
+
+        # 🆕 6. 测试梯度传播路径
+        print(f"  🔬 Testing gradient propagation with small forward pass...")
+        try:
+            with torch.enable_grad():
+                # 创建一个小的测试输入
+                test_input = input_ids[:1, :10].clone()  # 取第一个样本的前10个token
+                test_mask = attention_mask[:1, :10].clone()
+
+                # 前向传播到embedding
+                if hasattr(model_to_check, 'embed_tokens'):
+                    embeddings = model_to_check.embed_tokens(test_input)
+                    print(f"    Embeddings: requires_grad={embeddings.requires_grad}, grad_fn={embeddings.grad_fn is not None}")
+
+                    # 检查第一个transformer层的输出
+                    if hasattr(model_to_check, 'layers') and len(model_to_check.layers) > 0:
+                        # 这里只能做简单测试，不能完整运行transformer层（太复杂）
+                        print(f"    ✅ Embedding layer produces tensors with gradient connection")
+                else:
+                    print(f"    ❌ Cannot find embed_tokens layer")
+
+        except Exception as e:
+            print(f"    ❌ Gradient propagation test failed: {e}")
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """
