@@ -459,17 +459,40 @@ def print_expert_activation_stats(model_adapter, epoch):
 
     # 获取模型的MoE层
     try:
-        # 从adapter获取layers
-        if hasattr(model_adapter, 'backbone_model'):
-            if hasattr(model_adapter.backbone_model, 'layers'):
-                layers = model_adapter.backbone_model.layers
-            elif hasattr(model_adapter.backbone_model, 'model') and hasattr(model_adapter.backbone_model.model, 'layers'):
-                layers = model_adapter.backbone_model.model.layers
+        # 🔧 关键修复：使用与_get_target_layers完全相同的逻辑访问实际训练模型
+        actual_model = model_adapter.base_model
+
+        print(f"🔧 专家统计：开始解包模型，初始类型: {type(actual_model)}")
+
+        # 处理DDP包装
+        if hasattr(actual_model, 'module'):
+            actual_model = actual_model.module
+            print(f"🔧 专家统计：检测到DDP包装，解包后: {type(actual_model)}")
+
+        # 处理PeftModel包装（LoRA包装）
+        if hasattr(actual_model, 'base_model'):
+            if hasattr(actual_model.base_model, 'model'):
+                # PeftModel -> base_model.model
+                actual_model = actual_model.base_model.model
+                print(f"🔧 专家统计：检测到PeftModel包装，解包到base_model.model: {type(actual_model)}")
             else:
-                print("⚠️ 无法找到模型layers")
-                return
+                # PeftModel -> base_model
+                actual_model = actual_model.base_model
+                print(f"🔧 专家统计：检测到PeftModel包装，解包到base_model: {type(actual_model)}")
+
+        # 再次检查是否还有model属性
+        if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
+            actual_model = actual_model.model
+            print(f"🔧 专家统计：进一步解包到model属性: {type(actual_model)}")
+
+        # 获取layers
+        if hasattr(actual_model, 'layers'):
+            layers = actual_model.layers
+            print(f"✅ 专家统计：成功找到layers: {len(layers)} 层 in {type(actual_model)}")
         else:
-            print("⚠️ 无法找到backbone_model")
+            # 详细诊断
+            print(f"❌ 专家统计：无法找到layers，当前模型类型: {type(actual_model)}")
+            print(f"   模型属性: {[attr for attr in dir(actual_model) if not attr.startswith('_')]}")
             return
 
         total_layers = len(layers)

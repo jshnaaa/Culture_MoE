@@ -613,69 +613,65 @@ class SimplifiedCultureMoEAdapter:
         # 🆕 MASK机制：全局状态存储当前batch的input_type
         self._current_input_type = None
 
-        # 🔧 实现"单一真源"原则 - 彻底解包PeftModel
-        self.backbone_model = self._extract_backbone_model(base_model)
-
-        # 🆕 替换所有层的FFN为MoE
-        self._replace_all_layers_with_moe()
-
-        # 应用LoRA到注意力层
+        # 🔧 修复架构问题：正确的初始化顺序
+        # 1. 先应用LoRA到注意力层（如果启用）
         if config.use_lora:
             self._apply_attention_lora()
 
-        # 冻结非训练参数
+        # 2. 然后在包装后的模型上替换FFN为MoE
+        self._replace_all_layers_with_moe()
+
+        # 3. 冻结非训练参数
         self._freeze_non_trainable_parameters()
 
-        # 确保设备一致性
+        # 4. 确保设备一致性
         self._ensure_device_consistency()
 
-    def _extract_backbone_model(self, model):
-        """从各种包装中提取真正的backbone模型"""
-        # 处理DDP包装
-        if hasattr(model, 'module'):
-            model = model.module
-
-        # 处理PeftModel包装
-        try:
-            from peft import PeftModel
-            if isinstance(model, PeftModel):
-                print("🔧 检测到PeftModel，提取backbone...")
-                backbone = model.base_model.model
-                print(f"✅ 成功提取backbone: {type(backbone)}")
-                return backbone
-        except ImportError:
-            pass
-
-        # 检查是否已经是backbone模型
-        if hasattr(model, 'layers'):
-            print(f"✅ 直接使用模型: {type(model)}")
-            return model
-        elif hasattr(model, 'model') and hasattr(model.model, 'layers'):
-            print(f"✅ 提取model.layers: {type(model.model)}")
-            return model.model
-        else:
-            print(f"⚠️ 未知模型结构，直接使用: {type(model)}")
-            return model
 
     def _get_target_layers(self):
         """获取目标层索引（所有层）"""
-        # 🔧 使用单一真源 - 直接从backbone_model获取layers
-        # print(f"🔍 Using backbone model: {type(self.backbone_model)}")
+        # 🔧 关键修复：正确处理所有包装层，确保访问到实际的训练模型
+        actual_model = self.base_model
 
-        # 直接访问backbone模型的layers
-        if hasattr(self.backbone_model, 'layers'):
-            layers = self.backbone_model.layers
-            # print(f"✅ Found layers directly: {len(layers)} layers")
-        elif hasattr(self.backbone_model, 'model') and hasattr(self.backbone_model.model, 'layers'):
-            layers = self.backbone_model.model.layers
-            # print(f"✅ Found layers via model: {len(layers)} layers")
+        print(f"🔧 开始解包模型，初始类型: {type(actual_model)}")
+
+        # 处理DDP包装
+        if hasattr(actual_model, 'module'):
+            actual_model = actual_model.module
+            print(f"🔧 检测到DDP包装，解包后: {type(actual_model)}")
+
+        # 处理PeftModel包装（LoRA包装）
+        if hasattr(actual_model, 'base_model'):
+            if hasattr(actual_model.base_model, 'model'):
+                # PeftModel -> base_model.model
+                actual_model = actual_model.base_model.model
+                print(f"🔧 检测到PeftModel包装，解包到base_model.model: {type(actual_model)}")
+            else:
+                # PeftModel -> base_model
+                actual_model = actual_model.base_model
+                print(f"🔧 检测到PeftModel包装，解包到base_model: {type(actual_model)}")
+
+        # 再次检查是否还有model属性
+        if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
+            actual_model = actual_model.model
+            print(f"🔧 进一步解包到model属性: {type(actual_model)}")
+
+        # 获取layers
+        if hasattr(actual_model, 'layers'):
+            layers = actual_model.layers
+            print(f"✅ 成功找到layers: {len(layers)} 层 in {type(actual_model)}")
         else:
-            raise AttributeError(f"Cannot find layers in backbone model type: {type(self.backbone_model)}")
+            # 详细诊断
+            print(f"❌ 无法找到layers，当前模型类型: {type(actual_model)}")
+            print(f"   模型属性: {[attr for attr in dir(actual_model) if not attr.startswith('_')]}")
+            raise AttributeError(f"Cannot find layers in actual model type: {type(actual_model)}")
 
         total_layers = len(layers)
 
         # 🆕 所有层都嵌入MoE
         target_layers = list(range(total_layers))
+
+        print(f"🔧 目标层范围: {target_layers[:5]}...{target_layers[-5:]} (共{total_layers}层)")
 
         return layers, target_layers
 
@@ -771,40 +767,48 @@ class SimplifiedCultureMoEAdapter:
 
     def get_expert_weights_for_culture_loss(self):
         """获取专家权重用于文化损失计算"""
-        layers, target_layers = self._get_target_layers()
+        try:
+            layers, target_layers = self._get_target_layers()
 
-        # 收集MoE层的专家权重
-        expert_weights_list = []
+            # 收集MoE层的专家权重
+            expert_weights_list = []
 
-        for layer_idx in target_layers:
-            moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_expert_weights is not None:
-                expert_weights_list.append(moe_layer.latest_expert_weights)
+            for layer_idx in target_layers:
+                moe_layer = layers[layer_idx].mlp
+                if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_expert_weights is not None:
+                    expert_weights_list.append(moe_layer.latest_expert_weights)
 
-        if expert_weights_list:
-            # 对所有MoE层的权重求平均
-            avg_expert_weights = torch.stack(expert_weights_list, dim=0).mean(dim=0)
-            return avg_expert_weights.to(dtype=torch.float16)
-        else:
+            if expert_weights_list:
+                # 对所有MoE层的权重求平均
+                avg_expert_weights = torch.stack(expert_weights_list, dim=0).mean(dim=0)
+                return avg_expert_weights.to(dtype=torch.float16)
+            else:
+                return None
+        except Exception as e:
+            print(f"⚠️ 获取专家权重失败: {e}")
             return None
 
     def get_shared_outputs_for_culture_loss(self):
         """获取shared专家输出用于文化损失计算"""
-        layers, target_layers = self._get_target_layers()
+        try:
+            layers, target_layers = self._get_target_layers()
 
-        # 收集MoE层的shared专家输出
-        shared_outputs_list = []
+            # 收集MoE层的shared专家输出
+            shared_outputs_list = []
 
-        for layer_idx in target_layers:
-            moe_layer = layers[layer_idx].mlp
-            if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_shared_outputs is not None:
-                shared_outputs_list.append(moe_layer.latest_shared_outputs)
+            for layer_idx in target_layers:
+                moe_layer = layers[layer_idx].mlp
+                if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_shared_outputs is not None:
+                    shared_outputs_list.append(moe_layer.latest_shared_outputs)
 
-        if shared_outputs_list:
-            # 对所有MoE层的shared输出求平均
-            avg_shared_outputs = torch.stack(shared_outputs_list, dim=0).mean(dim=0)
-            return avg_shared_outputs.to(dtype=torch.float16)
-        else:
+            if shared_outputs_list:
+                # 对所有MoE层的shared输出求平均
+                avg_shared_outputs = torch.stack(shared_outputs_list, dim=0).mean(dim=0)
+                return avg_shared_outputs.to(dtype=torch.float16)
+            else:
+                return None
+        except Exception as e:
+            print(f"⚠️ 获取shared专家输出失败: {e}")
             return None
 
     def get_accumulated_z_loss(self):
