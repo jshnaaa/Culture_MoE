@@ -1001,9 +1001,8 @@ class SimplifiedCultureMoEAdapter:
                         avg_shared_outputs = avg_shared_outputs + outputs
                     avg_shared_outputs = avg_shared_outputs / len(shared_outputs_list)
 
-                # 使用原有的compute_culture_loss函数
-                from train_simplified_culturemoe import compute_culture_loss
-                shared_culture_loss = compute_culture_loss(None, culture_labels, avg_shared_outputs, main_loss)
+                # 🔧 修复循环导入：直接实现shared专家文化损失计算
+                shared_culture_loss = self._compute_shared_culture_loss(culture_labels, avg_shared_outputs, main_loss)
                 total_culture_losses.append(shared_culture_loss)
 
             # 2. 路由专家损失
@@ -1017,14 +1016,8 @@ class SimplifiedCultureMoEAdapter:
                         avg_routing_weights = avg_routing_weights + weights
                     avg_routing_weights = avg_routing_weights / len(routing_weights_list)
 
-                # 创建模拟的model_outputs对象
-                class MockOutputs:
-                    def __init__(self, expert_weights):
-                        self.expert_weights = expert_weights
-
-                mock_outputs = MockOutputs(avg_routing_weights)
-                from train_simplified_culturemoe import compute_culture_loss
-                routing_culture_loss = compute_culture_loss(mock_outputs, culture_labels, None, main_loss)
+                # 🔧 修复循环导入：直接计算路由专家文化损失
+                routing_culture_loss = self._compute_routing_culture_loss(culture_labels, avg_routing_weights, main_loss)
                 total_culture_losses.append(routing_culture_loss)
 
             # 3. 计算最终文化损失
@@ -1093,6 +1086,83 @@ class SimplifiedCultureMoEAdapter:
                 # 获取任意一个参数来创建零损失
                 dummy_param = next(iter(self.base_model.parameters()))
                 return dummy_param.sum() * 0.0
+
+    def _compute_shared_culture_loss(self, culture_labels, shared_outputs, main_loss):
+        """🔧 计算共享专家文化损失（避免循环导入）"""
+        try:
+            if shared_outputs is None or len(shared_outputs) < 2:
+                if main_loss is not None:
+                    return main_loss * 0.0
+                else:
+                    return culture_labels.float().sum() * 0.0
+
+            batch_size = shared_outputs.shape[0]
+            culture_loss = torch.tensor(0.0, device=shared_outputs.device, requires_grad=True)
+
+            # 共享专家一致性损失：总是鼓励相似
+            for i in range(batch_size):
+                for j in range(i + 1, batch_size):
+                    similarity = F.cosine_similarity(
+                        shared_outputs[i].unsqueeze(0),
+                        shared_outputs[j].unsqueeze(0)
+                    )
+                    # 共享专家：总是鼓励相似
+                    culture_loss = culture_loss + (1.0 - similarity)
+
+            # 归一化
+            num_pairs = batch_size * (batch_size - 1) // 2
+            if num_pairs > 0:
+                culture_loss = culture_loss / num_pairs
+
+            return culture_loss
+
+        except Exception as e:
+            print(f"❌ Shared culture loss computation failed: {e}")
+            if main_loss is not None:
+                return main_loss * 0.0
+            else:
+                return culture_labels.float().sum() * 0.0
+
+    def _compute_routing_culture_loss(self, culture_labels, expert_weights, main_loss):
+        """🔧 计算路由专家文化损失（避免循环导入）"""
+        try:
+            if expert_weights is None or len(expert_weights) < 2:
+                if main_loss is not None:
+                    return main_loss * 0.0
+                else:
+                    return culture_labels.float().sum() * 0.0
+
+            batch_size = expert_weights.shape[0]
+            culture_loss = torch.tensor(0.0, device=expert_weights.device, requires_grad=True)
+
+            # 路由专家文化对比损失
+            for i in range(batch_size):
+                for j in range(i + 1, batch_size):
+                    similarity = F.cosine_similarity(
+                        expert_weights[i].unsqueeze(0),
+                        expert_weights[j].unsqueeze(0)
+                    )
+
+                    if culture_labels[i] == culture_labels[j]:
+                        # 同文化：鼓励相似
+                        culture_loss = culture_loss + (1.0 - similarity)
+                    else:
+                        # 不同文化：鼓励不同
+                        culture_loss = culture_loss + similarity
+
+            # 归一化
+            num_pairs = batch_size * (batch_size - 1) // 2
+            if num_pairs > 0:
+                culture_loss = culture_loss / num_pairs
+
+            return culture_loss
+
+        except Exception as e:
+            print(f"❌ Routing culture loss computation failed: {e}")
+            if main_loss is not None:
+                return main_loss * 0.0
+            else:
+                return culture_labels.float().sum() * 0.0
 
     def print_trainable_parameters(self):
         """打印可训练参数统计并验证冻结状态"""

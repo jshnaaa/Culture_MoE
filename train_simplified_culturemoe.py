@@ -1075,34 +1075,9 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         print(f"  MoE params summary: {moe_params_trainable} trainable, {moe_params_frozen} frozen")
 
-        # 🔧 强制修复：确保关键的梯度传播层是可训练的
-        critical_layers_fixed = 0
-        model_to_check = model_adapter.base_model.module if hasattr(model_adapter.base_model, 'module') else model_adapter.base_model
-
-        # 🔧 扩展关键梯度传播层列表
-        critical_gradient_keywords = [
-            'norm', 'layernorm', 'layer_norm', 'input_layernorm', 'post_attention_layernorm',
-            'embed_tokens',  # 词嵌入层
-            'self_attn',     # 自注意力层
-            'q_proj', 'k_proj', 'v_proj', 'o_proj',  # 注意力投影层
-            'lm_head',       # 输出头
-            'lora',          # LoRA参数
-            'router',        # MoE路由器
-            'experts'        # MoE专家
-        ]
-
-        for name, param in model_to_check.named_parameters():
-            # 检查关键的梯度传播层
-            if any(keyword in name.lower() for keyword in critical_gradient_keywords):
-                if not param.requires_grad:
-                    print(f"🔧 FORCE FIX: Setting {name} to trainable (critical for gradient propagation)")
-                    param.requires_grad = True
-                    critical_layers_fixed += 1
-
-        if critical_layers_fixed > 0:
-            print(f"🔧 Fixed {critical_layers_fixed} critical layers for gradient propagation")
-        else:
-            print(f"✅ All critical gradient propagation layers already trainable")
+        # 🔧 LoRA参数验证：确保参数冻结策略正确
+        # LoRA原则：只训练LoRA适配器和MoE参数，冻结所有基座模型参数
+        model_adapter.ensure_trainable_parameters()
 
         # 单路处理
         outputs = model_adapter.forward(
