@@ -241,6 +241,10 @@ class MoEFFNLoRA(nn.Module):
         # 🆕 保存shared专家的输出用于文化损失计算
         self.latest_shared_outputs = None
 
+        # 🔧 关键修复：保存当前批次的梯度连接数据
+        self.current_expert_weights = None
+        self.current_shared_outputs = None
+
     def forward(self, hidden_states):
         """
         前向传播 - 简化版，移除MASK机制
@@ -259,6 +263,9 @@ class MoEFFNLoRA(nn.Module):
             return self.original_ffn(hidden_states)
 
         try:
+            # 🔧 关键修复：清空当前批次数据，确保不使用过期的梯度数据
+            self.current_expert_weights = None
+            self.current_shared_outputs = None
 
             # 1. 计算原始FFN输出作为基础
             original_output = self.original_ffn(hidden_states)
@@ -266,14 +273,15 @@ class MoEFFNLoRA(nn.Module):
             # 2. 路由计算（为路由专家）
             expert_weights, router_logits = self.router(hidden_states)
 
-            # 保存专家权重用于文化损失（平均到序列维度）
-            # 🔧 添加数值稳定性检查：确保expert_weights不包含NaN
+            # 🔧 关键修复：保存当前批次的有梯度expert_weights
             if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
-                # 如果包含NaN，使用均匀分布
-                self.latest_expert_weights = torch.ones(expert_weights.shape[0], expert_weights.shape[2],
-                                                        device=expert_weights.device, dtype=expert_weights.dtype) / expert_weights.shape[2]
+                # 如果包含NaN，使用均匀分布（保持梯度连接）
+                uniform_weights = expert_weights * 0.0 + (1.0 / expert_weights.shape[2])
+                self.current_expert_weights = uniform_weights.mean(dim=1)  # [B, num_experts] - 有梯度
+                self.latest_expert_weights = uniform_weights.mean(dim=1).detach()  # 无梯度版本用于统计
             else:
-                self.latest_expert_weights = expert_weights.mean(dim=1)  # [B, num_experts]
+                self.current_expert_weights = expert_weights.mean(dim=1)  # [B, num_experts] - 有梯度
+                self.latest_expert_weights = expert_weights.mean(dim=1).detach()  # 无梯度版本用于统计
 
             # 3. Top-k选择（路由专家）
             if self.num_activated_experts == self.num_experts:
@@ -330,12 +338,14 @@ class MoEFFNLoRA(nn.Module):
             if self.use_shared and not self.ablation_disable_shared:
                 shared_delta = self.shared_expert(hidden_states)  # 🔧 新架构：shared专家直接返回LoRA增量
 
-                # 🆕 保存shared专家输出用于文化损失计算（平均到序列维度）
+                # 🔧 关键修复：保存当前批次的有梯度shared_outputs
                 # shared专家的"输出"实际是原始FFN + LoRA增量
                 shared_output_for_culture_loss = original_output + shared_delta
-                self.latest_shared_outputs = shared_output_for_culture_loss.mean(dim=1)  # [B, H]
+                self.current_shared_outputs = shared_output_for_culture_loss.mean(dim=1)  # [B, H] - 有梯度
+                self.latest_shared_outputs = shared_output_for_culture_loss.mean(dim=1).detach()  # 无梯度版本用于统计
             else:
                 shared_delta = hidden_states * 0.0
+                self.current_shared_outputs = None
                 self.latest_shared_outputs = None
 
             # 6. 融合shared专家和路由专家的输出
@@ -640,13 +650,25 @@ class SimplifiedCultureMoEAdapter:
         try:
             layers, target_layers = self._get_target_layers()
 
-            # 收集MoE层的专家权重
-            expert_weights_list = []
+            # 🔧 关键修复：优先收集有梯度的current数据
+            current_weights_list = []
+            fallback_weights_list = []
 
             for layer_idx in target_layers:
                 moe_layer = layers[layer_idx].mlp
-                if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_expert_weights is not None:
-                    expert_weights_list.append(moe_layer.latest_expert_weights)
+                if isinstance(moe_layer, MoEFFNLoRA):
+                    # 优先使用有梯度的current数据
+                    if moe_layer.current_expert_weights is not None:
+                        current_weights_list.append(moe_layer.current_expert_weights)
+                    # 备用：使用无梯度的latest数据
+                    elif moe_layer.latest_expert_weights is not None:
+                        fallback_weights_list.append(moe_layer.latest_expert_weights)
+
+            # 优先返回有梯度的数据
+            if current_weights_list:
+                expert_weights_list = current_weights_list
+            else:
+                expert_weights_list = fallback_weights_list
 
             if expert_weights_list:
                 # 对所有MoE层的权重求平均
@@ -664,13 +686,25 @@ class SimplifiedCultureMoEAdapter:
         try:
             layers, target_layers = self._get_target_layers()
 
-            # 收集MoE层的shared专家输出
-            shared_outputs_list = []
+            # 🔧 关键修复：优先收集有梯度的current数据
+            current_outputs_list = []
+            fallback_outputs_list = []
 
             for layer_idx in target_layers:
                 moe_layer = layers[layer_idx].mlp
-                if isinstance(moe_layer, MoEFFNLoRA) and moe_layer.latest_shared_outputs is not None:
-                    shared_outputs_list.append(moe_layer.latest_shared_outputs)
+                if isinstance(moe_layer, MoEFFNLoRA):
+                    # 优先使用有梯度的current数据
+                    if moe_layer.current_shared_outputs is not None:
+                        current_outputs_list.append(moe_layer.current_shared_outputs)
+                    # 备用：使用无梯度的latest数据
+                    elif moe_layer.latest_shared_outputs is not None:
+                        fallback_outputs_list.append(moe_layer.latest_shared_outputs)
+
+            # 优先返回有梯度的数据
+            if current_outputs_list:
+                shared_outputs_list = current_outputs_list
+            else:
+                shared_outputs_list = fallback_outputs_list
 
             if shared_outputs_list:
                 # 对所有MoE层的shared输出求平均
@@ -759,11 +793,17 @@ class SimplifiedCultureMoEAdapter:
             **kwargs
         )
 
-        # 为文化损失计算收集专家权重
+        # 🔧 关键修复：为文化损失计算收集有梯度的数据
         if hasattr(outputs, 'loss') and outputs.loss is not None:
+            # 收集有梯度的expert_weights
             expert_weights = self.get_expert_weights_for_culture_loss()
             if expert_weights is not None:
                 outputs.expert_weights = expert_weights
+
+            # 收集有梯度的shared_outputs
+            shared_outputs = self.get_shared_outputs_for_culture_loss()
+            if shared_outputs is not None:
+                outputs.shared_outputs = shared_outputs
 
         return outputs
 
