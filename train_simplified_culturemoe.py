@@ -318,7 +318,7 @@ def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
     }
 
 
-def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, loss_weight=0.01):
+def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None):
     """
     计算文化感知损失
 
@@ -326,10 +326,9 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, los
         model_outputs: 模型输出，应该包含expert_weights等信息
         culture_labels: 文化标签 [B]
         shared_outputs: shared专家输出 [B, H]，可选
-        loss_weight: 损失权重
 
     Returns:
-        culture_loss: 文化损失
+        culture_loss: 文化损失（原始值，不包含权重）
     """
     device = culture_labels.device
     total_culture_losses = []
@@ -362,7 +361,7 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, los
                 shared_losses.append(shared_loss_term)
 
         if len(shared_losses) > 0:
-            shared_culture_loss = torch.stack(shared_losses).mean() * loss_weight
+            shared_culture_loss = torch.stack(shared_losses).mean()
             total_culture_losses.append(shared_culture_loss)
 
     # 🔄 2. 路由专家损失：保持原有逻辑（同culture相似，不同culture不同）
@@ -426,7 +425,7 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, los
                         routing_losses.append(similarity)
 
             if len(routing_losses) > 0:
-                routing_culture_loss = torch.stack(routing_losses).mean() * loss_weight
+                routing_culture_loss = torch.stack(routing_losses).mean()
                 total_culture_losses.append(routing_culture_loss)
 
     # 🔧 计算最终的总文化损失
@@ -447,7 +446,7 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, los
 
 
 def train_epoch_simplified(model_adapter, train_loader, optimizer, device, tokenizer,
-                         num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
+                         num_accumulation_steps=1, rank=0, use_culture_loss=True,
                          lambda_balance=1.0, alpha_z=0.1, beta_culture=1.0):
     """
     简化版CultureMoE训练一个epoch
@@ -546,7 +545,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
                 if expert_batch_size == full_batch_size:
                     # 所有样本都激活路由专家
-                    culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, culture_loss_weight)
+                    culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
                 elif expert_batch_size > 0:
                     # 部分样本激活路由专家，需要找到对应的culture_labels
                     # 🔧 MASK机制：根据input_type找到激活路由专家的样本索引
@@ -555,18 +554,18 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
                         if len(full_indices) == expert_batch_size:
                             # 提取对应的culture_labels
                             relevant_culture_labels = culture_labels[full_indices]
-                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
+                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs)
                         else:
                             # 索引数量不匹配，跳过文化损失计算
                             culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
                     else:
                         # 兼容模式，使用前expert_batch_size个
                         relevant_culture_labels = culture_labels[:expert_batch_size]
-                        culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
+                        culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs)
             else:
                 # 🆕 即使没有路由专家权重，也可以计算shared专家损失
                 if shared_outputs is not None:
-                    culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, culture_loss_weight)
+                    culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
 
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss()
@@ -645,7 +644,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
     }
 
 
-def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
+def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, use_culture_loss=True,
                        lambda_balance=1.0, alpha_z=0.1, beta_culture=1.0):
     """
     简化版CultureMoE验证
@@ -724,23 +723,23 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
                     full_batch_size = culture_labels.shape[0]
 
                     if expert_batch_size == full_batch_size:
-                        culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, culture_loss_weight)
+                        culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
                     elif expert_batch_size > 0:
                         # 🔧 MASK机制：根据input_type找到对应的culture_labels
                         if input_type is not None:
                             full_indices = (input_type == 1).nonzero(as_tuple=True)[0]
                             if len(full_indices) == expert_batch_size:
                                 relevant_culture_labels = culture_labels[full_indices]
-                                culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
+                                culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs)
                             else:
                                 culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=True)
                         else:
                             relevant_culture_labels = culture_labels[:expert_batch_size]
-                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs, culture_loss_weight)
+                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, shared_outputs)
                 else:
                     # 🆕 即使没有路由专家权重，也可以计算shared专家损失
                     if shared_outputs is not None:
-                        culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs, culture_loss_weight)
+                        culture_loss = compute_culture_loss(outputs, culture_labels, shared_outputs)
 
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss()
@@ -912,8 +911,6 @@ def main():
                         help="Number of activated experts (top-k), if equal to num_moe_experts then dense mode")
     parser.add_argument("--use_lora", type=str, default="true",
                         help="Whether to enable LoRA fine-tuning")
-    parser.add_argument("--culture_loss_weight", type=float, default=0.1,
-                        help="Culture loss weight (🔧 提升权重使文化损失更有效)")
 
     # 🆕 层次化损失系数参数
     parser.add_argument("--lambda_balance", type=float, default=1.0,
@@ -987,7 +984,6 @@ def main():
         print(f"Use MoE gate: {use_gate} (占位符)")
         print(f"Use culture loss: {use_culture_loss}")
         if use_culture_loss != 'false':
-            print(f"Culture loss weight: {args.culture_loss_weight}")
             print(f"🆕 层次化损失配置:")
             print(f"  Total Loss = Main Loss + λ * Balance Loss")
             print(f"  Balance Loss = α * Z Loss + β * Culture Loss")
@@ -1185,7 +1181,6 @@ def main():
         use_shared=use_shared,  # 占位符
         use_gate=use_gate,      # 占位符
         use_culture_loss=use_culture_loss,
-        culture_loss_weight=args.culture_loss_weight,
         use_lora=use_lora,
         aux_loss_coef=0.001  # 小的辅助损失
     )
@@ -1300,7 +1295,6 @@ def main():
             num_accumulation_steps=args.gradient_accumulation_steps,
             rank=rank,
             use_culture_loss=use_culture_loss,
-            culture_loss_weight=args.culture_loss_weight,
             lambda_balance=args.lambda_balance,
             alpha_z=args.alpha_z,
             beta_culture=args.beta_culture
@@ -1320,7 +1314,6 @@ def main():
             val_metrics = evaluate_simplified(
                 model_adapter, val_loader, device, tokenizer, rank=rank,
                 use_culture_loss=use_culture_loss,
-                culture_loss_weight=args.culture_loss_weight,
                 lambda_balance=args.lambda_balance,
                 alpha_z=args.alpha_z,
                 beta_culture=args.beta_culture
@@ -1423,7 +1416,6 @@ def main():
             'num_activated_experts': args.num_activated_experts,
             'moe_layers': 'All layers FFN replaced with MoE',
             'use_culture_loss': use_culture_loss,
-            'culture_loss_weight': args.culture_loss_weight,
             'hierarchical_loss_config': {
                 'lambda_balance': args.lambda_balance,
                 'alpha_z': args.alpha_z,

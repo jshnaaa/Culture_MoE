@@ -38,7 +38,6 @@ class SimplifiedCultureMoEConfig:
 
     # 文化损失配置
     use_culture_loss: str = "new"  # 文化损失模式：ori/new/kl/false
-    culture_loss_weight: float = 0.01
 
     # LoRA相关配置
     use_lora: bool = True  # 是否启用LoRA微调
@@ -77,7 +76,6 @@ class SimplifiedCultureMoEConfig:
             'moe_layers': self.moe_layers,
             'ffn_target_modules': self.ffn_target_modules,
             'use_culture_loss': self.use_culture_loss,
-            'culture_loss_weight': self.culture_loss_weight,
             'use_lora': self.use_lora,
             'apply_to_attention': self.apply_to_attention
         }
