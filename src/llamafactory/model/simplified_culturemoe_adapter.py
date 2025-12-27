@@ -340,6 +340,15 @@ class MoEFFNLoRA(nn.Module):
             print(f"  hidden_states.shape: {hidden_states.shape}")
             print(f"  hidden_states contains NaN/Inf: {torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any()}")
 
+        # 🔧 关键修复：如果输入没有梯度，尝试重新启用梯度
+        if not hidden_states.requires_grad:
+            print(f"⚠️ MoE input hidden_states has no gradient! Attempting to fix...")
+            print(f"  Original: requires_grad={hidden_states.requires_grad}, grad_fn={hidden_states.grad_fn is not None}")
+
+            # 尝试重新启用梯度
+            hidden_states = hidden_states.detach().requires_grad_(True)
+            print(f"  After fix: requires_grad={hidden_states.requires_grad}, grad_fn={hidden_states.grad_fn is not None}")
+
         # 检查输入
         if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
             print("⚠️ NaN/Inf in MoE input, using original FFN")
@@ -772,20 +781,34 @@ class SimplifiedCultureMoEAdapter:
         """冻结非训练参数，但保留计算loss所必需的关键层"""
         model_to_freeze = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        # 🔧 关键修复：保留计算loss必需的层和我们要训练的参数
+        # 🔧 关键修复：扩展可训练参数列表，确保梯度能传播到MoE层
         trainable_keywords = [
             'lora',          # LoRA参数
             'experts',       # MoE专家参数
             'router',        # MoE路由器参数
             'lm_head',       # 输出投影层（计算loss必需！）
             'embed_tokens',  # 词嵌入层
-            'norm',          # 标准化层
+            'norm',          # 标准化层（梯度传播必需！）
             'embed',         # 其他嵌入层的可能命名
-            'head'           # 其他head层的可能命名
+            'head',          # 其他head层的可能命名
+            'input_layernorm',   # 输入层归一化（梯度传播必需！）
+            'post_attention_layernorm',  # 注意力后归一化（梯度传播必需！）
+            'layernorm',     # 通用层归一化
+            'layer_norm'     # 另一种层归一化命名
         ]
 
         trainable_count = 0
         frozen_count = 0
+
+        # 🔧 关键诊断：首先检查哪些关键层会被冻结
+        critical_layers_to_check = ['norm', 'layernorm', 'layer_norm', 'input_layernorm', 'post_attention_layernorm', 'embed_tokens', 'lm_head']
+
+        print(f"🔍 Critical Layer Analysis Before Freezing:")
+        for name, param in model_to_freeze.named_parameters():
+            if any(critical in name.lower() for critical in critical_layers_to_check):
+                should_train = any(keyword in name.lower() for keyword in trainable_keywords)
+                status = "✅ WILL BE TRAINABLE" if should_train else "❌ WILL BE FROZEN"
+                print(f"  {name}: {status}")
 
         for name, param in model_to_freeze.named_parameters():
             # 检查参数名是否包含可训练的关键词
@@ -795,11 +818,15 @@ class SimplifiedCultureMoEAdapter:
                 param.requires_grad = True
                 trainable_count += 1
                 # 打印关键层的状态
-                if any(key in name.lower() for key in ['lm_head', 'embed_tokens', 'norm', 'router', 'experts']):
-                    print(f"🔧 Keeping trainable: {name} (MoE/critical layer)")
+                if any(key in name.lower() for key in ['lm_head', 'embed_tokens', 'norm', 'router', 'experts', 'layernorm']):
+                    print(f"🔧 Keeping trainable: {name} (gradient propagation critical)")
             else:
                 param.requires_grad = False
                 frozen_count += 1
+                # 🔧 重要警告：检查是否意外冻结了梯度传播关键层
+                if any(critical in name.lower() for critical in ['norm', 'layernorm', 'layer_norm']):
+                    print(f"❌ CRITICAL WARNING: Gradient propagation layer frozen: {name}")
+                    print(f"   This will break gradient flow to MoE layers!")
                 # 打印被冻结的router相关参数（这不应该发生）
                 if 'router' in name.lower():
                     print(f"❌ WARNING: Router parameter frozen: {name}")

@@ -770,6 +770,21 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         print(f"  MoE params summary: {moe_params_trainable} trainable, {moe_params_frozen} frozen")
 
+        # 🔧 强制修复：确保关键的梯度传播层是可训练的
+        critical_layers_fixed = 0
+        model_to_check = model_adapter.base_model.module if hasattr(model_adapter.base_model, 'module') else model_adapter.base_model
+
+        for name, param in model_to_check.named_parameters():
+            # 检查关键的梯度传播层
+            if any(keyword in name.lower() for keyword in ['norm', 'layernorm', 'layer_norm', 'input_layernorm', 'post_attention_layernorm']):
+                if not param.requires_grad:
+                    print(f"🔧 FORCE FIX: Setting {name} to trainable (critical for gradient propagation)")
+                    param.requires_grad = True
+                    critical_layers_fixed += 1
+
+        if critical_layers_fixed > 0:
+            print(f"🔧 Fixed {critical_layers_fixed} critical layers for gradient propagation")
+
         # 单路处理
         outputs = model_adapter.forward(
             input_ids=input_ids,
