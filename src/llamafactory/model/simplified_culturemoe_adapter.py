@@ -279,9 +279,15 @@ class MoEFFNLoRA(nn.Module):
                 uniform_weights = expert_weights * 0.0 + (1.0 / expert_weights.shape[2])
                 self.current_expert_weights = uniform_weights.mean(dim=1)  # [B, num_experts] - 有梯度
                 self.latest_expert_weights = uniform_weights.mean(dim=1).detach()  # 无梯度版本用于统计
+                print(f"🔍 MoE forward debug (NaN case): current_expert_weights set, requires_grad: {self.current_expert_weights.requires_grad}")
             else:
                 self.current_expert_weights = expert_weights.mean(dim=1)  # [B, num_experts] - 有梯度
                 self.latest_expert_weights = expert_weights.mean(dim=1).detach()  # 无梯度版本用于统计
+                print(f"🔍 MoE forward debug: current_expert_weights set, shape: {self.current_expert_weights.shape}, requires_grad: {self.current_expert_weights.requires_grad}")
+
+            # 验证expert_weights的梯度状态
+            print(f"  original expert_weights: requires_grad: {expert_weights.requires_grad}, grad_fn: {expert_weights.grad_fn is not None}")
+            print(f"  current_expert_weights: requires_grad: {self.current_expert_weights.requires_grad}, grad_fn: {self.current_expert_weights.grad_fn is not None}")
 
             # 3. Top-k选择（路由专家）
             if self.num_activated_experts == self.num_experts:
@@ -665,10 +671,16 @@ class SimplifiedCultureMoEAdapter:
                         fallback_weights_list.append(moe_layer.latest_expert_weights)
 
             # 优先返回有梯度的数据
+            print(f"🔍 get_expert_weights debug:")
+            print(f"  current_weights_list: {len(current_weights_list)} items")
+            print(f"  fallback_weights_list: {len(fallback_weights_list)} items")
+
             if current_weights_list:
                 expert_weights_list = current_weights_list
+                print(f"  using current_weights_list (有梯度)")
             else:
                 expert_weights_list = fallback_weights_list
+                print(f"  using fallback_weights_list (无梯度)")
 
             if expert_weights_list:
                 # 对所有MoE层的权重求平均
@@ -797,12 +809,17 @@ class SimplifiedCultureMoEAdapter:
         if hasattr(outputs, 'loss') and outputs.loss is not None:
             # 收集有梯度的expert_weights
             expert_weights = self.get_expert_weights_for_culture_loss()
+            print(f"🔍 Adapter forward debug:")
+            print(f"  expert_weights: {expert_weights is not None}")
             if expert_weights is not None:
+                print(f"    shape: {expert_weights.shape}, requires_grad: {expert_weights.requires_grad}, grad_fn: {expert_weights.grad_fn is not None}")
                 outputs.expert_weights = expert_weights
 
             # 收集有梯度的shared_outputs
             shared_outputs = self.get_shared_outputs_for_culture_loss()
+            print(f"  shared_outputs: {shared_outputs is not None}")
             if shared_outputs is not None:
+                print(f"    shape: {shared_outputs.shape}, requires_grad: {shared_outputs.requires_grad}, grad_fn: {shared_outputs.grad_fn is not None}")
                 outputs.shared_outputs = shared_outputs
 
         return outputs

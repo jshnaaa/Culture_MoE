@@ -753,16 +753,25 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         # 🔧 修复梯度问题：获取当前batch的expert_weights用于z_loss计算
         current_expert_weights = None
-        if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
-            current_expert_weights = outputs.expert_weights
+        print(f"🔍 Training script z_loss debug:")
+        print(f"  hasattr(outputs, 'expert_weights'): {hasattr(outputs, 'expert_weights')}")
+        if hasattr(outputs, 'expert_weights'):
+            print(f"  outputs.expert_weights is not None: {outputs.expert_weights is not None}")
+            if outputs.expert_weights is not None:
+                print(f"    shape: {outputs.expert_weights.shape}, requires_grad: {outputs.expert_weights.requires_grad}, grad_fn: {outputs.expert_weights.grad_fn is not None}")
+                current_expert_weights = outputs.expert_weights
 
         # 获取MoE的z-loss用于稳定router - 使用有梯度的expert_weights
         if current_expert_weights is not None:
+            print(f"  using current_expert_weights for z_loss")
             # 计算有梯度的z_loss
             expert_usage = current_expert_weights.mean(dim=0)  # [num_experts]
             target_usage = expert_usage * 0.0 + (1.0 / 4)  # 假设4个专家，均匀分布
             z_loss = F.mse_loss(expert_usage, target_usage) * 0.01  # 小的权重
+            print(f"    expert_usage: {expert_usage}")
+            print(f"    z_loss: {z_loss.item()}, requires_grad: {z_loss.requires_grad}, grad_fn: {z_loss.grad_fn is not None}")
         else:
+            print(f"  fallback to get_accumulated_z_loss")
             # fallback到旧方法
             z_loss = model_adapter.get_accumulated_z_loss(main_loss=loss)
 
