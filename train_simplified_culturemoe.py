@@ -439,15 +439,15 @@ def compute_culture_loss(model_outputs, culture_labels, shared_outputs=None, mai
             culture_loss = main_loss * 0.0  # 保持梯度图连接
         else:
             # 🔧 如果没有main_loss，使用culture_labels创建连接到计算图的零损失
-            culture_loss = culture_labels.float().sum() * 0.0
+            culture_loss = main_loss * 0.0
 
     # 检查文化损失是否为NaN/Inf，如果是则返回零损失
     if torch.isnan(culture_loss) or torch.isinf(culture_loss):
         if main_loss is not None:
             culture_loss = main_loss * 0.0
         else:
-            # 🔧 如果没有main_loss，使用culture_labels创建连接到计算图的零损失
-            culture_loss = culture_labels.float().sum() * 0.0
+            # 🔧 如果没有main_loss，使用主损失创建连接到计算图的零损失
+            culture_loss = main_loss * 0.0
 
     return culture_loss
 
