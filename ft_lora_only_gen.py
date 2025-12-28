@@ -1316,11 +1316,6 @@ def main():
     print("✅ Training completed!")
     print("="*80)
     print(f"Results saved to: {args.output_dir}")
-    print(f"\nFiles generated:")
-    print(f"  - best_lora/ (Best LoRA weights)")
-    print(f"  - epoch_eval_results.json (Epoch-by-epoch results)")
-    print(f"  - generated_answers.json (Generated answers on validation set)")
-    print(f"  - config.json (Training configuration)")
     print("="*80)
 
 
