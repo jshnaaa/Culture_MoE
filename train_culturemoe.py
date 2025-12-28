@@ -131,71 +131,77 @@ def load_and_split_dataset_8_1_1(data_path: str, tokenizer, max_length: int = 51
     }
 
 
-def dynamic_collate_fn(batch):
-    """动态padding的collate函数"""
-    # 提取文化标签
-    culture_labels = []
-    for item in batch:
-        if hasattr(item, 'get'):
-            label = item.get('label', '0')
-        else:
-            # 处理Subset情况
-            label = item.get('label', '0') if hasattr(item, 'get') else '0'
+def create_dynamic_collate_fn(tokenizer):
+    """创建动态padding的collate函数"""
+    def dynamic_collate_fn(batch):
+        """动态padding的collate函数"""
+        # 提取文化标签
+        culture_labels = []
+        for item in batch:
+            if hasattr(item, 'get'):
+                label = item.get('label', '0')
+            else:
+                # 处理Subset情况
+                label = item.get('label', '0') if hasattr(item, 'get') else '0'
 
-        # 将字符串标签转换为整数
-        try:
-            culture_labels.append(int(label))
-        except:
-            culture_labels.append(0)
+            # 将字符串标签转换为整数
+            try:
+                culture_labels.append(int(label))
+            except:
+                culture_labels.append(0)
 
-    # 移除label字段避免冲突
-    batch_data = []
-    for item in batch:
-        new_item = {k: v for k, v in item.items() if k != 'label'}
-        batch_data.append(new_item)
+        # 移除label字段避免冲突
+        batch_data = []
+        for item in batch:
+            new_item = {k: v for k, v in item.items() if k != 'label'}
+            batch_data.append(new_item)
 
-    # 动态padding：找到batch中的最大长度
-    max_length = 0
-    for item in batch_data:
-        if 'input_ids' in item:
-            max_length = max(max_length, len(item['input_ids']))
+        # 动态padding：找到batch中的最大长度
+        max_length = 0
+        for item in batch_data:
+            if 'input_ids' in item:
+                max_length = max(max_length, len(item['input_ids']))
 
-    # 对每个样本进行padding或截断到batch内的最大长度
-    input_ids_list = []
-    attention_mask_list = []
-    labels_list = []
+        # 对每个样本进行padding或截断到batch内的最大长度
+        input_ids_list = []
+        attention_mask_list = []
+        labels_list = []
 
-    for item in batch_data:
-        input_ids = item['input_ids']
-        attention_mask = item['attention_mask']
-        labels = item['labels']
+        pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
 
-        # 如果长度超过max_length，截断
-        if len(input_ids) > max_length:
-            input_ids = input_ids[:max_length]
-            attention_mask = attention_mask[:max_length]
-            labels = labels[:max_length]
-        # 如果长度小于max_length，padding
-        elif len(input_ids) < max_length:
-            pad_length = max_length - len(input_ids)
-            # 使用tokenizer的pad_token_id进行padding
-            input_ids = input_ids + [0] * pad_length  # 0通常是pad_token_id
-            attention_mask = attention_mask + [0] * pad_length
-            labels = labels + [-100] * pad_length  # -100是忽略的标签
+        for item in batch_data:
+            input_ids = item['input_ids']
+            attention_mask = item['attention_mask']
+            labels = item['labels']
 
-        input_ids_list.append(input_ids)
-        attention_mask_list.append(attention_mask)
-        labels_list.append(labels)
+            # 如果长度超过max_length，截断
+            if len(input_ids) > max_length:
+                input_ids = input_ids[:max_length]
+                attention_mask = attention_mask[:max_length]
+                labels = labels[:max_length]
+            # 如果长度小于max_length，padding
+            elif len(input_ids) < max_length:
+                pad_length = max_length - len(input_ids)
+                # 使用tokenizer的pad_token_id进行padding
+                input_ids = input_ids + [pad_token_id] * pad_length
+                attention_mask = attention_mask + [0] * pad_length
+                labels = labels + [-100] * pad_length  # -100是忽略的标签
 
-    # 转换为tensor
-    padded_batch = {
-        'input_ids': torch.tensor(input_ids_list, dtype=torch.long),
-        'attention_mask': torch.tensor(attention_mask_list, dtype=torch.long),
-        'labels': torch.tensor(labels_list, dtype=torch.long),
-        'culture_labels': torch.tensor(culture_labels, dtype=torch.long)
-    }
+            input_ids_list.append(input_ids)
+            attention_mask_list.append(attention_mask)
+            labels_list.append(labels)
 
-    return padded_batch
+        # 转换为tensor
+        padded_batch = {
+            'input_ids': torch.tensor(input_ids_list, dtype=torch.long),
+            'attention_mask': torch.tensor(attention_mask_list, dtype=torch.long),
+            'labels': torch.tensor(labels_list, dtype=torch.long),
+            'culture_labels': torch.tensor(culture_labels, dtype=torch.long)
+        }
+
+        return padded_batch
+
+    return dynamic_collate_fn
 
 
 def generate_answer(model, tokenizer, instruction: str, input_text: str, device, max_new_tokens=10):
@@ -567,19 +573,22 @@ def main():
     val_dataset = datasets['validation']
     test_dataset = datasets['test']
 
+    # 创建动态collate函数
+    collate_fn = create_dynamic_collate_fn(tokenizer)
+
     # 创建数据加载器
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=dynamic_collate_fn
+        collate_fn=collate_fn
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=dynamic_collate_fn
+        collate_fn=collate_fn
     )
 
     # 创建优化器
@@ -631,22 +640,34 @@ def main():
                 best_accuracy = eval_results['accuracy']
                 best_epoch = epoch + 1
 
-                # 保存最佳模型（仅保存可训练参数）
-                best_model_dir = os.path.join(args.output_dir, "best_model")
+                # 保存最佳模型（按用户要求的目录结构）
+                best_model_dir = os.path.join(args.output_dir, "best_culturemoe")
                 os.makedirs(best_model_dir, exist_ok=True)
 
-                # 只保存可训练的参数
-                trainable_state_dict = {k: v for k, v in model.state_dict().items()
-                                       if any(p.requires_grad for p in model.named_parameters() if p[0] == k)}
+                # 只保存MoE相关的可训练参数
+                moe_state_dict = {}
+                for name, param in model.named_parameters():
+                    if param.requires_grad and ('culture_moe_layers' in name or 'lora' in name.lower()):
+                        moe_state_dict[name] = param
 
-                torch.save({
+                # 保存MoE权重
+                torch.save(moe_state_dict, os.path.join(best_model_dir, 'moe_weights.pt'))
+
+                # 保存CultureMoE配置
+                culturemoe_config = {
                     'epoch': epoch + 1,
-                    'trainable_state_dict': trainable_state_dict,
-                    'optimizer_state_dict': optimizer.state_dict(),
+                    'best_accuracy': best_accuracy,
                     'config': config,
                     'eval_results': eval_results,
-                    'best_accuracy': best_accuracy
-                }, os.path.join(best_model_dir, 'pytorch_model.bin'))
+                    'base_model_path': args.base_model_path,
+                    'backbone': args.backbone
+                }
+
+                with open(os.path.join(best_model_dir, 'culturemoe_config.json'), 'w') as f:
+                    json.dump(culturemoe_config, f, indent=2)
+
+                # 保存tokenizer文件
+                tokenizer.save_pretrained(best_model_dir)
 
                 print(f"🏆 新的最佳模型! 准确率: {best_accuracy:.4f}")
 

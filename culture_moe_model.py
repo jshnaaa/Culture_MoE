@@ -310,6 +310,11 @@ def create_culture_moe_model(base_model_path: str, config: Dict) -> CultureMoEMo
         trust_remote_code=True
     )
 
+    # 启用gradient checkpointing以节省显存
+    if hasattr(base_model, 'gradient_checkpointing_enable'):
+        base_model.gradient_checkpointing_enable()
+        print("Gradient checkpointing enabled")
+
     # 创建CultureMoE模型
     model = CultureMoEModel(base_model, config)
 
