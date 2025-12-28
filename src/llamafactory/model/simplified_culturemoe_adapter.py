@@ -183,7 +183,9 @@ class MoEFFNLoRA(nn.Module):
     def get_aux_loss(self):
         """计算负载均衡损失"""
         if self.latest_routing_weights is None:
-            return torch.tensor(0.0, device=next(self.parameters()).device, requires_grad=True)
+            # 🔧 修复梯度连接：使用参数创建有梯度的零损失
+            dummy_param = next(iter(self.parameters()))
+            return dummy_param.sum() * 0.0
 
         # 负载均衡损失：鼓励专家使用均匀分布
         expert_usage = self.latest_routing_weights.mean(dim=0)  # [4]
@@ -213,6 +215,10 @@ class SimplifiedCultureMoEAdapter:
 
         # 确保设备一致性
         self._ensure_device_consistency()
+
+        # 🔧 关键修复：在初始化时设置参数状态，避免在forward中动态修改
+        self.ensure_trainable_parameters()
+        self._parameters_initialized = True
 
     def _configure_memory_allocator(self):
         """🔧 配置PyTorch内存分配器以防止SimplifiedCultureMoE内存碎片化"""
@@ -782,10 +788,7 @@ class SimplifiedCultureMoEAdapter:
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         """简化的前向传播"""
-        # 确保关键参数可训练（仅在第一次调用时）
-        if not hasattr(self, '_parameters_checked'):
-            self._parameters_checked = True
-            self.ensure_trainable_parameters()
+        # 🔧 参数状态已在初始化时设置，避免在forward中重复调用导致DDP冲突
 
         outputs = self.base_model(
             input_ids=input_ids,
@@ -1073,9 +1076,12 @@ class SimplifiedCultureMoEAdapter:
                 if main_loss is not None:
                     return main_loss * 0.0
                 else:
-                    # 获取任意一个参数来创建零损失
-                    dummy_param = next(iter(self.base_model.parameters()))
-                    return dummy_param.sum() * 0.0
+                    # 🔧 修复梯度连接：获取可训练参数来创建零损失
+                    for param in self.base_model.parameters():
+                        if param.requires_grad:
+                            return param.sum() * 0.0
+                    # 如果没有找到可训练参数，返回detached零张量
+                    return torch.tensor(0.0, device=next(iter(self.base_model.parameters())).device, requires_grad=False)
 
         except Exception as e:
             print(f"❌ Direct z loss computation failed: {e}")
@@ -1083,9 +1089,12 @@ class SimplifiedCultureMoEAdapter:
             if main_loss is not None:
                 return main_loss * 0.0
             else:
-                # 获取任意一个参数来创建零损失
-                dummy_param = next(iter(self.base_model.parameters()))
-                return dummy_param.sum() * 0.0
+                # 🔧 修复梯度连接：获取可训练参数来创建零损失
+                for param in self.base_model.parameters():
+                    if param.requires_grad:
+                        return param.sum() * 0.0
+                # 如果没有找到可训练参数，返回detached零张量
+                return torch.tensor(0.0, device=next(iter(self.base_model.parameters())).device, requires_grad=False)
 
     def _compute_shared_culture_loss(self, culture_labels, shared_outputs, main_loss):
         """🔧 计算共享专家文化损失（避免循环导入）"""
@@ -1097,17 +1106,30 @@ class SimplifiedCultureMoEAdapter:
                     return culture_labels.float().sum() * 0.0
 
             batch_size = shared_outputs.shape[0]
-            culture_loss = torch.tensor(0.0, device=shared_outputs.device, requires_grad=True)
+            device = shared_outputs.device
+
+            # 🔧 修复梯度连接：使用shared_outputs创建有梯度的零损失
+            culture_loss = shared_outputs.mean() * 0.0  # 保持梯度连接
 
             # 共享专家一致性损失：总是鼓励相似
             for i in range(batch_size):
                 for j in range(i + 1, batch_size):
-                    similarity = F.cosine_similarity(
-                        shared_outputs[i].unsqueeze(0),
-                        shared_outputs[j].unsqueeze(0)
-                    )
-                    # 共享专家：总是鼓励相似
-                    culture_loss = culture_loss + (1.0 - similarity)
+                    vec1 = shared_outputs[i].unsqueeze(0)
+                    vec2 = shared_outputs[j].unsqueeze(0)
+
+                    # 检查向量是否为零向量
+                    norm1 = torch.norm(vec1)
+                    norm2 = torch.norm(vec2)
+                    if norm1 < 1e-8 or norm2 < 1e-8:
+                        continue
+
+                    similarity = F.cosine_similarity(vec1, vec2)
+                    if torch.isnan(similarity) or torch.isinf(similarity):
+                        continue
+
+                    # 共享专家：总是鼓励相似，损失为 1 - similarity
+                    loss_term = 1.0 - similarity
+                    culture_loss = culture_loss + loss_term
 
             # 归一化
             num_pairs = batch_size * (batch_size - 1) // 2
@@ -1133,22 +1155,35 @@ class SimplifiedCultureMoEAdapter:
                     return culture_labels.float().sum() * 0.0
 
             batch_size = expert_weights.shape[0]
-            culture_loss = torch.tensor(0.0, device=expert_weights.device, requires_grad=True)
+            device = expert_weights.device
+
+            # 🔧 修复梯度连接：使用expert_weights创建有梯度的零损失
+            culture_loss = expert_weights.mean() * 0.0  # 保持梯度连接
 
             # 路由专家文化对比损失
             for i in range(batch_size):
                 for j in range(i + 1, batch_size):
-                    similarity = F.cosine_similarity(
-                        expert_weights[i].unsqueeze(0),
-                        expert_weights[j].unsqueeze(0)
-                    )
+                    vec1 = expert_weights[i].unsqueeze(0)
+                    vec2 = expert_weights[j].unsqueeze(0)
+
+                    # 检查向量是否为零向量
+                    norm1 = torch.norm(vec1)
+                    norm2 = torch.norm(vec2)
+                    if norm1 < 1e-8 or norm2 < 1e-8:
+                        continue
+
+                    similarity = F.cosine_similarity(vec1, vec2)
+                    if torch.isnan(similarity) or torch.isinf(similarity):
+                        continue
 
                     if culture_labels[i] == culture_labels[j]:
-                        # 同文化：鼓励相似
-                        culture_loss = culture_loss + (1.0 - similarity)
+                        # 同文化：鼓励相似，损失为 1 - similarity
+                        loss_term = 1.0 - similarity
                     else:
-                        # 不同文化：鼓励不同
-                        culture_loss = culture_loss + similarity
+                        # 不同文化：鼓励不同，损失为 similarity
+                        loss_term = similarity
+
+                    culture_loss = culture_loss + loss_term
 
             # 归一化
             num_pairs = batch_size * (batch_size - 1) // 2

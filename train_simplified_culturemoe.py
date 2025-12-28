@@ -1075,9 +1075,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         print(f"  MoE params summary: {moe_params_trainable} trainable, {moe_params_frozen} frozen")
 
-        # 🔧 LoRA参数验证：确保参数冻结策略正确
+        # 🔧 参数管理已在adapter.forward()中处理，避免重复调用导致DDP冲突
         # LoRA原则：只训练LoRA适配器和MoE参数，冻结所有基座模型参数
-        model_adapter.ensure_trainable_parameters()
 
         # 单路处理
         outputs = model_adapter.forward(
@@ -1936,11 +1935,13 @@ def main():
 
         print("✅ Simplified CultureMoE configured")
 
-    # 启用梯度检查点节省显存
-    if hasattr(model_adapter.base_model, 'gradient_checkpointing_enable'):
-        model_adapter.base_model.gradient_checkpointing_enable()
-        if is_main_process(rank):
-            print("✅ Gradient checkpointing enabled (saves 3-5GB memory)")
+    # 🔧 暂时禁用梯度检查点，避免与MoE动态路由冲突导致梯度断连
+    # if hasattr(model_adapter.base_model, 'gradient_checkpointing_enable'):
+    #     model_adapter.base_model.gradient_checkpointing_enable()
+    #     if is_main_process(rank):
+    #         print("✅ Gradient checkpointing enabled (saves 3-5GB memory)")
+    if is_main_process(rank):
+        print("⚠️ Gradient checkpointing disabled to avoid conflicts with MoE routing")
 
     # 确保所有参数在正确设备上（在DDP包装前）
     torch.cuda.empty_cache()
