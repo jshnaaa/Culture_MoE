@@ -542,13 +542,20 @@ class CultureMoEModel(nn.Module):
             moe_device = next(moe_layer.parameters()).device
             moe_dtype = next(moe_layer.parameters()).dtype
 
-            # 🔧 只处理设备一致性，保持Router FP32（MoE工业标准）
+            # 🔧 设备和dtype精确控制
+            target_dtype = hidden_states.dtype
+
+            # 同步设备
             if hidden_states.device != moe_device:
-                # 只同步设备，不强制dtype统一
                 moe_layer = moe_layer.to(device=hidden_states.device)
                 self.culture_moe_layers[layer_idx] = moe_layer
 
-            # 🔧 确保Router始终保持FP32（MoE工业标准要求）
+            # 将整个MoE层转换为目标dtype，解决LoRA专家dtype问题
+            if moe_dtype != target_dtype:
+                moe_layer = moe_layer.to(dtype=target_dtype)
+                self.culture_moe_layers[layer_idx] = moe_layer
+
+            # 特殊处理Router，强制保持FP32（MoE工业标准要求）
             if moe_layer.router.gate.weight.dtype != torch.float32:
                 moe_layer.router.gate.weight.data = moe_layer.router.gate.weight.data.float()
 
