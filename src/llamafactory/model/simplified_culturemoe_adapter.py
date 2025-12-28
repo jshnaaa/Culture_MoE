@@ -503,28 +503,11 @@ class SimplifiedCultureMoEAdapter:
             print(f"✅ Replaced layer {layer_idx} FFN with LoRA MoE ({config_info})")
 
     def _apply_attention_lora(self):
-        """应用LoRA到注意力层"""
-        try:
-            from peft import LoraConfig, get_peft_model, TaskType
-
-            # LoRA配置
-            lora_config = LoraConfig(
-                task_type=TaskType.CAUSAL_LM,
-                r=self.config.lora_rank,
-                lora_alpha=self.config.lora_alpha,
-                lora_dropout=self.config.lora_dropout,
-                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],  # 只针对注意力层
-                bias="none",
-            )
-
-            # 应用LoRA
-            self.base_model = get_peft_model(self.base_model, lora_config)
-            print(f"✅ Applied LoRA to attention layers (rank={self.config.lora_rank})")
-
-        except ImportError:
-            print("⚠️ PEFT not available, skipping LoRA")
-        except Exception as e:
-            print(f"⚠️ LoRA application failed: {e}")
+        """应用LoRA到注意力层 - 已禁用，专注于纯MoE"""
+        print("🔧 注意力层LoRA已禁用 - 专注于纯MoE FFN训练")
+        print("   只训练MoE专家参数，保持注意力层完全冻结")
+        # 注释掉LoRA应用代码，避免额外的参数训练
+        pass
 
     def _freeze_non_trainable_parameters(self):
         """冻结非训练参数"""
