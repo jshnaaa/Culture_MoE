@@ -142,21 +142,43 @@ class CultureMoEFFN(nn.Module):
         top_k_probs = top_k_probs / (top_k_probs.sum(dim=-1, keepdim=True) + 1e-8)
 
         # 计算路由专家输出
-        routed_output = torch.zeros(batch_size, seq_len, self.intermediate_size,
-                                   device=hidden_states.device, dtype=hidden_states.dtype)
-
         expert_outputs = []
         for i, expert in enumerate(self.routing_experts):
             expert_output = expert(hidden_states)  # [batch_size, seq_len, intermediate_size]
             expert_outputs.append(expert_output)
 
-        # 加权求和激活的专家输出
-        for batch_idx in range(batch_size):
-            for seq_idx in range(seq_len):
-                for k_idx in range(self.num_activated_experts):
-                    expert_idx = top_k_indices[batch_idx, seq_idx, k_idx]
-                    weight = top_k_probs[batch_idx, seq_idx, k_idx]
-                    routed_output[batch_idx, seq_idx] += weight * expert_outputs[expert_idx][batch_idx, seq_idx]
+        # 堆叠所有专家输出 [num_experts, batch_size, seq_len, intermediate_size]
+        stacked_expert_outputs = torch.stack(expert_outputs, dim=0)
+
+        # 使用向量化操作进行加权求和，保持梯度连接
+        # top_k_indices: [batch_size, seq_len, num_activated_experts]
+        # top_k_probs: [batch_size, seq_len, num_activated_experts]
+
+        # 创建one-hot编码矩阵用于选择专家
+        # [batch_size, seq_len, num_activated_experts, num_experts]
+        expert_mask = torch.zeros(batch_size, seq_len, self.num_activated_experts, self.num_routing_experts,
+                                 device=hidden_states.device, dtype=hidden_states.dtype)
+
+        # 使用scatter创建one-hot mask
+        expert_mask.scatter_(3, top_k_indices.unsqueeze(-1), 1.0)
+
+        # 计算加权专家输出
+        # expert_mask: [batch_size, seq_len, num_activated_experts, num_experts]
+        # stacked_expert_outputs: [num_experts, batch_size, seq_len, intermediate_size]
+        # 重排维度以便广播: [batch_size, seq_len, num_experts, intermediate_size]
+        expert_outputs_reshaped = stacked_expert_outputs.permute(1, 2, 0, 3)
+
+        # 应用mask和权重
+        # expert_mask: [batch_size, seq_len, num_activated_experts, num_experts, 1]
+        # expert_outputs_reshaped: [batch_size, seq_len, 1, num_experts, intermediate_size]
+        weighted_outputs = expert_mask.unsqueeze(-1) * expert_outputs_reshaped.unsqueeze(2)
+
+        # 应用top-k权重
+        # top_k_probs: [batch_size, seq_len, num_activated_experts, 1, 1]
+        weighted_outputs = weighted_outputs * top_k_probs.unsqueeze(-1).unsqueeze(-1)
+
+        # 求和得到最终路由输出
+        routed_output = weighted_outputs.sum(dim=(2, 3))  # [batch_size, seq_len, intermediate_size]
 
         # 计算共享专家输出
         if self.use_shared:
@@ -270,10 +292,14 @@ class CultureMoEModel(nn.Module):
         # Hook函数来替换FFN输出
         def create_hook(layer_idx):
             def hook_fn(module, input, output):
-                # output是FFN的输出
-                hidden_states = input[0]  # FFN的输入
+                # input[0]是FFN的输入hidden_states
+                hidden_states = input[0]
+
+                # 通过MoE层计算输出，保持梯度连接
                 moe_output, aux_info = self.culture_moe_layers[layer_idx](hidden_states)
                 moe_aux_info.append(aux_info)
+
+                # 直接返回MoE输出，保持梯度图完整
                 return moe_output
             return hook_fn
 
