@@ -74,16 +74,30 @@ class Router(nn.Module):
 
 
 class LoRAExpert(nn.Module):
-    """单个LoRA专家"""
+    """终极dtype安全的LoRA专家 - 多重保障机制"""
 
-    def __init__(self, in_features: int, out_features: int, rank: int = 16, alpha: int = 32):
+    def __init__(self, in_features: int, out_features: int, rank: int = 16, alpha: int = 32, target_dtype: torch.dtype = torch.float16):
         super().__init__()
         self.rank = rank
         self.alpha = alpha
+        self.target_dtype = target_dtype
+        self._dtype_initialized = False
 
-        # LoRA参数
-        self.lora_A = nn.Parameter(torch.randn(in_features, rank) * 0.01)
-        self.lora_B = nn.Parameter(torch.zeros(rank, out_features))
+        # 🔧 策略1：构造时就使用目标dtype
+        self.lora_A = nn.Parameter(torch.randn(in_features, rank, dtype=target_dtype) * 0.01)
+        self.lora_B = nn.Parameter(torch.zeros(rank, out_features, dtype=target_dtype))
+
+        print(f"🔧 LoRAExpert创建: lora_A={self.lora_A.dtype}, lora_B={self.lora_B.dtype}")
+
+    def ensure_dtype_consistency(self, target_dtype: torch.dtype, device: torch.device):
+        """🔧 策略2：强制dtype一致性 - 永久修改参数"""
+        if self.lora_A.dtype != target_dtype:
+            self.lora_A.data = self.lora_A.data.to(dtype=target_dtype, device=device)
+            print(f"🔧 强制转换lora_A: {self.lora_A.dtype}")
+
+        if self.lora_B.dtype != target_dtype:
+            self.lora_B.data = self.lora_B.data.to(dtype=target_dtype, device=device)
+            print(f"🔧 强制转换lora_B: {self.lora_B.dtype}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -96,12 +110,33 @@ class LoRAExpert(nn.Module):
         if torch.isnan(x).any():
             print(f"🚨 LoRA专家输入包含NaN: {torch.isnan(x).sum().item()}/{x.numel()}")
 
-        # 🔧 确保dtype一致性：LoRA参数与输入匹配
-        lora_A = self.lora_A.to(dtype=x.dtype, device=x.device)
-        lora_B = self.lora_B.to(dtype=x.dtype, device=x.device)
+        # 🔧 策略3：运行时绝对保障 - 三重检查
+        input_dtype = x.dtype
+        input_device = x.device
 
-        # LoRA变换: x @ A @ B
-        lora_output = x @ lora_A @ lora_B
+        # 检查1：参数dtype是否匹配
+        if self.lora_A.dtype != input_dtype or self.lora_B.dtype != input_dtype:
+            print(f"🚨 Dtype不匹配检测! 输入:{input_dtype}, lora_A:{self.lora_A.dtype}, lora_B:{self.lora_B.dtype}")
+            self.ensure_dtype_consistency(input_dtype, input_device)
+
+        # 检查2：设备是否匹配
+        if self.lora_A.device != input_device or self.lora_B.device != input_device:
+            print(f"🚨 Device不匹配检测! 输入:{input_device}, lora_A:{self.lora_A.device}, lora_B:{self.lora_B.device}")
+            self.lora_A.data = self.lora_A.data.to(device=input_device)
+            self.lora_B.data = self.lora_B.data.to(device=input_device)
+
+        # 检查3：最终验证 - 直接使用参数进行计算（已保证一致性）
+        try:
+            # 🔧 策略4：使用原始参数（已确保一致性）而不是临时转换
+            lora_output = x @ self.lora_A @ self.lora_B
+        except RuntimeError as e:
+            print(f"🚨 FATAL: 即使经过所有检查仍然失败: {e}")
+            print(f"🚨 最终状态 - x:{x.dtype}, lora_A:{self.lora_A.dtype}, lora_B:{self.lora_B.dtype}")
+            # 🔧 策略5：核武器选项 - 强制临时转换
+            lora_A_temp = self.lora_A.to(dtype=input_dtype, device=input_device)
+            lora_B_temp = self.lora_B.to(dtype=input_dtype, device=input_device)
+            lora_output = x @ lora_A_temp @ lora_B_temp
+            print(f"🔧 核武器选项成功: 使用临时转换")
 
         # 🔍 NaN诊断：LoRA变换检查
         if torch.isnan(lora_output).any():
@@ -155,15 +190,15 @@ class MoELoRAFFN(nn.Module):
         # Router网络（FP32，数值稳定性）
         self.router = Router(hidden_size, num_routing_experts)
 
-        # 路由专家（LoRA增量）
+        # 路由专家（LoRA增量）- 使用dtype安全版本
         self.routing_experts = nn.ModuleList([
-            LoRAExpert(hidden_size, intermediate_size, lora_rank, lora_alpha)
+            LoRAExpert(hidden_size, intermediate_size, lora_rank, lora_alpha, target_dtype=torch.float16)
             for _ in range(num_routing_experts)
         ])
 
-        # 共享专家（LoRA增量）
+        # 共享专家（LoRA增量）- 使用dtype安全版本
         if use_shared:
-            self.shared_expert = LoRAExpert(hidden_size, intermediate_size, lora_rank, lora_alpha)
+            self.shared_expert = LoRAExpert(hidden_size, intermediate_size, lora_rank, lora_alpha, target_dtype=torch.float16)
 
         # 输出投影：intermediate_size -> hidden_size
         self.output_projection = nn.Linear(intermediate_size, hidden_size, bias=False)
@@ -387,6 +422,9 @@ class CultureMoEModel(nn.Module):
         if config.get('apply_to_attention', False):
             self._add_attention_lora()
 
+        # 🔧 策略6：全局dtype强制执行 - 确保所有MoE参数dtype一致
+        self._enforce_global_dtype_consistency()
+
         # 🔧 无Hook架构：直接替换完成，无需额外设置
 
     def _freeze_base_model(self):
@@ -415,6 +453,46 @@ class CultureMoEModel(nn.Module):
         print(f"Trainable LoRA parameters: {trainable_params:,}")
 
         # MoE层参数会在CultureMoEFFN中自动设置为可训练
+
+    def _enforce_global_dtype_consistency(self, target_dtype: torch.dtype = torch.float16):
+        """🔧 策略6：全局dtype强制执行 - 核武器级别的dtype保障"""
+        print(f"🔧 执行全局dtype强制执行: 目标dtype={target_dtype}")
+
+        moe_param_count = 0
+        fixed_param_count = 0
+
+        for name, param in self.named_parameters():
+            # 只处理MoE相关参数，保护Router（FP32）和base_ffn（原始）
+            if any(keyword in name for keyword in ["lora_A", "lora_B", "output_projection"]) and 'router' not in name:
+                if param.dtype != target_dtype:
+                    param.data = param.data.to(dtype=target_dtype)
+                    fixed_param_count += 1
+                    print(f"  🔧 强制转换 {name}: {param.dtype}")
+                moe_param_count += 1
+
+        print(f"✅ 全局dtype强制执行完成: 检查{moe_param_count}个参数, 修复{fixed_param_count}个参数")
+
+        # 🔧 策略7：直接调用所有LoRAExpert的ensure_dtype_consistency
+        transformer = self._get_transformer()
+        layers = getattr(transformer, self.layer_attr)
+
+        for layer_idx, layer in enumerate(layers):
+            if layer_idx >= self.num_layers:
+                break
+
+            ffn = getattr(layer, self.ffn_attr)
+            if hasattr(ffn, 'routing_experts'):
+                # 强制所有routing experts的dtype一致性
+                for expert_idx, expert in enumerate(ffn.routing_experts):
+                    if hasattr(expert, 'ensure_dtype_consistency'):
+                        expert.ensure_dtype_consistency(target_dtype, next(expert.parameters()).device)
+
+                # 强制shared expert的dtype一致性
+                if hasattr(ffn, 'shared_expert') and ffn.shared_expert is not None:
+                    if hasattr(ffn.shared_expert, 'ensure_dtype_consistency'):
+                        ffn.shared_expert.ensure_dtype_consistency(target_dtype, next(ffn.shared_expert.parameters()).device)
+
+        print("✅ 所有LoRAExpert的dtype一致性已强制执行")
 
     def _add_attention_lora(self):
         """为注意力层添加LoRA"""
