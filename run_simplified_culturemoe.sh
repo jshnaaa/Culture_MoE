@@ -20,8 +20,8 @@ USE_CULTURE_LOSS=${6:-"new"}  # ori/new/kl/false，默认为new
 NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
 USE_LORA=${8:-"true"}   # 是否启用LoRA，默认为true
 NUM_GPUS=${9:-"2"}
-LORA_RANK=${10:-"64"}   # LoRA rank (增大到64提升表达能力)
-LORA_ALPHA=${11:-"128"}  # LoRA alpha (相应调整到128)
+LORA_RANK=${10:-"32"}   # LoRA rank (平衡表达能力和显存)
+LORA_ALPHA=${11:-"64"}  # LoRA alpha (相应调整到64)
 
 # 检查参数
 if [ "$#" -gt 11 ]; then
@@ -263,9 +263,9 @@ echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
 echo ""
 
-# 内存优化的训练参数 - 参考joint版本设置
-BATCH_SIZE=4              # 调整为2，支持culture loss多样本计算
-GRADIENT_ACCUMULATION=8   # 相应增加梯度累积，保持有效batch size
+# 内存优化的训练参数 - 针对新架构调整
+BATCH_SIZE=2              # 🔧 减少到2，节省显存
+GRADIENT_ACCUMULATION=16  # 🔧 相应增加梯度累积，保持有效batch size=32
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
 NUM_EPOCHS=7              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
@@ -328,11 +328,13 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 }
 EOF
 
-# 设置内存优化环境变量（与MixLoRA一致）
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32
+# 设置内存优化环境变量 - 针对新架构强化
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32,expandable_segments:True
 export CUDA_LAUNCH_BLOCKING=0
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
+export PYTORCH_NO_CUDA_MEMORY_CACHING=1  # 🔧 禁用CUDA内存缓存
+export CUDA_CACHE_DISABLE=1              # 🔧 禁用CUDA缓存
 
 echo "开始简化版FFN CultureMoE训练..."
 

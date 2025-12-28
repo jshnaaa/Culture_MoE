@@ -17,7 +17,7 @@ from .simplified_culturemoe import SimplifiedCultureMoEConfig
 class LoRAExpert(nn.Module):
     """LoRA专家层 - 为FFN的每个线性层添加LoRA分支"""
 
-    def __init__(self, original_ffn, lora_rank: int = 64, lora_alpha: int = 128, dropout: float = 0.1):
+    def __init__(self, original_ffn, lora_rank: int = 32, lora_alpha: int = 64, dropout: float = 0.1):
         super().__init__()
         self.original_ffn = original_ffn  # 保持原始FFN不变
         self.lora_rank = lora_rank
