@@ -30,9 +30,24 @@ class Router(nn.Module):
             gate_logits: [batch_size, seq_len, num_experts] 专家权重logits
             gate_probs: [batch_size, seq_len, num_experts] 专家权重概率
         """
+        # 🔍 NaN诊断：Router输入检查
+        if torch.isnan(hidden_states).any():
+            print(f"🚨 Router输入包含NaN: {torch.isnan(hidden_states).sum().item()}/{hidden_states.numel()}")
+
         # 计算每个token对每个专家的权重
         gate_logits = self.gate(hidden_states)  # [batch_size, seq_len, num_experts]
+
+        # 🔍 NaN诊断：gate_logits检查
+        if torch.isnan(gate_logits).any():
+            print(f"🚨 Router gate_logits包含NaN: {torch.isnan(gate_logits).sum().item()}/{gate_logits.numel()}")
+            print(f"  gate_logits范围: [{gate_logits.min().item():.6f}, {gate_logits.max().item():.6f}]")
+
         gate_probs = F.softmax(gate_logits, dim=-1)
+
+        # 🔍 NaN诊断：gate_probs检查
+        if torch.isnan(gate_probs).any():
+            print(f"🚨 Router gate_probs包含NaN: {torch.isnan(gate_probs).sum().item()}/{gate_probs.numel()}")
+            print(f"  gate_probs范围: [{gate_probs.min().item():.6f}, {gate_probs.max().item():.6f}]")
 
         return gate_logits, gate_probs
 
@@ -55,14 +70,32 @@ class Gate(nn.Module):
         Returns:
             fused_output: [batch_size, seq_len, intermediate_size] 融合后的输出
         """
+        # 🔍 NaN诊断：Gate输入检查
+        if torch.isnan(shared_output).any():
+            print(f"🚨 Gate shared_output包含NaN: {torch.isnan(shared_output).sum().item()}/{shared_output.numel()}")
+        if torch.isnan(routed_output).any():
+            print(f"🚨 Gate routed_output包含NaN: {torch.isnan(routed_output).sum().item()}/{routed_output.numel()}")
+
         # 🔧 使用可学习的加权平均，参数量从4亿降到2个
         # 归一化权重
         total_weight = torch.abs(self.shared_weight) + torch.abs(self.routed_weight)
         shared_norm_weight = torch.abs(self.shared_weight) / (total_weight + 1e-8)
         routed_norm_weight = torch.abs(self.routed_weight) / (total_weight + 1e-8)
 
+        # 🔍 NaN诊断：权重检查
+        if torch.isnan(shared_norm_weight).any() or torch.isnan(routed_norm_weight).any():
+            print(f"🚨 Gate权重归一化产生NaN:")
+            print(f"  shared_weight: {self.shared_weight.item():.6f}")
+            print(f"  routed_weight: {self.routed_weight.item():.6f}")
+            print(f"  total_weight: {total_weight.item():.6f}")
+
         # 加权融合
         fused_output = shared_norm_weight * shared_output + routed_norm_weight * routed_output
+
+        # 🔍 NaN诊断：Gate输出检查
+        if torch.isnan(fused_output).any():
+            print(f"🚨 Gate fused_output包含NaN: {torch.isnan(fused_output).sum().item()}/{fused_output.numel()}")
+
         return fused_output
 
 
@@ -85,9 +118,27 @@ class LoRAExpert(nn.Module):
         Returns:
             output: [batch_size, seq_len, out_features]
         """
+        # 🔍 NaN诊断：LoRA专家输入检查
+        if torch.isnan(x).any():
+            print(f"🚨 LoRA专家输入包含NaN: {torch.isnan(x).sum().item()}/{x.numel()}")
+
         # LoRA变换: x @ A @ B
         lora_output = x @ self.lora_A @ self.lora_B
-        return lora_output * (self.alpha / self.rank)
+
+        # 🔍 NaN诊断：LoRA变换检查
+        if torch.isnan(lora_output).any():
+            print(f"🚨 LoRA变换包含NaN: {torch.isnan(lora_output).sum().item()}/{lora_output.numel()}")
+            print(f"  lora_A范围: [{self.lora_A.min().item():.6f}, {self.lora_A.max().item():.6f}]")
+            print(f"  lora_B范围: [{self.lora_B.min().item():.6f}, {self.lora_B.max().item():.6f}]")
+
+        scaled_output = lora_output * (self.alpha / self.rank)
+
+        # 🔍 NaN诊断：LoRA专家输出检查
+        if torch.isnan(scaled_output).any():
+            print(f"🚨 LoRA专家输出包含NaN: {torch.isnan(scaled_output).sum().item()}/{scaled_output.numel()}")
+            print(f"  alpha/rank比例: {self.alpha / self.rank:.6f}")
+
+        return scaled_output
 
 
 class CultureMoEFFN(nn.Module):
@@ -147,17 +198,40 @@ class CultureMoEFFN(nn.Module):
 
         # Top-k选择
         top_k_probs, top_k_indices = torch.topk(gate_probs, self.num_activated_experts, dim=-1)
+
+        # 🔍 NaN诊断：Top-k选择检查
+        if torch.isnan(top_k_probs).any() or torch.isnan(top_k_indices).any():
+            print(f"🚨 Top-k选择产生NaN:")
+            print(f"  top_k_probs NaN数量: {torch.isnan(top_k_probs).sum().item()}")
+            print(f"  top_k_indices NaN数量: {torch.isnan(top_k_indices.float()).sum().item()}")
+
         # 重新归一化
-        top_k_probs = top_k_probs / (top_k_probs.sum(dim=-1, keepdim=True) + 1e-8)
+        top_k_sum = top_k_probs.sum(dim=-1, keepdim=True)
+        top_k_probs = top_k_probs / (top_k_sum + 1e-8)
+
+        # 🔍 NaN诊断：归一化检查
+        if torch.isnan(top_k_probs).any():
+            print(f"🚨 Top-k归一化产生NaN:")
+            print(f"  top_k_sum范围: [{top_k_sum.min().item():.6f}, {top_k_sum.max().item():.6f}]")
+            print(f"  归一化后top_k_probs范围: [{top_k_probs.min().item():.6f}, {top_k_probs.max().item():.6f}]")
 
         # 计算路由专家输出
         expert_outputs = []
         for i, expert in enumerate(self.routing_experts):
             expert_output = expert(hidden_states)  # [batch_size, seq_len, intermediate_size]
+
+            # 🔍 NaN诊断：专家输出检查
+            if torch.isnan(expert_output).any():
+                print(f"🚨 专家{i}输出包含NaN: {torch.isnan(expert_output).sum().item()}/{expert_output.numel()}")
+
             expert_outputs.append(expert_output)
 
         # 堆叠所有专家输出 [num_experts, batch_size, seq_len, intermediate_size]
         stacked_expert_outputs = torch.stack(expert_outputs, dim=0)
+
+        # 🔍 NaN诊断：堆叠专家输出检查
+        if torch.isnan(stacked_expert_outputs).any():
+            print(f"🚨 堆叠专家输出包含NaN: {torch.isnan(stacked_expert_outputs).sum().item()}/{stacked_expert_outputs.numel()}")
 
         # 🔧 内存优化：使用更高效的专家选择和加权
         # 直接计算激活专家的加权输出，避免创建大型mask矩阵
@@ -179,13 +253,29 @@ class CultureMoEFFN(nn.Module):
                     expert_output = stacked_expert_outputs[expert_id]  # [batch_size, seq_len, intermediate_size]
                     # 应用权重和mask
                     weighted_contribution = expert_output * expert_weights.unsqueeze(-1) * mask.unsqueeze(-1)
+
+                    # 🔍 NaN诊断：专家加权贡献检查
+                    if torch.isnan(weighted_contribution).any():
+                        print(f"🚨 专家{expert_id}加权贡献包含NaN:")
+                        print(f"  expert_weights范围: [{expert_weights.min().item():.6f}, {expert_weights.max().item():.6f}]")
+                        print(f"  mask激活数量: {mask.sum().item()}")
+                        print(f"  weighted_contribution NaN数量: {torch.isnan(weighted_contribution).sum().item()}")
+
                     routed_output += weighted_contribution
 
         # 计算共享专家输出
         if self.use_shared:
             shared_output = self.shared_expert(hidden_states)
+
+            # 🔍 NaN诊断：共享专家输出检查
+            if torch.isnan(shared_output).any():
+                print(f"🚨 共享专家输出包含NaN: {torch.isnan(shared_output).sum().item()}/{shared_output.numel()}")
         else:
             shared_output = None
+
+        # 🔍 NaN诊断：路由输出检查
+        if torch.isnan(routed_output).any():
+            print(f"🚨 路由输出包含NaN: {torch.isnan(routed_output).sum().item()}/{routed_output.numel()}")
 
         # 融合输出
         if self.use_gate and self.use_shared:
@@ -193,11 +283,24 @@ class CultureMoEFFN(nn.Module):
         elif self.use_shared:
             # 简单相加
             intermediate_output = shared_output + routed_output
+
+            # 🔍 NaN诊断：相加融合检查
+            if torch.isnan(intermediate_output).any():
+                print(f"🚨 相加融合输出包含NaN: {torch.isnan(intermediate_output).sum().item()}/{intermediate_output.numel()}")
         else:
             intermediate_output = routed_output
 
+        # 🔍 NaN诊断：融合后输出检查
+        if torch.isnan(intermediate_output).any():
+            print(f"🚨 融合后intermediate_output包含NaN: {torch.isnan(intermediate_output).sum().item()}/{intermediate_output.numel()}")
+
         # 投影到hidden_size维度
         final_output = self.output_projection(intermediate_output)
+
+        # 🔍 NaN诊断：最终输出检查
+        if torch.isnan(final_output).any():
+            print(f"🚨 MoE最终输出包含NaN: {torch.isnan(final_output).sum().item()}/{final_output.numel()}")
+            print(f"  output_projection权重范围: [{self.output_projection.weight.min().item():.6f}, {self.output_projection.weight.max().item():.6f}]")
 
         # 收集辅助信息
         aux_info = {
@@ -419,24 +522,14 @@ class CultureMoEModel(nn.Module):
                 moe_layer = moe_layer.to(device=hidden_states.device, dtype=hidden_states.dtype)
                 self.culture_moe_layers[layer_idx] = moe_layer
 
-            # 🔧 安全的梯度连接：保持完整梯度流
-            moe_params = [p for p in moe_layer.parameters() if p.requires_grad]
-            if moe_params:
-                # 创建零贡献但有梯度的连接器
-                param_sum = sum(p.sum() for p in moe_params)
-                gradient_connector = param_sum * 0.0  # 数值为0，但保持梯度连接
-
-                # 无论hidden_states是否有梯度，都建立连接
-                hidden_states = hidden_states + gradient_connector.expand_as(hidden_states)
-
-                if layer_idx < 3:  # 只在前几层打印诊断
-                    print(f"Layer {layer_idx}: 建立安全梯度连接 (connector_norm={gradient_connector.norm().item():.6f})")
-
-            # 确保hidden_states有梯度（但不断开现有连接）
+            # 🔧 极简梯度连接：只在必要时启用梯度
             if not hidden_states.requires_grad:
-                hidden_states = hidden_states.requires_grad_(True)  # 不使用detach()
-                if layer_idx < 3:
-                    print(f"Layer {layer_idx}: 启用梯度跟踪")
+                hidden_states = hidden_states.requires_grad_(True)
+
+            # 🔧 NaN早期检测和阻断
+            if torch.isnan(hidden_states).any():
+                print(f"🚨 Hook Layer {layer_idx}: 输入包含NaN，停止处理")
+                return hidden_states  # 直接返回原始输入，避免NaN传播
 
             # 通过MoE层计算输出
             moe_output, aux_info = moe_layer(hidden_states)
