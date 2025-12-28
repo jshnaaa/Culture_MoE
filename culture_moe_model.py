@@ -339,6 +339,174 @@ class CultureMoEFFN(nn.Module):
         return final_output, aux_info
 
 
+class MoELoRAFFN(nn.Module):
+    """FFN + LoRA-MoE 融合模块，直接替换原始FFN，无需Hook机制"""
+
+    def __init__(
+        self,
+        original_ffn,
+        hidden_size: int,
+        intermediate_size: int,
+        num_routing_experts: int = 4,
+        num_activated_experts: int = 2,
+        use_shared: bool = True,
+        use_gate: bool = True,
+        lora_rank: int = 16,
+        lora_alpha: int = 32,
+        freeze_base_ffn: bool = True
+    ):
+        super().__init__()
+
+        # 保存配置
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.num_routing_experts = num_routing_experts
+        self.num_activated_experts = num_activated_experts
+        self.use_shared = use_shared
+        self.use_gate = use_gate
+
+        # 🔧 保留原始FFN（可选择性冻结）
+        self.base_ffn = original_ffn
+        if freeze_base_ffn:
+            for param in self.base_ffn.parameters():
+                param.requires_grad = False
+
+        # 🔧 MoE LoRA组件
+        # Router网络（FP32，数值稳定性）
+        self.router = Router(hidden_size, num_routing_experts)
+
+        # 路由专家（LoRA增量）
+        self.routing_experts = nn.ModuleList([
+            LoRAExpert(hidden_size, intermediate_size, lora_rank, lora_alpha)
+            for _ in range(num_routing_experts)
+        ])
+
+        # 共享专家（LoRA增量）
+        if use_shared:
+            self.shared_expert = LoRAExpert(hidden_size, intermediate_size, lora_rank, lora_alpha)
+
+        # 融合门控（轻量级）
+        if use_gate and use_shared:
+            self.gate = Gate(intermediate_size)
+
+        # 输出投影：intermediate_size -> hidden_size
+        self.output_projection = nn.Linear(intermediate_size, hidden_size, bias=False)
+
+        # 🔧 小尺度初始化：确保MoE作为增量时不过度影响FFN
+        with torch.no_grad():
+            nn.init.normal_(self.output_projection.weight, mean=0.0, std=0.01)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        FFN + LoRA-MoE 前向传播：FFN_out = FFN_base + MoE_LoRA_delta
+
+        Args:
+            hidden_states: [batch_size, seq_len, hidden_size]
+        Returns:
+            output: [batch_size, seq_len, hidden_size]
+        """
+        # 🔧 原始FFN输出（包含激活函数、正确scale）
+        base_output = self.base_ffn(hidden_states)
+
+        # 🔧 计算MoE LoRA增量
+        moe_delta, aux_info = self._compute_moe_delta(hidden_states)
+
+        # 🔧 FFN + LoRA-MoE：加法组合，保持residual语义
+        final_output = base_output + moe_delta
+
+        # 存储辅助信息以便训练时使用
+        if hasattr(self, '_store_aux_info') and self._store_aux_info:
+            if not hasattr(self, '_aux_info_list'):
+                self._aux_info_list = []
+            self._aux_info_list.append(aux_info)
+
+        return final_output
+
+    def _compute_moe_delta(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+        """计算MoE LoRA增量"""
+        batch_size, seq_len, hidden_size = hidden_states.shape
+
+        # 计算路由权重
+        gate_logits, gate_probs = self.router(hidden_states)
+
+        # Top-k选择
+        top_k_probs, top_k_indices = torch.topk(gate_probs, self.num_activated_experts, dim=-1)
+
+        # 安全归一化：防除零
+        top_k_sum = top_k_probs.sum(dim=-1, keepdim=True)
+        denom = top_k_sum.clamp(min=1e-6)
+        top_k_probs = top_k_probs / denom
+
+        # 计算路由专家输出
+        expert_outputs = []
+        for expert in self.routing_experts:
+            expert_output = expert(hidden_states)  # [batch_size, seq_len, intermediate_size]
+            expert_outputs.append(expert_output)
+
+        # 堆叠所有专家输出
+        stacked_expert_outputs = torch.stack(expert_outputs, dim=0)  # [num_experts, batch_size, seq_len, intermediate_size]
+
+        # 高效的专家选择和加权
+        routed_output = torch.zeros(batch_size, seq_len, self.intermediate_size,
+                                   device=stacked_expert_outputs.device, dtype=stacked_expert_outputs.dtype)
+
+        for expert_pos in range(self.num_activated_experts):
+            expert_indices = top_k_indices[:, :, expert_pos]  # [batch_size, seq_len]
+            expert_weights = top_k_probs[:, :, expert_pos]   # [batch_size, seq_len]
+
+            for expert_id in range(self.num_routing_experts):
+                mask = (expert_indices == expert_id)
+                if mask.any():
+                    expert_output = stacked_expert_outputs[expert_id]
+                    weighted_contribution = expert_output * expert_weights.unsqueeze(-1) * mask.unsqueeze(-1)
+                    routed_output += weighted_contribution
+
+        # 计算共享专家输出
+        if self.use_shared:
+            shared_output = self.shared_expert(hidden_states)
+        else:
+            shared_output = None
+
+        # 融合输出
+        if self.use_gate and self.use_shared:
+            intermediate_output = self.gate(shared_output, routed_output)
+        elif self.use_shared:
+            intermediate_output = shared_output + routed_output
+        else:
+            intermediate_output = routed_output
+
+        # 投影到hidden_size维度
+        moe_delta = self.output_projection(intermediate_output)
+
+        # 收集辅助信息
+        aux_info = {
+            'gate_probs': gate_probs,
+            'top_k_indices': top_k_indices,
+            'top_k_probs': top_k_probs,
+            'expert_outputs': expert_outputs,
+            'shared_output': shared_output,
+            'routed_output': routed_output
+        }
+
+        return moe_delta, aux_info
+
+    def enable_aux_info_collection(self):
+        """启用辅助信息收集（训练时使用）"""
+        self._store_aux_info = True
+        self._aux_info_list = []
+
+    def get_aux_info(self):
+        """获取收集的辅助信息"""
+        if hasattr(self, '_aux_info_list'):
+            return self._aux_info_list
+        return []
+
+    def clear_aux_info(self):
+        """清空辅助信息"""
+        if hasattr(self, '_aux_info_list'):
+            self._aux_info_list.clear()
+
+
 class CultureMoEModel(nn.Module):
     """CultureMoE模型包装器"""
 
@@ -368,10 +536,10 @@ class CultureMoEModel(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone: {config['backbone']}")
 
-        # 替换每一层的FFN为CultureMoE - 确保设备一致性
-        self.culture_moe_layers = nn.ModuleList()
+        # 🔧 直接替换每一层的FFN为MoELoRAFFN，无需Hook机制
+        print("🔧 直接替换FFN为MoELoRAFFN...")
 
-        # 获取基座模型各层的设备分布
+        # 获取transformer层
         transformer = self.base_model.model if hasattr(self.base_model, 'model') else self.base_model
         layers = getattr(transformer, self.layer_attr)
 
@@ -380,8 +548,14 @@ class CultureMoEModel(nn.Module):
             layer_device = next(layers[layer_idx].parameters()).device
             print(f"  基座模型第{layer_idx}层在: {layer_device}")
 
-        for layer_idx in range(self.num_layers):
-            moe_ffn = CultureMoEFFN(
+        # 直接替换每一层的MLP
+        for layer_idx in range(min(self.num_layers, len(layers))):
+            layer = layers[layer_idx]
+            original_ffn = getattr(layer, self.ffn_attr)
+
+            # 创建MoELoRAFFN，包含原始FFN
+            moe_lora_ffn = MoELoRAFFN(
+                original_ffn=original_ffn,
                 hidden_size=self.hidden_size,
                 intermediate_size=self.intermediate_size,
                 num_routing_experts=config['num_moe_experts'],
@@ -389,26 +563,33 @@ class CultureMoEModel(nn.Module):
                 use_shared=config['use_shared'],
                 use_gate=config['use_gate'],
                 lora_rank=config['lora_rank'],
-                lora_alpha=config['lora_alpha']
+                lora_alpha=config['lora_alpha'],
+                freeze_base_ffn=True  # 冻结原始FFN
             )
 
-            # 获取对应基座模型层的设备和数据类型，确保完全一致
-            if layer_idx < len(layers):
-                target_device = next(layers[layer_idx].parameters()).device
-                target_dtype = next(layers[layer_idx].parameters()).dtype
+            # 设备和dtype一致性处理
+            target_device = next(original_ffn.parameters()).device
+            target_dtype = next(original_ffn.parameters()).dtype
 
-                # 🔧 只设置设备，保持Router为FP32
-                moe_ffn = moe_ffn.to(device=target_device)
+            # 移动MoE组件到正确设备
+            moe_lora_ffn = moe_lora_ffn.to(device=target_device)
 
-                # 🔧 手动设置非Router组件为目标dtype，保持Router为FP32
-                for name, module in moe_ffn.named_modules():
-                    if 'router' not in name and hasattr(module, 'weight'):
-                        module.to(dtype=target_dtype)
+            # 精确的dtype控制：Router保持FP32，其他组件使用目标dtype
+            for name, module in moe_lora_ffn.named_modules():
+                if 'router' in name and hasattr(module, 'weight'):
+                    # Router权重强制保持FP32
+                    module.weight.data = module.weight.data.float()
+                elif hasattr(module, 'weight') and 'router' not in name and 'base_ffn' not in name:
+                    # 非Router、非原始FFN的组件转换为目标dtype
+                    module.to(dtype=target_dtype)
 
-                if layer_idx < 3:  # 只打印前3层的设备和类型分配
-                    print(f"MoE层{layer_idx}移动到{target_device}, Router保持FP32, 其他组件: {target_dtype}")
+            # 🔧 直接替换layer的mlp属性
+            setattr(layer, self.ffn_attr, moe_lora_ffn)
 
-            self.culture_moe_layers.append(moe_ffn)
+            if layer_idx < 3:  # 只打印前3层的替换信息
+                print(f"✅ 第{layer_idx}层FFN已替换为MoELoRAFFN，设备: {target_device}, Router: FP32, 其他: {target_dtype}")
+
+        print(f"✅ 成功替换 {min(self.num_layers, len(layers))} 层的FFN为MoELoRAFFN")
 
         # 冻结基座模型参数
         self._freeze_base_model()
@@ -417,8 +598,7 @@ class CultureMoEModel(nn.Module):
         if config.get('apply_to_attention', False):
             self._add_attention_lora()
 
-        # 🔧 一次性初始化：解包PEFT并注册持久化Hook
-        self._setup_persistent_hooks()
+        # 🔧 无Hook架构：直接替换完成，无需额外设置
 
     def _freeze_base_model(self):
         """选择性冻结基座模型参数，保留LoRA和MoE层可训练"""
@@ -516,113 +696,53 @@ class CultureMoEModel(nn.Module):
         self._cached_transformer = transformer
         return transformer
 
-    def _setup_persistent_hooks(self):
-        """一次性设置持久化Hook，避免每次前向传播重复注册"""
-        print("🔧 设置持久化MoE Hook...")
-
-        # 获取transformer层（只解包一次）
-        transformer = self._get_transformer()
-        layers = getattr(transformer, self.layer_attr)
-
-        # 存储Hook引用以便清理
-        self._persistent_hooks = []
-
-        # 为每一层注册持久化Hook
-        for layer_idx, layer in enumerate(layers):
-            ffn = getattr(layer, self.ffn_attr)
-            hook = ffn.register_forward_hook(self._create_persistent_hook(layer_idx))
-            self._persistent_hooks.append(hook)
-
-        print(f"✅ 成功注册 {len(self._persistent_hooks)} 个持久化Hook")
-
-    def _create_persistent_hook(self, layer_idx):
-        """创建持久化Hook函数"""
-        def hook_fn(module, input, output):
-            # 🔧 FFN + LoRA-MoE 架构：FFN_out = FFN_base + MoE_LoRA_delta
-            # input[0]是FFN的输入hidden_states
-            # output是FFN的原始输出（包含激活函数、正确scale）
-            hidden_states = input[0]
-            ffn_base_output = output  # 保持原始FFN输出
-
-            # 确保MoE层和输入在同一设备且数据类型一致
-            moe_layer = self.culture_moe_layers[layer_idx]
-            moe_device = next(moe_layer.parameters()).device
-            moe_dtype = next(moe_layer.parameters()).dtype
-
-            # 🔧 设备和dtype精确控制
-            target_dtype = hidden_states.dtype
-
-            # 同步设备
-            if hidden_states.device != moe_device:
-                moe_layer = moe_layer.to(device=hidden_states.device)
-                self.culture_moe_layers[layer_idx] = moe_layer
-
-            # 将整个MoE层转换为目标dtype，解决LoRA专家dtype问题
-            if moe_dtype != target_dtype:
-                moe_layer = moe_layer.to(dtype=target_dtype)
-                self.culture_moe_layers[layer_idx] = moe_layer
-
-            # 特殊处理Router，强制保持FP32（MoE工业标准要求）
-            if moe_layer.router.gate.weight.dtype != torch.float32:
-                moe_layer.router.gate.weight.data = moe_layer.router.gate.weight.data.float()
-
-            # 🔧 极简梯度连接：只在必要时启用梯度
-            if not hidden_states.requires_grad:
-                hidden_states = hidden_states.requires_grad_(True)
-
-            # 🔧 NaN早期检测和阻断
-            if torch.isnan(hidden_states).any():
-                print(f"🚨 Hook Layer {layer_idx}: 输入包含NaN，停止处理")
-                return ffn_base_output  # 返回原始FFN输出，保持语义
-
-            # 🔧 计算MoE LoRA增量（而非替换）
-            moe_delta, aux_info = moe_layer(hidden_states)
-
-            # 🔧 NaN检测：MoE增量
-            if torch.isnan(moe_delta).any():
-                print(f"🚨 Hook Layer {layer_idx}: MoE增量包含NaN，使用原始FFN输出")
-                return ffn_base_output
-
-            # 🔧 FFN + LoRA-MoE：加法组合，保持residual语义
-            final_output = ffn_base_output + moe_delta
-
-            # 🔧 NaN检测：最终输出
-            if torch.isnan(final_output).any():
-                print(f"🚨 Hook Layer {layer_idx}: 最终输出包含NaN，使用原始FFN输出")
-                return ffn_base_output
-
-            # 存储辅助信息
-            if not hasattr(self, '_current_moe_aux_info'):
-                self._current_moe_aux_info = []
-            self._current_moe_aux_info.append(aux_info)
-
-            return final_output
-
-        return hook_fn
-
-    def __del__(self):
-        """清理持久化Hook"""
-        if hasattr(self, '_persistent_hooks'):
-            for hook in self._persistent_hooks:
-                hook.remove()
-            print("🧹 清理持久化Hook")
+    # 🔧 Hook机制已移除：直接替换FFN，无需Hook拦截
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
-        """前向传播 - 持久化Hook版本，无需重复注册"""
+        """前向传播 - 无Hook版本，MoE直接集成在FFN中"""
 
-        # 🔧 清空上次的辅助信息
-        self._current_moe_aux_info = []
+        # 🔧 启用MoE辅助信息收集（训练时需要）
+        if self.training:
+            self._enable_aux_info_collection()
 
-        # 🔧 直接前向传播，持久化Hook会自动拦截FFN
+        # 🔧 直接前向传播，MoE已集成在每层的FFN中
         outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
 
-        # 🔧 添加MoE辅助信息
-        if hasattr(self, '_current_moe_aux_info'):
-            outputs.moe_aux_info = self._current_moe_aux_info
+        # 🔧 收集MoE辅助信息
+        if self.training:
+            moe_aux_info = self._collect_aux_info()
+            outputs.moe_aux_info = moe_aux_info
         else:
             outputs.moe_aux_info = []
 
         return outputs
+
+    def _enable_aux_info_collection(self):
+        """启用所有MoE层的辅助信息收集"""
+        transformer = self.base_model.model if hasattr(self.base_model, 'model') else self.base_model
+        layers = getattr(transformer, self.layer_attr)
+
+        for layer in layers:
+            ffn = getattr(layer, self.ffn_attr)
+            if hasattr(ffn, 'enable_aux_info_collection'):
+                ffn.enable_aux_info_collection()
+
+    def _collect_aux_info(self):
+        """收集所有MoE层的辅助信息"""
+        transformer = self.base_model.model if hasattr(self.base_model, 'model') else self.base_model
+        layers = getattr(transformer, self.layer_attr)
+
+        all_aux_info = []
+        for layer in layers:
+            ffn = getattr(layer, self.ffn_attr)
+            if hasattr(ffn, 'get_aux_info'):
+                aux_info = ffn.get_aux_info()
+                all_aux_info.extend(aux_info)
+                # 清空辅助信息，为下次前向传播准备
+                if hasattr(ffn, 'clear_aux_info'):
+                    ffn.clear_aux_info()
+
+        return all_aux_info
 
 
 def create_culture_moe_model(base_model_path: str, config: Dict) -> CultureMoEModel:
