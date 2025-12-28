@@ -295,46 +295,31 @@ class CultureMoEModel(nn.Module):
             self._add_attention_lora()
 
     def _freeze_base_model(self):
-        """选择性冻结基座模型参数，保持梯度流"""
-        # 获取模型结构
-        if hasattr(self.base_model, 'model'):
-            model = self.base_model.model
-        else:
-            model = self.base_model
+        """选择性冻结基座模型参数，保留LoRA和MoE层可训练"""
+        frozen_count = 0
+        trainable_count = 0
 
-        # 冻结embedding层（不需要训练）
-        if hasattr(model, 'embed_tokens'):
-            for param in model.embed_tokens.parameters():
+        for name, param in self.base_model.named_parameters():
+            # 保留LoRA相关参数可训练
+            if any(lora_key in name.lower() for lora_key in ['lora_a', 'lora_b', 'lora']):
+                param.requires_grad = True
+                trainable_count += 1
+            else:
+                # 冻结非LoRA参数
                 param.requires_grad = False
-            print("Embedding layer frozen")
+                frozen_count += 1
 
-        # 冻结位置编码等
-        if hasattr(model, 'embed_positions'):
-            for param in model.embed_positions.parameters():
-                param.requires_grad = False
+        print(f"Base model: {frozen_count} params frozen, {trainable_count} LoRA params trainable")
 
-        # 冻结LayerNorm
-        if hasattr(model, 'norm'):
-            for param in model.norm.parameters():
-                param.requires_grad = False
+        # 统计参数数量
+        frozen_params = sum(p.numel() for name, p in self.base_model.named_parameters()
+                          if not p.requires_grad)
+        trainable_params = sum(p.numel() for name, p in self.base_model.named_parameters()
+                             if p.requires_grad)
+        print(f"Frozen parameters: {frozen_params:,}")
+        print(f"Trainable LoRA parameters: {trainable_params:,}")
 
-        # 冻结LM Head（如果存在）
-        if hasattr(self.base_model, 'lm_head'):
-            for param in self.base_model.lm_head.parameters():
-                param.requires_grad = False
-
-        # 🔧 关键修复：保留所有transformer层的梯度，确保MoE层能接收到梯度
-        # 不冻结transformer layers，让梯度能够流通到MoE层
-        layers = getattr(model, self.layer_attr)
-        trainable_transformer_params = 0
-        for layer in layers:
-            for param in layer.parameters():
-                if param.requires_grad:
-                    trainable_transformer_params += param.numel()
-
-        print(f"Transformer layers kept trainable for gradient flow")
-        print(f"Trainable transformer parameters: {trainable_transformer_params:,}")
-        print("Only embedding and output layers frozen")
+        # MoE层参数会在CultureMoEFFN中自动设置为可训练
 
     def _add_attention_lora(self):
         """为注意力层添加LoRA"""
@@ -378,7 +363,21 @@ class CultureMoEModel(nn.Module):
                     moe_layer = moe_layer.to(device=hidden_states.device, dtype=hidden_states.dtype)
                     self.culture_moe_layers[layer_idx] = moe_layer
 
-                # 通过MoE层计算输出，保持梯度连接
+                # 🔍 调试：检查hidden_states的梯度状态
+                if layer_idx == 0:  # 只在第一层打印
+                    print(f"Layer {layer_idx} hidden_states.requires_grad: {hidden_states.requires_grad}")
+                    print(f"Layer {layer_idx} hidden_states.grad_fn: {hidden_states.grad_fn}")
+
+                # 🔧 关键修复：确保MoE层能接收梯度
+                # 如果hidden_states没有梯度（基座模型完全冻结的情况），建立梯度连接
+                if not hidden_states.requires_grad:
+                    # 使用MoE层的第一个参数来建立梯度连接
+                    moe_first_param = next(moe_layer.parameters())
+                    gradient_connector = torch.zeros_like(hidden_states) * moe_first_param.sum() * 0.0
+                    hidden_states = hidden_states + gradient_connector
+                    print(f"Layer {layer_idx}: Added gradient connector for MoE")
+
+                # 通过MoE层计算输出，现在有梯度连接
                 moe_output, aux_info = moe_layer(hidden_states)
                 moe_aux_info.append(aux_info)
 

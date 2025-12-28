@@ -514,7 +514,7 @@ def train_epoch(model, dataloader, optimizer, device, config):
 
     progress_bar = tqdm(dataloader, desc="Training")
 
-    for batch in progress_bar:
+    for batch_idx, batch in enumerate(progress_bar):
         # 移动数据到设备 - 使用模型实际所在的设备
         model_device = next(model.parameters()).device
         input_ids = batch['input_ids'].to(model_device)

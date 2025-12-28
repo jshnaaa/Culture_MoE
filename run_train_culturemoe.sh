@@ -188,7 +188,7 @@ python train_culturemoe.py \
     --use_gate "$USE_GATE" \
     --lora_rank "$LORA_RANK" \
     --lora_alpha "$LORA_ALPHA" \
-    --apply_to_attention "false" \
+    --apply_to_attention "true" \
     --use_culture_loss "$USE_CULTURE_LOSS" \
     --lambda_weight "$LAMBDA" \
     --alpha "$ALPHA" \
