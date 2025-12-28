@@ -113,6 +113,9 @@ class LoRAExpert(nn.Module):
 
         except Exception as e:
             print(f"⚠️ LoRAExpert forward failed: {e}")
+            print(f"   输入shape: {x.shape if x is not None else 'None'}")
+            print(f"   设备: {x.device if x is not None else 'None'}")
+            print(f"   数据类型: {x.dtype if x is not None else 'None'}")
             return torch.zeros_like(x)
 
 
@@ -372,6 +375,9 @@ class MoEFFNLoRA(nn.Module):
 
         except Exception as e:
             print(f"⚠️ MoE forward failed: {e}, using original FFN")
+            print(f"   输入shape: {hidden_states.shape if hidden_states is not None else 'None'}")
+            print(f"   设备: {hidden_states.device if hidden_states is not None else 'None'}")
+            print(f"   数据类型: {hidden_states.dtype if hidden_states is not None else 'None'}")
             return self.original_ffn(hidden_states)
 
     def get_aux_loss(self):
@@ -700,8 +706,18 @@ class SimplifiedCultureMoEAdapter:
         # 获取实际的模型（处理DDP包装）
         actual_model = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        # 委托给base_model的generate方法
-        return actual_model.generate(**kwargs)
+        # 🔧 确保模型在eval模式下进行推理
+        was_training = actual_model.training
+        actual_model.eval()
+
+        try:
+            # 委托给base_model的generate方法
+            result = actual_model.generate(**kwargs)
+            return result
+        finally:
+            # 恢复原始训练状态
+            if was_training:
+                actual_model.train()
 
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):

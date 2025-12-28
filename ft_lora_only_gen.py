@@ -573,20 +573,29 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     if not full_input.endswith(" "):
         full_input = f"{full_input.rstrip()} "
 
-    # 🔍 调试生成时的输入（注释掉详细调试）
-    # print(f"🔍 生成时输入: {repr(full_input[-100:])}")  # 显示输入的最后100个字符
+    # 🔍 调试生成时的输入 - 启用来调试问题
+    print(f"🔍 生成时输入: {repr(full_input[-100:])}")  # 显示输入的最后100个字符
 
-    inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512)
+    inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512, padding=False)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    # 🔍 调试tokenization结果（注释掉详细调试）
+    # 🔧 确保attention_mask存在且正确
+    if 'attention_mask' not in inputs:
+        inputs['attention_mask'] = torch.ones_like(inputs['input_ids'])
+
+    # 🔍 调试tokenization结果 - 启用来调试问题
     input_length = inputs['input_ids'].shape[1]
-    # print(f"🔍 生成时input_ids长度: {input_length}")
+    print(f"🔍 生成时input_ids长度: {input_length}")
+    print(f"🔍 输入token IDs: {inputs['input_ids'][0].tolist()}")
+    print(f"🔍 输入解码: {repr(tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=True))}")
 
     with torch.no_grad():
         # 检查模型类型，确定使用哪种generate方法
         model_class_name = model.__class__.__name__
-        # print(f"🔍 生成时模型类型: {model_class_name}")  # 注释掉详细调试
+        print(f"🔍 生成时模型类型: {model_class_name}")
+        print(f"🔍 模型属性检查: hasattr(model, 'moe_layer')={hasattr(model, 'moe_layer')}")
+        print(f"🔍 模型属性检查: hasattr(model, 'base_model')={hasattr(model, 'base_model')}")
+        print(f"🔍 模型属性检查: hasattr(model, 'generate')={hasattr(model, 'generate')}")
 
         # 🔧 修复：统一使用模型的generate方法
         # SimplifiedCultureMoEAdapter现在有自己的generate方法，可以直接调用
@@ -597,10 +606,15 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             hasattr(model, 'generate')):
 
             # 🔧 统一调用：所有MoE模型都直接使用model.generate()
+            print(f"🔍 调用模型generate方法...")
+            print(f"🔍 输入shape: {inputs['input_ids'].shape}")
+            print(f"🔍 pad_token_id: {tokenizer.pad_token_id}")
+            print(f"🔍 eos_token_id: {tokenizer.eos_token_id}")
+
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=1,  # 🔧 减少到1个token，单个数字答案
+                max_new_tokens=5,  # 🔧 临时增加到5个token用于调试
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
@@ -609,12 +623,13 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
                 temperature=None,  # 🔧 明确禁用temperature
                 top_p=None  # 🔧 明确禁用top_p
             )
+            print(f"🔍 生成完成，输出shape: {outputs.shape}")
         else:
             # 回退到标准generate方法
-            # print(f"🔍 Using standard model generate method")  # 注释掉详细调试
+            print(f"🔍 使用标准模型generate方法")
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=1,  # 🔧 减少到1个token，单个数字答案
+                max_new_tokens=5,  # 🔧 临时增加到5个token用于调试
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
@@ -628,20 +643,30 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
     generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
-    # 🔍 详细的生成调试信息（注释掉详细调试）
-    # print(f"🔍 生成结果调试:")
-    # print(f"  生成的token数量: {len(generated_ids)}")
-    # print(f"  生成的token IDs: {generated_ids.tolist()}")
-    # print(f"  生成的文本: {repr(generated_text)}")
-    # print(f"  生成文本长度: {len(generated_text)}")
+    # 🔍 详细的生成调试信息 - 启用来调试问题
+    print(f"🔍 生成结果调试:")
+    print(f"  输入token数量: {inputs['input_ids'].shape[1]}")
+    print(f"  输出总token数量: {outputs.shape[1]}")
+    print(f"  生成的token数量: {len(generated_ids)}")
+    print(f"  生成的token IDs: {generated_ids.tolist()}")
+    print(f"  生成的文本: {repr(generated_text)}")
+    print(f"  生成文本长度: {len(generated_text)}")
 
     if len(generated_text.strip()) == 0:
         print(f"⚠️ 生成为空!")
-    # elif len(generated_ids) > 0:
-    #     # 检查第一个生成的token
-    #     first_token_id = generated_ids[0].item()
-    #     first_token_text = tokenizer.decode([first_token_id], skip_special_tokens=True)
-    #     print(f"  第一个token: {first_token_id} -> '{first_token_text}'")
+        # 如果生成为空，检查生成的token是否是特殊token
+        if len(generated_ids) > 0:
+            for i, token_id in enumerate(generated_ids.tolist()):
+                try:
+                    token_text = tokenizer.decode([token_id], skip_special_tokens=False)  # 不跳过特殊token
+                    print(f"  生成token {i}: {token_id} -> '{token_text}' (特殊token: {token_id in [tokenizer.pad_token_id, tokenizer.eos_token_id]})")
+                except Exception as e:
+                    print(f"  生成token {i}: {token_id} -> ERROR: {e}")
+    elif len(generated_ids) > 0:
+        # 检查第一个生成的token
+        first_token_id = generated_ids[0].item()
+        first_token_text = tokenizer.decode([first_token_id], skip_special_tokens=True)
+        print(f"  第一个token: {first_token_id} -> '{first_token_text}'")
 
     # 检查生成的token是否在合理范围内
     # vocab_size = tokenizer.vocab_size
