@@ -159,36 +159,27 @@ class CultureMoEFFN(nn.Module):
         # 堆叠所有专家输出 [num_experts, batch_size, seq_len, intermediate_size]
         stacked_expert_outputs = torch.stack(expert_outputs, dim=0)
 
-        # 使用向量化操作进行加权求和，保持梯度连接
-        # top_k_indices: [batch_size, seq_len, num_activated_experts]
-        # top_k_probs: [batch_size, seq_len, num_activated_experts]
+        # 🔧 内存优化：使用更高效的专家选择和加权
+        # 直接计算激活专家的加权输出，避免创建大型mask矩阵
+        routed_output = torch.zeros(batch_size, seq_len, self.intermediate_size,
+                                   device=stacked_expert_outputs.device, dtype=stacked_expert_outputs.dtype)
 
-        # 创建one-hot编码矩阵用于选择专家
-        # [batch_size, seq_len, num_activated_experts, num_experts]
-        # 确保与专家输出的设备和类型一致
-        expert_mask = torch.zeros(batch_size, seq_len, self.num_activated_experts, self.num_routing_experts,
-                                 device=stacked_expert_outputs.device, dtype=stacked_expert_outputs.dtype)
+        # 对每个激活的专家位置进行加权求和
+        for expert_pos in range(self.num_activated_experts):
+            # 获取该位置的专家索引和权重
+            expert_indices = top_k_indices[:, :, expert_pos]  # [batch_size, seq_len]
+            expert_weights = top_k_probs[:, :, expert_pos]   # [batch_size, seq_len]
 
-        # 使用scatter创建one-hot mask
-        expert_mask.scatter_(3, top_k_indices.unsqueeze(-1), 1.0)
-
-        # 计算加权专家输出
-        # expert_mask: [batch_size, seq_len, num_activated_experts, num_experts]
-        # stacked_expert_outputs: [num_experts, batch_size, seq_len, intermediate_size]
-        # 重排维度以便广播: [batch_size, seq_len, num_experts, intermediate_size]
-        expert_outputs_reshaped = stacked_expert_outputs.permute(1, 2, 0, 3)
-
-        # 应用mask和权重
-        # expert_mask: [batch_size, seq_len, num_activated_experts, num_experts, 1]
-        # expert_outputs_reshaped: [batch_size, seq_len, 1, num_experts, intermediate_size]
-        weighted_outputs = expert_mask.unsqueeze(-1) * expert_outputs_reshaped.unsqueeze(2)
-
-        # 应用top-k权重
-        # top_k_probs: [batch_size, seq_len, num_activated_experts, 1, 1]
-        weighted_outputs = weighted_outputs * top_k_probs.unsqueeze(-1).unsqueeze(-1)
-
-        # 求和得到最终路由输出
-        routed_output = weighted_outputs.sum(dim=(2, 3))  # [batch_size, seq_len, intermediate_size]
+            # 为每个专家累加其贡献
+            for expert_id in range(self.num_routing_experts):
+                # 找到选择了该专家的位置
+                mask = (expert_indices == expert_id)  # [batch_size, seq_len]
+                if mask.any():
+                    # 获取该专家的输出
+                    expert_output = stacked_expert_outputs[expert_id]  # [batch_size, seq_len, intermediate_size]
+                    # 应用权重和mask
+                    weighted_contribution = expert_output * expert_weights.unsqueeze(-1) * mask.unsqueeze(-1)
+                    routed_output += weighted_contribution
 
         # 计算共享专家输出
         if self.use_shared:
@@ -336,54 +327,59 @@ class CultureMoEModel(nn.Module):
 
     def _get_transformer(self):
         """获取transformer层，处理PEFT包装的多层嵌套"""
+        # 🔧 缓存机制：避免每次都重新解包
+        if hasattr(self, '_cached_transformer'):
+            return self._cached_transformer
+
         model = self.base_model
         path_trace = [type(model).__name__]
 
-        # 🔧 关键修复：递归解包所有PEFT层级，直到找到真正的transformer模型
-        max_depth = 10  # 防止无限循环
-        depth = 0
+        # 🔧 智能解包：避免自引用循环
+        seen_types = set()
+        max_depth = 5  # 减少最大深度
 
-        while hasattr(model, "base_model") and depth < max_depth:
-            print(f"🔍 解包PEFT层级 [{depth+1}]: {type(model).__name__} -> {type(model.base_model).__name__}")
+        while hasattr(model, "base_model") and len(seen_types) < max_depth:
+            model_type = type(model).__name__
+
+            # 🔧 防止自引用循环：如果下一个model和当前model类型相同，直接跳出
+            next_model_type = type(model.base_model).__name__
+            if model_type == next_model_type:
+                print(f"🔍 检测到自引用循环: {model_type} -> {next_model_type}，停止解包")
+                break
+
+            if model_type in seen_types:
+                print(f"🔍 检测到类型重复: {model_type}，停止解包")
+                break
+
+            seen_types.add(model_type)
+            print(f"🔍 解包PEFT层级: {model_type} -> {next_model_type}")
             model = model.base_model
-            path_trace.append(type(model).__name__)
-            depth += 1
+            path_trace.append(next_model_type)
 
         print(f"🔍 完整路径: {' -> '.join(path_trace)}")
-        print(f"🔍 最终model类型: {type(model).__name__}")
 
         # 🔧 处理HuggingFace模型结构 (LlamaForCausalLM -> LlamaModel)
         if hasattr(model, "model") and hasattr(model.model, self.layer_attr):
+            transformer = model.model
             print(f"✅ 找到transformer层: {type(model).__name__}.model.{self.layer_attr}")
-            return model.model
-
         # 🔧 直接检查是否就是transformer模型
-        if hasattr(model, self.layer_attr):
+        elif hasattr(model, self.layer_attr):
+            transformer = model
             print(f"✅ 找到transformer层: {type(model).__name__}.{self.layer_attr}")
-            return model
+        else:
+            # 如果所有路径都失败，提供详细的错误信息
+            available_attrs = [attr for attr in dir(model) if not attr.startswith('_')]
+            raise AttributeError(
+                f"无法找到transformer层。\n"
+                f"完整路径: {' -> '.join(path_trace)}\n"
+                f"最终model类型: {type(model).__name__}\n"
+                f"查找属性: {self.layer_attr}\n"
+                f"可用属性: {available_attrs[:10]}..."
+            )
 
-        # 🔧 额外检查：如果还有base_model但达到了最大深度
-        if hasattr(model, "base_model") and depth >= max_depth:
-            print(f"⚠️ 达到最大解包深度 {max_depth}，强制继续...")
-            model = model.base_model
-            if hasattr(model, "model") and hasattr(model.model, self.layer_attr):
-                print(f"✅ 强制解包后找到transformer层: {type(model).__name__}.model.{self.layer_attr}")
-                return model.model
-
-        # 如果所有路径都失败，提供详细的错误信息
-        available_attrs = [attr for attr in dir(model) if not attr.startswith('_')]
-        model_attrs = [attr for attr in available_attrs if 'model' in attr.lower()]
-        base_attrs = [attr for attr in available_attrs if 'base' in attr.lower()]
-
-        raise AttributeError(
-            f"无法找到transformer层。\n"
-            f"完整路径: {' -> '.join(path_trace)}\n"
-            f"最终model类型: {type(model).__name__}\n"
-            f"查找属性: {self.layer_attr}\n"
-            f"model相关属性: {model_attrs}\n"
-            f"base相关属性: {base_attrs}\n"
-            f"所有可用属性: {available_attrs[:20]}..."  # 只显示前20个
-        )
+        # 🔧 缓存结果避免重复解包
+        self._cached_transformer = transformer
+        return transformer
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
         """前向传播"""
@@ -416,14 +412,23 @@ class CultureMoEModel(nn.Module):
                     print(f"Layer {layer_idx} hidden_states.requires_grad: {hidden_states.requires_grad}")
                     print(f"Layer {layer_idx} hidden_states.grad_fn: {hidden_states.grad_fn}")
 
-                # 🔧 关键修复：确保MoE层能接收梯度
-                # 如果hidden_states没有梯度（基座模型完全冻结的情况），建立梯度连接
+                # 🔧 增强梯度连接：确保MoE层能接收梯度
                 if not hidden_states.requires_grad:
-                    # 使用MoE层的第一个参数来建立梯度连接
-                    moe_first_param = next(moe_layer.parameters())
-                    gradient_connector = torch.zeros_like(hidden_states) * moe_first_param.sum() * 0.0
-                    hidden_states = hidden_states + gradient_connector
-                    print(f"Layer {layer_idx}: Added gradient connector for MoE")
+                    # 方法1：直接设置requires_grad
+                    hidden_states = hidden_states.detach().requires_grad_(True)
+                    if layer_idx < 3:  # 只在前3层打印
+                        print(f"Layer {layer_idx}: 启用hidden_states梯度")
+                else:
+                    # 方法2：对于已有梯度的hidden_states，确保与MoE参数连接
+                    moe_params = list(moe_layer.parameters())
+                    if moe_params:
+                        # 创建微小的梯度连接，不影响数值但建立计算图连接
+                        param_sum = sum(p.sum() for p in moe_params if p.requires_grad)
+                        if param_sum.numel() > 0:
+                            gradient_connector = param_sum * 0.0  # 零贡献但有梯度
+                            hidden_states = hidden_states + gradient_connector.expand_as(hidden_states)
+                            if layer_idx < 3:
+                                print(f"Layer {layer_idx}: 建立MoE梯度连接")
 
                 # 通过MoE层计算输出，现在有梯度连接
                 moe_output, aux_info = moe_layer(hidden_states)
