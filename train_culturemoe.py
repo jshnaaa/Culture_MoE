@@ -372,7 +372,7 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
     with open(generated_file, 'w', encoding='utf-8') as f:
         json.dump(generated_data, f, indent=2, ensure_ascii=False)
 
-    # 保存评估结果
+    # 评估结果
     eval_results = {
         'accuracy': accuracy,
         'valid_accuracy': valid_accuracy,
@@ -383,10 +383,6 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
         'correct_samples': correct,
         'valid_samples': len(valid_indices)
     }
-
-    eval_file = os.path.join(output_dir, f"eval_results{epoch_suffix}.json")
-    with open(eval_file, 'w', encoding='utf-8') as f:
-        json.dump(eval_results, f, indent=2, ensure_ascii=False)
 
     print(f"📊 评估结果 (epoch {epoch}):")
     print(f"  - 准确率: {accuracy:.4f} ({correct}/{total})")
@@ -694,19 +690,9 @@ def main():
         weight_decay=0.01
     )
 
-    # 保存配置和数据划分信息
+    # 保存配置信息
     with open(os.path.join(args.output_dir, 'config.json'), 'w') as f:
         json.dump(config, f, indent=2)
-
-    with open(os.path.join(args.output_dir, 'dataset_info.json'), 'w') as f:
-        dataset_info = {
-            'train_size': len(train_dataset),
-            'val_size': len(val_dataset),
-            'test_size': len(test_dataset),
-            'split_ratio': '8:1:1',
-            'data_path': args.train_file
-        }
-        json.dump(dataset_info, f, indent=2)
 
     # 训练循环
     print(f"Starting training for {args.num_epochs} epochs...")
@@ -714,6 +700,7 @@ def main():
     best_accuracy = 0.0
     best_epoch = 0
     training_history = []
+    all_eval_results = []  # 累积所有epoch的评估结果
 
     for epoch in range(args.num_epochs):
         print(f"\nEpoch {epoch + 1}/{args.num_epochs}")
@@ -751,6 +738,10 @@ def main():
                 model, val_dataset, tokenizer, device, args.output_dir, epoch + 1
             )
             eval_stats.update(eval_results)
+
+            # 将评估结果添加到累积列表
+            eval_results_with_epoch = {'epoch': epoch + 1, **eval_results}
+            all_eval_results.append(eval_results_with_epoch)
 
             # 检查是否是最佳模型
             if eval_results['accuracy'] > best_accuracy:
@@ -796,28 +787,11 @@ def main():
         # 记录日志
         logging.info(f"Epoch {epoch + 1}: {epoch_stats}")
 
-        # 保存检查点
-        if (epoch + 1) % 2 == 0 or epoch == args.num_epochs - 1:
-            checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-epoch-{epoch + 1}")
-            os.makedirs(checkpoint_dir, exist_ok=True)
 
-            # 只保存可训练的参数
-            trainable_state_dict = {k: v for k, v in model.state_dict().items()
-                                   if any(p.requires_grad for p in model.named_parameters() if p[0] == k)}
 
-            torch.save({
-                'epoch': epoch + 1,
-                'trainable_state_dict': trainable_state_dict,
-                'optimizer_state_dict': optimizer.state_dict(),
-                'config': config,
-                'training_history': training_history
-            }, os.path.join(checkpoint_dir, 'pytorch_model.bin'))
-
-            print(f"Checkpoint saved to {checkpoint_dir}")
-
-    # 保存训练历史
-    with open(os.path.join(args.output_dir, 'training_history.json'), 'w') as f:
-        json.dump(training_history, f, indent=2)
+    # 保存累积的评估结果
+    with open(os.path.join(args.output_dir, 'eval_results_epoch.json'), 'w') as f:
+        json.dump(all_eval_results, f, indent=2)
 
     # 保存最终总结
     final_summary = {
