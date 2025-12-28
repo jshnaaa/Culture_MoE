@@ -71,51 +71,6 @@ class Router(nn.Module):
         return gate_logits, gate_probs
 
 
-class Gate(nn.Module):
-    """轻量级融合网络，融合共享专家和路由专家的输出"""
-
-    def __init__(self, intermediate_size: int):
-        super().__init__()
-        # 🔧 修复：使用轻量级融合方式，大幅减少参数
-        # 使用可学习的权重进行加权平均，而不是全连接层
-        self.shared_weight = nn.Parameter(torch.ones(1))
-        self.routed_weight = nn.Parameter(torch.ones(1))
-
-    def forward(self, shared_output: torch.Tensor, routed_output: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            shared_output: [batch_size, seq_len, intermediate_size] 共享专家输出
-            routed_output: [batch_size, seq_len, intermediate_size] 路由专家加权输出
-        Returns:
-            fused_output: [batch_size, seq_len, intermediate_size] 融合后的输出
-        """
-        # 🔍 NaN诊断：Gate输入检查
-        if torch.isnan(shared_output).any():
-            print(f"🚨 Gate shared_output包含NaN: {torch.isnan(shared_output).sum().item()}/{shared_output.numel()}")
-        if torch.isnan(routed_output).any():
-            print(f"🚨 Gate routed_output包含NaN: {torch.isnan(routed_output).sum().item()}/{routed_output.numel()}")
-
-        # 🔧 使用可学习的加权平均，参数量从4亿降到2个
-        # 归一化权重
-        total_weight = torch.abs(self.shared_weight) + torch.abs(self.routed_weight)
-        shared_norm_weight = torch.abs(self.shared_weight) / (total_weight + 1e-8)
-        routed_norm_weight = torch.abs(self.routed_weight) / (total_weight + 1e-8)
-
-        # 🔍 NaN诊断：权重检查
-        if torch.isnan(shared_norm_weight).any() or torch.isnan(routed_norm_weight).any():
-            print(f"🚨 Gate权重归一化产生NaN:")
-            print(f"  shared_weight: {self.shared_weight.item():.6f}")
-            print(f"  routed_weight: {self.routed_weight.item():.6f}")
-            print(f"  total_weight: {total_weight.item():.6f}")
-
-        # 加权融合
-        fused_output = shared_norm_weight * shared_output + routed_norm_weight * routed_output
-
-        # 🔍 NaN诊断：Gate输出检查
-        if torch.isnan(fused_output).any():
-            print(f"🚨 Gate fused_output包含NaN: {torch.isnan(fused_output).sum().item()}/{fused_output.numel()}")
-
-        return fused_output
 
 
 class LoRAExpert(nn.Module):
@@ -170,7 +125,6 @@ class CultureMoEFFN(nn.Module):
         num_routing_experts: int = 4,
         num_activated_experts: int = 2,
         use_shared: bool = True,
-        use_gate: bool = True,
         lora_rank: int = 16,
         lora_alpha: int = 32
     ):
@@ -180,7 +134,6 @@ class CultureMoEFFN(nn.Module):
         self.num_routing_experts = num_routing_experts
         self.num_activated_experts = num_activated_experts
         self.use_shared = use_shared
-        self.use_gate = use_gate
 
         # 路由网络
         self.router = Router(hidden_size, num_routing_experts)
@@ -194,10 +147,6 @@ class CultureMoEFFN(nn.Module):
         # 共享专家（LoRA）
         if use_shared:
             self.shared_expert = LoRAExpert(hidden_size, intermediate_size, lora_rank, lora_alpha)
-
-        # 融合门控
-        if use_gate and use_shared:
-            self.gate = Gate(intermediate_size)  # 轻量级门控网络
 
         # 输出投影层：将intermediate_size映射回hidden_size
         self.output_projection = nn.Linear(intermediate_size, hidden_size, bias=False)
@@ -287,32 +236,30 @@ class CultureMoEFFN(nn.Module):
 
                     routed_output += weighted_contribution
 
-        # 计算共享专家输出
+        # 🔧 按照ChatGPT分析：正确的MoE结构
+        # y = Δ_shared(x) + Σ_i p_i(x) · Δ_routed_i(x)
+
+        # 1. 共享专家增量：直接计算，不走router，对所有样本生效
         if self.use_shared:
-            shared_output = self.shared_expert(hidden_states)
+            shared_delta = self.shared_expert(hidden_states)
 
             # 🔍 NaN诊断：共享专家输出检查
-            if torch.isnan(shared_output).any():
-                print(f"🚨 共享专家输出包含NaN: {torch.isnan(shared_output).sum().item()}/{shared_output.numel()}")
+            if torch.isnan(shared_delta).any():
+                print(f"🚨 共享专家增量包含NaN: {torch.isnan(shared_delta).sum().item()}/{shared_delta.numel()}")
         else:
-            shared_output = None
+            shared_delta = torch.zeros(batch_size, seq_len, self.intermediate_size,
+                                     device=hidden_states.device, dtype=hidden_states.dtype)
 
         # 🔍 NaN诊断：路由输出检查
         if torch.isnan(routed_output).any():
-            print(f"🚨 路由输出包含NaN: {torch.isnan(routed_output).sum().item()}/{routed_output.numel()}")
+            print(f"🚨 路由专家增量包含NaN: {torch.isnan(routed_output).sum().item()}/{routed_output.numel()}")
 
-        # 融合输出
-        if self.use_gate and self.use_shared:
-            intermediate_output = self.gate(shared_output, routed_output)
-        elif self.use_shared:
-            # 简单相加
-            intermediate_output = shared_output + routed_output
+        # 2. 总的MoE增量 = 共享增量 + 路由增量
+        intermediate_output = shared_delta + routed_output
 
-            # 🔍 NaN诊断：相加融合检查
-            if torch.isnan(intermediate_output).any():
-                print(f"🚨 相加融合输出包含NaN: {torch.isnan(intermediate_output).sum().item()}/{intermediate_output.numel()}")
-        else:
-            intermediate_output = routed_output
+        # 🔍 NaN诊断：MoE总增量检查
+        if torch.isnan(intermediate_output).any():
+            print(f"🚨 MoE总增量包含NaN: {torch.isnan(intermediate_output).sum().item()}/{intermediate_output.numel()}")
 
         # 🔍 NaN诊断：融合后输出检查
         if torch.isnan(intermediate_output).any():
@@ -332,8 +279,8 @@ class CultureMoEFFN(nn.Module):
             'top_k_indices': top_k_indices,
             'top_k_probs': top_k_probs,
             'expert_outputs': expert_outputs,
-            'shared_output': shared_output,
-            'routed_output': routed_output
+            'shared_delta': shared_delta,
+            'routed_delta': routed_output
         }
 
         return final_output, aux_info
@@ -350,7 +297,6 @@ class MoELoRAFFN(nn.Module):
         num_routing_experts: int = 4,
         num_activated_experts: int = 2,
         use_shared: bool = True,
-        use_gate: bool = True,
         lora_rank: int = 16,
         lora_alpha: int = 32,
         freeze_base_ffn: bool = True
@@ -363,7 +309,6 @@ class MoELoRAFFN(nn.Module):
         self.num_routing_experts = num_routing_experts
         self.num_activated_experts = num_activated_experts
         self.use_shared = use_shared
-        self.use_gate = use_gate
 
         # 🔧 保留原始FFN（可选择性冻结）
         self.base_ffn = original_ffn
@@ -384,10 +329,6 @@ class MoELoRAFFN(nn.Module):
         # 共享专家（LoRA增量）
         if use_shared:
             self.shared_expert = LoRAExpert(hidden_size, intermediate_size, lora_rank, lora_alpha)
-
-        # 融合门控（轻量级）
-        if use_gate and use_shared:
-            self.gate = Gate(intermediate_size)
 
         # 输出投影：intermediate_size -> hidden_size
         self.output_projection = nn.Linear(intermediate_size, hidden_size, bias=False)
@@ -423,16 +364,23 @@ class MoELoRAFFN(nn.Module):
         return final_output
 
     def _compute_moe_delta(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
-        """计算MoE LoRA增量"""
+        """计算MoE LoRA增量：按照ChatGPT分析的正确结构"""
         batch_size, seq_len, hidden_size = hidden_states.shape
 
-        # 计算路由权重
+        # 🔧 1. 共享专家增量：直接计算，不走router，对所有样本生效
+        if self.use_shared:
+            shared_delta = self.shared_expert(hidden_states)
+        else:
+            shared_delta = torch.zeros(batch_size, seq_len, self.intermediate_size,
+                                     device=hidden_states.device, dtype=hidden_states.dtype)
+
+        # 🔧 2. 路由专家增量：通过router选择和加权
         gate_logits, gate_probs = self.router(hidden_states)
 
-        # Top-k选择
+        # Top-k选择（只在路由专家内部）
         top_k_probs, top_k_indices = torch.topk(gate_probs, self.num_activated_experts, dim=-1)
 
-        # 安全归一化：防除零
+        # 安全归一化：只在top-k内部进行
         top_k_sum = top_k_probs.sum(dim=-1, keepdim=True)
         denom = top_k_sum.clamp(min=1e-6)
         top_k_probs = top_k_probs / denom
@@ -447,8 +395,8 @@ class MoELoRAFFN(nn.Module):
         stacked_expert_outputs = torch.stack(expert_outputs, dim=0)  # [num_experts, batch_size, seq_len, intermediate_size]
 
         # 高效的专家选择和加权
-        routed_output = torch.zeros(batch_size, seq_len, self.intermediate_size,
-                                   device=stacked_expert_outputs.device, dtype=stacked_expert_outputs.dtype)
+        routed_delta = torch.zeros(batch_size, seq_len, self.intermediate_size,
+                                  device=stacked_expert_outputs.device, dtype=stacked_expert_outputs.dtype)
 
         for expert_pos in range(self.num_activated_experts):
             expert_indices = top_k_indices[:, :, expert_pos]  # [batch_size, seq_len]
@@ -459,21 +407,11 @@ class MoELoRAFFN(nn.Module):
                 if mask.any():
                     expert_output = stacked_expert_outputs[expert_id]
                     weighted_contribution = expert_output * expert_weights.unsqueeze(-1) * mask.unsqueeze(-1)
-                    routed_output += weighted_contribution
+                    routed_delta += weighted_contribution
 
-        # 计算共享专家输出
-        if self.use_shared:
-            shared_output = self.shared_expert(hidden_states)
-        else:
-            shared_output = None
-
-        # 融合输出
-        if self.use_gate and self.use_shared:
-            intermediate_output = self.gate(shared_output, routed_output)
-        elif self.use_shared:
-            intermediate_output = shared_output + routed_output
-        else:
-            intermediate_output = routed_output
+        # 🔧 3. 总的MoE增量 = 共享增量 + 路由增量
+        # 数学形式：y = Δ_shared(x) + Σ_i p_i(x) · Δ_routed_i(x)
+        intermediate_output = shared_delta + routed_delta
 
         # 投影到hidden_size维度
         moe_delta = self.output_projection(intermediate_output)
@@ -484,8 +422,8 @@ class MoELoRAFFN(nn.Module):
             'top_k_indices': top_k_indices,
             'top_k_probs': top_k_probs,
             'expert_outputs': expert_outputs,
-            'shared_output': shared_output,
-            'routed_output': routed_output
+            'shared_delta': shared_delta,
+            'routed_delta': routed_delta
         }
 
         return moe_delta, aux_info
@@ -561,7 +499,6 @@ class CultureMoEModel(nn.Module):
                 num_routing_experts=config['num_moe_experts'],
                 num_activated_experts=config['num_activated_experts'],
                 use_shared=config['use_shared'],
-                use_gate=config['use_gate'],
                 lora_rank=config['lora_rank'],
                 lora_alpha=config['lora_alpha'],
                 freeze_base_ffn=True  # 冻结原始FFN

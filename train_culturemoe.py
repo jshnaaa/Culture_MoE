@@ -738,7 +738,7 @@ def main():
         'num_moe_experts': args.num_moe_experts,
         'num_activated_experts': args.num_activated_experts,
         'use_shared': args.use_shared.lower() == 'true',
-        'use_gate': args.use_gate.lower() == 'true',
+        # 'use_gate': 已移除，按照ChatGPT分析不再需要gate融合
         'lora_rank': args.lora_rank,
         'lora_alpha': args.lora_alpha,
         'apply_to_attention': args.apply_to_attention.lower() == 'true',
