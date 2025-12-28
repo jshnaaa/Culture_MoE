@@ -222,10 +222,10 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device,
 
     # 分词
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=500)
-    # 确保使用第一张GPU
-    primary_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    input_ids = inputs.input_ids.to(primary_device)
-    attention_mask = inputs.attention_mask.to(primary_device)
+    # 确保使用模型实际所在的设备
+    model_device = next(model.parameters()).device
+    input_ids = inputs.input_ids.to(model_device)
+    attention_mask = inputs.attention_mask.to(model_device)
 
     # 生成
     model.eval()
@@ -256,12 +256,12 @@ def evaluate_model(model, val_loader, device, tokenizer, config):
 
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Evaluating"):
-            # 移动数据到设备 - 确保使用第一张GPU
-            primary_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            input_ids = batch['input_ids'].to(primary_device)
-            attention_mask = batch['attention_mask'].to(primary_device)
-            labels = batch['labels'].to(primary_device)
-            culture_labels = batch['culture_labels'].to(primary_device)
+            # 移动数据到设备 - 使用模型实际所在的设备
+            model_device = next(model.parameters()).device
+            input_ids = batch['input_ids'].to(model_device)
+            attention_mask = batch['attention_mask'].to(model_device)
+            labels = batch['labels'].to(model_device)
+            culture_labels = batch['culture_labels'].to(model_device)
 
             # 前向传播
             outputs = model(
@@ -507,12 +507,12 @@ def train_epoch(model, dataloader, optimizer, device, config):
     progress_bar = tqdm(dataloader, desc="Training")
 
     for batch in progress_bar:
-        # 移动数据到设备 - 确保使用第一张GPU
-        primary_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        input_ids = batch['input_ids'].to(primary_device)
-        attention_mask = batch['attention_mask'].to(primary_device)
-        labels = batch['labels'].to(primary_device)
-        culture_labels = batch['culture_labels'].to(primary_device)
+        # 移动数据到设备 - 使用模型实际所在的设备
+        model_device = next(model.parameters()).device
+        input_ids = batch['input_ids'].to(model_device)
+        attention_mask = batch['attention_mask'].to(model_device)
+        labels = batch['labels'].to(model_device)
+        culture_labels = batch['culture_labels'].to(model_device)
 
         # 前向传播
         outputs = model(

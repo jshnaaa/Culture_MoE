@@ -159,8 +159,9 @@ class CultureMoEFFN(nn.Module):
 
         # 创建one-hot编码矩阵用于选择专家
         # [batch_size, seq_len, num_activated_experts, num_experts]
+        # 确保与专家输出的设备和类型一致
         expert_mask = torch.zeros(batch_size, seq_len, self.num_activated_experts, self.num_routing_experts,
-                                 device=hidden_states.device, dtype=hidden_states.dtype)
+                                 device=stacked_expert_outputs.device, dtype=stacked_expert_outputs.dtype)
 
         # 使用scatter创建one-hot mask
         expert_mask.scatter_(3, top_k_indices.unsqueeze(-1), 1.0)

@@ -56,8 +56,8 @@ def compute_culture_contrastive_loss(
     - 共享专家输出总是希望相似度大（最小化 -similarity，即最大化 similarity）
 
     Args:
-        expert_outputs: List of [batch_size, seq_len, hidden_size] 每个路由专家的输出
-        shared_output: [batch_size, seq_len, hidden_size] 共享专家输出
+        expert_outputs: List of [batch_size, seq_len, intermediate_size] 每个路由专家的输出
+        shared_output: [batch_size, seq_len, intermediate_size] 共享专家输出
         culture_labels: [batch_size] 文化标签（整数张量）
 
     Returns:
@@ -69,6 +69,11 @@ def compute_culture_contrastive_loss(
     batch_size = expert_outputs[0].shape[0]
     num_experts = len(expert_outputs)
 
+    # 确保culture_labels在正确的设备上
+    target_device = expert_outputs[0].device
+    if culture_labels.device != target_device:
+        culture_labels = culture_labels.to(target_device)
+
     # 将专家输出堆叠 [num_experts, batch_size, seq_len, hidden_size]
     stacked_expert_outputs = torch.stack(expert_outputs, dim=0)
 
@@ -76,7 +81,8 @@ def compute_culture_contrastive_loss(
     expert_sentence_repr = stacked_expert_outputs.mean(dim=2)
     shared_sentence_repr = shared_output.mean(dim=1)  # [batch_size, hidden_size]
 
-    total_loss = 0.0
+    # 确保total_loss在正确的设备上
+    total_loss = torch.tensor(0.0, device=expert_outputs[0].device, dtype=expert_outputs[0].dtype)
     num_pairs = 0
 
     # 计算路由专家的文化对比损失和共享专家损失
@@ -154,20 +160,25 @@ def compute_total_loss(
 
     # 计算负载均衡损失
     if len(moe_aux_info) > 0:
-        total_load_balance_loss = 0.0
+        total_load_balance_loss = torch.tensor(0.0, device=device)  # 确保在正确设备上
         num_layers = len(moe_aux_info)
 
         for layer_aux in moe_aux_info:
             gate_probs = layer_aux['gate_probs']
             num_experts = gate_probs.shape[-1]
             layer_load_balance_loss = compute_load_balance_loss(gate_probs, num_experts)
+
+            # 确保损失在正确设备上
+            if layer_load_balance_loss.device != device:
+                layer_load_balance_loss = layer_load_balance_loss.to(device)
+
             total_load_balance_loss += layer_load_balance_loss
 
         load_balance_loss = total_load_balance_loss / num_layers
 
     # 计算文化对比损失
     if use_culture_loss == "new" and len(moe_aux_info) > 0 and culture_labels is not None:
-        total_culture_loss = 0.0
+        total_culture_loss = torch.tensor(0.0, device=device)  # 确保在正确设备上
         num_layers = len(moe_aux_info)
 
         for layer_aux in moe_aux_info:
@@ -176,6 +187,11 @@ def compute_total_loss(
             layer_culture_loss = compute_culture_contrastive_loss(
                 expert_outputs, shared_output, culture_labels
             )
+
+            # 确保损失在正确设备上
+            if layer_culture_loss.device != device:
+                layer_culture_loss = layer_culture_loss.to(device)
+
             total_culture_loss += layer_culture_loss
 
         culture_loss = total_culture_loss / num_layers
