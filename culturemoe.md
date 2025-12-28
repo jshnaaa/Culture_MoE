@@ -8,7 +8,6 @@ CultureMoE是一个基于Mixture of Experts (MoE)架构的文化感知语言模�
 
 - **纯MoE架构**: 所有层的FFN都替换为LoRA MoE结构
 - **文化感知路由**: 通过文化损失引导专家学习文化特定模式
-- **条件激活**: MASK机制支持根据输入类型条件激活专家
 - **内存高效**: 基于LoRA的专家设计，显著降低参数量和内存需求
 
 ## 整体架构
@@ -22,7 +21,6 @@ CultureMoE架构包含以下主要组件：
    - LoRA专家群：多个基于LoRA的专家网络
    - 共享专家：可选的始终激活专家
    - 门控网络：可选的专家融合机制
-   - MASK机制：条件专家激活控制
    - 文化损失函数：促进文化专业化的对比学习
 
 ## 核心组件详细说明
@@ -85,7 +83,6 @@ MoE FFN层是完整的专家混合前馈网络，整合了路由、专家计算�
 #### 设计理念
 - 完全替换原始FFN为MoE结构
 - 支持Top-k稀疏激活和Dense全激活两种模式
-- 集成MASK机制实现条件专家激活
 
 #### 核心组件
 - **路由器**: 负责专家选择的MoERouter实例
@@ -105,20 +102,6 @@ MoE FFN层是完整的专家混合前馈网络，整合了路由、专家计算�
 - 对top-k权重重新归一化确保和为1
 - 计算效率高但可能损失部分信息
 
-#### MASK机制
-
-MASK机制实现条件专家激活，根据输入类型动态选择激活策略：
-
-**条件激活规则**:
-- **input_type = 0**: masked输入，仅激活shared专家，不产生expert_weights
-- **input_type = 1**: 完整输入，仅激活路由专家，产生expert_weights用于文化损失
-- **混合batch**: 不同样本采用不同激活策略，分别处理
-
-**处理流程**:
-1. 检查batch中input_type分布
-2. 纯masked batch → 调用shared-only前向传播
-3. 纯完整batch → 调用routed-only前向传播
-4. 混合batch → 分别处理不同类型样本后合并
 
 ### 4. 损失函数体系 (Loss Function System)
 
@@ -215,10 +198,6 @@ $$w_i = \frac{1}{L} \sum_{t=1}^{L} \text{router\_weights}_i[t]$$
 - **精度控制**: 使用float16精度节省显存同时保持数值稳定
 - **梯度安全**: 确保返回张量具有正确的梯度属性
 
-#### MASK机制适配
-- 仅对激活路由专家的样本计算文化损失
-- shared-only样本不产生expert_weights，不参与文化损失计算
-- 混合batch中自动匹配expert_weights维度与对应的culture_labels
 
 ### 5. 简化版CultureMoE适配器
 
@@ -242,7 +221,6 @@ SimplifiedCultureMoEAdapter是整个系统的控制中心，负责模型改造�
 - 获取backbone模型的所有transformer层
 - 保留原始FFN作为LoRA专家的基础
 - 为每层创建独立的MoEFFNLoRA实例
-- 设置adapter引用支持MASK机制的全局状态管理
 
 **参数管理**:
 - 自动识别可训练参数(包含'lora'、'experts'、'router'关键词)
@@ -252,7 +230,6 @@ SimplifiedCultureMoEAdapter是整个系统的控制中心，负责模型改造�
 **推理支持**:
 - 提供generate方法委托给base_model进行文本生成
 - 处理DDP包装确保推理时的模型访问
-- 支持MASK机制的input_type全局状态管理
 
 ## 训练配置
 
@@ -330,7 +307,6 @@ DDP配置针对MoE特点优化：
 - backbone: 基础模型类型 (llama/qwen)
 - data_id: 数据集编号
 - use_shared: 是否启用共享专家
-- use_mask: 是否启用MASK机制
 - use_gate: 是否启用门控网络
 - num_experts: MoE专家总数
 - culture_loss: 文化损失模式 (new/ori/kl/false)
@@ -369,24 +345,20 @@ DDP配置针对MoE特点优化：
 - 保持原始FFN权重作为稳定基础
 - 仅训练少量LoRA参数实现专家差异化
 
-### 3. MASK条件激活机制
-- 根据输入类型动态选择专家激活策略
-- 支持混合batch的高效处理
-- 提升训练效率和推理性能
 
-### 4. 文化感知对比损失
+### 3. 文化感知对比损失
 - 基于余弦相似度的对比学习框架
 - 促进专家的文化专业化分工
 - 数值稳定的实现保证训练稳定性
 
-### 5. 内存优化技术
+### 4. 内存优化技术
 - float16精度计算减少显存需求
 - 分布式训练支持大规模部署
 - 动态内存管理避免显存碎片化
 
 ## 总结
 
-CultureMoE通过纯MoE架构和文化感知机制，在保持模型性能的同时实现了文化专业化。其创新的LoRA专家设计和MASK机制为大规模语言模型的文化适应提供了高效的解决方案。
+CultureMoE通过纯MoE架构和文化感知机制，在保持模型性能的同时实现了文化专业化。其创新的LoRA专家设计为大规模语言模型的文化适应提供了高效的解决方案。
 
 ### 核心优势
 1. **参数高效**: 仅训练1.25%的参数实现文化适应

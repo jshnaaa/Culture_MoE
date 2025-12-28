@@ -82,8 +82,7 @@ def is_main_process(rank):
 
 
 def load_and_split_multi_datasets_8_1_1(data_path: str, tokenizer, max_length: int = 512,
-                                        output_dir: str = None, force_resplit: bool = False,
-                                        enable_mask: bool = False, mask_prob: float = 0.15):
+                                        output_dir: str = None, force_resplit: bool = False):
     """
     加载合并数据集并按8:1:1划分，同时为每个原始数据集保存独立的划分文件
 
@@ -105,12 +104,10 @@ def load_and_split_multi_datasets_8_1_1(data_path: str, tokenizer, max_length: i
 
         # 分别加载两个原始数据集
         blend_dataset = CultureLLMNewFormatDataset(
-            blend_file, tokenizer, max_length,
-            enable_mask=enable_mask, mask_prob=mask_prob
+            blend_file, tokenizer, max_length
         )
         cultureatlas_dataset = CultureLLMNewFormatDataset(
-            cultureatlas_file, tokenizer, max_length,
-            enable_mask=enable_mask, mask_prob=mask_prob
+            cultureatlas_file, tokenizer, max_length
         )
 
         blend_size = len(blend_dataset)
@@ -165,8 +162,7 @@ def load_and_split_multi_datasets_8_1_1(data_path: str, tokenizer, max_length: i
 
         # 创建合并的数据集
         full_dataset = CultureLLMNewFormatDataset(
-            data_path, tokenizer, max_length,
-            enable_mask=enable_mask, mask_prob=mask_prob
+            data_path, tokenizer, max_length
         )
 
         # 调整cultureAtlas的索引（因为在合并数据集中的偏移）
@@ -198,12 +194,11 @@ def load_and_split_multi_datasets_8_1_1(data_path: str, tokenizer, max_length: i
         }
     else:
         # 单数据集情况，使用原有逻辑
-        return load_and_split_data_8_1_1(data_path, tokenizer, max_length, output_dir, force_resplit, enable_mask, mask_prob)
+        return load_and_split_data_8_1_1(data_path, tokenizer, max_length, output_dir, force_resplit)
 
 
 def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
-                               output_dir: str = None, force_resplit: bool = False,
-                               enable_mask: bool = False, mask_prob: float = 0.15):
+                               output_dir: str = None, force_resplit: bool = False):
     """
     加载数据并按8:1:1划分为训练集、验证集、测试集
 
@@ -219,8 +214,7 @@ def load_and_split_data_8_1_1(data_path: str, tokenizer, max_length: int = 512,
     """
     # 创建完整数据集
     full_dataset = CultureLLMNewFormatDataset(
-        data_path, tokenizer, max_length,
-        enable_mask=enable_mask, mask_prob=mask_prob
+        data_path, tokenizer, max_length
     )
     total_size = len(full_dataset)
 
@@ -335,8 +329,7 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
 
     expert_weights = model_outputs.expert_weights  # [B_expert, num_experts]
 
-    # 🔧 MASK机制修复：expert_weights可能只包含激活路由专家的样本
-    # 如果维度不匹配，说明部分样本使用了shared专家，没有expert_weights
+    # 检查expert_weights和culture_labels维度是否匹配
     if expert_weights.shape[0] != culture_labels.shape[0]:
         # 只对有expert_weights的样本计算文化损失
         if expert_weights.shape[0] < 2:
@@ -465,17 +458,11 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             else:
                 culture_labels = batch['label'].to(device)
 
-        # 获取input_type（MASK机制）
-        input_type = batch.get('input_type', None)
-        if input_type is not None:
-            input_type = input_type.to(device)
-
         # 前向传播
         outputs = model_adapter.forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            labels=labels,
-            input_type=input_type  # 🆕 MASK机制
+            labels=labels
         )
 
         loss = outputs.loss
@@ -483,31 +470,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         # 计算文化损失 - 统一使用float16节省显存
         culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
         if use_culture_loss != 'false' and culture_labels is not None:
-            # 🔧 MASK机制：传递input_type信息以正确处理文化损失
             if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
-                # 如果有expert_weights，说明有样本激活了路由专家
-                expert_batch_size = outputs.expert_weights.shape[0]
-                full_batch_size = culture_labels.shape[0]
-
-                if expert_batch_size == full_batch_size:
-                    # 所有样本都激活路由专家
-                    culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
-                elif expert_batch_size > 0:
-                    # 部分样本激活路由专家，需要找到对应的culture_labels
-                    # 🔧 MASK机制：根据input_type找到激活路由专家的样本索引
-                    if input_type is not None:
-                        full_indices = (input_type == 1).nonzero(as_tuple=True)[0]
-                        if len(full_indices) == expert_batch_size:
-                            # 提取对应的culture_labels
-                            relevant_culture_labels = culture_labels[full_indices]
-                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
-                        else:
-                            # 索引数量不匹配，跳过文化损失计算
-                            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
-                    else:
-                        # 兼容模式，使用前expert_batch_size个
-                        relevant_culture_labels = culture_labels[:expert_batch_size]
-                        culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
+                culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
 
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss()
@@ -634,17 +598,11 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
                 else:
                     culture_labels = batch['label'].to(device)
 
-            # 获取input_type（MASK机制）
-            input_type = batch.get('input_type', None)
-            if input_type is not None:
-                input_type = input_type.to(device)
-
             # 前向传播
             outputs = model_adapter.forward(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                labels=labels,
-                input_type=input_type  # 🆕 MASK机制
+                labels=labels
             )
 
             loss = outputs.loss
@@ -652,25 +610,8 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             # 计算文化损失 - 统一使用float16节省显存
             culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
             if use_culture_loss != 'false' and culture_labels is not None:
-                # 🔧 MASK机制：正确处理文化损失
                 if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
-                    expert_batch_size = outputs.expert_weights.shape[0]
-                    full_batch_size = culture_labels.shape[0]
-
-                    if expert_batch_size == full_batch_size:
-                        culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
-                    elif expert_batch_size > 0:
-                        # 🔧 MASK机制：根据input_type找到对应的culture_labels
-                        if input_type is not None:
-                            full_indices = (input_type == 1).nonzero(as_tuple=True)[0]
-                            if len(full_indices) == expert_batch_size:
-                                relevant_culture_labels = culture_labels[full_indices]
-                                culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
-                            else:
-                                culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
-                        else:
-                            relevant_culture_labels = culture_labels[:expert_batch_size]
-                            culture_loss = compute_culture_loss(outputs, relevant_culture_labels, culture_loss_weight)
+                    culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
 
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss()
@@ -853,11 +794,6 @@ def main():
     parser.add_argument("--memory_efficient", action='store_true',
                         help="Enable memory efficient training")
 
-    # MASK机制参数
-    parser.add_argument("--enable_mask", action='store_true',
-                        help="Enable MASK mechanism for conditional expert activation")
-    parser.add_argument("--mask_prob", type=float, default=0.15,
-                        help="Probability of masking tokens in instruction")
 
     args = parser.parse_args()
 
@@ -1015,8 +951,6 @@ def main():
         max_length=args.max_length,
         output_dir=args.output_dir,  # 将划分信息保存到输出目录
         force_resplit=False,
-        enable_mask=args.enable_mask,  # 🆕 MASK机制
-        mask_prob=args.mask_prob
     )
     train_dataset = datasets['train']
     val_dataset = datasets['validation']
