@@ -45,9 +45,13 @@ class Router(nn.Module):
         if torch.isnan(hidden_states).any():
             print(f"🚨 Router输入包含NaN: {torch.isnan(hidden_states).sum().item()}/{hidden_states.numel()}")
 
-        # 🔧 简化FP32计算：gate权重已经是FP32，直接匹配
+        # 🔧 确保gate权重为FP32（MoE工业标准要求）
+        if self.gate.weight.dtype != torch.float32:
+            self.gate.weight.data = self.gate.weight.data.float()
+
+        # 🔧 输入转FP32匹配gate权重
         hs = hidden_states.float()          # 输入转FP32
-        gate_logits = self.gate(hs)         # gate权重也是FP32，dtype匹配
+        gate_logits = self.gate(hs)         # gate权重为FP32，dtype匹配
 
         # 🔧 NaN防护：清理异常值
         gate_logits = torch.nan_to_num(gate_logits, nan=0.0, posinf=10.0, neginf=-10.0)
@@ -538,10 +542,15 @@ class CultureMoEModel(nn.Module):
             moe_device = next(moe_layer.parameters()).device
             moe_dtype = next(moe_layer.parameters()).dtype
 
-            # 检查设备和数据类型一致性
-            if hidden_states.device != moe_device or hidden_states.dtype != moe_dtype:
-                moe_layer = moe_layer.to(device=hidden_states.device, dtype=hidden_states.dtype)
+            # 🔧 只处理设备一致性，保持Router FP32（MoE工业标准）
+            if hidden_states.device != moe_device:
+                # 只同步设备，不强制dtype统一
+                moe_layer = moe_layer.to(device=hidden_states.device)
                 self.culture_moe_layers[layer_idx] = moe_layer
+
+            # 🔧 确保Router始终保持FP32（MoE工业标准要求）
+            if moe_layer.router.gate.weight.dtype != torch.float32:
+                moe_layer.router.gate.weight.data = moe_layer.router.gate.weight.data.float()
 
             # 🔧 极简梯度连接：只在必要时启用梯度
             if not hidden_states.requires_grad:
