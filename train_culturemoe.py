@@ -528,6 +528,14 @@ def train_epoch(model, dataloader, optimizer, device, config):
             attention_mask=attention_mask
         )
 
+        # 🔍 梯度诊断3：检查模型输出的梯度状态
+        if batch_idx == 0:  # 只在第一个batch打印
+            print(f"\n🔍 梯度诊断3：模型输出梯度状态")
+            print(f"  outputs.logits.requires_grad: {outputs.logits.requires_grad}")
+            print(f"  outputs.logits.grad_fn: {outputs.logits.grad_fn}")
+            if hasattr(outputs, 'moe_aux_info'):
+                print(f"  MoE辅助信息数量: {len(outputs.moe_aux_info)}")
+
         # 手动计算交叉熵损失，确保梯度连接到MoE层
         logits = outputs.logits
         # 移位处理：logits和labels对齐
@@ -539,6 +547,13 @@ def train_epoch(model, dataloader, optimizer, device, config):
         # 计算交叉熵损失（忽略-100标签）
         loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
         main_loss = loss_fct(shift_logits, shift_labels)
+
+        # 🔍 梯度诊断4：检查main_loss的梯度状态
+        if batch_idx == 0:
+            print(f"\n🔍 梯度诊断4：main_loss梯度状态")
+            print(f"  main_loss.requires_grad: {main_loss.requires_grad}")
+            print(f"  main_loss.grad_fn: {main_loss.grad_fn}")
+            print(f"  main_loss.item(): {main_loss.item()}")
 
         # 收集MoE辅助信息
         batch_moe_aux_info = getattr(outputs, 'moe_aux_info', [])
@@ -554,6 +569,27 @@ def train_epoch(model, dataloader, optimizer, device, config):
             beta_weight=config['beta'],
             use_culture_loss=config['use_culture_loss']
         )
+
+        # 🔍 梯度诊断5：检查总损失的梯度状态
+        if batch_idx == 0:
+            print(f"\n🔍 梯度诊断5：总损失梯度状态")
+            print(f"  total_loss_batch.requires_grad: {total_loss_batch.requires_grad}")
+            print(f"  total_loss_batch.grad_fn: {total_loss_batch.grad_fn}")
+            print(f"  total_loss_batch.item(): {total_loss_batch.item()}")
+            print(f"  loss_dict: {loss_dict}")
+
+            # 检查MoE辅助信息中的梯度状态
+            if batch_moe_aux_info:
+                print(f"\n🔍 梯度诊断6：MoE辅助信息梯度状态")
+                for i, aux_info in enumerate(batch_moe_aux_info[:2]):  # 只检查前2层
+                    if 'gate_probs' in aux_info:
+                        gate_probs = aux_info['gate_probs']
+                        print(f"  Layer {i} gate_probs.requires_grad: {gate_probs.requires_grad}")
+                        print(f"  Layer {i} gate_probs.grad_fn: {gate_probs.grad_fn}")
+                    if 'expert_outputs' in aux_info and aux_info['expert_outputs']:
+                        expert_out = aux_info['expert_outputs'][0]
+                        print(f"  Layer {i} expert_outputs[0].requires_grad: {expert_out.requires_grad}")
+                        print(f"  Layer {i} expert_outputs[0].grad_fn: {expert_out.grad_fn}")
 
         # 反向传播
         optimizer.zero_grad()
@@ -702,6 +738,38 @@ def main():
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable parameters: {trainable_params:,}")
     print(f"Trainable percentage: {100 * trainable_params / total_params:.2f}%")
+
+    # 🔍 梯度诊断1：检查哪些参数是可训练的
+    print("\n🔍 梯度诊断1：可训练参数列表")
+    trainable_param_names = []
+    for name, p in model.named_parameters():
+        if p.requires_grad:
+            trainable_param_names.append(name)
+
+    if trainable_param_names:
+        print(f"✅ 找到 {len(trainable_param_names)} 个可训练参数:")
+        for name in trainable_param_names[:10]:  # 只显示前10个
+            print(f"  - {name}")
+        if len(trainable_param_names) > 10:
+            print(f"  ... 还有 {len(trainable_param_names) - 10} 个参数")
+    else:
+        print("❌ 致命错误：没有找到任何可训练参数！")
+        print("   这会直接导致梯度错误")
+
+    # 🔍 梯度诊断2：检查MoE层参数
+    print("\n🔍 梯度诊断2：MoE层参数状态")
+    moe_params = []
+    for name, p in model.named_parameters():
+        if 'culture_moe' in name or 'router' in name or 'expert' in name or 'gate' in name:
+            moe_params.append((name, p.requires_grad))
+
+    if moe_params:
+        print(f"✅ 找到 {len(moe_params)} 个MoE相关参数:")
+        for name, requires_grad in moe_params[:5]:
+            status = "✅" if requires_grad else "❌"
+            print(f"  {status} {name}: requires_grad={requires_grad}")
+    else:
+        print("❌ 警告：没有找到MoE相关参数！")
 
     # 加载和划分数据集
     print("Loading and splitting dataset...")
