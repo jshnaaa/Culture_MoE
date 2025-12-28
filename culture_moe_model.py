@@ -334,13 +334,43 @@ class CultureMoEModel(nn.Module):
         self.base_model = get_peft_model(self.base_model, lora_config)
         print("Attention LoRA added")
 
+    def _get_transformer(self):
+        """获取transformer层，处理PEFT包装的多层嵌套"""
+        # 尝试不同的访问路径，按优先级处理PEFT包装
+        access_paths = [
+            # PEFT包装: PeftModel -> base_model (LlamaForCausalLM) -> model (LlamaModel)
+            ['base_model', 'model'],
+            # 直接: LlamaForCausalLM -> model (LlamaModel)
+            ['model'],
+            # 直接就是LlamaModel
+            []
+        ]
+
+        for path in access_paths:
+            try:
+                obj = self.base_model
+                for attr in path:
+                    obj = getattr(obj, attr)
+
+                # 检查是否有layers属性
+                if hasattr(obj, self.layer_attr):
+                    print(f"✅ 找到transformer层: {'.'.join(['base_model'] + path + [self.layer_attr])}")
+                    return obj
+
+            except AttributeError:
+                continue
+
+        # 如果所有路径都失败，提供详细的错误信息
+        raise AttributeError(
+            f"无法找到transformer层。base_model类型: {type(self.base_model).__name__}, "
+            f"查找属性: {self.layer_attr}, "
+            f"可用属性: {list(self.base_model.__dict__.keys())}"
+        )
+
     def forward(self, input_ids, attention_mask=None, **kwargs):
         """前向传播"""
-        # 获取基座模型的transformer层
-        if hasattr(self.base_model, 'model'):
-            transformer = self.base_model.model
-        else:
-            transformer = self.base_model
+        # 获取基座模型的transformer层 - 处理PEFT包装
+        transformer = self._get_transformer()
 
         # 存储MoE辅助信息
         moe_aux_info = []
