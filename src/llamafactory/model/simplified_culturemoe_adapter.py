@@ -858,6 +858,22 @@ class SimplifiedCultureMoEAdapter:
         if self.config.use_shared and not self.config.use_gate:
             print(f"  - Fusion method: simple addition (shared + routed)")
 
+    def generate(self, **kwargs):
+        """
+        生成方法 - 委托给base_model的generate方法
+
+        Args:
+            **kwargs: generate方法的参数
+
+        Returns:
+            生成的token序列
+        """
+        # 获取实际的模型（处理DDP包装）
+        actual_model = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        # 委托给base_model的generate方法
+        return actual_model.generate(**kwargs)
+
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):
     """创建简化版CultureMoE模型"""

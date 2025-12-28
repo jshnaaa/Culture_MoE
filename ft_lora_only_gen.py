@@ -656,42 +656,27 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
         model_class_name = model.__class__.__name__
         # print(f"🔍 生成时模型类型: {model_class_name}")  # 注释掉详细调试
 
-        # 🔧 修复：支持SimplifiedCultureMoEAdapter
+        # 🔧 修复：统一使用模型的generate方法
+        # SimplifiedCultureMoEAdapter现在有自己的generate方法，可以直接调用
         if ('JointLoRAMoE' in model_class_name or
             hasattr(model, 'moe_layer') or
             'SimplifiedCultureMoEAdapter' in model_class_name or
-            hasattr(model, 'base_model')):
+            hasattr(model, 'base_model') or
+            hasattr(model, 'generate')):
 
-            # 🔧 修复：对于SimplifiedCultureMoEAdapter，需要使用其base_model进行生成
-            if hasattr(model, 'base_model'):
-                # 处理DDP包装的情况
-                actual_model = model.base_model.module if hasattr(model.base_model, 'module') else model.base_model
-                outputs = actual_model.generate(
-                    input_ids=inputs['input_ids'],
-                    attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=1,  # 🔧 减少到1个token，单个数字答案
-                    min_new_tokens=1,  # 🔧 至少生成1个token
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                    do_sample=False,  # 🔧 贪心解码
-                    num_beams=1,
-                    temperature=None,  # 🔧 明确禁用temperature
-                    top_p=None  # 🔧 明确禁用top_p
-                )
-            else:
-                # 使用联合模型的自定义generate方法
-                outputs = model.generate(
-                    input_ids=inputs['input_ids'],
-                    attention_mask=inputs.get('attention_mask'),
-                    max_new_tokens=1,  # 🔧 减少到1个token，单个数字答案
-                    min_new_tokens=1,  # 🔧 至少生成1个token
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                    do_sample=False,  # 🔧 贪心解码
-                    num_beams=1,
-                    temperature=None,  # 🔧 明确禁用temperature
-                    top_p=None  # 🔧 明确禁用top_p
-                )
+            # 🔧 统一调用：所有MoE模型都直接使用model.generate()
+            outputs = model.generate(
+                input_ids=inputs['input_ids'],
+                attention_mask=inputs.get('attention_mask'),
+                max_new_tokens=1,  # 🔧 减少到1个token，单个数字答案
+                min_new_tokens=1,  # 🔧 至少生成1个token
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                do_sample=False,  # 🔧 贪心解码
+                num_beams=1,
+                temperature=None,  # 🔧 明确禁用temperature
+                top_p=None  # 🔧 明确禁用top_p
+            )
         else:
             # 回退到标准generate方法
             # print(f"🔍 Using standard model generate method")  # 注释掉详细调试
