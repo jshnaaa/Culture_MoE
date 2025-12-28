@@ -398,6 +398,94 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
     return eval_results
 
 
+def analyze_expert_activation_stats(moe_aux_info_list, num_layers, num_experts):
+    """分析专家激活分布统计"""
+    print("\n" + "="*60)
+    print("📊 专家激活分布统计")
+    print("="*60)
+
+    # 收集所有层的激活统计
+    layer_stats = []
+
+    for layer_idx in range(num_layers):
+        # 收集该层所有batch的激活信息
+        layer_activations = []
+
+        for batch_aux_info in moe_aux_info_list:
+            if layer_idx < len(batch_aux_info):
+                aux_info = batch_aux_info[layer_idx]
+                if 'top_k_indices' in aux_info:
+                    top_k_indices = aux_info['top_k_indices']  # [batch_size, seq_len, k]
+                    # 展平所有激活的专家索引
+                    activated_experts = top_k_indices.cpu().numpy().flatten()
+                    layer_activations.extend(activated_experts)
+
+        if layer_activations:
+            # 统计每个专家的激活频率
+            expert_counts = {}
+            total_activations = len(layer_activations)
+
+            for expert_id in range(num_experts):
+                count = sum(1 for x in layer_activations if x == expert_id)
+                expert_counts[expert_id] = count
+
+            # 计算激活频率百分比
+            expert_percentages = {}
+            for expert_id, count in expert_counts.items():
+                percentage = (count / total_activations) * 100 if total_activations > 0 else 0
+                expert_percentages[expert_id] = percentage
+
+            layer_stats.append(expert_percentages)
+
+            # 输出该层的统计信息
+            print(f"第{layer_idx+1:2d}层: ", end="")
+            for expert_id in range(num_experts):
+                percentage = expert_percentages[expert_id]
+                print(f"专家{expert_id+1}: {percentage:5.1f}% ", end="")
+            print()
+        else:
+            layer_stats.append({})
+            print(f"第{layer_idx+1:2d}层: 无激活数据")
+
+    # 计算全局统计
+    print("\n" + "-"*60)
+    print("🌍 全局专家激活统计")
+    print("-"*60)
+
+    global_expert_counts = {i: 0 for i in range(num_experts)}
+    global_total = 0
+
+    for layer_stats_dict in layer_stats:
+        for expert_id, percentage in layer_stats_dict.items():
+            # 这里用百分比重新计算总数（近似）
+            if percentage > 0:
+                global_expert_counts[expert_id] += percentage
+                global_total += percentage
+
+    if global_total > 0:
+        print("平均激活频率: ", end="")
+        for expert_id in range(num_experts):
+            avg_percentage = (global_expert_counts[expert_id] / num_layers) if num_layers > 0 else 0
+            print(f"专家{expert_id+1}: {avg_percentage:5.1f}% ", end="")
+        print()
+
+        # 找出最活跃和最不活跃的专家
+        avg_percentages = [(global_expert_counts[i] / num_layers, i) for i in range(num_experts)]
+        avg_percentages.sort(reverse=True)
+
+        print(f"\n最活跃专家: 专家{avg_percentages[0][1]+1} ({avg_percentages[0][0]:.1f}%)")
+        print(f"最不活跃专家: 专家{avg_percentages[-1][1]+1} ({avg_percentages[-1][0]:.1f}%)")
+
+        # 计算负载均衡度（标准差）
+        percentages = [p[0] for p in avg_percentages]
+        import numpy as np
+        std_dev = np.std(percentages)
+        print(f"负载均衡度 (标准差): {std_dev:.2f}% (越小越均衡)")
+
+    print("="*60)
+    return layer_stats
+
+
 def train_epoch(model, dataloader, optimizer, device, config):
     """训练一个epoch"""
     model.train()
@@ -405,6 +493,9 @@ def train_epoch(model, dataloader, optimizer, device, config):
     total_main_loss = 0.0
     total_aux_loss = 0.0
     num_batches = 0
+
+    # 收集专家激活信息
+    all_moe_aux_info = []
 
     progress_bar = tqdm(dataloader, desc="Training")
 
@@ -425,10 +516,14 @@ def train_epoch(model, dataloader, optimizer, device, config):
         # 主任务损失
         main_loss = outputs.loss
 
+        # 收集MoE辅助信息
+        batch_moe_aux_info = getattr(outputs, 'moe_aux_info', [])
+        all_moe_aux_info.append(batch_moe_aux_info)
+
         # 计算总损失
         total_loss_batch, loss_dict = compute_total_loss(
             main_loss=main_loss,
-            moe_aux_info=getattr(outputs, 'moe_aux_info', []),
+            moe_aux_info=batch_moe_aux_info,
             culture_labels=culture_labels,
             lambda_weight=config['lambda'],
             alpha_weight=config['alpha'],
@@ -463,7 +558,8 @@ def train_epoch(model, dataloader, optimizer, device, config):
     return {
         'train_loss': total_loss / num_batches,
         'train_main_loss': total_main_loss / num_batches,
-        'train_aux_loss': total_aux_loss / num_batches
+        'train_aux_loss': total_aux_loss / num_batches,
+        'moe_aux_info': all_moe_aux_info
     }
 
 
@@ -625,6 +721,27 @@ def main():
         # 训练一个epoch
         train_stats = train_epoch(model, train_loader, optimizer, device, config)
 
+        # 分析专家激活分布统计
+        if 'moe_aux_info' in train_stats and train_stats['moe_aux_info']:
+            print(f"\n🔍 Epoch {epoch + 1} 专家激活分布分析:")
+            expert_stats = analyze_expert_activation_stats(
+                train_stats['moe_aux_info'],
+                num_layers=32 if config['backbone'] == 'llama' else 28,  # 根据backbone确定层数
+                num_experts=config['num_moe_experts']
+            )
+            # 将专家统计信息保存到文件
+            expert_stats_file = os.path.join(args.output_dir, f"expert_activation_stats_epoch_{epoch + 1}.json")
+            with open(expert_stats_file, 'w') as f:
+                json.dump({
+                    'epoch': epoch + 1,
+                    'layer_stats': expert_stats,
+                    'config': {
+                        'num_layers': 32 if config['backbone'] == 'llama' else 28,
+                        'num_experts': config['num_moe_experts'],
+                        'num_activated_experts': config['num_activated_experts']
+                    }
+                }, f, indent=2)
+
         # 验证评估
         eval_stats = evaluate_model(model, val_loader, device, tokenizer, config)
 
@@ -671,8 +788,9 @@ def main():
 
                 print(f"🏆 新的最佳模型! 准确率: {best_accuracy:.4f}")
 
-        # 合并统计信息
-        epoch_stats = {**train_stats, **eval_stats, 'epoch': epoch + 1}
+        # 合并统计信息（移除moe_aux_info以节省存储空间）
+        train_stats_clean = {k: v for k, v in train_stats.items() if k != 'moe_aux_info'}
+        epoch_stats = {**train_stats_clean, **eval_stats, 'epoch': epoch + 1}
         training_history.append(epoch_stats)
 
         # 记录日志
