@@ -39,22 +39,26 @@ def compute_load_balance_loss(gate_probs: torch.Tensor, num_experts: int) -> tor
 def compute_culture_contrastive_loss(
     expert_outputs: List[torch.Tensor],
     shared_output: torch.Tensor,
-    culture_labels: torch.Tensor,
-    temperature: float = 0.1
+    culture_labels: torch.Tensor
 ) -> torch.Tensor:
     """
     计算文化对比损失
 
-    目标：
-    - 同一种文化的样本，路由专家输出应该相似
-    - 不同文化的样本，路由专家输出应该不相似
-    - 无论什么文化，共享专家输出都应该相似
+    新的损失函数公式：
+    L = Σ [δ(culture_i, culture_j) * (1 - similarity_ijk) +
+           (1 - δ(culture_i, culture_j)) * similarity_ijk +
+           (-similarity(shared(i), shared(j)))]
+
+    其中：
+    - δ(culture_i, culture_j) = 1 当 culture_i == culture_j，否则为 0
+    - 同文化时，希望 similarity_ijk 尽可能大（最小化 1-similarity）
+    - 异文化时，希望 similarity_ijk 尽可能小（最小化 similarity）
+    - 共享专家输出总是希望相似度大（最小化 -similarity，即最大化 similarity）
 
     Args:
         expert_outputs: List of [batch_size, seq_len, hidden_size] 每个路由专家的输出
         shared_output: [batch_size, seq_len, hidden_size] 共享专家输出
         culture_labels: [batch_size] 文化标签（整数张量）
-        temperature: 温度参数
 
     Returns:
         culture_loss: 标量损失值
@@ -75,60 +79,44 @@ def compute_culture_contrastive_loss(
     total_loss = 0.0
     num_pairs = 0
 
-    # 计算路由专家的文化对比损失
+    # 计算路由专家的文化对比损失和共享专家损失
     for i in range(batch_size):
         for j in range(i + 1, batch_size):
             culture_i = culture_labels[i].item()
             culture_j = culture_labels[j].item()
 
-            # 对于每个专家，计算样本i和样本j的相似度
+            # 指示函数：同文化为1，异文化为0
+            delta = 1.0 if culture_i == culture_j else 0.0
+
+            # 计算共享专家相似度
+            shared_repr_i = shared_sentence_repr[i]  # [hidden_size]
+            shared_repr_j = shared_sentence_repr[j]  # [hidden_size]
+            shared_similarity = F.cosine_similarity(shared_repr_i, shared_repr_j, dim=0)
+
+            # 对于每个路由专家，计算样本i和样本j的相似度
             for expert_idx in range(num_experts):
                 expert_repr_i = expert_sentence_repr[expert_idx, i]  # [hidden_size]
                 expert_repr_j = expert_sentence_repr[expert_idx, j]  # [hidden_size]
 
                 # 计算余弦相似度
-                similarity = F.cosine_similarity(expert_repr_i, expert_repr_j, dim=0)
+                similarity_ijk = F.cosine_similarity(expert_repr_i, expert_repr_j, dim=0)
 
-                if culture_i == culture_j:
-                    # 同文化：希望相似度高
-                    loss_ij = -torch.log(torch.sigmoid(similarity / temperature))
-                else:
-                    # 异文化：希望相似度低
-                    loss_ij = -torch.log(torch.sigmoid(-similarity / temperature))
+                # 按照新的公式计算损失
+                # L = δ(culture_i, culture_j) * (1 - similarity_ijk) +
+                #     (1 - δ(culture_i, culture_j)) * similarity_ijk +
+                #     (-similarity(shared(i), shared(j)))
+                loss_ij = (delta * (1.0 - similarity_ijk) +
+                          (1.0 - delta) * similarity_ijk +
+                          (-shared_similarity))
 
                 total_loss += loss_ij
                 num_pairs += 1
 
-    # 计算共享专家损失：无论什么文化都应该相似
-    shared_loss = 0.0
-    shared_pairs = 0
-
-    for i in range(batch_size):
-        for j in range(i + 1, batch_size):
-            shared_repr_i = shared_sentence_repr[i]  # [hidden_size]
-            shared_repr_j = shared_sentence_repr[j]  # [hidden_size]
-
-            # 计算余弦相似度
-            shared_similarity = F.cosine_similarity(shared_repr_i, shared_repr_j, dim=0)
-
-            # 共享专家总是希望相似度高
-            shared_loss_ij = -torch.log(torch.sigmoid(shared_similarity / temperature))
-            shared_loss += shared_loss_ij
-            shared_pairs += 1
-
     # 平均损失
     if num_pairs > 0:
-        routing_loss = total_loss / num_pairs
+        culture_loss = total_loss / num_pairs
     else:
-        routing_loss = torch.tensor(0.0, device=expert_outputs[0].device)
-
-    if shared_pairs > 0:
-        shared_loss = shared_loss / shared_pairs
-    else:
-        shared_loss = torch.tensor(0.0, device=expert_outputs[0].device)
-
-    # 总文化对比损失
-    culture_loss = routing_loss + shared_loss
+        culture_loss = torch.tensor(0.0, device=expert_outputs[0].device)
 
     return culture_loss
 

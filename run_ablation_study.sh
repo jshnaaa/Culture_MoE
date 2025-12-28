@@ -146,13 +146,11 @@ fi
 if [ "$BACKBONE" = "llama" ]; then
     POSSIBLE_PATHS=(
         "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-        "/Users/yzl/models/Meta-Llama-3.1-8B-Instruct"
         "meta-llama/Meta-Llama-3.1-8B-Instruct"
     )
 elif [ "$BACKBONE" = "qwen" ]; then
     POSSIBLE_PATHS=(
         "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-        "/Users/yzl/models/Meta-Qwen-2.5-7B-Instruct"
         "Qwen/Qwen2.5-7B-Instruct"
     )
 fi

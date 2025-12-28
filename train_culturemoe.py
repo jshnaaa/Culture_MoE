@@ -131,8 +131,8 @@ def load_and_split_dataset_8_1_1(data_path: str, tokenizer, max_length: int = 51
     }
 
 
-def collate_fn(batch):
-    """自定义collate函数"""
+def dynamic_collate_fn(batch):
+    """动态padding的collate函数"""
     # 提取文化标签
     culture_labels = []
     for item in batch:
@@ -154,11 +154,46 @@ def collate_fn(batch):
         new_item = {k: v for k, v in item.items() if k != 'label'}
         batch_data.append(new_item)
 
-    # 使用动态padding
-    padded_batch = dynamic_padding_collate_fn(batch_data)
+    # 动态padding：找到batch中的最大长度
+    max_length = 0
+    for item in batch_data:
+        if 'input_ids' in item:
+            max_length = max(max_length, len(item['input_ids']))
 
-    # 添加文化标签张量
-    padded_batch['culture_labels'] = torch.tensor(culture_labels, dtype=torch.long)
+    # 对每个样本进行padding或截断到batch内的最大长度
+    input_ids_list = []
+    attention_mask_list = []
+    labels_list = []
+
+    for item in batch_data:
+        input_ids = item['input_ids']
+        attention_mask = item['attention_mask']
+        labels = item['labels']
+
+        # 如果长度超过max_length，截断
+        if len(input_ids) > max_length:
+            input_ids = input_ids[:max_length]
+            attention_mask = attention_mask[:max_length]
+            labels = labels[:max_length]
+        # 如果长度小于max_length，padding
+        elif len(input_ids) < max_length:
+            pad_length = max_length - len(input_ids)
+            # 使用tokenizer的pad_token_id进行padding
+            input_ids = input_ids + [0] * pad_length  # 0通常是pad_token_id
+            attention_mask = attention_mask + [0] * pad_length
+            labels = labels + [-100] * pad_length  # -100是忽略的标签
+
+        input_ids_list.append(input_ids)
+        attention_mask_list.append(attention_mask)
+        labels_list.append(labels)
+
+    # 转换为tensor
+    padded_batch = {
+        'input_ids': torch.tensor(input_ids_list, dtype=torch.long),
+        'attention_mask': torch.tensor(attention_mask_list, dtype=torch.long),
+        'labels': torch.tensor(labels_list, dtype=torch.long),
+        'culture_labels': torch.tensor(culture_labels, dtype=torch.long)
+    }
 
     return padded_batch
 
@@ -537,14 +572,14 @@ def main():
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=collate_fn
+        collate_fn=dynamic_collate_fn
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=collate_fn
+        collate_fn=dynamic_collate_fn
     )
 
     # 创建优化器
@@ -596,13 +631,17 @@ def main():
                 best_accuracy = eval_results['accuracy']
                 best_epoch = epoch + 1
 
-                # 保存最佳模型
+                # 保存最佳模型（仅保存可训练参数）
                 best_model_dir = os.path.join(args.output_dir, "best_model")
                 os.makedirs(best_model_dir, exist_ok=True)
 
+                # 只保存可训练的参数
+                trainable_state_dict = {k: v for k, v in model.state_dict().items()
+                                       if any(p.requires_grad for p in model.named_parameters() if p[0] == k)}
+
                 torch.save({
                     'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
+                    'trainable_state_dict': trainable_state_dict,
                     'optimizer_state_dict': optimizer.state_dict(),
                     'config': config,
                     'eval_results': eval_results,
@@ -623,9 +662,13 @@ def main():
             checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-epoch-{epoch + 1}")
             os.makedirs(checkpoint_dir, exist_ok=True)
 
+            # 只保存可训练的参数
+            trainable_state_dict = {k: v for k, v in model.state_dict().items()
+                                   if any(p.requires_grad for p in model.named_parameters() if p[0] == k)}
+
             torch.save({
                 'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
+                'trainable_state_dict': trainable_state_dict,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'config': config,
                 'training_history': training_history

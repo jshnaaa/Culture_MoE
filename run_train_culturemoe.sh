@@ -30,27 +30,32 @@ else
     exit 1
 fi
 
-# ===== 数据集路径 =====
+# ===== 数据集路径和MAX_LENGTH设置 =====
 case $DATA_ID in
     1)
         TRAIN_FILE="/root/autodl-fs/blend_merge_gen.json"
         DATASET_TAG="blend"
+        MAX_LENGTH=512
         ;;
     2)
         TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
         DATASET_TAG="CulturalBench"
+        MAX_LENGTH=512
         ;;
     3)
         TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
         DATASET_TAG="normad"
+        MAX_LENGTH=850
         ;;
     4)
         TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
+        MAX_LENGTH=512
         ;;
     5)
         TRAIN_FILE="/autodl-fs/data/cultureAtlas_merge_gen.json"
         DATASET_TAG="cultureAtlas"
+        MAX_LENGTH=512
         ;;
     *)
         echo "❌ 无效的DATA_ID: $DATA_ID (支持: 1, 2, 3, 4, 5)"
@@ -60,11 +65,7 @@ esac
 
 # ===== 输出目录配置 =====
 TIMESTAMP=$(date +%m%d_%H%M)
-OUTPUT_DIR="./outputs/culturemoe_${BACKBONE}_${DATASET_TAG}_${TIMESTAMP}"
-OUTPUT_DIR="${OUTPUT_DIR}_shared${USE_SHARED}_gate${USE_GATE}_loss${USE_CULTURE_LOSS}"
-OUTPUT_DIR="${OUTPUT_DIR}_experts${NUM_MOE_EXPERTS}_top${NUM_ACTIVATED_EXPERTS}"
-OUTPUT_DIR="${OUTPUT_DIR}_lambda${LAMBDA}_alpha${ALPHA}_beta${BETA}"
-OUTPUT_DIR="${OUTPUT_DIR}_rank${LORA_RANK}_alpha${LORA_ALPHA}"
+OUTPUT_DIR="/root/autodl-fs/culturemoe_/${BACKBONE}_${DATASET_TAG}_shared${USE_SHARED}_gate${USE_GATE}_loss${USE_CULTURE_LOSS}_experts${NUM_MOE_EXPERTS}_top${NUM_ACTIVATED_EXPERTS}_lambda${LAMBDA}_alpha${ALPHA}_beta${BETA}_${TIMESTAMP}"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -72,7 +73,7 @@ mkdir -p "$OUTPUT_DIR"
 NUM_EPOCHS=6
 BATCH_SIZE=2
 LEARNING_RATE=1e-4
-MAX_LENGTH=512
+# MAX_LENGTH在数据集配置中设置
 SEED=42
 EVAL_STEPS=1  # 每个epoch都进行评估
 
@@ -85,6 +86,7 @@ echo "========================================"
 echo "📊 配置信息:"
 echo "  - 基座模型: $BACKBONE ($BASE_MODEL_PATH)"
 echo "  - 数据集: $DATASET_TAG ($TRAIN_FILE)"
+echo "  - 最大长度: $MAX_LENGTH"
 echo "  - 输出目录: $OUTPUT_DIR"
 echo "  - MoE配置: ${NUM_MOE_EXPERTS}个专家, Top-${NUM_ACTIVATED_EXPERTS}激活"
 echo "  - 共享专家: $USE_SHARED"
@@ -116,6 +118,7 @@ CultureMoE 训练配置信息
 模型路径: $BASE_MODEL_PATH
 数据集: $DATASET_TAG
 数据文件: $TRAIN_FILE
+最大长度: $MAX_LENGTH
 输出目录: $OUTPUT_DIR
 
 MoE配置:
@@ -226,50 +229,6 @@ print(f\"  - 测试集大小: {summary['dataset_info']['test_size']}\")
 "
     fi
 
-    # 创建快速加载脚本
-    cat > "${OUTPUT_DIR}/load_best_model.py" << EOF
-#!/usr/bin/env python3
-"""
-快速加载训练好的最佳CultureMoE模型
-"""
-import torch
-import json
-import sys
-import os
-
-# 添加项目路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from culture_moe_model import create_culture_moe_model
-
-def load_best_model():
-    # 加载配置
-    with open('config.json', 'r') as f:
-        config = json.load(f)
-
-    # 加载最终总结
-    with open('final_summary.json', 'r') as f:
-        summary = json.load(f)
-
-    print(f"🔧 加载最佳模型 (Epoch {summary['best_epoch']}, 准确率: {summary['best_accuracy']:.4f})")
-
-    # 创建模型
-    model = create_culture_moe_model(config['backbone'], config)
-
-    # 加载最佳权重
-    checkpoint = torch.load('best_model/pytorch_model.bin', map_location='cpu')
-    model.load_state_dict(checkpoint['model_state_dict'])
-
-    print("✅ CultureMoE模型加载完成!")
-    print(f"📊 配置: {config}")
-
-    return model, config, summary
-
-if __name__ == "__main__":
-    model, config, summary = load_best_model()
-EOF
-
-    echo "🔧 快速加载脚本已创建: ${OUTPUT_DIR}/load_best_model.py"
 
 else
     echo "❌ 训练失败，退出码: $TRAIN_EXIT_CODE"
@@ -283,5 +242,4 @@ echo "📁 输出目录: $OUTPUT_DIR"
 echo "📝 配置文件: ${OUTPUT_DIR}/run_config.txt"
 echo "📊 训练日志: $LOG_FILE"
 echo "🏆 最佳模型: ${OUTPUT_DIR}/best_model/"
-echo "🔧 快速加载: cd ${OUTPUT_DIR} && python load_best_model.py"
 echo "========================================"
