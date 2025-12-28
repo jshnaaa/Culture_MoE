@@ -96,8 +96,12 @@ class LoRAExpert(nn.Module):
         if torch.isnan(x).any():
             print(f"🚨 LoRA专家输入包含NaN: {torch.isnan(x).sum().item()}/{x.numel()}")
 
+        # 🔧 确保dtype一致性：LoRA参数与输入匹配
+        lora_A = self.lora_A.to(dtype=x.dtype, device=x.device)
+        lora_B = self.lora_B.to(dtype=x.dtype, device=x.device)
+
         # LoRA变换: x @ A @ B
-        lora_output = x @ self.lora_A @ self.lora_B
+        lora_output = x @ lora_A @ lora_B
 
         # 🔍 NaN诊断：LoRA变换检查
         if torch.isnan(lora_output).any():
@@ -352,11 +356,20 @@ class CultureMoEModel(nn.Module):
             # 移动MoE组件到正确设备
             moe_lora_ffn = moe_lora_ffn.to(device=target_device)
 
-            # 🔧 简化dtype控制：Router自治FP32，其他组件使用目标dtype
+            # 🔧 精确的dtype控制：专门处理不同组件类型
             for name, module in moe_lora_ffn.named_modules():
-                if hasattr(module, 'weight') and 'router' not in name and 'base_ffn' not in name:
-                    # 非Router、非原始FFN的组件转换为目标dtype
-                    # Router在自己的forward()中保证FP32，无需外层干预
+                if 'router' in name:
+                    # Router自治FP32，无需外层干预
+                    continue
+                elif 'base_ffn' in name:
+                    # 原始FFN保持不变
+                    continue
+                elif isinstance(module, LoRAExpert):
+                    # LoRA专家：专门处理其参数dtype
+                    module.lora_A.data = module.lora_A.data.to(dtype=target_dtype)
+                    module.lora_B.data = module.lora_B.data.to(dtype=target_dtype)
+                elif hasattr(module, 'weight'):
+                    # 其他有weight的模块
                     module.to(dtype=target_dtype)
 
             # 🔧 直接替换layer的mlp属性
