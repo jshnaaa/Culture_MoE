@@ -39,7 +39,9 @@ class Router(nn.Module):
             print(f"🚨 Router输入包含NaN: {torch.isnan(hidden_states).sum().item()}/{hidden_states.numel()}")
 
         # 🔧 强制使用FP32计算避免FP16数值不稳定
-        gate_logits = self.gate(hidden_states.float()).half()  # FP32计算，FP16输出
+        with torch.cuda.amp.autocast(enabled=False):
+            gate_logits = self.gate(hidden_states.float())  # FP32 matmul
+        gate_logits = gate_logits.to(hidden_states.dtype)  # cast back
 
         # 🔧 NaN防护：清理异常值
         gate_logits = torch.nan_to_num(gate_logits, nan=0.0, posinf=10.0, neginf=-10.0)
