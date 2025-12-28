@@ -293,6 +293,11 @@ class MoELoRAFFN(nn.Module):
         # 数学形式：y = Δ_shared(x) + Σ_i p_i(x) · Δ_routed_i(x)
         intermediate_output = shared_delta + routed_delta
 
+        # 🔧 4. Dtype修复：Router操作产生FP32，需要转换回FP16匹配output_projection
+        # 根据ChatGPT分析：intermediate_output来自Router(FP32) + LoRA(FP16)混合计算
+        # 必须转换为与hidden_states相同的dtype，确保与output_projection.weight匹配
+        intermediate_output = intermediate_output.to(hidden_states.dtype)
+
         # 投影到hidden_size维度
         moe_delta = self.output_projection(intermediate_output)
 
