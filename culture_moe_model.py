@@ -22,6 +22,10 @@ class Router(nn.Module):
         # 简单的线性层作为路由器
         self.gate = nn.Linear(hidden_size, num_experts, bias=False)
 
+        # 🔧 安全初始化：防止FP16下数值溢出
+        with torch.no_grad():
+            nn.init.normal_(self.gate.weight, mean=0.0, std=0.01)  # 小幅度初始化
+
     def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -34,8 +38,11 @@ class Router(nn.Module):
         if torch.isnan(hidden_states).any():
             print(f"🚨 Router输入包含NaN: {torch.isnan(hidden_states).sum().item()}/{hidden_states.numel()}")
 
-        # 计算每个token对每个专家的权重
-        gate_logits = self.gate(hidden_states)  # [batch_size, seq_len, num_experts]
+        # 🔧 强制使用FP32计算避免FP16数值不稳定
+        gate_logits = self.gate(hidden_states.float()).half()  # FP32计算，FP16输出
+
+        # 🔧 NaN防护：清理异常值
+        gate_logits = torch.nan_to_num(gate_logits, nan=0.0, posinf=10.0, neginf=-10.0)
 
         # 🔍 NaN诊断：gate_logits检查
         if torch.isnan(gate_logits).any():
@@ -205,9 +212,10 @@ class CultureMoEFFN(nn.Module):
             print(f"  top_k_probs NaN数量: {torch.isnan(top_k_probs).sum().item()}")
             print(f"  top_k_indices NaN数量: {torch.isnan(top_k_indices.float()).sum().item()}")
 
-        # 重新归一化
+        # 🔧 安全归一化：防除零
         top_k_sum = top_k_probs.sum(dim=-1, keepdim=True)
-        top_k_probs = top_k_probs / (top_k_sum + 1e-8)
+        denom = top_k_sum.clamp(min=1e-6)  # 确保分母不为0
+        top_k_probs = top_k_probs / denom
 
         # 🔍 NaN诊断：归一化检查
         if torch.isnan(top_k_probs).any():

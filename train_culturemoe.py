@@ -794,6 +794,15 @@ def main():
     else:
         print("❌ 警告：没有找到MoE相关参数！")
 
+    # 🔧 强制确保Router和Expert参数可训练
+    print("\n🔧 强制设置MoE参数requires_grad=True")
+    moe_param_count = 0
+    for name, param in model.named_parameters():
+        if any(keyword in name for keyword in ["router", "expert", "shared", "culture_moe_layers"]):
+            param.requires_grad = True
+            moe_param_count += 1
+    print(f"✅ 设置了 {moe_param_count} 个MoE参数为可训练")
+
     # 加载和划分数据集
     print("Loading and splitting dataset...")
     datasets = load_and_split_dataset_8_1_1(
