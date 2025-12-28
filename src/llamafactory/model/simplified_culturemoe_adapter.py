@@ -69,7 +69,7 @@ class LoRAExpert(nn.Module):
         nn.init.zeros_(self.down_lora_B.weight)
 
     def forward(self, x):
-        """前向传播：原始FFN输出 + LoRA输出"""
+        """前向传播：只返回LoRA增量，不包含原始FFN"""
         # 检查输入
         if torch.isnan(x).any() or torch.isinf(x).any():
             return torch.zeros_like(x)
@@ -78,42 +78,41 @@ class LoRAExpert(nn.Module):
         x = torch.clamp(x, min=-10.0, max=10.0)
 
         try:
-            # 原始FFN前向传播
-            gate_output = self.original_ffn.act_fn(self.original_ffn.gate_proj(x))
-            up_output = self.original_ffn.up_proj(x)
+            # 🔧 修正：只计算LoRA增量部分
+            # 原始FFN计算（用于获取正确的intermediate基础）
+            gate_original = self.original_ffn.act_fn(self.original_ffn.gate_proj(x))
+            up_original = self.original_ffn.up_proj(x)
+            intermediate_original = gate_original * up_original
 
             # LoRA分支计算
             gate_lora = self.gate_lora_B(self.gate_lora_A(x)) * self.scaling
             up_lora = self.up_lora_B(self.up_lora_A(x)) * self.scaling
 
-            # 组合原始输出和LoRA输出
-            gate_combined = gate_output + gate_lora
-            up_combined = up_output + up_lora
+            # 计算修改后的intermediate
+            gate_combined = gate_original + gate_lora
+            up_combined = up_original + up_lora
+            intermediate_combined = gate_combined * up_combined
 
-            # 限制中间结果
-            gate_combined = torch.clamp(gate_combined, min=-15.0, max=15.0)
-            up_combined = torch.clamp(up_combined, min=-15.0, max=15.0)
-
-            # FFN的激活和组合
-            intermediate = gate_combined * up_combined
-            intermediate = torch.clamp(intermediate, min=-20.0, max=20.0)
+            # 计算intermediate的增量
+            intermediate_delta = intermediate_combined - intermediate_original
+            intermediate_delta = torch.clamp(intermediate_delta, min=-20.0, max=20.0)
 
             # Dropout
-            intermediate = self.dropout(intermediate)
+            intermediate_delta = self.dropout(intermediate_delta)
 
-            # 🔧 修正方案：使用原始FFN的down_proj + LoRA增量
-            # 保持原始FFN冻结，通过LoRA提供专家差异化
-            down_original = self.original_ffn.down_proj(intermediate)
-            down_lora = self.down_lora_B(self.down_lora_A(intermediate)) * self.scaling
-            output = down_original + down_lora
+            # 计算最终的LoRA增量（只包含增量部分）
+            down_lora_from_delta = self.down_lora_B(self.down_lora_A(intermediate_delta)) * self.scaling
+            down_original_delta = self.original_ffn.down_proj(intermediate_delta)
 
-            output = torch.clamp(output, min=-10.0, max=10.0)
+            # 返回总的增量
+            total_delta = down_original_delta + down_lora_from_delta
+            total_delta = torch.clamp(total_delta, min=-10.0, max=10.0)
 
             # 检查输出
-            if torch.isnan(output).any() or torch.isinf(output).any():
+            if torch.isnan(total_delta).any() or torch.isinf(total_delta).any():
                 return torch.zeros_like(x)
 
-            return output
+            return total_delta
 
         except Exception as e:
             print(f"⚠️ LoRAExpert forward failed: {e}")
@@ -303,13 +302,12 @@ class MoEFFNLoRA(nn.Module):
                 selected_expert_weights = torch.zeros_like(expert_weights)  # [B, L, num_experts]
                 selected_expert_weights.scatter_(-1, top_k_indices, top_k_weights)
 
-            # 4. 计算路由专家的LoRA增量
+            # 4. 计算路由专家的LoRA增量（修正：专家直接返回增量）
             if self.num_activated_experts == self.num_experts:
                 # Dense模式：计算所有专家的增量
                 expert_deltas = []
                 for expert_idx in range(self.num_experts):
-                    expert_output = self.experts[expert_idx](hidden_states)
-                    expert_delta = expert_output - original_output
+                    expert_delta = self.experts[expert_idx](hidden_states)  # 直接是增量
                     expert_deltas.append(expert_delta)
                 expert_deltas = torch.stack(expert_deltas, dim=-1)  # [B, L, H, num_experts]
 
@@ -331,10 +329,7 @@ class MoEFFNLoRA(nn.Module):
 
                     if expert_mask.any():
                         expert_input = hidden_flat[expert_mask]
-                        original_input = original_output.view(-1, self.hidden_dim)[expert_mask]
-
-                        expert_output = self.experts[expert_idx](expert_input)
-                        expert_delta = expert_output - original_input
+                        expert_delta = self.experts[expert_idx](expert_input)  # 直接是增量
 
                         expert_weight = weights_flat[:, expert_idx][expert_mask].unsqueeze(-1)
                         delta_flat[expert_mask] += expert_delta * expert_weight
@@ -343,8 +338,7 @@ class MoEFFNLoRA(nn.Module):
 
             # 5. 计算shared专家输出（如果启用）
             if self.use_shared:
-                shared_output = self.shared_expert(hidden_states)
-                shared_delta = shared_output - original_output
+                shared_delta = self.shared_expert(hidden_states)  # 直接是增量
             else:
                 shared_delta = torch.zeros_like(hidden_states)
 
