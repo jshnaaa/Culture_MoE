@@ -19,10 +19,10 @@ class Router(nn.Module):
     def __init__(self, hidden_size: int, num_experts: int):
         super().__init__()
         self.num_experts = num_experts
-        # 简单的线性层作为路由器
-        self.gate = nn.Linear(hidden_size, num_experts, bias=False)
+        # 🔧 Router使用FP32：MoE工业标准做法
+        self.gate = nn.Linear(hidden_size, num_experts, bias=False).float()
 
-        # 🔧 安全初始化：防止FP16下数值溢出
+        # 🔧 安全初始化：防止数值溢出
         with torch.no_grad():
             nn.init.normal_(self.gate.weight, mean=0.0, std=0.01)  # 小幅度初始化
 
@@ -45,10 +45,9 @@ class Router(nn.Module):
         if torch.isnan(hidden_states).any():
             print(f"🚨 Router输入包含NaN: {torch.isnan(hidden_states).sum().item()}/{hidden_states.numel()}")
 
-        # 🔧 强制使用FP32计算避免FP16数值不稳定
-        with torch.cuda.amp.autocast(enabled=False):
-            gate_logits = self.gate(hidden_states.float())  # FP32 matmul
-        gate_logits = gate_logits.to(hidden_states.dtype)  # cast back
+        # 🔧 简化FP32计算：gate权重已经是FP32，直接匹配
+        hs = hidden_states.float()          # 输入转FP32
+        gate_logits = self.gate(hs)         # gate权重也是FP32，dtype匹配
 
         # 🔧 NaN防护：清理异常值
         gate_logits = torch.nan_to_num(gate_logits, nan=0.0, posinf=10.0, neginf=-10.0)
