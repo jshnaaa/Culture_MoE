@@ -595,6 +595,29 @@ def train_epoch(model, dataloader, optimizer, device, config):
         optimizer.zero_grad()
         total_loss_batch.backward()
 
+        # 🔍 梯度监控：检查关键参数的梯度
+        if batch_idx == 0:  # 只在第一个batch监控
+            print(f"\n🔍 梯度监控:")
+            lora_grad_norm = 0
+            moe_grad_norm = 0
+            lora_count = 0
+            moe_count = 0
+
+            for name, param in model.named_parameters():
+                if param.requires_grad and param.grad is not None:
+                    grad_norm = param.grad.norm().item()
+                    if 'lora' in name.lower():
+                        lora_grad_norm += grad_norm
+                        lora_count += 1
+                    elif 'culture_moe' in name:
+                        moe_grad_norm += grad_norm
+                        moe_count += 1
+
+            if lora_count > 0:
+                print(f"  LoRA平均梯度范数: {lora_grad_norm/lora_count:.6f} ({lora_count}个参数)")
+            if moe_count > 0:
+                print(f"  MoE平均梯度范数: {moe_grad_norm/moe_count:.6f} ({moe_count}个参数)")
+
         # 梯度裁剪
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 

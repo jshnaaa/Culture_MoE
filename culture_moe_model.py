@@ -419,17 +419,24 @@ class CultureMoEModel(nn.Module):
                 moe_layer = moe_layer.to(device=hidden_states.device, dtype=hidden_states.dtype)
                 self.culture_moe_layers[layer_idx] = moe_layer
 
-            # 🔧 增强梯度连接：确保MoE层能接收梯度
+            # 🔧 安全的梯度连接：保持完整梯度流
+            moe_params = [p for p in moe_layer.parameters() if p.requires_grad]
+            if moe_params:
+                # 创建零贡献但有梯度的连接器
+                param_sum = sum(p.sum() for p in moe_params)
+                gradient_connector = param_sum * 0.0  # 数值为0，但保持梯度连接
+
+                # 无论hidden_states是否有梯度，都建立连接
+                hidden_states = hidden_states + gradient_connector.expand_as(hidden_states)
+
+                if layer_idx < 3:  # 只在前几层打印诊断
+                    print(f"Layer {layer_idx}: 建立安全梯度连接 (connector_norm={gradient_connector.norm().item():.6f})")
+
+            # 确保hidden_states有梯度（但不断开现有连接）
             if not hidden_states.requires_grad:
-                hidden_states = hidden_states.detach().requires_grad_(True)
-            else:
-                # 对于已有梯度的hidden_states，确保与MoE参数连接
-                moe_params = list(moe_layer.parameters())
-                if moe_params:
-                    param_sum = sum(p.sum() for p in moe_params if p.requires_grad)
-                    if param_sum.numel() > 0:
-                        gradient_connector = param_sum * 0.0
-                        hidden_states = hidden_states + gradient_connector.expand_as(hidden_states)
+                hidden_states = hidden_states.requires_grad_(True)  # 不使用detach()
+                if layer_idx < 3:
+                    print(f"Layer {layer_idx}: 启用梯度跟踪")
 
             # 通过MoE层计算输出
             moe_output, aux_info = moe_layer(hidden_states)
