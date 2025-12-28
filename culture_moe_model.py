@@ -34,6 +34,13 @@ class Router(nn.Module):
             gate_logits: [batch_size, seq_len, num_experts] 专家权重logits
             gate_probs: [batch_size, seq_len, num_experts] 专家权重概率
         """
+        # 🔍 dtype诊断：确认真正的根因
+        if not hasattr(self, "_printed_dtype"):
+            print("🔍 Router dtype诊断:")
+            print(f"  hidden_states.dtype: {hidden_states.dtype}")
+            print(f"  gate.weight.dtype: {self.gate.weight.dtype}")
+            self._printed_dtype = True
+
         # 🔍 NaN诊断：Router输入检查
         if torch.isnan(hidden_states).any():
             print(f"🚨 Router输入包含NaN: {torch.isnan(hidden_states).sum().item()}/{hidden_states.numel()}")
