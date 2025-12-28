@@ -95,8 +95,6 @@ echo "  - 文化损失: $USE_CULTURE_LOSS"
 echo "  - LoRA配置: rank=${LORA_RANK}, alpha=${LORA_ALPHA}"
 echo "  - 损失权重: λ=${LAMBDA}, α=${ALPHA}, β=${BETA}"
 echo "  - 训练参数: epochs=${NUM_EPOCHS}, batch_size=${BATCH_SIZE}, lr=${LEARNING_RATE}"
-echo "  - 数据划分: 8:1:1 (训练:验证:测试)"
-echo "  - 评估频率: 每${EVAL_STEPS}个epoch"
 echo "========================================"
 
 # ===== 检查文件存在性 =====
