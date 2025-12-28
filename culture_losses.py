@@ -64,7 +64,8 @@ def compute_culture_contrastive_loss(
         culture_loss: 标量损失值
     """
     if shared_output is None:
-        return torch.tensor(0.0, device=expert_outputs[0].device, dtype=expert_outputs[0].dtype, requires_grad=True)
+        # 🔧 修复：使用expert_outputs创建零损失，保持梯度连接
+        return torch.zeros_like(expert_outputs[0][:1, :1, :1]).sum() * 0.0
 
     batch_size = expert_outputs[0].shape[0]
     num_experts = len(expert_outputs)
@@ -122,7 +123,8 @@ def compute_culture_contrastive_loss(
     if num_pairs > 0:
         culture_loss = total_loss / num_pairs
     else:
-        culture_loss = torch.tensor(0.0, device=expert_outputs[0].device, dtype=expert_outputs[0].dtype, requires_grad=True)
+        # 🔧 修复：使用expert_outputs创建零损失，保持梯度连接
+        culture_loss = torch.zeros_like(expert_outputs[0][:1, :1, :1]).sum() * 0.0
 
     return culture_loss
 

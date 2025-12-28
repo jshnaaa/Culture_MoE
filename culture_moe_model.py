@@ -38,12 +38,14 @@ class Router(nn.Module):
 
 
 class Gate(nn.Module):
-    """融合网络，融合共享专家和路由专家的输出"""
+    """轻量级融合网络，融合共享专家和路由专家的输出"""
 
     def __init__(self, intermediate_size: int):
         super().__init__()
-        # 简单的线性变换来融合输出 - 修复维度匹配
-        self.fusion_gate = nn.Linear(intermediate_size * 2, intermediate_size)
+        # 🔧 修复：使用轻量级融合方式，大幅减少参数
+        # 使用可学习的权重进行加权平均，而不是全连接层
+        self.shared_weight = nn.Parameter(torch.ones(1))
+        self.routed_weight = nn.Parameter(torch.ones(1))
 
     def forward(self, shared_output: torch.Tensor, routed_output: torch.Tensor) -> torch.Tensor:
         """
@@ -53,10 +55,14 @@ class Gate(nn.Module):
         Returns:
             fused_output: [batch_size, seq_len, intermediate_size] 融合后的输出
         """
-        # 拼接两个输出
-        concatenated = torch.cat([shared_output, routed_output], dim=-1)
-        # 通过门控网络融合
-        fused_output = self.fusion_gate(concatenated)
+        # 🔧 使用可学习的加权平均，参数量从4亿降到2个
+        # 归一化权重
+        total_weight = torch.abs(self.shared_weight) + torch.abs(self.routed_weight)
+        shared_norm_weight = torch.abs(self.shared_weight) / (total_weight + 1e-8)
+        routed_norm_weight = torch.abs(self.routed_weight) / (total_weight + 1e-8)
+
+        # 加权融合
+        fused_output = shared_norm_weight * shared_output + routed_norm_weight * routed_output
         return fused_output
 
 
@@ -121,7 +127,7 @@ class CultureMoEFFN(nn.Module):
 
         # 融合门控
         if use_gate and use_shared:
-            self.gate = Gate(intermediate_size)  # 传入intermediate_size而不是hidden_size
+            self.gate = Gate(intermediate_size)  # 轻量级门控网络
 
         # 输出投影层：将intermediate_size映射回hidden_size
         self.output_projection = nn.Linear(intermediate_size, hidden_size, bias=False)
@@ -289,10 +295,46 @@ class CultureMoEModel(nn.Module):
             self._add_attention_lora()
 
     def _freeze_base_model(self):
-        """冻结基座模型的所有参数"""
-        for param in self.base_model.parameters():
-            param.requires_grad = False
-        print("Base model parameters frozen")
+        """选择性冻结基座模型参数，保持梯度流"""
+        # 获取模型结构
+        if hasattr(self.base_model, 'model'):
+            model = self.base_model.model
+        else:
+            model = self.base_model
+
+        # 冻结embedding层（不需要训练）
+        if hasattr(model, 'embed_tokens'):
+            for param in model.embed_tokens.parameters():
+                param.requires_grad = False
+            print("Embedding layer frozen")
+
+        # 冻结位置编码等
+        if hasattr(model, 'embed_positions'):
+            for param in model.embed_positions.parameters():
+                param.requires_grad = False
+
+        # 冻结LayerNorm
+        if hasattr(model, 'norm'):
+            for param in model.norm.parameters():
+                param.requires_grad = False
+
+        # 冻结LM Head（如果存在）
+        if hasattr(self.base_model, 'lm_head'):
+            for param in self.base_model.lm_head.parameters():
+                param.requires_grad = False
+
+        # 🔧 关键修复：保留所有transformer层的梯度，确保MoE层能接收到梯度
+        # 不冻结transformer layers，让梯度能够流通到MoE层
+        layers = getattr(model, self.layer_attr)
+        trainable_transformer_params = 0
+        for layer in layers:
+            for param in layer.parameters():
+                if param.requires_grad:
+                    trainable_transformer_params += param.numel()
+
+        print(f"Transformer layers kept trainable for gradient flow")
+        print(f"Trainable transformer parameters: {trainable_transformer_params:,}")
+        print("Only embedding and output layers frozen")
 
     def _add_attention_lora(self):
         """为注意力层添加LoRA"""
