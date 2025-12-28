@@ -389,11 +389,16 @@ class CultureMoEModel(nn.Module):
                 target_device = next(layers[layer_idx].parameters()).device
                 target_dtype = next(layers[layer_idx].parameters()).dtype
 
-                # 同时设置设备和数据类型
-                moe_ffn = moe_ffn.to(device=target_device, dtype=target_dtype)
+                # 🔧 只设置设备，保持Router为FP32
+                moe_ffn = moe_ffn.to(device=target_device)
+
+                # 🔧 手动设置非Router组件为目标dtype，保持Router为FP32
+                for name, module in moe_ffn.named_modules():
+                    if 'router' not in name and hasattr(module, 'weight'):
+                        module.to(dtype=target_dtype)
 
                 if layer_idx < 3:  # 只打印前3层的设备和类型分配
-                    print(f"MoE层{layer_idx}移动到{target_device}, 数据类型: {target_dtype}")
+                    print(f"MoE层{layer_idx}移动到{target_device}, Router保持FP32, 其他组件: {target_dtype}")
 
             self.culture_moe_layers.append(moe_ffn)
 
