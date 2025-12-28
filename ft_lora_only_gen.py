@@ -506,8 +506,18 @@ def extract_answer_from_text(text: str) -> str:
     Returns:
         提取的答案（数字字符串）
     """
-    # 🔧 修复：清理文本中的多余空格
+    # 🔧 修复：清理文本中的多余空格和重复字符
     cleaned_text = ' '.join(text.split())
+
+    # 🔧 新增：处理重复数字的情况（如"1111" -> "1"）
+    # 如果文本主要由重复的同一数字组成，提取该数字
+    if len(cleaned_text) > 1:
+        # 检查是否是重复的单个数字
+        first_char = cleaned_text[0]
+        if first_char.isdigit() and first_char in ['1', '2', '3', '4']:
+            # 如果文本主要是重复的同一数字，返回该数字
+            if cleaned_text.count(first_char) / len(cleaned_text.replace(' ', '')) > 0.5:
+                return first_char
 
     # 优先匹配单个数字1-4，避免提取"442"这种多位数字
     match = re.search(r'\b([1-4])\b', cleaned_text)
@@ -607,14 +617,15 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=20,  # 🔧 增加到20个token，给模型足够空间生成完整答案
+                max_new_tokens=5,  # 🔧 减少到5个token，避免重复生成
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,  # 🔧 贪心解码
-                num_beams=1,
-                temperature=None,  # 🔧 明确禁用temperature
-                top_p=None  # 🔧 明确禁用top_p
+                do_sample=True,  # 🔧 启用采样避免重复
+                temperature=0.1,  # 🔧 低温度保持确定性
+                top_p=0.9,  # 🔧 核采样
+                repetition_penalty=1.2,  # 🔧 重复惩罚
+                num_beams=1
             )
             print(f"🔍 生成完成，输出shape: {outputs.shape}")
         else:
@@ -622,14 +633,15 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             print(f"🔍 使用标准模型generate方法")
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=20,  # 🔧 增加到20个token，给模型足够空间生成完整答案
+                max_new_tokens=5,  # 🔧 减少到5个token，避免重复生成
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,  # 贪婪解码
-                num_beams=1,     # 禁用 beam search
-                temperature=None,  # 🔧 明确禁用temperature
-                top_p=None       # 🔧 明确禁用top_p
+                do_sample=True,  # 🔧 启用采样避免重复
+                temperature=0.1,  # 🔧 低温度保持确定性
+                top_p=0.9,  # 🔧 核采样
+                repetition_penalty=1.2,  # 🔧 重复惩罚
+                num_beams=1
             )
 
     # 解码
