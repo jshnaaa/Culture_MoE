@@ -868,11 +868,24 @@ class SimplifiedCultureMoEAdapter:
         Returns:
             生成的token序列
         """
-        # 获取实际的模型（处理DDP包装）
-        actual_model = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+        # 🔧 修复生成文本为空问题：设置推理时的默认input_type
+        # 推理时使用完整输入模式（激活路由专家），与训练时保持一致
+        if 'input_ids' in kwargs:
+            batch_size = kwargs['input_ids'].shape[0]
+            # 设置为完整输入模式（input_type=1），激活路由专家
+            self._current_input_type = torch.ones(batch_size, dtype=torch.long, device=kwargs['input_ids'].device)
 
-        # 委托给base_model的generate方法
-        return actual_model.generate(**kwargs)
+        try:
+            # 获取实际的模型（处理DDP包装）
+            actual_model = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+            # 委托给base_model的generate方法
+            result = actual_model.generate(**kwargs)
+
+            return result
+        finally:
+            # 清理input_type状态
+            self._current_input_type = None
 
 
 def create_simplified_culturemoe_model(base_model, config: SimplifiedCultureMoEConfig):
