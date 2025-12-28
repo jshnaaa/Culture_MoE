@@ -174,6 +174,14 @@ def create_dynamic_collate_fn(tokenizer):
             attention_mask = item['attention_mask']
             labels = item['labels']
 
+            # 确保所有数据都是list类型
+            if isinstance(input_ids, torch.Tensor):
+                input_ids = input_ids.tolist()
+            if isinstance(attention_mask, torch.Tensor):
+                attention_mask = attention_mask.tolist()
+            if isinstance(labels, torch.Tensor):
+                labels = labels.tolist()
+
             # 如果长度超过max_length，截断
             if len(input_ids) > max_length:
                 input_ids = input_ids[:max_length]
