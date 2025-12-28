@@ -285,6 +285,9 @@ class CultureMoEModel(nn.Module):
         if config.get('apply_to_attention', False):
             self._add_attention_lora()
 
+        # 🔧 一次性初始化：解包PEFT并注册持久化Hook
+        self._setup_persistent_hooks()
+
     def _freeze_base_model(self):
         """选择性冻结基座模型参数，保留LoRA和MoE层可训练"""
         frozen_count = 0
@@ -381,83 +384,88 @@ class CultureMoEModel(nn.Module):
         self._cached_transformer = transformer
         return transformer
 
-    def forward(self, input_ids, attention_mask=None, **kwargs):
-        """前向传播"""
-        # 获取基座模型的transformer层 - 处理PEFT包装
+    def _setup_persistent_hooks(self):
+        """一次性设置持久化Hook，避免每次前向传播重复注册"""
+        print("🔧 设置持久化MoE Hook...")
+
+        # 获取transformer层（只解包一次）
         transformer = self._get_transformer()
-
-        # 存储MoE辅助信息
-        moe_aux_info = []
-
-        # Hook函数来替换FFN输出
-        def create_hook(layer_idx):
-            def hook_fn(module, input, output):
-                # input[0]是FFN的输入hidden_states
-                hidden_states = input[0]
-
-                # 确保MoE层和输入在同一设备且数据类型一致
-                moe_layer = self.culture_moe_layers[layer_idx]
-                moe_device = next(moe_layer.parameters()).device
-                moe_dtype = next(moe_layer.parameters()).dtype
-
-                # 检查设备和数据类型一致性
-                if hidden_states.device != moe_device or hidden_states.dtype != moe_dtype:
-                    print(f"不匹配警告: hidden_states({hidden_states.device}, {hidden_states.dtype}) vs MoE层{layer_idx}({moe_device}, {moe_dtype})")
-                    # 将MoE层移动到hidden_states的设备和数据类型
-                    moe_layer = moe_layer.to(device=hidden_states.device, dtype=hidden_states.dtype)
-                    self.culture_moe_layers[layer_idx] = moe_layer
-
-                # 🔍 调试：检查hidden_states的梯度状态
-                if layer_idx == 0:  # 只在第一层打印
-                    print(f"Layer {layer_idx} hidden_states.requires_grad: {hidden_states.requires_grad}")
-                    print(f"Layer {layer_idx} hidden_states.grad_fn: {hidden_states.grad_fn}")
-
-                # 🔧 增强梯度连接：确保MoE层能接收梯度
-                if not hidden_states.requires_grad:
-                    # 方法1：直接设置requires_grad
-                    hidden_states = hidden_states.detach().requires_grad_(True)
-                    if layer_idx < 3:  # 只在前3层打印
-                        print(f"Layer {layer_idx}: 启用hidden_states梯度")
-                else:
-                    # 方法2：对于已有梯度的hidden_states，确保与MoE参数连接
-                    moe_params = list(moe_layer.parameters())
-                    if moe_params:
-                        # 创建微小的梯度连接，不影响数值但建立计算图连接
-                        param_sum = sum(p.sum() for p in moe_params if p.requires_grad)
-                        if param_sum.numel() > 0:
-                            gradient_connector = param_sum * 0.0  # 零贡献但有梯度
-                            hidden_states = hidden_states + gradient_connector.expand_as(hidden_states)
-                            if layer_idx < 3:
-                                print(f"Layer {layer_idx}: 建立MoE梯度连接")
-
-                # 通过MoE层计算输出，现在有梯度连接
-                moe_output, aux_info = moe_layer(hidden_states)
-                moe_aux_info.append(aux_info)
-
-                # 直接返回MoE输出，保持梯度图完整
-                return moe_output
-            return hook_fn
-
-        # 注册hooks
-        hooks = []
         layers = getattr(transformer, self.layer_attr)
+
+        # 存储Hook引用以便清理
+        self._persistent_hooks = []
+
+        # 为每一层注册持久化Hook
         for layer_idx, layer in enumerate(layers):
             ffn = getattr(layer, self.ffn_attr)
-            hook = ffn.register_forward_hook(create_hook(layer_idx))
-            hooks.append(hook)
+            hook = ffn.register_forward_hook(self._create_persistent_hook(layer_idx))
+            self._persistent_hooks.append(hook)
 
-        try:
-            # 执行前向传播
-            outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        print(f"✅ 成功注册 {len(self._persistent_hooks)} 个持久化Hook")
 
-            # 添加MoE辅助信息
-            outputs.moe_aux_info = moe_aux_info
+    def _create_persistent_hook(self, layer_idx):
+        """创建持久化Hook函数"""
+        def hook_fn(module, input, output):
+            # input[0]是FFN的输入hidden_states
+            hidden_states = input[0]
 
-            return outputs
-        finally:
-            # 清理hooks
-            for hook in hooks:
+            # 确保MoE层和输入在同一设备且数据类型一致
+            moe_layer = self.culture_moe_layers[layer_idx]
+            moe_device = next(moe_layer.parameters()).device
+            moe_dtype = next(moe_layer.parameters()).dtype
+
+            # 检查设备和数据类型一致性
+            if hidden_states.device != moe_device or hidden_states.dtype != moe_dtype:
+                moe_layer = moe_layer.to(device=hidden_states.device, dtype=hidden_states.dtype)
+                self.culture_moe_layers[layer_idx] = moe_layer
+
+            # 🔧 增强梯度连接：确保MoE层能接收梯度
+            if not hidden_states.requires_grad:
+                hidden_states = hidden_states.detach().requires_grad_(True)
+            else:
+                # 对于已有梯度的hidden_states，确保与MoE参数连接
+                moe_params = list(moe_layer.parameters())
+                if moe_params:
+                    param_sum = sum(p.sum() for p in moe_params if p.requires_grad)
+                    if param_sum.numel() > 0:
+                        gradient_connector = param_sum * 0.0
+                        hidden_states = hidden_states + gradient_connector.expand_as(hidden_states)
+
+            # 通过MoE层计算输出
+            moe_output, aux_info = moe_layer(hidden_states)
+
+            # 存储辅助信息（如果需要的话）
+            if not hasattr(self, '_current_moe_aux_info'):
+                self._current_moe_aux_info = []
+            self._current_moe_aux_info.append(aux_info)
+
+            return moe_output
+
+        return hook_fn
+
+    def __del__(self):
+        """清理持久化Hook"""
+        if hasattr(self, '_persistent_hooks'):
+            for hook in self._persistent_hooks:
                 hook.remove()
+            print("🧹 清理持久化Hook")
+
+    def forward(self, input_ids, attention_mask=None, **kwargs):
+        """前向传播 - 持久化Hook版本，无需重复注册"""
+
+        # 🔧 清空上次的辅助信息
+        self._current_moe_aux_info = []
+
+        # 🔧 直接前向传播，持久化Hook会自动拦截FFN
+        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+
+        # 🔧 添加MoE辅助信息
+        if hasattr(self, '_current_moe_aux_info'):
+            outputs.moe_aux_info = self._current_moe_aux_info
+        else:
+            outputs.moe_aux_info = []
+
+        return outputs
 
 
 def create_culture_moe_model(base_model_path: str, config: Dict) -> CultureMoEModel:
