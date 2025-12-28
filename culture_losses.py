@@ -64,7 +64,7 @@ def compute_culture_contrastive_loss(
         culture_loss: 标量损失值
     """
     if shared_output is None:
-        return torch.tensor(0.0, device=expert_outputs[0].device)
+        return torch.tensor(0.0, device=expert_outputs[0].device, dtype=expert_outputs[0].dtype, requires_grad=True)
 
     batch_size = expert_outputs[0].shape[0]
     num_experts = len(expert_outputs)
@@ -81,8 +81,8 @@ def compute_culture_contrastive_loss(
     expert_sentence_repr = stacked_expert_outputs.mean(dim=2)
     shared_sentence_repr = shared_output.mean(dim=1)  # [batch_size, hidden_size]
 
-    # 确保total_loss在正确的设备上
-    total_loss = torch.tensor(0.0, device=expert_outputs[0].device, dtype=expert_outputs[0].dtype)
+    # 初始化total_loss，保持梯度信息
+    total_loss = torch.tensor(0.0, device=expert_outputs[0].device, dtype=expert_outputs[0].dtype, requires_grad=True)
     num_pairs = 0
 
     # 计算路由专家的文化对比损失和共享专家损失
@@ -122,7 +122,7 @@ def compute_culture_contrastive_loss(
     if num_pairs > 0:
         culture_loss = total_loss / num_pairs
     else:
-        culture_loss = torch.tensor(0.0, device=expert_outputs[0].device)
+        culture_loss = torch.tensor(0.0, device=expert_outputs[0].device, dtype=expert_outputs[0].dtype, requires_grad=True)
 
     return culture_loss
 
@@ -154,13 +154,13 @@ def compute_total_loss(
     """
     device = main_loss.device
 
-    # 初始化辅助损失
-    load_balance_loss = torch.tensor(0.0, device=device)
-    culture_loss = torch.tensor(0.0, device=device)
+    # 初始化辅助损失 - 使用main_loss的设备和梯度信息
+    load_balance_loss = torch.zeros_like(main_loss)
+    culture_loss = torch.zeros_like(main_loss)
 
     # 计算负载均衡损失
     if len(moe_aux_info) > 0:
-        total_load_balance_loss = torch.tensor(0.0, device=device)  # 确保在正确设备上
+        total_load_balance_loss = torch.zeros_like(main_loss)  # 使用main_loss的设备和梯度信息
         num_layers = len(moe_aux_info)
 
         for layer_aux in moe_aux_info:
@@ -178,7 +178,7 @@ def compute_total_loss(
 
     # 计算文化对比损失
     if use_culture_loss == "new" and len(moe_aux_info) > 0 and culture_labels is not None:
-        total_culture_loss = torch.tensor(0.0, device=device)  # 确保在正确设备上
+        total_culture_loss = torch.zeros_like(main_loss)  # 使用main_loss的设备和梯度信息
         num_layers = len(moe_aux_info)
 
         for layer_aux in moe_aux_info:
