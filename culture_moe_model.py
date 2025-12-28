@@ -336,35 +336,30 @@ class CultureMoEModel(nn.Module):
 
     def _get_transformer(self):
         """获取transformer层，处理PEFT包装的多层嵌套"""
-        # 尝试不同的访问路径，按优先级处理PEFT包装
-        access_paths = [
-            # PEFT包装: PeftModel -> base_model (LlamaForCausalLM) -> model (LlamaModel)
-            ['base_model', 'model'],
-            # 直接: LlamaForCausalLM -> model (LlamaModel)
-            ['model'],
-            # 直接就是LlamaModel
-            []
-        ]
+        model = self.base_model
 
-        for path in access_paths:
-            try:
-                obj = self.base_model
-                for attr in path:
-                    obj = getattr(obj, attr)
+        # 🔧 关键修复：处理PEFT包装 (PeftModelForCausalLM)
+        if hasattr(model, "base_model"):
+            print(f"🔍 检测到PEFT包装: {type(model).__name__} -> {type(model.base_model).__name__}")
+            model = model.base_model
 
-                # 检查是否有layers属性
-                if hasattr(obj, self.layer_attr):
-                    print(f"✅ 找到transformer层: {'.'.join(['base_model'] + path + [self.layer_attr])}")
-                    return obj
+        # 🔧 处理HuggingFace模型结构 (LlamaForCausalLM -> LlamaModel)
+        if hasattr(model, "model") and hasattr(model.model, self.layer_attr):
+            print(f"✅ 找到transformer层: {type(model).__name__}.model.{self.layer_attr}")
+            return model.model
 
-            except AttributeError:
-                continue
+        # 🔧 直接检查是否就是transformer模型
+        if hasattr(model, self.layer_attr):
+            print(f"✅ 找到transformer层: {type(model).__name__}.{self.layer_attr}")
+            return model
 
         # 如果所有路径都失败，提供详细的错误信息
         raise AttributeError(
-            f"无法找到transformer层。base_model类型: {type(self.base_model).__name__}, "
+            f"无法找到transformer层。"
+            f"base_model类型: {type(self.base_model).__name__}, "
+            f"当前model类型: {type(model).__name__}, "
             f"查找属性: {self.layer_attr}, "
-            f"可用属性: {list(self.base_model.__dict__.keys())}"
+            f"model可用属性: {[attr for attr in dir(model) if not attr.startswith('_')][:10]}"
         )
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
