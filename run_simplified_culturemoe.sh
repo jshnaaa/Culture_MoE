@@ -271,7 +271,7 @@ echo ""
 BATCH_SIZE=2              # 🔧 减少到2，节省显存
 GRADIENT_ACCUMULATION=16  # 🔧 相应增加梯度累积，保持有效batch size=32
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
-NUM_EPOCHS=7              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
+NUM_EPOCHS=6              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
 # 动态设置max_seq_len：参考joint版本逻辑
 echo "🔧 调试信息: DATA_ID='$DATA_ID'"

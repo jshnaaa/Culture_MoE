@@ -537,7 +537,7 @@ def extract_answer_from_text(text: str) -> str:
     return ""
 
 
-def generate_answer(model, tokenizer, instruction: str, input_text: str, device: str = 'cuda', max_new_tokens: int = 10) -> str:
+def generate_answer(model, tokenizer, instruction: str, input_text: str, device: str = 'cuda', max_new_tokens: int = 5) -> str:
     """
     使用模型生成答案
 
@@ -617,7 +617,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=5,  # 🔧 减少到5个token，避免重复生成
+                max_new_tokens=max_new_tokens,  # 🔧 使用传入的参数
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
@@ -633,7 +633,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             print(f"🔍 使用标准模型generate方法")
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=5,  # 🔧 减少到5个token，避免重复生成
+                max_new_tokens=max_new_tokens,  # 🔧 使用传入的参数
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
