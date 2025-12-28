@@ -65,7 +65,7 @@ esac
 
 # ===== 输出目录配置 =====
 TIMESTAMP=$(date +%m%d_%H%M)
-OUTPUT_DIR="/root/autodl-fs/culturemoe_/${BACKBONE}_${DATASET_TAG}_shared${USE_SHARED}_gate${USE_GATE}_loss${USE_CULTURE_LOSS}_experts${NUM_MOE_EXPERTS}_top${NUM_ACTIVATED_EXPERTS}_lambda${LAMBDA}_alpha${ALPHA}_beta${BETA}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/culturemoe/${BACKBONE}_${DATASET_TAG}_experts${NUM_MOE_EXPERTS}_top${NUM_ACTIVATED_EXPERTS}_lambda${LAMBDA}_alpha${ALPHA}_beta${BETA}_${TIMESTAMP}"
 
 mkdir -p "$OUTPUT_DIR"
 
