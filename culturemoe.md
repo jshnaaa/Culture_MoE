@@ -110,12 +110,15 @@ CultureMoE采用多组件损失函数设计，通过不同损失项的协同优�
 #### 4.1 总损失函数 (Total Loss)
 
 **总损失公式**:
-$$L_{total} = L_{generation} + L_{culture} + L_{aux}$$
+$$L_{total} = L_{generation} + \lambda \times (\alpha \times L_{balance} + \beta \times L_{culture})$$
 
 其中：
 - $L_{generation}$: 主要生成损失（语言建模损失）
-- $L_{culture}$: 文化感知损失（对比学习损失）
-- $L_{aux}$: 辅助损失（负载均衡损失）
+- $L_{balance}$: 负载均衡损失（辅助损失）
+- $L_{culture}$: 文化对比损失（对比学习损失）
+- $\lambda$: 辅助损失总权重 (默认1.0)
+- $\alpha$: 负载均衡损失权重 (默认0.1)
+- $\beta$: 文化对比损失权重 (默认0.5)
 
 #### 4.2 生成损失 (Generation Loss)
 
@@ -131,17 +134,16 @@ $$L_{generation} = -\frac{1}{N} \sum_{i=1}^{N} \log P(y_i | x_i, \theta)$$
 
 这是标准的自回归语言建模损失，确保模型保持基本的文本生成能力。
 
-#### 4.3 辅助损失 (Auxiliary Loss)
+#### 4.3 负载均衡损失 (Load Balancing Loss)
 
-**辅助损失公式**:
-$$L_{aux} = \frac{1}{L_{layers}} \sum_{l=1}^{L_{layers}} L_{aux}^{(l)}$$
+**负载均衡损失公式**:
+$$L_{balance} = \frac{1}{L_{layers}} \sum_{l=1}^{L_{layers}} L_{balance}^{(l)}$$
 
-其中每层的辅助损失为：
-$$L_{aux}^{(l)} = \lambda_{aux} \cdot \text{MSE}(\bar{u}^{(l)}, \frac{1}{E} \mathbf{1})$$
+其中每层的负载均衡损失为：
+$$L_{balance}^{(l)} = \text{MSE}(\bar{u}^{(l)}, \frac{1}{E} \mathbf{1})$$
 
 **组成部分**:
 - $L_{layers}$: MoE层总数
-- $\lambda_{aux}$: 辅助损失权重 (默认0.01)
 - $\bar{u}^{(l)} = \frac{1}{B \cdot T} \sum_{b=1}^{B} \sum_{t=1}^{T} w_{b,t}^{(l)}$: 第$l$层的平均专家使用率
 - $w_{b,t}^{(l)} \in \mathbb{R}^E$: 第$l$层在样本$b$时间步$t$的专家权重
 - $E$: 专家数量
@@ -149,7 +151,7 @@ $$L_{aux}^{(l)} = \lambda_{aux} \cdot \text{MSE}(\bar{u}^{(l)}, \frac{1}{E} \mat
 - $\frac{1}{E} \mathbf{1}$: 均匀分布目标（每个专家使用率为$\frac{1}{E}$）
 
 **作用机制**:
-辅助损失通过最小化实际专家使用率与均匀分布的均方误差，防止专家使用不均衡，确保所有专家都能得到充分训练。
+负载均衡损失通过最小化实际专家使用率与均匀分布的均方误差，防止专家使用不均衡，确保所有专家都能得到充分训练。
 
 #### 4.4 文化对比损失函数 (Culture Contrastive Loss)
 

@@ -479,13 +479,15 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         # 将主损失转换为float16以保持一致性和节省显存
         loss = loss.to(dtype=torch.float16)
 
-        # 总损失
-        total_batch_loss = loss + culture_loss + z_loss
+        # 新的损失函数：L_total = L_generation + lambda × (alpha × L_balance + beta × L_culture)
+        auxiliary_loss = args.alpha_weight * z_loss + args.beta_weight * culture_loss
+        total_batch_loss = loss + args.lambda_weight * auxiliary_loss
 
         # 检查 NaN/Inf loss - 在所有损失计算完成后检查
         if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
             print(f"❌ NaN or Inf total loss detected at batch {batch_idx}")
-            print(f"  Main loss: {loss.item()}, Culture loss: {culture_loss.item()}, Z loss: {z_loss.item()}")
+            print(f"  Main loss: {loss.item()}, Culture loss: {culture_loss.item()}, Balance loss: {z_loss.item()}")
+            print(f"  Auxiliary loss: {auxiliary_loss.item()}, Lambda: {args.lambda_weight}, Alpha: {args.alpha_weight}, Beta: {args.beta_weight}")
             continue
 
         # 梯度累积
@@ -619,7 +621,9 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             # 将主损失转换为float16以保持一致性和节省显存
             loss = loss.to(dtype=torch.float16)
 
-            total_batch_loss = loss + culture_loss + z_loss
+            # 新的损失函数：L_total = L_generation + lambda × (alpha × L_balance + beta × L_culture)
+            auxiliary_loss = args.alpha_weight * z_loss + args.beta_weight * culture_loss
+            total_batch_loss = loss + args.lambda_weight * auxiliary_loss
 
             # 检查总损失是否为NaN/Inf
             if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
@@ -782,6 +786,12 @@ def main():
                         help="Whether to enable LoRA fine-tuning")
     parser.add_argument("--culture_loss_weight", type=float, default=0.01,
                         help="Culture loss weight")
+    parser.add_argument("--lambda_weight", type=float, default=1.0,
+                        help="Lambda weight for auxiliary losses")
+    parser.add_argument("--alpha_weight", type=float, default=0.1,
+                        help="Alpha weight for load balancing loss")
+    parser.add_argument("--beta_weight", type=float, default=0.5,
+                        help="Beta weight for culture contrast loss")
 
     # LoRA参数 - 与joint版本保持一致
     parser.add_argument("--lora_rank", type=int, default=16,

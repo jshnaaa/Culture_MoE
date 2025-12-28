@@ -18,14 +18,17 @@ USE_GATE=${4:-"true"}     # 是否使用MoE内部融合Gate，默认为true
 NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
 USE_CULTURE_LOSS=${6:-"false"}  # ori/new/kl/false，默认为new
 NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
-USE_LORA=${8:-"true"}   # 是否启用LoRA，默认为true
-NUM_GPUS=${9:-"2"}
-LORA_RANK=${10:-"32"}   # LoRA rank (平衡表达能力和显存)
-LORA_ALPHA=${11:-"64"}  # LoRA alpha (相应调整到64)
+LAMBDA=${8:-"1.0"}  # 🔧 提升lambda让辅助损失有意义
+ALPHA=${9:-"0.1"}   # 负载均衡损失权重
+BETA=${10:-"0.5"}   # 文化对比损失权重
+USE_LORA=${11:-"true"}   # 是否启用LoRA，默认为true
+NUM_GPUS=${12:-"2"}
+LORA_RANK=${13:-"32"}   # LoRA rank (平衡表达能力和显存)
+LORA_ALPHA=${14:-"64"}  # LoRA alpha (相应调整到64)
 
 # 检查参数
-if [ "$#" -gt 11 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 14 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [lambda] [alpha] [beta] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
     exit 1
 fi
 
@@ -257,6 +260,7 @@ echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
 echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, false=仅L_aux)"
+echo "  损失函数权重: lambda=$LAMBDA, alpha=$ALPHA, beta=$BETA"
 echo "  启用LoRA: $USE_LORA"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
 echo "  GPU: $NUM_GPUS卡"
@@ -314,6 +318,9 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "moe_experts": $NUM_MOE_EXPERTS,
         "activated_experts": $NUM_ACTIVATED_EXPERTS,
         "use_culture_loss": $USE_CULTURE_LOSS,
+        "lambda": $LAMBDA,
+        "alpha": $ALPHA,
+        "beta": $BETA,
         "use_lora": $USE_LORA,
         "lora_rank": $LORA_RANK,
         "lora_alpha": $LORA_ALPHA,
@@ -358,6 +365,9 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --num_moe_experts $NUM_MOE_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
         --num_activated_experts $NUM_ACTIVATED_EXPERTS \
+        --lambda_weight $LAMBDA \
+        --alpha_weight $ALPHA \
+        --beta_weight $BETA \
         --use_lora $USE_LORA \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
@@ -385,6 +395,9 @@ else
         --num_moe_experts $NUM_MOE_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
         --num_activated_experts $NUM_ACTIVATED_EXPERTS \
+        --lambda_weight $LAMBDA \
+        --alpha_weight $ALPHA \
+        --beta_weight $BETA \
         --use_lora $USE_LORA \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
