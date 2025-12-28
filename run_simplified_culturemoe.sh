@@ -268,19 +268,19 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 针对新架构调整
-BATCH_SIZE=2              # 🔧 降回到2，避免显存溢出
-GRADIENT_ACCUMULATION=16  # 🔧 相应增加梯度累积，保持有效batch size=32
+BATCH_SIZE=1              # 🔧 进一步降到1，应对长序列
+GRADIENT_ACCUMULATION=32  # 🔧 相应增加梯度累积，保持有效batch size=64
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
 NUM_EPOCHS=6              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
-# 动态设置max_seq_len：参考joint版本逻辑
+# 动态设置max_seq_len：参考joint版本逻辑，进一步降低应对显存问题
 echo "🔧 调试信息: DATA_ID='$DATA_ID'"
 if [ "$DATA_ID" = "3" ] || [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
-    MAX_SEQ_LEN=850       # 长文本数据集使用850
-    echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=850"
+    MAX_SEQ_LEN=512       # 🔧 长文本数据集降低到512应对显存问题
+    echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=512（显存优化）"
 else
-    MAX_SEQ_LEN=384       # 其他数据集使用384
-    echo "🔧 使用标准序列长度MAX_SEQ_LEN=384"
+    MAX_SEQ_LEN=256       # 🔧 其他数据集降低到256
+    echo "🔧 使用优化序列长度MAX_SEQ_LEN=256（显存优化）"
 fi
 
 echo "训练参数:"
@@ -336,12 +336,13 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 EOF
 
 # 设置内存优化环境变量 - 针对新架构强化
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32,expandable_segments:True
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:16,expandable_segments:True,garbage_collection_threshold:0.8
 export CUDA_LAUNCH_BLOCKING=0
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
 export PYTORCH_NO_CUDA_MEMORY_CACHING=1  # 🔧 禁用CUDA内存缓存
 export CUDA_CACHE_DISABLE=1              # 🔧 禁用CUDA缓存
+export CUDA_VISIBLE_DEVICES=0,1          # 🔧 明确指定GPU
 
 echo "开始简化版FFN CultureMoE训练..."
 

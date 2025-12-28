@@ -404,6 +404,11 @@ def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
     # 找到batch内最长的序列长度，但限制在指定长度以内
     max_length = min(max(len(item['input_ids']) for item in batch), max_seq_length)
 
+    # 🔧 额外安全检查：如果仍然过长，强制截断到更安全的长度
+    if max_length > max_seq_length:
+        max_length = max_seq_length
+        print(f"⚠️ 强制截断序列长度到 {max_seq_length}")
+
     # 为每个样本进行padding
     batch_input_ids = []
     batch_attention_mask = []
