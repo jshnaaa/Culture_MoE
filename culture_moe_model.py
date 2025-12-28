@@ -319,7 +319,7 @@ class CultureMoEModel(nn.Module):
         print("🔧 直接替换FFN为MoELoRAFFN...")
 
         # 获取transformer层
-        transformer = self.base_model.model if hasattr(self.base_model, 'model') else self.base_model
+        transformer = self._get_transformer()
         layers = getattr(transformer, self.layer_attr)
 
         print(f"检查基座模型层的设备分布:")
@@ -495,7 +495,7 @@ class CultureMoEModel(nn.Module):
 
     def _enable_aux_info_collection(self):
         """启用所有MoE层的辅助信息收集"""
-        transformer = self.base_model.model if hasattr(self.base_model, 'model') else self.base_model
+        transformer = self._get_transformer()
         layers = getattr(transformer, self.layer_attr)
 
         for layer in layers:
@@ -505,7 +505,7 @@ class CultureMoEModel(nn.Module):
 
     def _collect_aux_info(self):
         """收集所有MoE层的辅助信息"""
-        transformer = self.base_model.model if hasattr(self.base_model, 'model') else self.base_model
+        transformer = self._get_transformer()
         layers = getattr(transformer, self.layer_attr)
 
         all_aux_info = []
