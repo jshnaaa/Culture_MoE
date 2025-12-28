@@ -386,19 +386,6 @@ class CultureLLMNewFormatDataset(Dataset):
         #             except:
         #                 print(f"    位置{pos_idx}: {token_id}=(解码失败)")
 
-        #     # 🔧 简化的问题检查
-        #     if pad_token_id == eot_token_id:
-        #         print(f"  🚨 发现问题: pad_token_id == <|eot_id|> ({pad_token_id})")
-        #         print(f"    这会导致padding区域填充<|eot_id|>，造成大量有效标签!")
-        #     elif pad_token_id is None:
-        #         print(f"  🚨 发现问题: pad_token_id is None!")
-        #         print(f"    tokenizer配置可能没有正确应用")
-        #     elif pad_in_labels > 0:
-        #         print(f"  🚨 发现问题: {pad_in_labels}个padding token({pad_token_id})仍在训练标签中!")
-        #         print(f"    padding token应该被掩码为-100，不应该出现在有效标签中")
-        #     elif valid_labels > 10:
-        #         print(f"  🚨 发现问题: 有效标签数过多({valid_labels})，可能有其他token被错误包含")
-
         return {
             'input_ids': input_ids,
             'attention_mask': attention_mask,
