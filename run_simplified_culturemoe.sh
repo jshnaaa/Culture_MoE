@@ -12,11 +12,11 @@ echo "======================================="
 
 # 参数设置
 BACKBONE=${1:-"llama"}  # 默认使用llama
-DATA_ID=${2:-"2"}
+DATA_ID=${2:-"3"}
 USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
 USE_GATE=${4:-"true"}     # 是否使用MoE内部融合Gate，默认为true
 NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
-USE_CULTURE_LOSS=${6:-"false"}  # ori/new/kl/false，默认为new
+USE_CULTURE_LOSS=${6:-"new"}  # ori/new/kl/false，默认为new
 NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
 LAMBDA=${8:-"1.0"}  # 🔧 提升lambda让辅助损失有意义
 ALPHA=${9:-"0.1"}   # 负载均衡损失权重
