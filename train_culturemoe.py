@@ -263,15 +263,23 @@ def evaluate_model(model, val_loader, device, tokenizer, config):
             labels = batch['labels'].to(model_device)
             culture_labels = batch['culture_labels'].to(model_device)
 
-            # 前向传播
+            # 前向传播 - 不传入labels，避免冻结模型计算损失
             outputs = model(
                 input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels
+                attention_mask=attention_mask
             )
 
-            # 主任务损失
-            main_loss = outputs.loss
+            # 手动计算交叉熵损失，确保梯度连接到MoE层
+            logits = outputs.logits
+            # 移位处理：logits和labels对齐
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # 展平
+            shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+            shift_labels = shift_labels.view(-1)
+            # 计算交叉熵损失（忽略-100标签）
+            loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+            main_loss = loss_fct(shift_logits, shift_labels)
 
             # 计算总损失
             total_loss_batch, loss_dict = compute_total_loss(
@@ -514,15 +522,23 @@ def train_epoch(model, dataloader, optimizer, device, config):
         labels = batch['labels'].to(model_device)
         culture_labels = batch['culture_labels'].to(model_device)
 
-        # 前向传播
+        # 前向传播 - 不传入labels，避免冻结模型计算损失
         outputs = model(
             input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels
+            attention_mask=attention_mask
         )
 
-        # 主任务损失
-        main_loss = outputs.loss
+        # 手动计算交叉熵损失，确保梯度连接到MoE层
+        logits = outputs.logits
+        # 移位处理：logits和labels对齐
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        # 展平
+        shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+        shift_labels = shift_labels.view(-1)
+        # 计算交叉熵损失（忽略-100标签）
+        loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+        main_loss = loss_fct(shift_logits, shift_labels)
 
         # 收集MoE辅助信息
         batch_moe_aux_info = getattr(outputs, 'moe_aux_info', [])
