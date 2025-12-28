@@ -14,19 +14,18 @@ echo "======================================="
 BACKBONE=${1:-"llama"}  # 默认使用llama
 DATA_ID=${2:-"2"}
 USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
-USE_MASK=${4:-"true"}     # 是否启用MASK机制，默认为true
-USE_GATE=${5:-"true"}     # 是否使用MoE内部融合Gate，默认为true
-NUM_MOE_EXPERTS=${6:-"4"}  # MoE专家数量
-USE_CULTURE_LOSS=${7:-"new"}  # ori/new/kl/false，默认为new
-NUM_ACTIVATED_EXPERTS=${8:-"2"}  # 激活的专家数量，默认为top-2
-USE_LORA=${9:-"true"}   # 是否启用LoRA，默认为true
-NUM_GPUS=${10:-"2"}
-LORA_RANK=${11:-"16"}   # LoRA rank
-LORA_ALPHA=${12:-"32"}  # LoRA alpha
+USE_GATE=${4:-"true"}     # 是否使用MoE内部融合Gate，默认为true
+NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
+USE_CULTURE_LOSS=${6:-"new"}  # ori/new/kl/false，默认为new
+NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
+USE_LORA=${8:-"true"}   # 是否启用LoRA，默认为true
+NUM_GPUS=${9:-"2"}
+LORA_RANK=${10:-"16"}   # LoRA rank
+LORA_ALPHA=${11:-"32"}  # LoRA alpha
 
 # 检查参数
-if [ "$#" -gt 12 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_mask] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 11 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
     exit 1
 fi
 
@@ -254,7 +253,6 @@ else
     echo "  训练模式: 仅所有层LoRA MoE专家训练"
 fi
 echo "  共享专家: $USE_SHARED"
-echo "  MASK机制: $USE_MASK"
 echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
@@ -312,7 +310,6 @@ cat > "$OUTPUT_DIR/config.json" << EOF
     "training_config": {
         "training_mode": "simplified_all_layers_moe",
         "use_shared_expert": $USE_SHARED,
-        "use_mask": $USE_MASK,
         "use_moe_gate": $USE_GATE,
         "moe_experts": $NUM_MOE_EXPERTS,
         "activated_experts": $NUM_ACTIVATED_EXPERTS,
@@ -364,7 +361,6 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
         --memory_efficient \
-        $(if [ "$USE_MASK" = "true" ]; then echo "--enable_mask --mask_prob 0.15"; fi) \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 else
     # 多卡训练
@@ -392,7 +388,6 @@ else
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
         --memory_efficient \
-        $(if [ "$USE_MASK" = "true" ]; then echo "--enable_mask --mask_prob 0.15"; fi) \
         2>&1 | tee "$OUTPUT_DIR/training.log"
 fi
 
