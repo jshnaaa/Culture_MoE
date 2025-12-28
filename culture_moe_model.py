@@ -40,18 +40,18 @@ class Router(nn.Module):
 class Gate(nn.Module):
     """融合网络，融合共享专家和路由专家的输出"""
 
-    def __init__(self, hidden_size: int):
+    def __init__(self, intermediate_size: int):
         super().__init__()
-        # 简单的线性变换来融合输出
-        self.fusion_gate = nn.Linear(hidden_size * 2, hidden_size)
+        # 简单的线性变换来融合输出 - 修复维度匹配
+        self.fusion_gate = nn.Linear(intermediate_size * 2, intermediate_size)
 
     def forward(self, shared_output: torch.Tensor, routed_output: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            shared_output: [batch_size, seq_len, hidden_size] 共享专家输出
-            routed_output: [batch_size, seq_len, hidden_size] 路由专家加权输出
+            shared_output: [batch_size, seq_len, intermediate_size] 共享专家输出
+            routed_output: [batch_size, seq_len, intermediate_size] 路由专家加权输出
         Returns:
-            fused_output: [batch_size, seq_len, hidden_size] 融合后的输出
+            fused_output: [batch_size, seq_len, intermediate_size] 融合后的输出
         """
         # 拼接两个输出
         concatenated = torch.cat([shared_output, routed_output], dim=-1)
@@ -121,14 +121,17 @@ class CultureMoEFFN(nn.Module):
 
         # 融合门控
         if use_gate and use_shared:
-            self.gate = Gate(intermediate_size)
+            self.gate = Gate(intermediate_size)  # 传入intermediate_size而不是hidden_size
+
+        # 输出投影层：将intermediate_size映射回hidden_size
+        self.output_projection = nn.Linear(intermediate_size, hidden_size, bias=False)
 
     def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         """
         Args:
             hidden_states: [batch_size, seq_len, hidden_size]
         Returns:
-            output: [batch_size, seq_len, intermediate_size]
+            output: [batch_size, seq_len, hidden_size]  # 修复：应该返回hidden_size
             aux_info: 辅助信息，包含路由权重等
         """
         batch_size, seq_len, hidden_size = hidden_states.shape
@@ -188,12 +191,15 @@ class CultureMoEFFN(nn.Module):
 
         # 融合输出
         if self.use_gate and self.use_shared:
-            final_output = self.gate(shared_output, routed_output)
+            intermediate_output = self.gate(shared_output, routed_output)
         elif self.use_shared:
             # 简单相加
-            final_output = shared_output + routed_output
+            intermediate_output = shared_output + routed_output
         else:
-            final_output = routed_output
+            intermediate_output = routed_output
+
+        # 投影到hidden_size维度
+        final_output = self.output_projection(intermediate_output)
 
         # 收集辅助信息
         aux_info = {
@@ -261,12 +267,16 @@ class CultureMoEModel(nn.Module):
                 lora_alpha=config['lora_alpha']
             )
 
-            # 获取对应基座模型层的设备，确保MoE层在同一设备
+            # 获取对应基座模型层的设备和数据类型，确保完全一致
             if layer_idx < len(layers):
                 target_device = next(layers[layer_idx].parameters()).device
-                moe_ffn = moe_ffn.to(target_device)
-                if layer_idx < 3:  # 只打印前3层的设备分配
-                    print(f"MoE层{layer_idx}移动到{target_device}(匹配基座模型)")
+                target_dtype = next(layers[layer_idx].parameters()).dtype
+
+                # 同时设置设备和数据类型
+                moe_ffn = moe_ffn.to(device=target_device, dtype=target_dtype)
+
+                if layer_idx < 3:  # 只打印前3层的设备和类型分配
+                    print(f"MoE层{layer_idx}移动到{target_device}, 数据类型: {target_dtype}")
 
             self.culture_moe_layers.append(moe_ffn)
 
@@ -313,12 +323,16 @@ class CultureMoEModel(nn.Module):
                 # input[0]是FFN的输入hidden_states
                 hidden_states = input[0]
 
-                # 确保MoE层和输入在同一设备上
+                # 确保MoE层和输入在同一设备且数据类型一致
                 moe_layer = self.culture_moe_layers[layer_idx]
-                if hidden_states.device != next(moe_layer.parameters()).device:
-                    print(f"设备不匹配警告: hidden_states在{hidden_states.device}, MoE层{layer_idx}在{next(moe_layer.parameters()).device}")
-                    # 将MoE层移动到hidden_states的设备
-                    moe_layer = moe_layer.to(hidden_states.device)
+                moe_device = next(moe_layer.parameters()).device
+                moe_dtype = next(moe_layer.parameters()).dtype
+
+                # 检查设备和数据类型一致性
+                if hidden_states.device != moe_device or hidden_states.dtype != moe_dtype:
+                    print(f"不匹配警告: hidden_states({hidden_states.device}, {hidden_states.dtype}) vs MoE层{layer_idx}({moe_device}, {moe_dtype})")
+                    # 将MoE层移动到hidden_states的设备和数据类型
+                    moe_layer = moe_layer.to(device=hidden_states.device, dtype=hidden_states.dtype)
                     self.culture_moe_layers[layer_idx] = moe_layer
 
                 # 通过MoE层计算输出，保持梯度连接
