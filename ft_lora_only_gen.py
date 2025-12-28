@@ -95,7 +95,8 @@ class CultureLLMNewFormatDataset(Dataset):
             full_input = instruction
 
         # 完整的文本（用于语言建模）
-        full_text = f"{full_input.rstrip()} {output_text}"
+        # 🔧 修复：确保训练和推理格式完全一致，不添加额外空格
+        full_text = f"{full_input.rstrip()}{output_text}"
 
         # 🔍 关键调试：检查构建后的full_text（注释掉详细调试）
         # if idx < 5:
@@ -141,10 +142,10 @@ class CultureLLMNewFormatDataset(Dataset):
         # 我们需要找到"### Answer:"之后空格的位置，让模型从那里开始学习
 
         # 🔧 修复：精确计算input_length - 确保只学习output部分
-        # 实际数据格式：full_input + " " + output_text
-        # 我们需要计算到空格结束位置的token数量
+        # 实际数据格式：full_input + output_text (不添加空格)
+        # 我们需要计算full_input的token数量
 
-        # 方法1：直接使用full_input计算长度
+        # 🔧 修复：直接使用full_input的长度，不添加分隔符
         input_encoded = self.tokenizer(
             full_input,
             truncation=True,
@@ -153,18 +154,8 @@ class CultureLLMNewFormatDataset(Dataset):
             padding=False
         )
 
-        # 方法2：计算分隔符（空格）的长度
-        separator = " "
-        separator_encoded = self.tokenizer(
-            separator,
-            truncation=True,
-            return_tensors='pt',
-            add_special_tokens=False,  # 分隔符不需要特殊token
-            padding=False
-        )
-
-        # input_length = full_input的token数 + 分隔符的token数
-        input_length = len(input_encoded['input_ids'][0]) + len(separator_encoded['input_ids'][0])
+        # input_length = 只计算full_input的token数，不包括分隔符
+        input_length = len(input_encoded['input_ids'][0])
 
         # 🔧 安全检查：确保input_length不超过总长度
         total_length = len(input_ids)
@@ -515,18 +506,21 @@ def extract_answer_from_text(text: str) -> str:
     Returns:
         提取的答案（数字字符串）
     """
-    # 🔧 修复：只匹配单个数字1-4，避免提取"442"这种多位数字
-    match = re.search(r'\b([1-4])\b', text)
+    # 🔧 修复：清理文本中的多余空格
+    cleaned_text = ' '.join(text.split())
+
+    # 优先匹配单个数字1-4，避免提取"442"这种多位数字
+    match = re.search(r'\b([1-4])\b', cleaned_text)
     if match:
         return match.group(1)
 
     # 如果没有找到1-4，尝试查找任意单个数字（兼容性）
-    match = re.search(r'\b(\d)\b', text)
+    match = re.search(r'\b(\d)\b', cleaned_text)
     if match:
         return match.group(1)
 
     # 最后兜底：查找第一个数字字符
-    match = re.search(r'(\d)', text)
+    match = re.search(r'(\d)', cleaned_text)
     if match:
         return match.group(1)
 
@@ -566,12 +560,11 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
         full_input = instruction
 
     # 🔧 修复：确保生成时的输入格式与训练时完全一致
-    # 训练时格式：full_input + " " + output_text
-    # 生成时格式：full_input + " " (让模型生成output_text)
+    # 训练时格式：full_input + output_text (不添加空格)
+    # 生成时格式：full_input (让模型生成output_text)
 
-    # 简化逻辑：直接使用与训练时相同的格式
-    if not full_input.endswith(" "):
-        full_input = f"{full_input.rstrip()} "
+    # 不添加额外空格，让模型直接从full_input后生成答案
+    full_input = full_input.rstrip()
 
     # 🔍 调试生成时的输入 - 启用来调试问题
     print(f"🔍 生成时输入: {repr(full_input[-100:])}")  # 显示输入的最后100个字符
@@ -614,7 +607,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=5,  # 🔧 临时增加到5个token用于调试
+                max_new_tokens=20,  # 🔧 增加到20个token，给模型足够空间生成完整答案
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
@@ -629,7 +622,7 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             print(f"🔍 使用标准模型generate方法")
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=5,  # 🔧 临时增加到5个token用于调试
+                max_new_tokens=20,  # 🔧 增加到20个token，给模型足够空间生成完整答案
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
