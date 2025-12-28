@@ -237,8 +237,18 @@ class CultureMoEModel(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone: {config['backbone']}")
 
-        # 替换每一层的FFN为CultureMoE - 使用更小的LoRA配置以节省显存
+        # 替换每一层的FFN为CultureMoE - 确保设备一致性
         self.culture_moe_layers = nn.ModuleList()
+
+        # 获取基座模型各层的设备分布
+        transformer = self.base_model.model if hasattr(self.base_model, 'model') else self.base_model
+        layers = getattr(transformer, self.layer_attr)
+
+        print(f"检查基座模型层的设备分布:")
+        for layer_idx in range(min(5, len(layers))):  # 只检查前5层
+            layer_device = next(layers[layer_idx].parameters()).device
+            print(f"  基座模型第{layer_idx}层在: {layer_device}")
+
         for layer_idx in range(self.num_layers):
             moe_ffn = CultureMoEFFN(
                 hidden_size=self.hidden_size,
@@ -250,13 +260,15 @@ class CultureMoEModel(nn.Module):
                 lora_rank=config['lora_rank'],
                 lora_alpha=config['lora_alpha']
             )
-            self.culture_moe_layers.append(moe_ffn)
 
-            # 48GB*2卡配置下无需频繁清理缓存
-            # if layer_idx % 8 == 0:  # 每8层清理一次
-            #     import gc
-            #     gc.collect()
-            #     torch.cuda.empty_cache()
+            # 获取对应基座模型层的设备，确保MoE层在同一设备
+            if layer_idx < len(layers):
+                target_device = next(layers[layer_idx].parameters()).device
+                moe_ffn = moe_ffn.to(target_device)
+                if layer_idx < 3:  # 只打印前3层的设备分配
+                    print(f"MoE层{layer_idx}移动到{target_device}(匹配基座模型)")
+
+            self.culture_moe_layers.append(moe_ffn)
 
         # 冻结基座模型参数
         self._freeze_base_model()
@@ -301,8 +313,16 @@ class CultureMoEModel(nn.Module):
                 # input[0]是FFN的输入hidden_states
                 hidden_states = input[0]
 
+                # 确保MoE层和输入在同一设备上
+                moe_layer = self.culture_moe_layers[layer_idx]
+                if hidden_states.device != next(moe_layer.parameters()).device:
+                    print(f"设备不匹配警告: hidden_states在{hidden_states.device}, MoE层{layer_idx}在{next(moe_layer.parameters()).device}")
+                    # 将MoE层移动到hidden_states的设备
+                    moe_layer = moe_layer.to(hidden_states.device)
+                    self.culture_moe_layers[layer_idx] = moe_layer
+
                 # 通过MoE层计算输出，保持梯度连接
-                moe_output, aux_info = self.culture_moe_layers[layer_idx](hidden_states)
+                moe_output, aux_info = moe_layer(hidden_states)
                 moe_aux_info.append(aux_info)
 
                 # 直接返回MoE输出，保持梯度图完整
