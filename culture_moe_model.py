@@ -115,175 +115,6 @@ class LoRAExpert(nn.Module):
         return scaled_output
 
 
-class CultureMoEFFN(nn.Module):
-    """CultureMoE的FFN层，替换原始FFN"""
-
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        num_routing_experts: int = 4,
-        num_activated_experts: int = 2,
-        use_shared: bool = True,
-        lora_rank: int = 16,
-        lora_alpha: int = 32
-    ):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        self.num_routing_experts = num_routing_experts
-        self.num_activated_experts = num_activated_experts
-        self.use_shared = use_shared
-
-        # 路由网络
-        self.router = Router(hidden_size, num_routing_experts)
-
-        # 路由专家（LoRA）
-        self.routing_experts = nn.ModuleList([
-            LoRAExpert(hidden_size, intermediate_size, lora_rank, lora_alpha)
-            for _ in range(num_routing_experts)
-        ])
-
-        # 共享专家（LoRA）
-        if use_shared:
-            self.shared_expert = LoRAExpert(hidden_size, intermediate_size, lora_rank, lora_alpha)
-
-        # 输出投影层：将intermediate_size映射回hidden_size
-        self.output_projection = nn.Linear(intermediate_size, hidden_size, bias=False)
-
-        # 🔧 小尺度初始化：确保MoE作为增量时不过度影响FFN
-        with torch.no_grad():
-            nn.init.normal_(self.output_projection.weight, mean=0.0, std=0.01)
-
-    def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
-        """
-        Args:
-            hidden_states: [batch_size, seq_len, hidden_size]
-        Returns:
-            output: [batch_size, seq_len, hidden_size]  # 修复：应该返回hidden_size
-            aux_info: 辅助信息，包含路由权重等
-        """
-        batch_size, seq_len, hidden_size = hidden_states.shape
-
-        # 计算路由权重
-        gate_logits, gate_probs = self.router(hidden_states)
-
-        # Top-k选择
-        top_k_probs, top_k_indices = torch.topk(gate_probs, self.num_activated_experts, dim=-1)
-
-        # 🔍 NaN诊断：Top-k选择检查
-        if torch.isnan(top_k_probs).any() or torch.isnan(top_k_indices).any():
-            print(f"🚨 Top-k选择产生NaN:")
-            print(f"  top_k_probs NaN数量: {torch.isnan(top_k_probs).sum().item()}")
-            print(f"  top_k_indices NaN数量: {torch.isnan(top_k_indices.float()).sum().item()}")
-
-        # 🔧 安全归一化：防除零
-        top_k_sum = top_k_probs.sum(dim=-1, keepdim=True)
-        denom = top_k_sum.clamp(min=1e-6)  # 确保分母不为0
-        top_k_probs = top_k_probs / denom
-
-        # 🔍 NaN诊断：归一化检查
-        if torch.isnan(top_k_probs).any():
-            print(f"🚨 Top-k归一化产生NaN:")
-            print(f"  top_k_sum范围: [{top_k_sum.min().item():.6f}, {top_k_sum.max().item():.6f}]")
-            print(f"  归一化后top_k_probs范围: [{top_k_probs.min().item():.6f}, {top_k_probs.max().item():.6f}]")
-
-        # 计算路由专家输出
-        expert_outputs = []
-        for i, expert in enumerate(self.routing_experts):
-            expert_output = expert(hidden_states)  # [batch_size, seq_len, intermediate_size]
-
-            # 🔍 NaN诊断：专家输出检查
-            if torch.isnan(expert_output).any():
-                print(f"🚨 专家{i}输出包含NaN: {torch.isnan(expert_output).sum().item()}/{expert_output.numel()}")
-
-            expert_outputs.append(expert_output)
-
-        # 堆叠所有专家输出 [num_experts, batch_size, seq_len, intermediate_size]
-        stacked_expert_outputs = torch.stack(expert_outputs, dim=0)
-
-        # 🔍 NaN诊断：堆叠专家输出检查
-        if torch.isnan(stacked_expert_outputs).any():
-            print(f"🚨 堆叠专家输出包含NaN: {torch.isnan(stacked_expert_outputs).sum().item()}/{stacked_expert_outputs.numel()}")
-
-        # 🔧 内存优化：使用更高效的专家选择和加权
-        # 直接计算激活专家的加权输出，避免创建大型mask矩阵
-        routed_output = torch.zeros(batch_size, seq_len, self.intermediate_size,
-                                   device=stacked_expert_outputs.device, dtype=stacked_expert_outputs.dtype)
-
-        # 对每个激活的专家位置进行加权求和
-        for expert_pos in range(self.num_activated_experts):
-            # 获取该位置的专家索引和权重
-            expert_indices = top_k_indices[:, :, expert_pos]  # [batch_size, seq_len]
-            expert_weights = top_k_probs[:, :, expert_pos]   # [batch_size, seq_len]
-
-            # 为每个专家累加其贡献
-            for expert_id in range(self.num_routing_experts):
-                # 找到选择了该专家的位置
-                mask = (expert_indices == expert_id)  # [batch_size, seq_len]
-                if mask.any():
-                    # 获取该专家的输出
-                    expert_output = stacked_expert_outputs[expert_id]  # [batch_size, seq_len, intermediate_size]
-                    # 应用权重和mask
-                    weighted_contribution = expert_output * expert_weights.unsqueeze(-1) * mask.unsqueeze(-1)
-
-                    # 🔍 NaN诊断：专家加权贡献检查
-                    if torch.isnan(weighted_contribution).any():
-                        print(f"🚨 专家{expert_id}加权贡献包含NaN:")
-                        print(f"  expert_weights范围: [{expert_weights.min().item():.6f}, {expert_weights.max().item():.6f}]")
-                        print(f"  mask激活数量: {mask.sum().item()}")
-                        print(f"  weighted_contribution NaN数量: {torch.isnan(weighted_contribution).sum().item()}")
-
-                    routed_output += weighted_contribution
-
-        # 🔧 按照ChatGPT分析：正确的MoE结构
-        # y = Δ_shared(x) + Σ_i p_i(x) · Δ_routed_i(x)
-
-        # 1. 共享专家增量：直接计算，不走router，对所有样本生效
-        if self.use_shared:
-            shared_delta = self.shared_expert(hidden_states)
-
-            # 🔍 NaN诊断：共享专家输出检查
-            if torch.isnan(shared_delta).any():
-                print(f"🚨 共享专家增量包含NaN: {torch.isnan(shared_delta).sum().item()}/{shared_delta.numel()}")
-        else:
-            shared_delta = torch.zeros(batch_size, seq_len, self.intermediate_size,
-                                     device=hidden_states.device, dtype=hidden_states.dtype)
-
-        # 🔍 NaN诊断：路由输出检查
-        if torch.isnan(routed_output).any():
-            print(f"🚨 路由专家增量包含NaN: {torch.isnan(routed_output).sum().item()}/{routed_output.numel()}")
-
-        # 2. 总的MoE增量 = 共享增量 + 路由增量
-        intermediate_output = shared_delta + routed_output
-
-        # 🔍 NaN诊断：MoE总增量检查
-        if torch.isnan(intermediate_output).any():
-            print(f"🚨 MoE总增量包含NaN: {torch.isnan(intermediate_output).sum().item()}/{intermediate_output.numel()}")
-
-        # 🔍 NaN诊断：融合后输出检查
-        if torch.isnan(intermediate_output).any():
-            print(f"🚨 融合后intermediate_output包含NaN: {torch.isnan(intermediate_output).sum().item()}/{intermediate_output.numel()}")
-
-        # 投影到hidden_size维度
-        final_output = self.output_projection(intermediate_output)
-
-        # 🔍 NaN诊断：最终输出检查
-        if torch.isnan(final_output).any():
-            print(f"🚨 MoE最终输出包含NaN: {torch.isnan(final_output).sum().item()}/{final_output.numel()}")
-            print(f"  output_projection权重范围: [{self.output_projection.weight.min().item():.6f}, {self.output_projection.weight.max().item():.6f}]")
-
-        # 收集辅助信息
-        aux_info = {
-            'gate_probs': gate_probs,
-            'top_k_indices': top_k_indices,
-            'top_k_probs': top_k_probs,
-            'expert_outputs': expert_outputs,
-            'shared_delta': shared_delta,
-            'routed_delta': routed_output
-        }
-
-        return final_output, aux_info
 
 
 class MoELoRAFFN(nn.Module):
@@ -394,20 +225,30 @@ class MoELoRAFFN(nn.Module):
         # 堆叠所有专家输出
         stacked_expert_outputs = torch.stack(expert_outputs, dim=0)  # [num_experts, batch_size, seq_len, intermediate_size]
 
-        # 高效的专家选择和加权
-        routed_delta = torch.zeros(batch_size, seq_len, self.intermediate_size,
-                                  device=stacked_expert_outputs.device, dtype=stacked_expert_outputs.dtype)
+        # 🚀 高效的O(K)专家加权实现（避免O(K×E)的嵌套循环）
+        # 使用高级索引和广播，直接计算top-k专家的加权输出
 
-        for expert_pos in range(self.num_activated_experts):
-            expert_indices = top_k_indices[:, :, expert_pos]  # [batch_size, seq_len]
-            expert_weights = top_k_probs[:, :, expert_pos]   # [batch_size, seq_len]
+        # 重塑索引和权重用于高级索引
+        batch_indices = torch.arange(batch_size, device=top_k_indices.device).view(-1, 1, 1)  # [B, 1, 1]
+        seq_indices = torch.arange(seq_len, device=top_k_indices.device).view(1, -1, 1)      # [1, S, 1]
 
-            for expert_id in range(self.num_routing_experts):
-                mask = (expert_indices == expert_id)
-                if mask.any():
-                    expert_output = stacked_expert_outputs[expert_id]
-                    weighted_contribution = expert_output * expert_weights.unsqueeze(-1) * mask.unsqueeze(-1)
-                    routed_delta += weighted_contribution
+        # 使用高级索引直接获取top-k专家的输出
+        # stacked_expert_outputs: [num_experts, batch_size, seq_len, intermediate_size]
+        # top_k_indices: [batch_size, seq_len, k]
+        selected_expert_outputs = stacked_expert_outputs[
+            top_k_indices.view(-1),                    # 展平的专家索引
+            batch_indices.expand(-1, seq_len, self.num_activated_experts).contiguous().view(-1),
+            seq_indices.expand(batch_size, -1, self.num_activated_experts).contiguous().view(-1)
+        ]  # [batch_size * seq_len * k, intermediate_size]
+
+        # 重塑回原始维度
+        selected_expert_outputs = selected_expert_outputs.view(
+            batch_size, seq_len, self.num_activated_experts, self.intermediate_size
+        )  # [batch_size, seq_len, k, intermediate_size]
+
+        # 应用top-k权重并求和
+        weighted_outputs = selected_expert_outputs * top_k_probs.unsqueeze(-1)  # [B, S, K, D]
+        routed_delta = weighted_outputs.sum(dim=2)  # [batch_size, seq_len, intermediate_size]
 
         # 🔧 3. 总的MoE增量 = 共享增量 + 路由增量
         # 数学形式：y = Δ_shared(x) + Σ_i p_i(x) · Δ_routed_i(x)
@@ -511,13 +352,11 @@ class CultureMoEModel(nn.Module):
             # 移动MoE组件到正确设备
             moe_lora_ffn = moe_lora_ffn.to(device=target_device)
 
-            # 精确的dtype控制：Router保持FP32，其他组件使用目标dtype
+            # 🔧 简化dtype控制：Router自治FP32，其他组件使用目标dtype
             for name, module in moe_lora_ffn.named_modules():
-                if 'router' in name and hasattr(module, 'weight'):
-                    # Router权重强制保持FP32
-                    module.weight.data = module.weight.data.float()
-                elif hasattr(module, 'weight') and 'router' not in name and 'base_ffn' not in name:
+                if hasattr(module, 'weight') and 'router' not in name and 'base_ffn' not in name:
                     # 非Router、非原始FFN的组件转换为目标dtype
+                    # Router在自己的forward()中保证FP32，无需外层干预
                     module.to(dtype=target_dtype)
 
             # 🔧 直接替换layer的mlp属性
