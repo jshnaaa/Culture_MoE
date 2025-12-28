@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # CultureMoE训练脚本
-# 使用方法: ./run_train_culturemoe.sh [BACKBONE] [DATA_ID] [USE_SHARED] [USE_MASK] [USE_GATE] [USE_CULTURE_LOSS] [LAMBDA] [ALPHA] [BETA] [NUM_MOE_EXPERTS] [NUM_ACTIVATED_EXPERTS] [LORA_RANK] [LORA_ALPHA]
 
 set -e  # 遇到错误立即退出
 
@@ -220,7 +219,6 @@ with open('${OUTPUT_DIR}/final_summary.json', 'r') as f:
     summary = json.load(f)
 print(f\"  - 最佳Epoch: {summary['best_epoch']}\")
 print(f\"  - 最佳准确率: {summary['best_accuracy']:.4f}\")
-print(f\"  - 总Epochs: {summary['total_epochs']}\")
 print(f\"  - 训练集大小: {summary['dataset_info']['train_size']}\")
 print(f\"  - 验证集大小: {summary['dataset_info']['val_size']}\")
 print(f\"  - 测试集大小: {summary['dataset_info']['test_size']}\")
@@ -237,7 +235,5 @@ fi
 echo "========================================"
 echo "🎉 CultureMoE 训练流程完成"
 echo "📁 输出目录: $OUTPUT_DIR"
-echo "📝 配置文件: ${OUTPUT_DIR}/run_config.txt"
-echo "📊 训练日志: $LOG_FILE"
 echo "🏆 最佳模型: ${OUTPUT_DIR}/best_model/"
 echo "========================================"

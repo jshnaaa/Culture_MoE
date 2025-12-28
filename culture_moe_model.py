@@ -339,13 +339,18 @@ class CultureMoEModel(nn.Module):
         model = self.base_model
         path_trace = [type(model).__name__]
 
-        # 🔧 关键修复：递归解包所有PEFT层级
-        while hasattr(model, "base_model"):
-            print(f"🔍 解包PEFT层级: {type(model).__name__} -> {type(model.base_model).__name__}")
+        # 🔧 关键修复：递归解包所有PEFT层级，直到找到真正的transformer模型
+        max_depth = 10  # 防止无限循环
+        depth = 0
+
+        while hasattr(model, "base_model") and depth < max_depth:
+            print(f"🔍 解包PEFT层级 [{depth+1}]: {type(model).__name__} -> {type(model.base_model).__name__}")
             model = model.base_model
             path_trace.append(type(model).__name__)
+            depth += 1
 
         print(f"🔍 完整路径: {' -> '.join(path_trace)}")
+        print(f"🔍 最终model类型: {type(model).__name__}")
 
         # 🔧 处理HuggingFace模型结构 (LlamaForCausalLM -> LlamaModel)
         if hasattr(model, "model") and hasattr(model.model, self.layer_attr):
@@ -357,13 +362,27 @@ class CultureMoEModel(nn.Module):
             print(f"✅ 找到transformer层: {type(model).__name__}.{self.layer_attr}")
             return model
 
+        # 🔧 额外检查：如果还有base_model但达到了最大深度
+        if hasattr(model, "base_model") and depth >= max_depth:
+            print(f"⚠️ 达到最大解包深度 {max_depth}，强制继续...")
+            model = model.base_model
+            if hasattr(model, "model") and hasattr(model.model, self.layer_attr):
+                print(f"✅ 强制解包后找到transformer层: {type(model).__name__}.model.{self.layer_attr}")
+                return model.model
+
         # 如果所有路径都失败，提供详细的错误信息
+        available_attrs = [attr for attr in dir(model) if not attr.startswith('_')]
+        model_attrs = [attr for attr in available_attrs if 'model' in attr.lower()]
+        base_attrs = [attr for attr in available_attrs if 'base' in attr.lower()]
+
         raise AttributeError(
-            f"无法找到transformer层。"
-            f"完整路径: {' -> '.join(path_trace)}, "
-            f"最终model类型: {type(model).__name__}, "
-            f"查找属性: {self.layer_attr}, "
-            f"可用属性: {[attr for attr in dir(model) if not attr.startswith('_') and 'model' in attr.lower()]}"
+            f"无法找到transformer层。\n"
+            f"完整路径: {' -> '.join(path_trace)}\n"
+            f"最终model类型: {type(model).__name__}\n"
+            f"查找属性: {self.layer_attr}\n"
+            f"model相关属性: {model_attrs}\n"
+            f"base相关属性: {base_attrs}\n"
+            f"所有可用属性: {available_attrs[:20]}..."  # 只显示前20个
         )
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
