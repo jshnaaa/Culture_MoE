@@ -337,11 +337,15 @@ class CultureMoEModel(nn.Module):
     def _get_transformer(self):
         """获取transformer层，处理PEFT包装的多层嵌套"""
         model = self.base_model
+        path_trace = [type(model).__name__]
 
-        # 🔧 关键修复：处理PEFT包装 (PeftModelForCausalLM)
-        if hasattr(model, "base_model"):
-            print(f"🔍 检测到PEFT包装: {type(model).__name__} -> {type(model.base_model).__name__}")
+        # 🔧 关键修复：递归解包所有PEFT层级
+        while hasattr(model, "base_model"):
+            print(f"🔍 解包PEFT层级: {type(model).__name__} -> {type(model.base_model).__name__}")
             model = model.base_model
+            path_trace.append(type(model).__name__)
+
+        print(f"🔍 完整路径: {' -> '.join(path_trace)}")
 
         # 🔧 处理HuggingFace模型结构 (LlamaForCausalLM -> LlamaModel)
         if hasattr(model, "model") and hasattr(model.model, self.layer_attr):
@@ -356,10 +360,10 @@ class CultureMoEModel(nn.Module):
         # 如果所有路径都失败，提供详细的错误信息
         raise AttributeError(
             f"无法找到transformer层。"
-            f"base_model类型: {type(self.base_model).__name__}, "
-            f"当前model类型: {type(model).__name__}, "
+            f"完整路径: {' -> '.join(path_trace)}, "
+            f"最终model类型: {type(model).__name__}, "
             f"查找属性: {self.layer_attr}, "
-            f"model可用属性: {[attr for attr in dir(model) if not attr.startswith('_')][:10]}"
+            f"可用属性: {[attr for attr in dir(model) if not attr.startswith('_') and 'model' in attr.lower()]}"
         )
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
