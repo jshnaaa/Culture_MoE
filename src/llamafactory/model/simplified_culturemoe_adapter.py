@@ -17,7 +17,7 @@ from .simplified_culturemoe import SimplifiedCultureMoEConfig
 class LoRAExpert(nn.Module):
     """LoRA专家层 - 为FFN的每个线性层添加LoRA分支"""
 
-    def __init__(self, original_ffn, lora_rank: int = 16, lora_alpha: int = 32, dropout: float = 0.1):
+    def __init__(self, original_ffn, lora_rank: int = 64, lora_alpha: int = 128, dropout: float = 0.1):
         super().__init__()
         self.original_ffn = original_ffn  # 保持原始FFN不变
         self.lora_rank = lora_rank
@@ -28,7 +28,15 @@ class LoRAExpert(nn.Module):
         self.hidden_dim = original_ffn.gate_proj.in_features
         self.intermediate_dim = original_ffn.gate_proj.out_features
 
-        # 为每个FFN线性层创建LoRA分支
+        # 🔧 为每个专家创建独立的down_proj层（可训练）
+        # 这是专家差异化的关键：每个专家有自己的输出投影
+        self.expert_down_proj = nn.Linear(self.intermediate_dim, self.hidden_dim, bias=False)
+
+        # 初始化为原始权重的副本，然后允许独立训练
+        with torch.no_grad():
+            self.expert_down_proj.weight.copy_(original_ffn.down_proj.weight)
+
+        # 为每个FFN线性层创建LoRA分支（增大rank提升表达能力）
         # gate_proj LoRA: hidden_dim -> intermediate_dim
         self.gate_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
         self.gate_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
@@ -37,7 +45,7 @@ class LoRAExpert(nn.Module):
         self.up_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
         self.up_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
 
-        # down_proj LoRA: intermediate_dim -> hidden_dim
+        # down_proj LoRA: intermediate_dim -> hidden_dim（作用于独立的expert_down_proj）
         self.down_lora_A = nn.Linear(self.intermediate_dim, lora_rank, bias=False)
         self.down_lora_B = nn.Linear(lora_rank, self.hidden_dim, bias=False)
 
@@ -98,10 +106,11 @@ class LoRAExpert(nn.Module):
             # Dropout
             intermediate = self.dropout(intermediate)
 
-            # down_proj: 原始 + LoRA
-            down_original = self.original_ffn.down_proj(intermediate)
+            # 🔧 使用专家独立的down_proj + LoRA增强
+            # 每个专家现在有自己的down_proj，可以学习不同的输出模式
+            down_expert = self.expert_down_proj(intermediate)
             down_lora = self.down_lora_B(self.down_lora_A(intermediate)) * self.scaling
-            output = down_original + down_lora
+            output = down_expert + down_lora
 
             output = torch.clamp(output, min=-10.0, max=10.0)
 
@@ -527,8 +536,8 @@ class SimplifiedCultureMoEAdapter:
         model_to_freeze = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
         for name, param in model_to_freeze.named_parameters():
-            # 只训练LoRA参数和MoE参数
-            if any(keyword in name.lower() for keyword in ['lora', 'experts', 'router']):
+            # 训练LoRA参数、MoE参数和专家独立的down_proj层
+            if any(keyword in name.lower() for keyword in ['lora', 'experts', 'router', 'expert_down_proj']):
                 param.requires_grad = True
             else:
                 param.requires_grad = False

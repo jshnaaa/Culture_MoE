@@ -20,8 +20,8 @@ USE_CULTURE_LOSS=${6:-"new"}  # ori/new/kl/false，默认为new
 NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
 USE_LORA=${8:-"true"}   # 是否启用LoRA，默认为true
 NUM_GPUS=${9:-"2"}
-LORA_RANK=${10:-"16"}   # LoRA rank
-LORA_ALPHA=${11:-"32"}  # LoRA alpha
+LORA_RANK=${10:-"64"}   # LoRA rank (增大到64提升表达能力)
+LORA_ALPHA=${11:-"128"}  # LoRA alpha (相应调整到128)
 
 # 检查参数
 if [ "$#" -gt 11 ]; then
