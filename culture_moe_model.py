@@ -202,6 +202,10 @@ class CultureMoEFFN(nn.Module):
         # 输出投影层：将intermediate_size映射回hidden_size
         self.output_projection = nn.Linear(intermediate_size, hidden_size, bias=False)
 
+        # 🔧 小尺度初始化：确保MoE作为增量时不过度影响FFN
+        with torch.no_grad():
+            nn.init.normal_(self.output_projection.weight, mean=0.0, std=0.01)
+
     def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         """
         Args:
@@ -534,8 +538,11 @@ class CultureMoEModel(nn.Module):
     def _create_persistent_hook(self, layer_idx):
         """创建持久化Hook函数"""
         def hook_fn(module, input, output):
+            # 🔧 FFN + LoRA-MoE 架构：FFN_out = FFN_base + MoE_LoRA_delta
             # input[0]是FFN的输入hidden_states
+            # output是FFN的原始输出（包含激活函数、正确scale）
             hidden_states = input[0]
+            ffn_base_output = output  # 保持原始FFN输出
 
             # 确保MoE层和输入在同一设备且数据类型一致
             moe_layer = self.culture_moe_layers[layer_idx]
@@ -566,17 +573,30 @@ class CultureMoEModel(nn.Module):
             # 🔧 NaN早期检测和阻断
             if torch.isnan(hidden_states).any():
                 print(f"🚨 Hook Layer {layer_idx}: 输入包含NaN，停止处理")
-                return hidden_states  # 直接返回原始输入，避免NaN传播
+                return ffn_base_output  # 返回原始FFN输出，保持语义
 
-            # 通过MoE层计算输出
-            moe_output, aux_info = moe_layer(hidden_states)
+            # 🔧 计算MoE LoRA增量（而非替换）
+            moe_delta, aux_info = moe_layer(hidden_states)
 
-            # 存储辅助信息（如果需要的话）
+            # 🔧 NaN检测：MoE增量
+            if torch.isnan(moe_delta).any():
+                print(f"🚨 Hook Layer {layer_idx}: MoE增量包含NaN，使用原始FFN输出")
+                return ffn_base_output
+
+            # 🔧 FFN + LoRA-MoE：加法组合，保持residual语义
+            final_output = ffn_base_output + moe_delta
+
+            # 🔧 NaN检测：最终输出
+            if torch.isnan(final_output).any():
+                print(f"🚨 Hook Layer {layer_idx}: 最终输出包含NaN，使用原始FFN输出")
+                return ffn_base_output
+
+            # 存储辅助信息
             if not hasattr(self, '_current_moe_aux_info'):
                 self._current_moe_aux_info = []
             self._current_moe_aux_info.append(aux_info)
 
-            return moe_output
+            return final_output
 
         return hook_fn
 
