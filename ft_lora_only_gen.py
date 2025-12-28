@@ -389,19 +389,20 @@ class CultureLLMNewFormatDataset(Dataset):
         }
 
 
-def dynamic_padding_collate_fn(batch, tokenizer):
+def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
     """
-    动态padding collate函数：根据batch内最长样本动态设置padding长度，上限850
+    动态padding collate函数：根据batch内最长样本动态设置padding长度
 
     Args:
         batch: 数据集返回的样本列表
         tokenizer: tokenizer对象
+        max_seq_length: 最大序列长度限制
 
     Returns:
         批次数据字典
     """
-    # 找到batch内最长的序列长度，但限制在850以内
-    max_length = min(max(len(item['input_ids']) for item in batch), 850)
+    # 找到batch内最长的序列长度，但限制在指定长度以内
+    max_length = min(max(len(item['input_ids']) for item in batch), max_seq_length)
 
     # 为每个样本进行padding
     batch_input_ids = []
@@ -417,11 +418,11 @@ def dynamic_padding_collate_fn(batch, tokenizer):
         attention_mask = item['attention_mask']
         labels = item['labels']
 
-        # 🔧 如果样本超过850，进行截断
-        if len(input_ids) > 850:
-            input_ids = input_ids[:850]
-            attention_mask = attention_mask[:850]
-            labels = labels[:850]
+        # 🔧 如果样本超过max_seq_length，进行截断
+        if len(input_ids) > max_seq_length:
+            input_ids = input_ids[:max_seq_length]
+            attention_mask = attention_mask[:max_seq_length]
+            labels = labels[:max_seq_length]
 
         # 计算需要padding的长度
         pad_length = max_length - len(input_ids)

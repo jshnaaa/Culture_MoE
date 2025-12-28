@@ -268,7 +268,7 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 针对新架构调整
-BATCH_SIZE=4              # 🔧 减少到2，节省显存
+BATCH_SIZE=2              # 🔧 降回到2，避免显存溢出
 GRADIENT_ACCUMULATION=16  # 🔧 相应增加梯度累积，保持有效batch size=32
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
 NUM_EPOCHS=6              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）

@@ -407,7 +407,8 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
 
 
 def train_epoch_simplified(model_adapter, train_loader, optimizer, device, tokenizer,
-                         num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
+                         num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
+                         lambda_weight=1.0, alpha_weight=0.1, beta_weight=0.5):
     """
     简化版CultureMoE训练一个epoch
     """
@@ -480,14 +481,14 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         loss = loss.to(dtype=torch.float16)
 
         # 新的损失函数：L_total = L_generation + lambda × (alpha × L_balance + beta × L_culture)
-        auxiliary_loss = args.alpha_weight * z_loss + args.beta_weight * culture_loss
-        total_batch_loss = loss + args.lambda_weight * auxiliary_loss
+        auxiliary_loss = alpha_weight * z_loss + beta_weight * culture_loss
+        total_batch_loss = loss + lambda_weight * auxiliary_loss
 
         # 检查 NaN/Inf loss - 在所有损失计算完成后检查
         if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
             print(f"❌ NaN or Inf total loss detected at batch {batch_idx}")
             print(f"  Main loss: {loss.item()}, Culture loss: {culture_loss.item()}, Balance loss: {z_loss.item()}")
-            print(f"  Auxiliary loss: {auxiliary_loss.item()}, Lambda: {args.lambda_weight}, Alpha: {args.alpha_weight}, Beta: {args.beta_weight}")
+            print(f"  Auxiliary loss: {auxiliary_loss.item()}, Lambda: {lambda_weight}, Alpha: {alpha_weight}, Beta: {beta_weight}")
             continue
 
         # 梯度累积
@@ -549,7 +550,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
     }
 
 
-def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
+def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
+                       lambda_weight=1.0, alpha_weight=0.1, beta_weight=0.5):
     """
     简化版CultureMoE验证
     """
@@ -622,8 +624,8 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             loss = loss.to(dtype=torch.float16)
 
             # 新的损失函数：L_total = L_generation + lambda × (alpha × L_balance + beta × L_culture)
-            auxiliary_loss = args.alpha_weight * z_loss + args.beta_weight * culture_loss
-            total_batch_loss = loss + args.lambda_weight * auxiliary_loss
+            auxiliary_loss = alpha_weight * z_loss + beta_weight * culture_loss
+            total_batch_loss = loss + lambda_weight * auxiliary_loss
 
             # 检查总损失是否为NaN/Inf
             if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
@@ -978,7 +980,7 @@ def main():
 
     # 创建动态padding的collate函数
     def collate_fn(batch):
-        return dynamic_padding_collate_fn(batch, tokenizer)
+        return dynamic_padding_collate_fn(batch, tokenizer, args.max_length)
 
     # 创建数据加载器 - 使用动态padding
     train_loader = DataLoader(
@@ -1133,7 +1135,10 @@ def main():
             num_accumulation_steps=args.gradient_accumulation_steps,
             rank=rank,
             use_culture_loss=use_culture_loss,
-            culture_loss_weight=args.culture_loss_weight
+            culture_loss_weight=args.culture_loss_weight,
+            lambda_weight=args.lambda_weight,
+            alpha_weight=args.alpha_weight,
+            beta_weight=args.beta_weight
         )
 
         if is_main_process(rank):
@@ -1150,7 +1155,10 @@ def main():
             val_metrics = evaluate_simplified(
                 model_adapter, val_loader, device, tokenizer, rank=rank,
                 use_culture_loss=use_culture_loss,
-                culture_loss_weight=args.culture_loss_weight
+                culture_loss_weight=args.culture_loss_weight,
+                lambda_weight=args.lambda_weight,
+                alpha_weight=args.alpha_weight,
+                beta_weight=args.beta_weight
             )
 
             # 生成答案并评估准确率（只在主进程执行）
