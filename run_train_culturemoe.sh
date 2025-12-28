@@ -71,7 +71,7 @@ mkdir -p "$OUTPUT_DIR"
 
 # ===== 训练参数 =====
 NUM_EPOCHS=6
-BATCH_SIZE=2
+BATCH_SIZE=4  # 48GB*2卡配置下可以使用更大的批次
 LEARNING_RATE=1e-4
 # MAX_LENGTH在数据集配置中设置
 SEED=42

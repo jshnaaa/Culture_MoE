@@ -560,6 +560,20 @@ def train_epoch(model, dataloader, optimizer, device, config):
 
 
 def main():
+    # 设置多GPU训练环境
+    import torch
+    import os
+
+    # 检测GPU数量
+    num_gpus = torch.cuda.device_count()
+    print(f"检测到 {num_gpus} 张GPU")
+
+    # 设置CUDA优化
+    torch.backends.cudnn.benchmark = True  # 优化cudnn性能
+    if num_gpus > 1:
+        os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'  # 使用前两张卡
+        print("启用多GPU并行训练")
+
     parser = argparse.ArgumentParser(description="Train CultureMoE model")
 
     # 基本参数
@@ -605,7 +619,13 @@ def main():
 
     # 设置设备
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    print(f"主设备: {device}")
+
+    # 显示GPU内存信息
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            gpu_memory = torch.cuda.get_device_properties(i).total_memory / 1024**3
+            print(f"GPU {i}: {torch.cuda.get_device_name(i)} ({gpu_memory:.1f}GB)")
 
     # 创建输出目录
     os.makedirs(args.output_dir, exist_ok=True)
@@ -646,7 +666,7 @@ def main():
     # 创建模型
     print("Creating CultureMoE model...")
     model = create_culture_moe_model(args.base_model_path, config)
-    model.to(device)
+    # 模型已经通过device_map="auto"在GPU上，无需再次移动
 
     # 统计可训练参数
     total_params = sum(p.numel() for p in model.parameters())

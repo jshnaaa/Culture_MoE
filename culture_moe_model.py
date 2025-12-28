@@ -237,7 +237,7 @@ class CultureMoEModel(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone: {config['backbone']}")
 
-        # 替换每一层的FFN为CultureMoE
+        # 替换每一层的FFN为CultureMoE - 使用更小的LoRA配置以节省显存
         self.culture_moe_layers = nn.ModuleList()
         for layer_idx in range(self.num_layers):
             moe_ffn = CultureMoEFFN(
@@ -251,6 +251,12 @@ class CultureMoEModel(nn.Module):
                 lora_alpha=config['lora_alpha']
             )
             self.culture_moe_layers.append(moe_ffn)
+
+            # 48GB*2卡配置下无需频繁清理缓存
+            # if layer_idx % 8 == 0:  # 每8层清理一次
+            #     import gc
+            #     gc.collect()
+            #     torch.cuda.empty_cache()
 
         # 冻结基座模型参数
         self._freeze_base_model()
@@ -328,12 +334,14 @@ class CultureMoEModel(nn.Module):
 def create_culture_moe_model(base_model_path: str, config: Dict) -> CultureMoEModel:
     """创建CultureMoE模型"""
 
-    # 加载基座模型
+    # 加载基座模型 - 适配48GB*2卡配置
     base_model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
         torch_dtype=torch.float16,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        low_cpu_mem_usage=True,
+        max_memory={0: "40GB", 1: "40GB"}  # 为每张卡预留充足空间
     )
 
     # 启用gradient checkpointing以节省显存
