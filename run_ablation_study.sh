@@ -85,15 +85,6 @@ if [[ "$BACKBONE" != "llama" && "$BACKBONE" != "qwen" ]]; then
     exit 1
 fi
 
-if [[ "$DATA_ID" != "0" && "$DATA_ID" != "2" && "$DATA_ID" != "3" && "$DATA_ID" != "4" ]]; then
-    echo "❌ 无效的DATA_ID: $DATA_ID (支持: 0, 2, 3, 4)"
-    echo "  0 - 使用pkl划分的测试集（推荐）"
-    echo "  2 - CulturalBench完整数据集"
-    echo "  3 - normad完整数据集"
-    echo "  4 - cultureLLM完整数据集"
-    exit 1
-fi
-
 # 根据DATA_ID设置数据处理模式
 case $DATA_ID in
     0)
@@ -133,6 +124,13 @@ case $DATA_ID in
         USE_PKL_SPLIT=false
         USE_MULTI_DATASET_SPLIT=false
         echo "📊 数据模式: cultureLLM完整数据集"
+        ;;
+    5)
+        DATA_FILE="/root/autodl-fs/cultureAtlas_merge_gen.json"
+        DATASET_TAG="culturecultureAtlas"
+        USE_PKL_SPLIT=false
+        USE_MULTI_DATASET_SPLIT=false
+        echo "📊 数据模式: culturecultureAtlas完整数据集"
         ;;
 esac
 
