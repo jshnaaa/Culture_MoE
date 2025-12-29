@@ -335,13 +335,11 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 }
 EOF
 
-# 设置内存优化环境变量 - 针对新架构强化
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32,expandable_segments:True,garbage_collection_threshold:0.8
+# 设置内存优化环境变量 - 性能优化版本
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:64,expandable_segments:True,garbage_collection_threshold:0.6
 export CUDA_LAUNCH_BLOCKING=0
 export TOKENIZERS_PARALLELISM=false
-export OMP_NUM_THREADS=1
-export PYTORCH_NO_CUDA_MEMORY_CACHING=1  # 🔧 禁用CUDA内存缓存
-export CUDA_CACHE_DISABLE=1              # 🔧 禁用CUDA缓存
+export OMP_NUM_THREADS=2                 # 🔧 增加到2个线程提升并行度
 export CUDA_VISIBLE_DEVICES=0,1          # 🔧 明确指定GPU
 
 echo "开始简化版FFN CultureMoE训练..."
