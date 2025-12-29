@@ -255,12 +255,12 @@ class SimplifiedCultureMoEEvaluator:
                 import traceback
                 traceback.print_exc()
 
-        # 2. 回退到原来的LoRA+MoE加载逻辑
-        # 🔧 但要避免重新初始化MoE层导致权重丢失
+        # 2. LoRA+MoE加载逻辑
+        # 🔧 关键修复：先加载原始base模型（无LoRA），然后依次加载LoRA和MoE权重
 
         # 加载原始base模型（无LoRA）
         base_model = AutoModelForCausalLM.from_pretrained(
-            self.base_model_path or self.model_path,
+            base_model_path,
             torch_dtype=torch.float16,
             device_map=None,
             trust_remote_code=True,
@@ -284,15 +284,13 @@ class SimplifiedCultureMoEEvaluator:
         self.model_adapter = SimplifiedCultureMoEAdapter(base_model, self.config)
         self.model_adapter.base_model.eval()
 
-        # 3. 🔧 尝试加载MoE权重，但不替换已有的MoE层
-        # 关键修改：直接在base_model.module上加载MoE权重，而不是在backbone_model上
+        # 3. 加载MoE权重（在适配器创建后）
         moe_path = os.path.join(self.model_path, 'moe_weights.pt')
         if os.path.exists(moe_path):
             try:
                 moe_state_dict = torch.load(moe_path, map_location='cpu')
 
-                # 🔧 关键修复：直接在MoE适配器上加载权重
-                # 因为model_adapter已经包含了替换后的MoE层，直接在其上加载权重
+                # 🔧 关键修复：直接在model_adapter的layers上加载MoE权重
                 model_to_load = self.model_adapter
                 print(f"🔍 使用model_adapter进行权重加载: {type(model_to_load)}")
 
