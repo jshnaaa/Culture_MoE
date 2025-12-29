@@ -437,9 +437,12 @@ class SimplifiedCultureMoEAdapter:
 
     def _extract_backbone_model(self, model):
         """从各种包装中提取真正的backbone模型"""
+        print(f"🔍 开始提取backbone模型，输入类型: {type(model)}")
+
         # 处理DDP包装
         if hasattr(model, 'module'):
             model = model.module
+            print(f"🔧 去除DDP包装: {type(model)}")
 
         # 处理PeftModel包装
         try:
@@ -448,19 +451,25 @@ class SimplifiedCultureMoEAdapter:
                 print("🔧 检测到PeftModel，提取backbone...")
                 backbone = model.base_model.model
                 print(f"✅ 成功提取backbone: {type(backbone)}")
+                print(f"🔍 backbone是否有layers: {hasattr(backbone, 'layers')}")
+                if hasattr(backbone, 'layers'):
+                    print(f"🔍 layers数量: {len(backbone.layers)}")
                 return backbone
         except ImportError:
-            pass
+            print("⚠️ 无法导入PeftModel")
 
         # 检查是否已经是backbone模型
         if hasattr(model, 'layers'):
             print(f"✅ 直接使用模型: {type(model)}")
+            print(f"🔍 layers数量: {len(model.layers)}")
             return model
         elif hasattr(model, 'model') and hasattr(model.model, 'layers'):
             print(f"✅ 提取model.layers: {type(model.model)}")
+            print(f"🔍 layers数量: {len(model.model.layers)}")
             return model.model
         else:
             print(f"⚠️ 未知模型结构，直接使用: {type(model)}")
+            print(f"🔍 模型属性: {[attr for attr in dir(model) if not attr.startswith('_')][:10]}")
             return model
 
     def _get_target_layers(self):
@@ -703,7 +712,7 @@ class SimplifiedCultureMoEAdapter:
 
     def generate(self, **kwargs):
         """
-        生成方法 - 委托给base_model的generate方法
+        生成方法 - 确保使用包含MoE层的模型进行生成
 
         Args:
             **kwargs: generate方法的参数
@@ -711,15 +720,45 @@ class SimplifiedCultureMoEAdapter:
         Returns:
             生成的token序列
         """
-        # 获取实际的模型（处理DDP包装）
+        # 🔧 关键修复：使用base_model（已经包含MoE层替换的模型）
         actual_model = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+        # 🔍 调试：检查推理时的模型结构
+        print(f"🔍 推理时base_model类型: {type(actual_model)}")
+
+        # 检查MoE层是否存在
+        layers = None
+        if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
+            layers = actual_model.model.layers
+            print(f"🔍 通过actual_model.model.layers访问层")
+        elif hasattr(actual_model, 'layers'):
+            layers = actual_model.layers
+            print(f"🔍 直接通过actual_model.layers访问层")
+        else:
+            print("❌ 无法找到模型层！")
+
+        if layers and len(layers) > 0:
+            layer0_mlp = layers[0].mlp
+            print(f"🔍 第0层MLP类型: {type(layer0_mlp)}")
+            print(f"🔍 是否为MoE层: {'MoEFFNLoRA' in str(type(layer0_mlp))}")
+            if hasattr(layer0_mlp, 'experts'):
+                print(f"🔍 专家数量: {len(layer0_mlp.experts) if hasattr(layer0_mlp.experts, '__len__') else 'unknown'}")
+
+                # 🔍 检查第一个专家的权重是否非零
+                if hasattr(layer0_mlp.experts, '__getitem__') and len(layer0_mlp.experts) > 0:
+                    expert0 = layer0_mlp.experts[0]
+                    if hasattr(expert0, 'gate_lora_A'):
+                        weight_norm = expert0.gate_lora_A.weight.norm().item()
+                        print(f"🔍 第0个专家gate_lora_A权重范数: {weight_norm:.4f}")
+        else:
+            print("❌ 无法验证MoE层结构！")
 
         # 🔧 确保模型在eval模式下进行推理
         was_training = actual_model.training
         actual_model.eval()
 
         try:
-            # 委托给base_model的generate方法
+            # 委托给base_model的generate方法（base_model已包含MoE层）
             result = actual_model.generate(**kwargs)
             return result
         finally:

@@ -307,9 +307,12 @@ class SimplifiedCultureMoEEvaluator:
                             if hasattr(target_param, 'shape') and hasattr(target_param, 'data'):
                                 # 确保形状匹配
                                 if target_param.shape == param.shape:
+                                    # 🔧 添加权重加载前后的检查
+                                    old_norm = target_param.data.norm().item()
                                     target_param.data.copy_(param.data)
+                                    new_norm = target_param.data.norm().item()
                                     loaded_keys.append(name)
-                                    print(f"  ✅ 加载: {name} (shape: {param.shape})")
+                                    print(f"  ✅ 加载: {name} (shape: {param.shape}, norm: {old_norm:.4f} → {new_norm:.4f})")
                                 else:
                                     print(f"  ❌ 形状不匹配: {name} 期望{target_param.shape}, 得到{param.shape}")
                                     missing_keys.append(name)
@@ -318,7 +321,7 @@ class SimplifiedCultureMoEEvaluator:
                                 print(f"  ❌ 找到对象但不是参数张量: {name} (type: {type(target_param)})")
                         else:
                             missing_keys.append(name)
-                            print(f"  ❌ 未找到: {name}")
+                            print(f"  ❌ 未找到: {name} (尝试的路径: {clean_name})")
 
                     except Exception as e:
                         missing_keys.append(name)
