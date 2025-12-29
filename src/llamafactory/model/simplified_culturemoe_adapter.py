@@ -503,6 +503,11 @@ class SimplifiedCultureMoEAdapter:
 
         for layer_idx in target_layers:
             original_ffn = layers[layer_idx].mlp
+            # 🔧 关键修复：检测MLP是否已经是MoEFFNLoRA，避免覆盖已训练的MoE权重
+            if isinstance(original_ffn, MoEFFNLoRA):
+                print(f"  ✅ Layer {layer_idx} MLP is already MoEFFNLoRA, skipping replacement")
+                continue
+
             moe_ffn = MoEFFNLoRA(original_ffn, self.config)
             layers[layer_idx].mlp = moe_ffn
 
