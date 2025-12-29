@@ -253,22 +253,31 @@ class SimplifiedCultureMoEEvaluator:
         # 2. 回退到原来的LoRA+MoE加载逻辑
         # 🔧 但要避免重新初始化MoE层导致权重丢失
 
-        # 先加载LoRA权重到base_model
+        # 加载原始base模型（无LoRA）
+        base_model = AutoModelForCausalLM.from_pretrained(
+            self.base_model_path or self.model_path,
+            torch_dtype=torch.float16,
+            device_map=None,
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
+        )
+        base_model = base_model.to(self.device)
+        print("✅ 原始base模型加载完成")
+
+        # 加载LoRA权重
         lora_path = os.path.join(self.model_path, 'lora_weights')
         if os.path.exists(lora_path):
             try:
                 from peft import PeftModel
-                self.base_model = PeftModel.from_pretrained(
-                    self.base_model, lora_path
-                )
+                base_model = PeftModel.from_pretrained(base_model, lora_path)
                 print("✅ 加载LoRA权重")
             except Exception as e:
                 print(f"⚠️ LoRA权重加载失败: {e}")
 
-        # 2. 创建MoE适配器（基于已加载LoRA的模型）
+        # 创建MoE适配器（基于已加载LoRA的base_model）
         print("🔧 创建MoE适配器...")
-        self.model_adapter = SimplifiedCultureMoEAdapter(self.base_model, self.config)
-        self.model_adapter.base_model.eval()  # 🔧 关键修复：在加载MoE权重之前设置为eval模式
+        self.model_adapter = SimplifiedCultureMoEAdapter(base_model, self.config)
+        self.model_adapter.base_model.eval()
 
         # 3. 🔧 尝试加载MoE权重，但不替换已有的MoE层
         # 关键修改：直接在base_model.module上加载MoE权重，而不是在backbone_model上
