@@ -145,17 +145,23 @@ class CultureLLMNewFormatDataset(Dataset):
         # 实际数据格式：full_input + output_text (不添加空格)
         # 我们需要计算full_input的token数量
 
-        # 🔧 修复：直接使用full_input的长度，不添加分隔符
-        input_encoded = self.tokenizer(
-            full_input,
-            truncation=True,
-            return_tensors='pt',
-            add_special_tokens=True,
-            padding=False
-        )
+        # 🔧 关键修复：精确计算input_length，避免tokenizer边界问题
+        # 不能分别编码full_input，因为tokenizer可能在边界处产生不同分词
+        # 应该在完整的full_text中找到output_text的起始位置
 
-        # input_length = 只计算full_input的token数，不包括分隔符
-        input_length = len(input_encoded['input_ids'][0])
+        # 方法：在token级别找到output开始的位置
+        # 先编码output_text看它的token是什么
+        output_tokens = self.tokenizer(output_text, add_special_tokens=False)['input_ids']
+
+        # 在完整的input_ids中找到output_tokens的起始位置
+        input_length = len(input_ids)  # 默认全部掩码
+
+        if len(output_tokens) > 0:
+            # 从后往前搜索，找到output_tokens的匹配位置
+            for start_pos in range(len(input_ids) - len(output_tokens), -1, -1):
+                if start_pos >= 0 and input_ids[start_pos:start_pos + len(output_tokens)].tolist() == output_tokens:
+                    input_length = start_pos
+                    break
 
         # 🔧 安全检查：确保input_length不超过总长度
         total_length = len(input_ids)
@@ -254,12 +260,20 @@ class CultureLLMNewFormatDataset(Dataset):
         # 🔧 临时启用调试信息来验证标签掩码
         if idx < 3:
             print(f"\n📋 样本 {idx} - 标签掩码验证:")
+            print(f"  🔍 原始instruction: '{instruction}'")
+            print(f"  🔍 原始input: '{input_text}'")
+            print(f"  🔍 原始output: '{output_text}'")
+            print(f"  🔍 output_tokens: {output_tokens}")
             print(f"  原始文本: '{full_text[:100]}...'")
             print(f"  full_input: '{full_input[:80]}...'")
-            print(f"  output_text: '{output_text}'")
-            print(f"  计算的input_length: {input_length}")
+            print(f"  精确计算的input_length: {input_length}")
             print(f"  总序列长度: {len(input_ids)}")
             print(f"  有效训练标签数: {valid_labels}")
+
+            # 检查input_length位置的token
+            if input_length < len(input_ids):
+                print(f"  input_length位置的token: {input_ids[input_length].item()}")
+                print(f"  input_length位置解码: '{self.tokenizer.decode([input_ids[input_length].item()], skip_special_tokens=True)}'")
 
             # 检查前几个和后几个token的掩码情况
             print(f"  前10个labels: {labels[:10].tolist()}")
@@ -567,14 +581,6 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     # 训练时的格式：full_input = f"{instruction}\n{input_text}"，然后添加 {output}
     # 所以生成时应该给模型：full_input + " "，让它生成output
 
-    # 🔧 修复：检查并添加选择题提示，确保模型知道需要生成1-4的数字答案
-    # 如果instruction不包含选择题格式，添加明确提示
-    if "1 to 4" not in instruction and "1-4" not in instruction and "from 1 to 4" not in instruction:
-        if instruction.endswith("?"):
-            instruction = instruction[:-1] + "? Please answer with only a number from 1 to 4:"
-        else:
-            instruction = instruction + " Please answer with only a number from 1 to 4:"
-
     if input_text:
         full_input = f"{instruction}\n{input_text}"
     else:
@@ -588,8 +594,9 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     full_input = full_input.rstrip()
 
     # 🔍 调试生成时的输入 - 启用来调试问题
-    print(f"🔍 原始instruction: {repr(instruction[:100])}...")
-    print(f"🔍 生成时输入: {repr(full_input[-150:])}")  # 显示输入的最后150个字符
+    print(f"🔍 原始instruction末尾: {repr(instruction[-100:])}")
+    print(f"🔍 原始input: {repr(input_text)}")
+    print(f"🔍 生成时输入末尾: {repr(full_input[-150:])}")  # 显示输入的最后150个字符
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512, padding=False)
     inputs = {k: v.to(device) for k, v in inputs.items()}
