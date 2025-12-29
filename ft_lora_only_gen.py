@@ -620,18 +620,19 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             print(f"🔍 pad_token_id: {tokenizer.pad_token_id}")
             print(f"🔍 eos_token_id: {tokenizer.eos_token_id}")
 
+            # 🔧 修复生成参数：针对简单数字答案优化
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=max_new_tokens,  # 🔧 使用传入的参数
+                max_new_tokens=3,  # 🔧 减少到3个token，适合数字答案
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=True,  # 🔧 启用采样避免重复
-                temperature=0.1,  # 🔧 低温度保持确定性
-                top_p=0.9,  # 🔧 核采样
-                repetition_penalty=1.2,  # 🔧 重复惩罚
-                num_beams=1
+                do_sample=False,  # 🔧 关闭采样，使用贪心解码确保确定性
+                temperature=1.0,  # 🔧 标准温度
+                repetition_penalty=1.0,  # 🔧 关闭重复惩罚避免干扰
+                num_beams=1,
+                early_stopping=True  # 🔧 早停，遇到eos_token就停止
             )
             print(f"🔍 生成完成，输出shape: {outputs.shape}")
         else:
@@ -639,15 +640,15 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             print(f"🔍 使用标准模型generate方法")
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=max_new_tokens,  # 🔧 使用传入的参数
+                max_new_tokens=3,  # 🔧 减少到3个token，适合数字答案
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=True,  # 🔧 启用采样避免重复
-                temperature=0.1,  # 🔧 低温度保持确定性
-                top_p=0.9,  # 🔧 核采样
-                repetition_penalty=1.2,  # 🔧 重复惩罚
-                num_beams=1
+                do_sample=False,  # 🔧 关闭采样，使用贪心解码确保确定性
+                temperature=1.0,  # 🔧 标准温度
+                repetition_penalty=1.0,  # 🔧 关闭重复惩罚避免干扰
+                num_beams=1,
+                early_stopping=True  # 🔧 早停，遇到eos_token就停止
             )
 
     # 解码
@@ -1013,9 +1014,23 @@ def main():
                 print(f"⚠️ 无法找到合适的padding token，将导致训练问题")
 
     elif tokenizer.pad_token is None:
-        # 其他模型的标准配置
-        tokenizer.pad_token = tokenizer.eos_token
-        print(f"🔧 标准配置: pad_token = eos_token")
+        # 🔧 修复：避免将pad_token设置为eos_token
+        print(f"🔧 标准配置: 设置安全的padding token")
+        safe_tokens = ['~', '`', '|', '^', '§', '¶']
+        found_safe_token = False
+        for safe_token in safe_tokens:
+            try:
+                safe_token_id = tokenizer.convert_tokens_to_ids(safe_token)
+                if safe_token_id != tokenizer.unk_token_id and safe_token_id != 128009:
+                    tokenizer.pad_token = safe_token
+                    tokenizer.pad_token_id = safe_token_id
+                    found_safe_token = True
+                    break
+            except:
+                continue
+
+        if not found_safe_token:
+            tokenizer.pad_token_id = 0  # fallback to token_id=0
     else:
         # 对于已经有pad_token但可能配置错误的情况，也要检查
         if tokenizer.pad_token_id == 128009:
@@ -1063,20 +1078,51 @@ def main():
         print(f"🚨 严重错误: pad_token_id仍然是128009 (<|eot_id|>)!")
         print(f"   强制修复tokenizer配置...")
 
-        # 使用eos_token作为padding（避免添加新token）
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-        print(f"   修复后pad_token_id: {tokenizer.pad_token_id}")
-        print(f"   修复后pad_token: {repr(tokenizer.pad_token)}")
+        # 🔧 修复：使用安全的低频token作为padding，避免与eos_token冲突
+        safe_tokens = ['~', '`', '|', '^', '§', '¶', '†', '‡']
+        found_safe_token = False
+        for safe_token in safe_tokens:
+            try:
+                safe_token_id = tokenizer.convert_tokens_to_ids(safe_token)
+                if safe_token_id != tokenizer.unk_token_id and safe_token_id != 128009:
+                    tokenizer.pad_token = safe_token
+                    tokenizer.pad_token_id = safe_token_id
+                    print(f"   修复后pad_token_id: {tokenizer.pad_token_id}")
+                    print(f"   修复后pad_token: {repr(tokenizer.pad_token)}")
+                    found_safe_token = True
+                    break
+            except:
+                continue
+
+        if not found_safe_token:
+            # 最后的fallback：使用token_id=0（通常是<unk>）
+            tokenizer.pad_token_id = 0
+            print(f"   Fallback修复后pad_token_id: {tokenizer.pad_token_id}")
 
     elif tokenizer.pad_token_id is None:
         print(f"🚨 错误: pad_token_id is None!")
         print(f"   强制设置专用padding token...")
 
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-        print(f"   设置后pad_token_id: {tokenizer.pad_token_id}")
-        print(f"   设置后pad_token: {repr(tokenizer.pad_token)}")
+        # 🔧 修复：避免使用eos_token作为padding
+        safe_tokens = ['~', '`', '|', '^', '§', '¶', '†', '‡']
+        found_safe_token = False
+        for safe_token in safe_tokens:
+            try:
+                safe_token_id = tokenizer.convert_tokens_to_ids(safe_token)
+                if safe_token_id != tokenizer.unk_token_id and safe_token_id != 128009:
+                    tokenizer.pad_token = safe_token
+                    tokenizer.pad_token_id = safe_token_id
+                    print(f"   设置后pad_token_id: {tokenizer.pad_token_id}")
+                    print(f"   设置后pad_token: {repr(tokenizer.pad_token)}")
+                    found_safe_token = True
+                    break
+            except:
+                continue
+
+        if not found_safe_token:
+            # 最后的fallback：使用token_id=0
+            tokenizer.pad_token_id = 0
+            print(f"   Fallback设置后pad_token_id: {tokenizer.pad_token_id}")
 
     elif tokenizer.pad_token_id == 0:
         # 检查token_id=0对应的实际字符
@@ -1105,10 +1151,9 @@ def main():
                     continue
 
             if chosen_pad_token is None:
-                # 如果找不到合适的token，使用eos_token
-                tokenizer.pad_token = tokenizer.eos_token
-                tokenizer.pad_token_id = tokenizer.eos_token_id
-                chosen_pad_token = tokenizer.eos_token
+                # 🔧 修复：如果找不到合适的token，使用token_id=0作为fallback
+                tokenizer.pad_token_id = 0
+                chosen_pad_token = "fallback_token_0"
 
             print(f"   修复后pad_token_id: {tokenizer.pad_token_id}")
             print(f"   修复后pad_token: {repr(chosen_pad_token)}")
