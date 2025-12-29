@@ -268,8 +268,8 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 针对新架构调整
-BATCH_SIZE=1              # 🔧 进一步降到1，应对长序列
-GRADIENT_ACCUMULATION=32  # 🔧 相应增加梯度累积，保持有效batch size=64
+BATCH_SIZE=2              # 🔧 改回2以支持文化损失对比学习
+GRADIENT_ACCUMULATION=16  # 🔧 相应调整梯度累积，保持有效batch size=64
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
 NUM_EPOCHS=6              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
