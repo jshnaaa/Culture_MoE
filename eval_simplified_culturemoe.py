@@ -172,11 +172,14 @@ class SimplifiedCultureMoEEvaluator:
 
         return config
 
-    def load_model(self, base_model_path: str, device: str = 'cuda'):
+    def load_model(self, base_model_path: str, device: str = 'cuda', self_load_weights: bool = True):
         """加载模型和tokenizer"""
         print(f"\n🔄 加载模型...")
         print(f"  基础模型: {base_model_path}")
         print(f"  训练权重: {self.model_path}")
+
+        # 保存device供后续使用
+        self.device = device
 
         # 加载tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
@@ -205,14 +208,16 @@ class SimplifiedCultureMoEEvaluator:
 
         # 先加载LoRA权重，然后创建MoE适配器
         self.base_model = base_model
-        self._load_trained_weights_and_create_adapter()
+        if self_load_weights:
+            self._load_trained_weights_and_create_adapter(base_model_path)
 
         # 设置为评估模式
-        self.model_adapter.base_model.eval()
+        if self.model_adapter is not None:
+            self.model_adapter.base_model.eval()
 
         print("✅ 模型加载完成")
 
-    def _load_trained_weights_and_create_adapter(self):
+    def _load_trained_weights_and_create_adapter(self, base_model_path: str):
         """正确顺序加载权重并创建适配器"""
         # 🔧 关键修复：直接加载完整的模型，而不是分别加载LoRA和MoE权重
         # 问题：如果分别加载，创建适配器时会重新初始化MoE层，导致训练好的MoE权重丢失
@@ -227,7 +232,7 @@ class SimplifiedCultureMoEEvaluator:
 
                 # 加载基础模型
                 base_model = AutoModelForCausalLM.from_pretrained(
-                    self.base_model_path or self.model_path,
+                    base_model_path,
                     torch_dtype=torch.float16,
                     device_map=None,
                     trust_remote_code=True,
@@ -790,7 +795,7 @@ def main():
         evaluator = SimplifiedCultureMoEEvaluator(args.model_path)
 
         # 加载模型
-        evaluator.load_model(args.base_model_path, args.device)
+        evaluator.load_model(args.base_model_path, args.device, self_load_weights=True)
 
         # 设置消融实验配置
         evaluator.set_ablation_config(args.disable_shared, args.disable_mask,
