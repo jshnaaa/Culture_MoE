@@ -341,11 +341,21 @@ class SimplifiedCultureMoEEvaluator:
 
         # 加载测试集
         if use_fixed_split and split_file:
+            # 🔍 验证假设：同时测试验证集和测试集
+            print(f"🔍 验证假设：训练时验证集 vs 推理时测试集的差异")
+
+            # 加载验证集
+            val_dataset_for_comparison, _ = load_fixed_test_split(
+                data_file, self.tokenizer, max_length, split_file, split_type='validation'
+            )
+            print(f"🔍 验证集大小: {len(val_dataset_for_comparison)} 样本")
+
             # 使用固定的测试集划分
             test_dataset, split_info = load_fixed_test_split(
                 data_file, self.tokenizer, max_length, split_file, split_type='test'
             )
             val_dataset = test_dataset  # 在消融实验中，我们在测试集上评估
+            print(f"🔍 关键信息：推理脚本使用的是测试集（{len(test_dataset)}样本）")
             print(f"✅ 使用固定测试集进行评估")
         else:
             # 回退到原来的逻辑（兼容性）
