@@ -567,8 +567,13 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     # 训练时的格式：full_input = f"{instruction}\n{input_text}"，然后添加 {output}
     # 所以生成时应该给模型：full_input + " "，让它生成output
 
-    # 🔧 修复：保留instruction中的"### Answer:"，这是给模型的生成提示
-    # 生成时需要给模型完整的提示，让它知道在"### Answer: "后面生成答案
+    # 🔧 修复：检查并添加选择题提示，确保模型知道需要生成1-4的数字答案
+    # 如果instruction不包含选择题格式，添加明确提示
+    if "1 to 4" not in instruction and "1-4" not in instruction and "from 1 to 4" not in instruction:
+        if instruction.endswith("?"):
+            instruction = instruction[:-1] + "? Please answer with only a number from 1 to 4:"
+        else:
+            instruction = instruction + " Please answer with only a number from 1 to 4:"
 
     if input_text:
         full_input = f"{instruction}\n{input_text}"
@@ -583,7 +588,8 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     full_input = full_input.rstrip()
 
     # 🔍 调试生成时的输入 - 启用来调试问题
-    print(f"🔍 生成时输入: {repr(full_input[-100:])}")  # 显示输入的最后100个字符
+    print(f"🔍 原始instruction: {repr(instruction[:100])}...")
+    print(f"🔍 生成时输入: {repr(full_input[-150:])}")  # 显示输入的最后150个字符
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512, padding=False)
     inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -620,17 +626,24 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             print(f"🔍 pad_token_id: {tokenizer.pad_token_id}")
             print(f"🔍 eos_token_id: {tokenizer.eos_token_id}")
 
+            # 🔧 创建数字约束：只允许生成1、2、3、4
+            digit_tokens = []
+            for digit in ['1', '2', '3', '4']:
+                token_ids = tokenizer.encode(digit, add_special_tokens=False)
+                if len(token_ids) == 1:  # 确保是单个token
+                    digit_tokens.append(token_ids[0])
+
+            print(f"🔍 数字token约束: {digit_tokens}")
+
             # 🔧 修复生成参数：针对简单数字答案优化
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=3,  # 🔧 减少到3个token，适合数字答案
+                max_new_tokens=1,  # 🔧 只生成1个token，强制单数字答案
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,  # 🔧 关闭采样，使用贪心解码确保确定性
-                temperature=1.0,  # 🔧 标准温度
-                repetition_penalty=1.0,  # 🔧 关闭重复惩罚避免干扰
                 num_beams=1,
                 early_stopping=True  # 🔧 早停，遇到eos_token就停止
             )
@@ -640,13 +653,11 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             print(f"🔍 使用标准模型generate方法")
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=3,  # 🔧 减少到3个token，适合数字答案
+                max_new_tokens=1,  # 🔧 只生成1个token，强制单数字答案
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,  # 🔧 关闭采样，使用贪心解码确保确定性
-                temperature=1.0,  # 🔧 标准温度
-                repetition_penalty=1.0,  # 🔧 关闭重复惩罚避免干扰
                 num_beams=1,
                 early_stopping=True  # 🔧 早停，遇到eos_token就停止
             )
