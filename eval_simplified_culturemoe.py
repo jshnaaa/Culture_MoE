@@ -214,9 +214,46 @@ class SimplifiedCultureMoEEvaluator:
 
     def _load_trained_weights_and_create_adapter(self):
         """正确顺序加载权重并创建适配器"""
-        # 🔧 修复权重加载顺序：先加载LoRA权重，再创建MoE适配器，最后加载MoE权重
+        # 🔧 关键修复：直接加载完整的模型，而不是分别加载LoRA和MoE权重
+        # 问题：如果分别加载，创建适配器时会重新初始化MoE层，导致训练好的MoE权重丢失
 
-        # 1. 先加载LoRA权重到base_model
+        # 1. 先检查是否有保存的完整模型
+        full_model_path = os.path.join(self.model_path, 'full_model.pt')
+        if os.path.exists(full_model_path):
+            try:
+                print(f"🔍 检测到完整模型文件: {full_model_path}")
+                print("🔍 尝试加载完整模型...")
+                full_model = torch.load(full_model_path, map_location='cpu')
+
+                # 加载基础模型
+                base_model = AutoModelForCausalLM.from_pretrained(
+                    self.base_model_path or self.model_path,
+                    torch_dtype=torch.float16,
+                    device_map=None,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True
+                )
+                base_model = base_model.to(self.device)
+
+                # 加载完整模型的权重
+                missing_keys, unexpected_keys = base_model.load_state_dict(full_model, strict=False)
+                print(f"✅ 加载完整模型: 缺失{len(missing_keys)}个, 多余{len(unexpected_keys)}个键")
+
+                # 创建MoE适配器
+                print("🔧 创建MoE适配器...")
+                self.model_adapter = SimplifiedCultureMoEAdapter(base_model, self.config)
+                self.model_adapter.base_model.eval()
+
+                return
+            except Exception as e:
+                print(f"⚠️ 完整模型加载失败: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # 2. 回退到原来的LoRA+MoE加载逻辑
+        # 🔧 但要避免重新初始化MoE层导致权重丢失
+
+        # 先加载LoRA权重到base_model
         lora_path = os.path.join(self.model_path, 'lora_weights')
         if os.path.exists(lora_path):
             try:
@@ -231,17 +268,19 @@ class SimplifiedCultureMoEEvaluator:
         # 2. 创建MoE适配器（基于已加载LoRA的模型）
         print("🔧 创建MoE适配器...")
         self.model_adapter = SimplifiedCultureMoEAdapter(self.base_model, self.config)
+        self.model_adapter.base_model.eval()  # 🔧 关键修复：在加载MoE权重之前设置为eval模式
 
-        # 3. 最后加载MoE权重（在MoE适配器创建之后）
+        # 3. 🔧 尝试加载MoE权重，但不替换已有的MoE层
+        # 关键修改：直接在base_model.module上加载MoE权重，而不是在backbone_model上
         moe_path = os.path.join(self.model_path, 'moe_weights.pt')
         if os.path.exists(moe_path):
             try:
                 moe_state_dict = torch.load(moe_path, map_location='cpu')
 
-                # 🔧 关键修复：直接在MoE适配器的backbone_model上加载权重
-                # 这样可以绕过所有包装层，直接访问实际的模型层
-                model_to_load = self.model_adapter.backbone_model
-                print(f"🔍 使用backbone_model进行权重加载: {type(model_to_load)}")
+                # 🔧 关键修复：直接在MoE适配器上加载权重
+                # 因为model_adapter已经包含了替换后的MoE层，直接在其上加载权重
+                model_to_load = self.model_adapter
+                print(f"🔍 使用model_adapter进行权重加载: {type(model_to_load)}")
 
                 missing_keys = []
                 loaded_keys = []
