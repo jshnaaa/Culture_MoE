@@ -23,8 +23,8 @@ ALPHA=${9:-"0.1"}   # 负载均衡损失权重
 BETA=${10:-"0.5"}   # 文化对比损失权重
 USE_LORA=${11:-"true"}   # 是否启用LoRA，默认为true
 NUM_GPUS=${12:-"2"}
-LORA_RANK=${13:-"32"}   # LoRA rank (平衡表达能力和显存)
-LORA_ALPHA=${14:-"64"}  # LoRA alpha (相应调整到64)
+LORA_RANK=${13:-"16"}   # LoRA rank (平衡表达能力和显存)
+LORA_ALPHA=${14:-"32"}  # LoRA alpha (相应调整到32)
 
 # 检查参数
 if [ "$#" -gt 14 ]; then
@@ -269,7 +269,7 @@ echo ""
 
 # 内存优化的训练参数 - 针对新架构调整
 BATCH_SIZE=2              # 🔧 改回2以支持文化损失对比学习
-GRADIENT_ACCUMULATION=16  # 🔧 相应调整梯度累积，保持有效batch size=64
+GRADIENT_ACCUMULATION=8   # 🔧 调整梯度累积，保持有效batch size=32
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
 NUM_EPOCHS=6              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
 
