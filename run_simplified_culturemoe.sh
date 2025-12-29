@@ -336,7 +336,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 EOF
 
 # 设置内存优化环境变量 - 针对新架构强化
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:16,expandable_segments:True,garbage_collection_threshold:0.8
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32,expandable_segments:True,garbage_collection_threshold:0.8
 export CUDA_LAUNCH_BLOCKING=0
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
