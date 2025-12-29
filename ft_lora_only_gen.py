@@ -642,17 +642,17 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
 
             print(f"🔍 数字token约束: {digit_tokens}")
 
-            # 🔧 修复生成参数：针对简单数字答案优化
+            # 🔧 修复生成参数：允许模型自然生成数字答案
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=1,  # 🔧 只生成1个token，强制单数字答案
+                max_new_tokens=3,  # 🔧 允许生成最多3个token，给模型更多空间
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,  # 🔧 关闭采样，使用贪心解码确保确定性
                 num_beams=1,
-                early_stopping=True  # 🔧 早停，遇到eos_token就停止
+                early_stopping=False  # 🔧 关闭早停，让模型完成生成
             )
             print(f"🔍 生成完成，输出shape: {outputs.shape}")
         else:
@@ -660,32 +660,46 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             print(f"🔍 使用标准模型generate方法")
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=1,  # 🔧 只生成1个token，强制单数字答案
+                max_new_tokens=3,  # 🔧 允许生成最多3个token，给模型更多空间
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,  # 🔧 关闭采样，使用贪心解码确保确定性
                 num_beams=1,
-                early_stopping=True  # 🔧 早停，遇到eos_token就停止
+                early_stopping=False  # 🔧 关闭早停，让模型完成生成
             )
 
     # 解码
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
 
-    # 🔧 修复：简化解码逻辑，不使用可能掩盖问题的fallback
+    # 🔧 修复：处理多token生成，提取第一个有效数字
     if len(generated_ids) > 0:
-        # 直接解码生成的token，不做任何修改
-        generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+        # 解码所有生成的token
+        full_generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
-        # 🔍 调试信息：显示实际生成的token和解码结果
-        first_token = generated_ids[0].item()
-        print(f"🔍 实际生成: token_id={first_token}, 解码='{generated_text}', 长度={len(generated_text)}")
+        # 🔍 调试信息：显示所有生成的token
+        print(f"🔍 生成的所有token: {generated_ids.tolist()}")
+        print(f"🔍 完整解码结果: '{full_generated_text}'")
 
-        # 检查是否是预期的数字答案
-        if generated_text.strip() in ['1', '2', '3', '4']:
-            print(f"✅ 生成了有效数字: '{generated_text.strip()}'")
+        # 检查每个token，找到第一个数字token
+        for i, token_id in enumerate(generated_ids.tolist()):
+            token_text = tokenizer.decode([token_id], skip_special_tokens=True)
+            print(f"  Token {i}: {token_id} -> '{token_text}'")
+
+            # 如果找到数字token，使用它
+            if token_text.strip() in ['1', '2', '3', '4']:
+                generated_text = token_text.strip()
+                print(f"✅ 找到有效数字: '{generated_text}' (token {i})")
+                break
         else:
-            print(f"⚠️ 生成了非数字内容: '{generated_text}' (token_id={first_token})")
+            # 如果没有找到数字token，使用完整解码的第一个字符
+            generated_text = full_generated_text.strip()
+            if generated_text and generated_text[0] in '1234':
+                generated_text = generated_text[0]
+                print(f"✅ 从完整文本提取数字: '{generated_text}'")
+            else:
+                generated_text = full_generated_text
+                print(f"⚠️ 没有找到有效数字，使用完整结果: '{generated_text}'")
     else:
         generated_text = ""
         print(f"⚠️ 没有生成任何token")
