@@ -1117,7 +1117,7 @@ def main():
         print("Starting training...")
         print("="*80 + "\n")
 
-    best_eval_accuracy = 0.0
+    best_eval_loss = float('inf')  # 改为基于验证集损失保存最佳模型
     best_model_dir = os.path.join(args.output_dir, 'best_simplified_culturemoe')
     epoch_results = []
 
@@ -1182,9 +1182,9 @@ def main():
                     print(f"    Culture Loss: {val_metrics['culture_loss']:.4f}")
                 print(f"  Eval Accuracy: {gen_metrics['accuracy']:.4f} ({gen_metrics['correct']}/{gen_metrics['total']})")
 
-                # 根据accuracy保存最好的模型
-                if gen_metrics['accuracy'] > best_eval_accuracy:
-                    best_eval_accuracy = gen_metrics['accuracy']
+                # 根据验证集损失保存最好的模型（早停机制）
+                if val_metrics['loss'] < best_eval_loss:
+                    best_eval_loss = val_metrics['loss']
 
                     # 删除旧的最好模型
                     if os.path.exists(best_model_dir):
@@ -1200,7 +1200,7 @@ def main():
                     # 保存tokenizer
                     tokenizer.save_pretrained(best_model_dir)
 
-                    print(f"  ✅ Best model saved (accuracy: {best_eval_accuracy:.4f})")
+                    print(f"  ✅ Best model saved (eval_loss: {best_eval_loss:.4f}, accuracy: {gen_metrics['accuracy']:.4f})")
 
             # 记录结果
             epoch_results.append({
@@ -1216,7 +1216,7 @@ def main():
                 'eval_accuracy': gen_metrics['accuracy'],
                 'correct': gen_metrics['correct'],
                 'total': gen_metrics['total'],
-                'is_best': gen_metrics['accuracy'] == best_eval_accuracy
+                'is_best': val_metrics['loss'] == best_eval_loss
             })
         else:
             # 不评估的epoch，只记录训练损失
@@ -1282,7 +1282,7 @@ def main():
         print(f"  - epoch_eval_results.json (Epoch-by-epoch results)")
         print(f"  - generated_answers.json (Generated answers on validation set)")
         print(f"  - config.json (Training configuration)")
-        print(f"\nBest validation accuracy: {best_eval_accuracy:.4f}")
+        print(f"\nBest validation loss: {best_eval_loss:.4f} (early stopping based on eval loss)")
         print(f"Architecture: Simplified All Layers MoE")
         print(f"MoE layers: All layers FFN replaced with MoE")
         print(f"MoE experts: {args.num_moe_experts}")
