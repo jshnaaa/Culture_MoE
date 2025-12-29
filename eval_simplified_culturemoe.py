@@ -216,52 +216,114 @@ class SimplifiedCultureMoEEvaluator:
 
     def _load_trained_weights(self):
         """加载训练好的权重"""
-        # 🔧 修复：先加载LoRA权重到base_model，然后重新创建MoE适配器
+        # 🔧 修复权重加载顺序：先创建MoE适配器，再加载所有权重
+
+        # 1. 先加载LoRA权重到base_model
         lora_path = os.path.join(self.model_path, 'lora_weights')
         if os.path.exists(lora_path):
             try:
                 from peft import PeftModel
-                # 先加载LoRA权重到base_model
                 self.model_adapter.base_model = PeftModel.from_pretrained(
                     self.model_adapter.base_model, lora_path
                 )
                 print("✅ 加载LoRA权重")
 
                 # 🔧 关键修复：LoRA加载后，重新创建MoE适配器
-                # 因为MoE层需要基于最终的模型（包含LoRA）来创建
                 print("🔧 重新创建MoE适配器以匹配LoRA模型...")
                 self.model_adapter = SimplifiedCultureMoEAdapter(self.model_adapter.base_model, self.config)
 
             except Exception as e:
                 print(f"⚠️ LoRA权重加载失败: {e}")
 
-        # 加载MoE权重
+        # 2. 然后加载MoE权重（在MoE适配器创建之后）
         moe_path = os.path.join(self.model_path, 'moe_weights.pt')
         if os.path.exists(moe_path):
             try:
                 moe_state_dict = torch.load(moe_path, map_location='cpu')
 
-                # 加载MoE权重到对应的层
-                model_to_load = self.model_adapter.base_model.module if hasattr(self.model_adapter.base_model, 'module') else self.model_adapter.base_model
+                # 🔧 关键修复：直接在MoE适配器的backbone_model上加载权重
+                # 这样可以绕过所有包装层，直接访问实际的模型层
+                model_to_load = self.model_adapter.backbone_model
+                print(f"🔍 使用backbone_model进行权重加载: {type(model_to_load)}")
 
                 missing_keys = []
+                loaded_keys = []
+
+                print(f"🔍 尝试加载{len(moe_state_dict)}个MoE权重参数...")
+                print(f"🔍 目标模型类型: {type(model_to_load)}")
+
+                # 🔧 调试：打印一些参数名称以了解结构
+                sample_names = list(moe_state_dict.keys())[:3]
+                print(f"🔍 示例参数名称: {sample_names}")
+
                 for name, param in moe_state_dict.items():
                     try:
-                        # 查找对应的参数
-                        target_param = model_to_load
-                        for attr in name.split('.'):
-                            target_param = getattr(target_param, attr)
-                        target_param.data.copy_(param.data)
-                    except AttributeError:
+                        # 🔧 修复：尝试多种可能的参数路径
+                        target_param = None
+
+                        # 尝试1: 直接在model_to_load上查找
+                        try:
+                            target_param = model_to_load
+                            for attr in name.split('.'):
+                                target_param = getattr(target_param, attr)
+                        except AttributeError:
+                            target_param = None
+
+                        # 尝试2: 如果直接查找失败，尝试去掉可能的包装层前缀
+                        if target_param is None:
+                            # 去掉可能的前缀如 'base_model.model.' 或 'model.'
+                            for prefix in ['base_model.model.', 'model.', 'base_model.']:
+                                if name.startswith(prefix):
+                                    short_name = name[len(prefix):]
+                                    try:
+                                        target_param = model_to_load
+                                        for attr in short_name.split('.'):
+                                            target_param = getattr(target_param, attr)
+                                        break
+                                    except AttributeError:
+                                        continue
+
+                        # 尝试3: 如果还是找不到，尝试在self.model_adapter.base_model上查找
+                        if target_param is None:
+                            try:
+                                target_param = self.model_adapter.base_model
+                                for attr in name.split('.'):
+                                    target_param = getattr(target_param, attr)
+                            except AttributeError:
+                                target_param = None
+
+                        if target_param is not None:
+                            # 确保形状匹配
+                            if target_param.shape == param.shape:
+                                target_param.data.copy_(param.data)
+                                loaded_keys.append(name)
+                                print(f"  ✅ 加载: {name} (shape: {param.shape})")
+                            else:
+                                print(f"  ❌ 形状不匹配: {name} 期望{target_param.shape}, 得到{param.shape}")
+                                missing_keys.append(name)
+                        else:
+                            missing_keys.append(name)
+                            print(f"  ❌ 未找到: {name}")
+
+                    except Exception as e:
                         missing_keys.append(name)
+                        print(f"  ❌ 加载失败: {name} (错误: {e})")
+
+                print(f"\n📊 MoE权重加载结果:")
+                print(f"  - 成功加载: {len(loaded_keys)}个")
+                print(f"  - 未找到: {len(missing_keys)}个")
 
                 if missing_keys:
-                    print(f"⚠️ 部分MoE权重未找到对应参数: {len(missing_keys)}个")
+                    print(f"⚠️ 警告：{len(missing_keys)}个MoE权重未加载！")
+                    print("  这可能导致MoE层无法正常工作！")
+                    print(f"  未加载的权重: {missing_keys[:5]}...")  # 只显示前5个
                 else:
-                    print("✅ 加载MoE权重")
+                    print("✅ 所有MoE权重加载成功")
 
             except Exception as e:
                 print(f"⚠️ MoE权重加载失败: {e}")
+                import traceback
+                traceback.print_exc()
 
     def set_ablation_config(self, disable_shared: bool = False, disable_mask: bool = False,
                            disable_gate: bool = False, disable_culture_loss: bool = False):
