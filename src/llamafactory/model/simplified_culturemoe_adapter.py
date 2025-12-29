@@ -71,8 +71,8 @@ class LoRAExpert(nn.Module):
     def forward(self, x):
         """前向传播：只返回LoRA增量，不包含原始FFN"""
         # 🔧 序列长度检查：如果输入过大，返回零增量
-        if x.dim() >= 2 and x.shape[-2] > 512:
-            print(f"⚠️ LoRA专家输入序列过长 ({x.shape[-2]} > 512)，返回零增量")
+        if x.dim() >= 2 and x.shape[-2] > 769:
+            print(f"⚠️ LoRA专家输入序列过长 ({x.shape[-2]} > 769)，返回零增量")
             return torch.zeros_like(x)
 
         # 检查输入
@@ -277,8 +277,8 @@ class MoEFFNLoRA(nn.Module):
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
         # 🔧 序列长度安全检查：如果序列过长，直接使用原始FFN
-        if seq_len > 512:
-            print(f"⚠️ 序列长度过长 ({seq_len} > 512)，使用原始FFN避免显存溢出")
+        if seq_len > 769:
+            print(f"⚠️ 序列长度过长 ({seq_len} > 769)，使用原始FFN避免显存溢出")
             return self.original_ffn(hidden_states)
 
         # 检查输入

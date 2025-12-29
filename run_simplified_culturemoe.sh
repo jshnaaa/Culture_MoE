@@ -275,7 +275,10 @@ NUM_EPOCHS=6              # 🔧 减少到7轮，避免过拟合（观察到第8
 
 # 动态设置max_seq_len：参考joint版本逻辑，进一步降低应对显存问题
 echo "🔧 调试信息: DATA_ID='$DATA_ID'"
-if [ "$DATA_ID" = "3" ] || [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
+if [ "$DATA_ID" = "3" ]; then
+    MAX_SEQ_LEN=769       # 🔧 normad数据集需要更长序列长度（最长768+1）
+    echo "🔧 检测到normad数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=769（支持长文本）"
+elif [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
     MAX_SEQ_LEN=512       # 🔧 长文本数据集降低到512应对显存问题
     echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=512（显存优化）"
 else

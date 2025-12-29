@@ -241,44 +241,63 @@ CULTUREATLAS_SPLIT_FILE=""
 
 if [ "$USE_PKL_SPLIT" = "true" ]; then
     if [ "$USE_MULTI_DATASET_SPLIT" = "true" ]; then
-        # 多数据集模式：查找 blend 和 cultureatlas 的分割文件
-        echo "🔍 查找多数据集划分文件..."
+        # 多数据集模式：动态查找pkl文件
+        echo "🔍 查找数据集划分文件..."
 
-        # 查找 blend 数据集划分文件
-        if [ -f "$TRAINING_OUTPUT_DIR/blend_data_split_8_1_1.pkl" ]; then
-            BLEND_SPLIT_FILE="$TRAINING_OUTPUT_DIR/blend_data_split_8_1_1.pkl"
-        elif [ -f "$MODEL_PATH/blend_data_split_8_1_1.pkl" ]; then
-            BLEND_SPLIT_FILE="$MODEL_PATH/blend_data_split_8_1_1.pkl"
-        elif [ -f "/root/autodl-fs/simplified_culturemoe/blend_data_split_8_1_1.pkl" ]; then
-            BLEND_SPLIT_FILE="/root/autodl-fs/simplified_culturemoe/blend_data_split_8_1_1.pkl"
-        fi
+        # 定义搜索目录
+        SEARCH_DIRS=("$TRAINING_OUTPUT_DIR" "$MODEL_PATH" "/root/autodl-fs/simplified_culturemoe")
 
-        # 查找 cultureatlas 数据集划分文件
-        if [ -f "$TRAINING_OUTPUT_DIR/cultureatlas_data_split_8_1_1.pkl" ]; then
-            CULTUREATLAS_SPLIT_FILE="$TRAINING_OUTPUT_DIR/cultureatlas_data_split_8_1_1.pkl"
-        elif [ -f "$MODEL_PATH/cultureatlas_data_split_8_1_1.pkl" ]; then
-            CULTUREATLAS_SPLIT_FILE="$MODEL_PATH/cultureatlas_data_split_8_1_1.pkl"
-        elif [ -f "/root/autodl-fs/simplified_culturemoe/cultureatlas_data_split_8_1_1.pkl" ]; then
-            CULTUREATLAS_SPLIT_FILE="/root/autodl-fs/simplified_culturemoe/cultureatlas_data_split_8_1_1.pkl"
-        fi
+        # 查找所有pkl文件
+        PKL_FILES=()
+        for dir in "${SEARCH_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+                while IFS= read -r -d '' file; do
+                    PKL_FILES+=("$file")
+                done < <(find "$dir" -maxdepth 1 -name "*data_split_8_1_1.pkl" -print0 2>/dev/null)
+            fi
+        done
 
-        # 检查是否找到了必要的划分文件
-        if [ -n "$BLEND_SPLIT_FILE" ] && [ -n "$CULTUREATLAS_SPLIT_FILE" ]; then
-            echo "✅ 找到多数据集划分文件:"
-            echo "  - blend: $BLEND_SPLIT_FILE"
-            echo "  - cultureatlas: $CULTUREATLAS_SPLIT_FILE"
-        elif [ -n "$BLEND_SPLIT_FILE" ]; then
-            echo "✅ 找到blend数据划分文件: $BLEND_SPLIT_FILE"
-            echo "⚠️ 未找到cultureatlas数据划分文件，将仅测试blend数据集"
-        elif [ -n "$CULTUREATLAS_SPLIT_FILE" ]; then
-            echo "✅ 找到cultureatlas数据划分文件: $CULTUREATLAS_SPLIT_FILE"
-            echo "⚠️ 未找到blend数据划分文件，将仅测试cultureatlas数据集"
-        else
-            echo "❌ 未找到任何多数据集划分文件"
-            echo "请确保以下位置之一存在 blend_data_split_8_1_1.pkl 和 cultureatlas_data_split_8_1_1.pkl 文件："
+        if [ ${#PKL_FILES[@]} -eq 0 ]; then
+            echo "❌ 未找到任何数据集划分文件"
+            echo "请确保以下位置之一存在 *data_split_8_1_1.pkl 文件："
             echo "  1. $TRAINING_OUTPUT_DIR/ (推荐)"
             echo "  2. $MODEL_PATH/"
             echo "  3. /root/autodl-fs/simplified_culturemoe/"
+            exit 1
+        fi
+
+        # 显示找到的pkl文件并分类
+        echo "✅ 找到 ${#PKL_FILES[@]} 个数据集划分文件:"
+        for pkl_file in "${PKL_FILES[@]}"; do
+            basename_file=$(basename "$pkl_file")
+            echo "  - $basename_file: $pkl_file"
+
+            # 根据文件名分类
+            if [[ "$basename_file" == *"blend"* ]]; then
+                BLEND_SPLIT_FILE="$pkl_file"
+            elif [[ "$basename_file" == *"cultureatlas"* ]]; then
+                CULTUREATLAS_SPLIT_FILE="$pkl_file"
+            elif [[ "$basename_file" == "data_split_8_1_1.pkl" ]]; then
+                # 单数据集文件，检查是否是合并数据集
+                SPLIT_FILE="$pkl_file"
+            fi
+        done
+
+        # 检查找到的文件类型
+        if [ -n "$BLEND_SPLIT_FILE" ] && [ -n "$CULTUREATLAS_SPLIT_FILE" ]; then
+            echo "✅ 检测到多数据集训练：blend + cultureatlas"
+        elif [ -n "$SPLIT_FILE" ]; then
+            echo "✅ 检测到单一数据集或合并数据集训练"
+            # 对于单一pkl文件，需要检查是否包含多数据集信息
+            USE_MULTI_DATASET_SPLIT=false
+        elif [ -n "$BLEND_SPLIT_FILE" ]; then
+            echo "✅ 找到blend数据划分文件，将仅测试blend数据集"
+            CULTUREATLAS_SPLIT_FILE=""
+        elif [ -n "$CULTUREATLAS_SPLIT_FILE" ]; then
+            echo "✅ 找到cultureatlas数据划分文件，将仅测试cultureatlas数据集"
+            BLEND_SPLIT_FILE=""
+        else
+            echo "❌ 未找到有效的数据集划分文件"
             exit 1
         fi
     else
@@ -307,11 +326,21 @@ else
     echo "📊 使用完整数据集模式，跳过数据划分文件查找"
 fi
 
+# 设置序列长度（根据数据集类型）
+if [ "$DATA_ID" = "3" ]; then
+    MAX_LENGTH=769  # normad数据集需要更长序列长度
+    echo "🔧 normad数据集使用序列长度: $MAX_LENGTH"
+else
+    MAX_LENGTH=512  # 其他数据集使用默认长度
+    echo "🔧 使用序列长度: $MAX_LENGTH"
+fi
+
 # 构建eval命令参数
 EVAL_ARGS="--model_path \"$MODEL_PATH\" \
     --base_model_path \"$BASE_MODEL_PATH\" \
     --output_dir \"$OUTPUT_DIR\" \
-    --experiment_name \"$EXPERIMENT_NAME\""
+    --experiment_name \"$EXPERIMENT_NAME\" \
+    --max_length $MAX_LENGTH"
 
 # 执行评估 - 支持多数据集分离测试
 EXPERIMENT_SUCCESS=0
@@ -343,7 +372,8 @@ print(split_info.get('data_path', ''))")
                 --experiment_name \"${EXPERIMENT_NAME}_blend\" \
                 --use_fixed_split \
                 --split_file \"$BLEND_SPLIT_FILE\" \
-                --data_file \"$BLEND_DATA_FILE\""
+                --data_file \"$BLEND_DATA_FILE\" \
+                --max_length $MAX_LENGTH"
 
             # 根据配置添加disable参数
             if [ "$USE_SHARED" = "false" ]; then
@@ -398,7 +428,8 @@ print(split_info.get('data_path', ''))")
                 --experiment_name \"${EXPERIMENT_NAME}_cultureatlas\" \
                 --use_fixed_split \
                 --split_file \"$CULTUREATLAS_SPLIT_FILE\" \
-                --data_file \"$CULTUREATLAS_DATA_FILE\""
+                --data_file \"$CULTUREATLAS_DATA_FILE\" \
+                --max_length $MAX_LENGTH"
 
             # 根据配置添加disable参数
             if [ "$USE_SHARED" = "false" ]; then
