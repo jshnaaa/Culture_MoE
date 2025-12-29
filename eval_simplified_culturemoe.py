@@ -203,39 +203,36 @@ class SimplifiedCultureMoEEvaluator:
         )
         base_model = base_model.to(device)
 
-        # 创建MoE适配器
-        self.model_adapter = SimplifiedCultureMoEAdapter(base_model, self.config)
-
-        # 加载训练好的权重
-        self._load_trained_weights()
+        # 先加载LoRA权重，然后创建MoE适配器
+        self.base_model = base_model
+        self._load_trained_weights_and_create_adapter()
 
         # 设置为评估模式
         self.model_adapter.base_model.eval()
 
         print("✅ 模型加载完成")
 
-    def _load_trained_weights(self):
-        """加载训练好的权重"""
-        # 🔧 修复权重加载顺序：先创建MoE适配器，再加载所有权重
+    def _load_trained_weights_and_create_adapter(self):
+        """正确顺序加载权重并创建适配器"""
+        # 🔧 修复权重加载顺序：先加载LoRA权重，再创建MoE适配器，最后加载MoE权重
 
         # 1. 先加载LoRA权重到base_model
         lora_path = os.path.join(self.model_path, 'lora_weights')
         if os.path.exists(lora_path):
             try:
                 from peft import PeftModel
-                self.model_adapter.base_model = PeftModel.from_pretrained(
-                    self.model_adapter.base_model, lora_path
+                self.base_model = PeftModel.from_pretrained(
+                    self.base_model, lora_path
                 )
                 print("✅ 加载LoRA权重")
-
-                # 🔧 关键修复：LoRA加载后，重新创建MoE适配器
-                print("🔧 重新创建MoE适配器以匹配LoRA模型...")
-                self.model_adapter = SimplifiedCultureMoEAdapter(self.model_adapter.base_model, self.config)
-
             except Exception as e:
                 print(f"⚠️ LoRA权重加载失败: {e}")
 
-        # 2. 然后加载MoE权重（在MoE适配器创建之后）
+        # 2. 创建MoE适配器（基于已加载LoRA的模型）
+        print("🔧 创建MoE适配器...")
+        self.model_adapter = SimplifiedCultureMoEAdapter(self.base_model, self.config)
+
+        # 3. 最后加载MoE权重（在MoE适配器创建之后）
         moe_path = os.path.join(self.model_path, 'moe_weights.pt')
         if os.path.exists(moe_path):
             try:
@@ -256,51 +253,69 @@ class SimplifiedCultureMoEEvaluator:
                 sample_names = list(moe_state_dict.keys())[:3]
                 print(f"🔍 示例参数名称: {sample_names}")
 
+                # 🔧 先检查模型结构，打印一些层的名称以便调试
+                print("🔍 检查模型结构...")
+                if hasattr(model_to_load, 'layers') and len(model_to_load.layers) > 0:
+                    layer0 = model_to_load.layers[0]
+                    if hasattr(layer0, 'mlp'):
+                        print(f"  - 第0层MLP类型: {type(layer0.mlp)}")
+                        if hasattr(layer0.mlp, 'experts'):
+                            print(f"  - 检测到experts: {type(layer0.mlp.experts)}")
+                        if hasattr(layer0.mlp, 'router'):
+                            print(f"  - 检测到router: {type(layer0.mlp.router)}")
+
                 for name, param in moe_state_dict.items():
                     try:
-                        # 🔧 修复：尝试多种可能的参数路径
+                        # 🔧 修复：更智能的参数路径匹配
                         target_param = None
 
-                        # 尝试1: 直接在model_to_load上查找
+                        # 清理参数名称，去掉常见的包装前缀
+                        clean_name = name
+                        prefixes_to_remove = [
+                            'base_model.model.model.',
+                            'base_model.model.',
+                            'model.model.',
+                            'model.',
+                            'base_model.',
+                            'backbone_model.'
+                        ]
+
+                        for prefix in prefixes_to_remove:
+                            if clean_name.startswith(prefix):
+                                clean_name = clean_name[len(prefix):]
+                                break
+
+                        # 尝试在backbone_model上查找清理后的参数名
                         try:
                             target_param = model_to_load
-                            for attr in name.split('.'):
+                            for attr in clean_name.split('.'):
                                 target_param = getattr(target_param, attr)
                         except AttributeError:
                             target_param = None
 
-                        # 尝试2: 如果直接查找失败，尝试去掉可能的包装层前缀
-                        if target_param is None:
-                            # 去掉可能的前缀如 'base_model.model.' 或 'model.'
-                            for prefix in ['base_model.model.', 'model.', 'base_model.']:
-                                if name.startswith(prefix):
-                                    short_name = name[len(prefix):]
-                                    try:
-                                        target_param = model_to_load
-                                        for attr in short_name.split('.'):
-                                            target_param = getattr(target_param, attr)
-                                        break
-                                    except AttributeError:
-                                        continue
-
-                        # 尝试3: 如果还是找不到，尝试在self.model_adapter.base_model上查找
+                        # 如果还是找不到，尝试原始名称
                         if target_param is None:
                             try:
-                                target_param = self.model_adapter.base_model
+                                target_param = model_to_load
                                 for attr in name.split('.'):
                                     target_param = getattr(target_param, attr)
                             except AttributeError:
                                 target_param = None
 
                         if target_param is not None:
-                            # 确保形状匹配
-                            if target_param.shape == param.shape:
-                                target_param.data.copy_(param.data)
-                                loaded_keys.append(name)
-                                print(f"  ✅ 加载: {name} (shape: {param.shape})")
+                            # 确保target_param是参数张量而不是模型对象
+                            if hasattr(target_param, 'shape') and hasattr(target_param, 'data'):
+                                # 确保形状匹配
+                                if target_param.shape == param.shape:
+                                    target_param.data.copy_(param.data)
+                                    loaded_keys.append(name)
+                                    print(f"  ✅ 加载: {name} (shape: {param.shape})")
+                                else:
+                                    print(f"  ❌ 形状不匹配: {name} 期望{target_param.shape}, 得到{param.shape}")
+                                    missing_keys.append(name)
                             else:
-                                print(f"  ❌ 形状不匹配: {name} 期望{target_param.shape}, 得到{param.shape}")
                                 missing_keys.append(name)
+                                print(f"  ❌ 找到对象但不是参数张量: {name} (type: {type(target_param)})")
                         else:
                             missing_keys.append(name)
                             print(f"  ❌ 未找到: {name}")
