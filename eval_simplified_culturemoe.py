@@ -240,16 +240,22 @@ class SimplifiedCultureMoEEvaluator:
 
     def _load_trained_weights(self):
         """加载训练好的权重"""
-        # 加载LoRA权重
+        # 🔧 修复：先加载LoRA权重到base_model，然后重新创建MoE适配器
         lora_path = os.path.join(self.model_path, 'lora_weights')
         if os.path.exists(lora_path):
             try:
                 from peft import PeftModel
-                # 如果有LoRA权重，加载它们
+                # 先加载LoRA权重到base_model
                 self.model_adapter.base_model = PeftModel.from_pretrained(
                     self.model_adapter.base_model, lora_path
                 )
                 print("✅ 加载LoRA权重")
+
+                # 🔧 关键修复：LoRA加载后，重新创建MoE适配器
+                # 因为MoE层需要基于最终的模型（包含LoRA）来创建
+                print("🔧 重新创建MoE适配器以匹配LoRA模型...")
+                self.model_adapter = SimplifiedCultureMoEAdapter(self.model_adapter.base_model, self.config)
+
             except Exception as e:
                 print(f"⚠️ LoRA权重加载失败: {e}")
 
