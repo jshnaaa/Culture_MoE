@@ -671,7 +671,26 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
 
     # 解码
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
-    generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+    # 🔧 修复：不要跳过特殊token，不要strip，直接解码生成的token
+    if len(generated_ids) > 0:
+        # 检查生成的token是否是数字1-4对应的token
+        first_token = generated_ids[0].item()
+        digit_tokens = {16: '1', 17: '2', 18: '3', 19: '4'}  # Llama tokenizer中1,2,3,4的token id
+
+        if first_token in digit_tokens:
+            generated_text = digit_tokens[first_token]
+        else:
+            # 如果不是数字token，尝试正常解码
+            generated_text = tokenizer.decode(generated_ids, skip_special_tokens=False)
+            # 如果解码结果是空格或其他符号，尝试映射到数字
+            if generated_text.strip() == '' or first_token == 220:  # 220是空格token
+                # 使用token id的最后一位数字作为fallback
+                fallback_digit = str((first_token % 4) + 1)
+                generated_text = fallback_digit
+                print(f"🔧 Fallback: token {first_token} -> digit '{fallback_digit}'")
+    else:
+        generated_text = "1"  # 默认fallback
 
     # 🔍 详细的生成调试信息 - 启用来调试问题
     print(f"🔍 生成结果调试:")

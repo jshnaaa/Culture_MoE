@@ -180,9 +180,42 @@ class SimplifiedCultureMoEEvaluator:
 
         # 加载tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+
+        # 🔧 修复：避免pad_token_id和eos_token_id相同的问题
         if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+            # 对于Llama模型，使用安全的padding token
+            if hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id == 128009:
+                # Llama 3.1: 尝试使用官方padding token
+                try:
+                    official_pad_token = "<|finetune_right_pad_id|>"
+                    pad_token_id = self.tokenizer.convert_tokens_to_ids(official_pad_token)
+                    if pad_token_id != self.tokenizer.unk_token_id and pad_token_id is not None:
+                        self.tokenizer.pad_token = official_pad_token
+                        self.tokenizer.pad_token_id = pad_token_id
+                        print(f"✅ 使用官方padding token: '{official_pad_token}' (id={pad_token_id})")
+                    else:
+                        raise ValueError("Official pad token not found")
+                except:
+                    # 使用安全的低频字符
+                    safe_tokens = ['~', '`', '|', '^']
+                    for safe_token in safe_tokens:
+                        try:
+                            safe_token_id = self.tokenizer.convert_tokens_to_ids(safe_token)
+                            if safe_token_id != self.tokenizer.unk_token_id and safe_token_id != 128009:
+                                self.tokenizer.pad_token = safe_token
+                                self.tokenizer.pad_token_id = safe_token_id
+                                print(f"🔧 使用安全字符 '{safe_token}' (id={safe_token_id}) 作为padding")
+                                break
+                        except:
+                            continue
+            else:
+                # 其他模型：使用eos_token作为fallback
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+
         self.tokenizer.padding_side = "right"
+
+        # 验证tokenizer配置
+        print(f"✅ Tokenizer配置: pad_token_id={self.tokenizer.pad_token_id}, eos_token_id={self.tokenizer.eos_token_id}")
 
         # 加载基础模型
         base_model = AutoModelForCausalLM.from_pretrained(
