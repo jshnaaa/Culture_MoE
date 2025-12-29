@@ -90,10 +90,9 @@ def load_fixed_test_split(data_file: str, tokenizer, max_length: int,
         print(f"  保存的: {split_info.get('data_path')}")
         print(f"  当前的: {data_file}")
 
-    # 创建完整数据集（评估时不启用MASK机制）
+    # 创建完整数据集
     full_dataset = CultureLLMNewFormatDataset(
-        data_file, tokenizer, max_length,
-        enable_mask=False  # 评估时不使用MASK
+        data_file, tokenizer, max_length
     )
 
     if len(full_dataset) != split_info['total_size']:
