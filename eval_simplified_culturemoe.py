@@ -337,8 +337,7 @@ class SimplifiedCultureMoEEvaluator:
             # 回退到原来的逻辑（兼容性）
             print("⚠️ 未指定数据划分文件，使用原有的验证集划分逻辑")
             full_dataset = CultureLLMNewFormatDataset(
-                data_file, self.tokenizer, max_length,
-                enable_mask=False  # 评估时不使用MASK
+                data_file, self.tokenizer, max_length
             )
 
             # 处理验证集划分
