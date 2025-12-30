@@ -22,7 +22,8 @@ class LoRAExpert(nn.Module):
         self.original_ffn = original_ffn  # 保持原始FFN不变
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
-        self.scaling = lora_alpha / lora_rank
+        # 🔧 数值稳定性修复：限制scaling范围，避免梯度爆炸
+        self.scaling = min(lora_alpha / lora_rank, 1.0)  # 最大为1.0
 
         # 获取原始FFN的维度和数据类型
         self.hidden_dim = original_ffn.gate_proj.in_features
@@ -89,9 +90,14 @@ class LoRAExpert(nn.Module):
             up_original = self.original_ffn.up_proj(x)
             intermediate_original = gate_original * up_original
 
-            # LoRA分支计算
-            gate_lora = self.gate_lora_B(self.gate_lora_A(x)) * self.scaling
-            up_lora = self.up_lora_B(self.up_lora_A(x)) * self.scaling
+            # LoRA分支计算（数值稳定版本）
+            gate_lora_a = self.gate_lora_A(x)
+            gate_lora_a = torch.clamp(gate_lora_a, min=-5.0, max=5.0)  # 限制中间结果
+            gate_lora = self.gate_lora_B(gate_lora_a) * self.scaling
+
+            up_lora_a = self.up_lora_A(x)
+            up_lora_a = torch.clamp(up_lora_a, min=-5.0, max=5.0)  # 限制中间结果
+            up_lora = self.up_lora_B(up_lora_a) * self.scaling
 
             # 计算修改后的intermediate
             gate_combined = gate_original + gate_lora
@@ -105,8 +111,10 @@ class LoRAExpert(nn.Module):
             # Dropout
             intermediate_delta = self.dropout(intermediate_delta)
 
-            # 计算最终的LoRA增量（只包含增量部分）
-            down_lora_from_delta = self.down_lora_B(self.down_lora_A(intermediate_delta)) * self.scaling
+            # 计算最终的LoRA增量（只包含增量部分，数值稳定版本）
+            down_lora_a = self.down_lora_A(intermediate_delta)
+            down_lora_a = torch.clamp(down_lora_a, min=-5.0, max=5.0)  # 限制中间结果
+            down_lora_from_delta = self.down_lora_B(down_lora_a) * self.scaling
             down_original_delta = self.original_ffn.down_proj(intermediate_delta)
 
             # 返回总的增量
