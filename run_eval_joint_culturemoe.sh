@@ -75,62 +75,103 @@ case $DATA_ID in
         ;;
 esac
 
-# 查找匹配的模型目录
-echo "🔍 在 $MODEL_PATH 中查找联合训练模型..."
+# 检查提供的模型路径
+echo "🔍 检查联合训练模型路径: $MODEL_PATH"
 
-# 查找所有可能的模型目录（按时间倒序）
-if [ "$DATA_ID" = "0" ]; then
-    # 对于pkl文件模式，查找任何包含指定backbone的模型目录
-    CANDIDATE_DIRS=$(find "$MODEL_PATH" -maxdepth 1 -type d -name "*${MODEL_NAME}_*" 2>/dev/null | sort -r)
-    echo "   查找模式: *${MODEL_NAME}_* (pkl文件模式，匹配任何数据集)"
+# 🔧 修复：检查用户提供的路径是否直接包含best_joint_model
+if [ -d "$MODEL_PATH/best_joint_model" ]; then
+    # 用户直接提供了包含best_joint_model的目录（这是正确的情况）
+    FOUND_MODEL="$MODEL_PATH/best_joint_model"
+    echo "✅ 找到联合训练模型: $FOUND_MODEL"
 else
-    # 对于特定数据集，使用精确匹配
-    CANDIDATE_DIRS=$(find "$MODEL_PATH" -maxdepth 1 -type d -name "*${MODEL_NAME}_${DATASET_TAG}*" 2>/dev/null | sort -r)
-    echo "   查找模式: *${MODEL_NAME}_${DATASET_TAG}*"
-fi
+    # 🔧 修复：如果用户提供的路径本身就是best_joint_model目录
+    if [ -f "$MODEL_PATH/joint_config.json" ] && [ -f "$MODEL_PATH/moe_weights.pt" ]; then
+        FOUND_MODEL="$MODEL_PATH"
+        echo "✅ 用户提供的路径本身就是联合训练模型目录: $FOUND_MODEL"
+    else
+        # 在提供的路径下查找子目录
+        echo "🔍 在 $MODEL_PATH 中查找联合训练模型..."
 
-if [ -z "$CANDIDATE_DIRS" ]; then
-    echo "❌ 在 $MODEL_PATH 中未找到匹配的模型目录"
-    echo "   请检查模型路径和参数设置"
-    exit 1
-fi
+        # 查找所有可能的模型目录（按时间倒序）
+        if [ "$DATA_ID" = "0" ]; then
+            # 对于pkl文件模式，查找任何包含指定backbone的模型目录
+            CANDIDATE_DIRS=$(find "$MODEL_PATH" -maxdepth 1 -type d -name "*${MODEL_NAME}_*" 2>/dev/null | sort -r)
+            echo "   查找模式: *${MODEL_NAME}_* (pkl文件模式，匹配任何数据集)"
+        else
+            # 对于特定数据集，使用精确匹配
+            CANDIDATE_DIRS=$(find "$MODEL_PATH" -maxdepth 1 -type d -name "*${MODEL_NAME}_${DATASET_TAG}*" 2>/dev/null | sort -r)
+            echo "   查找模式: *${MODEL_NAME}_${DATASET_TAG}*"
+        fi
 
-# 查找包含best_joint_model的目录
-FOUND_MODEL=""
-for dir in $CANDIDATE_DIRS; do
-    if [ -d "$dir/best_joint_model" ]; then
-        FOUND_MODEL="$dir/best_joint_model"
-        echo "✅ 找到联合训练模型: $FOUND_MODEL"
-        break
+        if [ -z "$CANDIDATE_DIRS" ]; then
+            echo "❌ 在 $MODEL_PATH 中未找到匹配的模型目录"
+            echo "   请检查模型路径和参数设置"
+            exit 1
+        fi
+
+        # 查找包含best_joint_model的目录
+        FOUND_MODEL=""
+        for dir in $CANDIDATE_DIRS; do
+            if [ -d "$dir/best_joint_model" ]; then
+                FOUND_MODEL="$dir/best_joint_model"
+                echo "✅ 找到联合训练模型: $FOUND_MODEL"
+                break
+            fi
+        done
+
+        if [ -z "$FOUND_MODEL" ]; then
+            echo "❌ 未找到包含best_joint_model/的目录"
+            echo "可用的候选目录:"
+            for dir in $CANDIDATE_DIRS; do
+                echo "  - $dir"
+            done
+            echo "请确保模型训练已完成并保存了最佳模型"
+            exit 1
+        fi
     fi
-done
-
-if [ -z "$FOUND_MODEL" ]; then
-    echo "❌ 未找到包含best_joint_model/的目录"
-    echo "可用的候选目录:"
-    for dir in $CANDIDATE_DIRS; do
-        echo "  - $dir"
-    done
-    echo "请确保模型训练已完成并保存了最佳模型"
-    exit 1
 fi
 
 # 验证模型文件
-if [ ! -f "$FOUND_MODEL/config.json" ]; then
-    echo "❌ 模型配置文件不存在: $FOUND_MODEL/config.json"
+if [ ! -f "$FOUND_MODEL/joint_config.json" ]; then
+    echo "❌ 联合模型配置文件不存在: $FOUND_MODEL/joint_config.json"
+    exit 1
+fi
+
+# 验证MoE权重文件
+if [ ! -f "$FOUND_MODEL/moe_weights.pt" ]; then
+    echo "❌ MoE权重文件不存在: $FOUND_MODEL/moe_weights.pt"
+    exit 1
+fi
+
+# 验证LoRA权重目录
+if [ ! -d "$FOUND_MODEL/lora_weights" ]; then
+    echo "❌ LoRA权重目录不存在: $FOUND_MODEL/lora_weights"
     exit 1
 fi
 
 # 设置pkl文件路径（用于DATA_ID=0）
 PKL_FILE=""
 if [ "$DATA_ID" = "0" ]; then
-    # 在模型的父目录中查找pkl文件
+    # 🔧 修复：根据实际目录结构查找pkl文件
+    # 用户提供的目录结构：MODEL_PATH/data_split_8_1_1.pkl
+    # FOUND_MODEL指向：MODEL_PATH/best_joint_model/
+    # 所以pkl文件在FOUND_MODEL的父目录中
+
     MODEL_PARENT_DIR=$(dirname "$FOUND_MODEL")
     PKL_FILE="$MODEL_PARENT_DIR/data_split_8_1_1.pkl"
+
+    echo "🔍 查找pkl文件:"
+    echo "  - FOUND_MODEL: $FOUND_MODEL"
+    echo "  - MODEL_PARENT_DIR: $MODEL_PARENT_DIR"
+    echo "  - 期望的PKL文件路径: $PKL_FILE"
 
     if [ ! -f "$PKL_FILE" ]; then
         echo "❌ 数据集划分文件不存在: $PKL_FILE"
         echo "请确保联合训练时保存了数据集划分信息"
+        echo ""
+        echo "🔍 调试信息：查找模型目录中的所有文件"
+        echo "模型父目录内容:"
+        ls -la "$MODEL_PARENT_DIR" 2>/dev/null || echo "无法列出目录内容"
         exit 1
     fi
     echo "✅ 找到数据集划分文件: $PKL_FILE"

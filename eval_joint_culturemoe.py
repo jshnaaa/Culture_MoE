@@ -175,60 +175,150 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
         with open(config_file, 'r') as f:
             saved_config = json.load(f)
         print("✅ Loaded saved joint model configuration")
+        print(f"  - Saved config keys: {list(saved_config.keys())}")
     else:
         print("⚠️ No saved config found, using default configuration")
         saved_config = {}
 
-    # 创建联合模型配置，优先使用保存的配置
+    # 🔧 修复：创建联合模型配置，完全匹配训练脚本的保存格式
+    # 根据训练脚本的save_model方法，保存的配置包含：
+    # lora_rank, lora_alpha, lora_dropout, lora_target_modules,
+    # num_moe_experts, moe_hidden_dim, moe_intermediate_dim,
+    # use_culture_loss, culture_loss_weight, dropout
     joint_config = JointLoRAMoEConfig(
-        # LoRA配置
+        # LoRA配置 - 从保存的配置中读取，确保与训练时一致
         lora_rank=saved_config.get('lora_rank', lora_rank),
         lora_alpha=saved_config.get('lora_alpha', lora_alpha),
         lora_dropout=saved_config.get('lora_dropout', 0.1),
         lora_target_modules=saved_config.get('lora_target_modules', ["q_proj", "k_proj", "v_proj", "o_proj"]),
         use_lora=True,  # 评估时总是启用LoRA
 
-        # MoE配置
+        # MoE配置 - 从保存的配置中读取，确保与训练时一致
         num_moe_experts=saved_config.get('num_moe_experts', num_moe_experts),
-        num_activated_experts=saved_config.get('num_activated_experts', num_activated_experts),
-        moe_hidden_dim=saved_config.get('moe_hidden_dim', 2048),
-        moe_intermediate_dim=saved_config.get('moe_intermediate_dim', None),
-        moe_influence_weight=saved_config.get('moe_influence_weight', 0.1),
+        num_activated_experts=num_activated_experts,  # 这个参数不在保存的配置中，使用传入值
+        moe_hidden_dim=saved_config.get('moe_hidden_dim', 4096),  # 从保存的配置读取
+        moe_intermediate_dim=saved_config.get('moe_intermediate_dim', None),  # 从保存的配置读取
+        moe_influence_weight=saved_config.get('moe_influence_weight', 0.1),  # 🔧 修复：从配置读取，确保一致
 
-        # 文化损失配置
+        # 文化损失配置 - 从保存的配置中读取
         use_culture_loss=saved_config.get('use_culture_loss', use_culture_loss),
         culture_loss_weight=saved_config.get('culture_loss_weight', 0.01),
 
-        # 其他配置
+        # 其他配置 - 从保存的配置中读取
         dropout=saved_config.get('dropout', 0.1)
     )
 
-    # 创建联合模型
-    joint_model = JointLoRAMoEModel(base_model, joint_config)
+    print(f"✅ Joint model config created:")
+    print(f"  - LoRA: rank={joint_config.lora_rank}, alpha={joint_config.lora_alpha}, dropout={joint_config.lora_dropout}")
+    print(f"  - LoRA target modules: {joint_config.lora_target_modules}")
+    print(f"  - MoE: experts={joint_config.num_moe_experts}, activated={joint_config.num_activated_experts}")
+    print(f"  - MoE hidden_dim: {joint_config.moe_hidden_dim}, intermediate_dim: {joint_config.moe_intermediate_dim}")
+    print(f"  - Culture loss: {joint_config.use_culture_loss}, weight: {joint_config.culture_loss_weight}")
+    print(f"  - Dropout: {joint_config.dropout}")
 
-    # 手动加载训练好的权重
-    # 1. 加载LoRA权重
+    # 🔧 修复：先加载LoRA权重到base_model，再创建联合模型
+    # 这个顺序很重要，必须先应用LoRA，再创建JointLoRAMoEModel
     lora_path = os.path.join(joint_model_path, 'lora_weights')
     if os.path.exists(lora_path):
-        print("Loading LoRA weights...")
-        from peft import PeftModel
-        # 重新加载带有LoRA权重的模型
-        joint_model.base_model = PeftModel.from_pretrained(base_model, lora_path)
-        print("✅ LoRA weights loaded")
-    else:
-        print("⚠️ LoRA weights not found, using base model without LoRA")
+        print(f"Loading LoRA weights from: {lora_path}")
 
-    # 2. 加载MoE权重
+        # 检查LoRA权重目录的内容
+        import os
+        lora_files = os.listdir(lora_path)
+        print(f"  - LoRA files found: {lora_files}")
+
+        try:
+            from peft import PeftModel
+            # 加载LoRA权重到基础模型
+            base_model = PeftModel.from_pretrained(base_model, lora_path)
+            print("✅ LoRA weights loaded successfully")
+        except Exception as e:
+            print(f"❌ Failed to load LoRA weights: {e}")
+            print("  - Using base model without LoRA")
+    else:
+        print(f"⚠️ LoRA weights directory not found: {lora_path}")
+        print("  - Using base model without LoRA")
+
+    # 创建联合模型（基于已加载LoRA的base_model）
+    print("Creating JointLoRAMoEModel...")
+    try:
+        joint_model = JointLoRAMoEModel(base_model, joint_config)
+        print("✅ JointLoRAMoEModel created successfully")
+    except Exception as e:
+        print(f"❌ Failed to create JointLoRAMoEModel: {e}")
+        raise e
+
+    # 加载MoE权重
     moe_weights_path = os.path.join(joint_model_path, 'moe_weights.pt')
     if os.path.exists(moe_weights_path):
-        print("Loading MoE weights...")
-        moe_state_dict = torch.load(moe_weights_path, map_location=device)
-        joint_model.moe_layer.load_state_dict(moe_state_dict)
-        print("✅ MoE weights loaded")
-    else:
-        print("⚠️ MoE weights not found, using randomly initialized MoE layer")
+        print(f"Loading MoE weights from: {moe_weights_path}")
+        try:
+            moe_state_dict = torch.load(moe_weights_path, map_location=device)
+            print(f"  - MoE state dict keys: {list(moe_state_dict.keys())}")
 
-    print("✅ Joint model loaded successfully")
+            # 🔧 修复：检查MoE层是否存在，并正确加载权重
+            if hasattr(joint_model, 'moe_layer') and joint_model.moe_layer is not None:
+                # 确保state_dict的键匹配
+                missing_keys, unexpected_keys = joint_model.moe_layer.load_state_dict(moe_state_dict, strict=False)
+                if missing_keys:
+                    print(f"  ⚠️ Missing keys in MoE state dict: {missing_keys}")
+                if unexpected_keys:
+                    print(f"  ⚠️ Unexpected keys in MoE state dict: {unexpected_keys}")
+
+                print("✅ MoE weights loaded successfully")
+
+                # 🔧 验证MoE层参数是否正确加载
+                moe_param_count = sum(p.numel() for p in joint_model.moe_layer.parameters())
+                print(f"  - MoE layer parameters count: {moe_param_count:,}")
+            else:
+                print("❌ joint_model.moe_layer not found or is None")
+                print("  - Check if JointLoRAMoEModel was created correctly")
+
+        except Exception as e:
+            print(f"❌ Failed to load MoE weights: {e}")
+            print(f"  - Error details: {str(e)}")
+            print("  - Using randomly initialized MoE layer")
+    else:
+        print(f"⚠️ MoE weights file not found: {moe_weights_path}")
+        print("  - Using randomly initialized MoE layer")
+
+    # 🔧 最终验证：检查模型结构和参数
+    print("✅ Joint model loading completed")
+    print(f"\n🔍 Final model verification:")
+    print(f"  - Model type: {type(joint_model).__name__}")
+    print(f"  - Has base_model: {hasattr(joint_model, 'base_model')}")
+    print(f"  - Has moe_layer: {hasattr(joint_model, 'moe_layer')}")
+
+    if hasattr(joint_model, 'base_model'):
+        base_model_type = type(joint_model.base_model).__name__
+        print(f"  - Base model type: {base_model_type}")
+
+        # 检查是否是PEFT模型（LoRA已加载）
+        if 'PeftModel' in base_model_type:
+            print(f"  ✅ LoRA adapter is loaded (PeftModel detected)")
+        else:
+            print(f"  ⚠️ No LoRA adapter detected (base model type: {base_model_type})")
+
+    if hasattr(joint_model, 'moe_layer') and joint_model.moe_layer is not None:
+        moe_type = type(joint_model.moe_layer).__name__
+        print(f"  - MoE layer type: {moe_type}")
+
+        # 检查MoE专家数量
+        if hasattr(joint_model.moe_layer, 'experts'):
+            expert_count = len(joint_model.moe_layer.experts)
+            print(f"  - Number of experts: {expert_count}")
+
+        # 检查路由器
+        if hasattr(joint_model.moe_layer, 'router'):
+            router_type = type(joint_model.moe_layer.router).__name__
+            print(f"  - Router type: {router_type}")
+
+    # 计算总参数量
+    total_params = sum(p.numel() for p in joint_model.parameters())
+    trainable_params = sum(p.numel() for p in joint_model.parameters() if p.requires_grad)
+    print(f"  - Total parameters: {total_params:,}")
+    print(f"  - Trainable parameters: {trainable_params:,}")
+    print(f"  - Trainable ratio: {trainable_params/total_params:.2%}")
 
     return joint_model
 
