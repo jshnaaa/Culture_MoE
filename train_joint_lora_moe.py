@@ -81,6 +81,147 @@ def is_main_process(rank):
     return rank == 0
 
 
+def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_expert_outputs, culture_labels, loss_weight=0.01):
+    """
+    计算CSL文化相似性损失（三组件）
+
+    Args:
+        expert_weights: 路由器专家权重 [B, num_experts] (wr_i)
+        shared_expert_outputs: 共享专家输出 [B, hidden_dim] (es_i)
+        router_expert_outputs: 路由专家融合输出 [B, hidden_dim] (er_i)
+        culture_labels: 文化标签 [B]
+        loss_weight: 损失权重
+
+    Returns:
+        dict: 包含总损失和各组件损失的字典
+    """
+    device = culture_labels.device if culture_labels is not None else torch.device('cuda')
+    dtype = torch.float16
+
+    # 初始化损失组件
+    L_culture_router = torch.tensor(0.0, device=device, dtype=dtype)
+    L_culture_share = torch.tensor(0.0, device=device, dtype=dtype)
+    L_culture_sr = torch.tensor(0.0, device=device, dtype=dtype)
+
+    # 输入验证
+    if culture_labels is None:
+        return {
+            'L_culture_router': L_culture_router,
+            'L_culture_share': L_culture_share,
+            'L_culture_sr': L_culture_sr,
+            'L_culture_total': L_culture_router + L_culture_share + L_culture_sr
+        }
+
+    batch_size = culture_labels.shape[0]
+
+    # 处理单样本批次
+    if batch_size < 2:
+        # 对于单样本，只计算L_culture_sr（如果两种专家输出都可用）
+        if shared_expert_outputs is not None and router_expert_outputs is not None:
+            # 检查向量有效性
+            if torch.norm(shared_expert_outputs) > 1e-8 and torch.norm(router_expert_outputs) > 1e-8:
+                similarity = F.cosine_similarity(
+                    shared_expert_outputs.unsqueeze(0),
+                    router_expert_outputs.unsqueeze(0)
+                )
+                if not (torch.isnan(similarity) or torch.isinf(similarity)):
+                    L_culture_sr = similarity.mean() * loss_weight
+
+        return {
+            'L_culture_router': L_culture_router,
+            'L_culture_share': L_culture_share,
+            'L_culture_sr': L_culture_sr,
+            'L_culture_total': L_culture_router + L_culture_share + L_culture_sr
+        }
+
+    # 计算L_culture_router（路由专家文化相似性损失）
+    if expert_weights is not None:
+        router_loss = torch.tensor(0.0, device=device, dtype=dtype)
+        count_router = 0
+
+        for i in range(batch_size):
+            for j in range(i + 1, batch_size):
+                wr_i = expert_weights[i]
+                wr_j = expert_weights[j]
+
+                # 检查零向量
+                if torch.norm(wr_i) < 1e-8 or torch.norm(wr_j) < 1e-8:
+                    continue
+
+                similarity = F.cosine_similarity(wr_i.unsqueeze(0), wr_j.unsqueeze(0))
+                if torch.isnan(similarity) or torch.isinf(similarity):
+                    continue
+
+                if culture_labels[i] == culture_labels[j]:
+                    # 相同文化，鼓励相似的专家权重
+                    router_loss += (1.0 - similarity)
+                else:
+                    # 不同文化，惩罚相似的专家权重
+                    router_loss += similarity
+
+                count_router += 1
+
+        if count_router > 0:
+            L_culture_router = router_loss / count_router * loss_weight
+
+    # 计算L_culture_share（共享专家文化无关损失）
+    if shared_expert_outputs is not None:
+        share_loss = torch.tensor(0.0, device=device, dtype=dtype)
+        count_share = 0
+
+        for i in range(batch_size):
+            for j in range(i + 1, batch_size):
+                es_i = shared_expert_outputs[i]
+                es_j = shared_expert_outputs[j]
+
+                # 检查零向量
+                if torch.norm(es_i) < 1e-8 or torch.norm(es_j) < 1e-8:
+                    continue
+
+                similarity = F.cosine_similarity(es_i.unsqueeze(0), es_j.unsqueeze(0))
+                if torch.isnan(similarity) or torch.isinf(similarity):
+                    continue
+
+                # 不考虑文化标签，强制共享专家输出一致
+                share_loss += (1.0 - similarity)
+                count_share += 1
+
+        if count_share > 0:
+            L_culture_share = share_loss / count_share * loss_weight
+
+    # 计算L_culture_sr（共享-路由解耦损失）
+    if shared_expert_outputs is not None and router_expert_outputs is not None:
+        sr_loss = torch.tensor(0.0, device=device, dtype=dtype)
+        count_sr = 0
+
+        for i in range(batch_size):
+            es_i = shared_expert_outputs[i]
+            er_i = router_expert_outputs[i]
+
+            # 检查零向量
+            if torch.norm(es_i) < 1e-8 or torch.norm(er_i) < 1e-8:
+                continue
+
+            similarity = F.cosine_similarity(es_i.unsqueeze(0), er_i.unsqueeze(0))
+            if torch.isnan(similarity) or torch.isinf(similarity):
+                continue
+
+            # 惩罚同一样本的共享和路由专家输出相似性
+            sr_loss += similarity
+            count_sr += 1
+
+        if count_sr > 0:
+            L_culture_sr = sr_loss / count_sr * loss_weight
+
+    # 返回所有损失组件
+    return {
+        'L_culture_router': L_culture_router,
+        'L_culture_share': L_culture_share,
+        'L_culture_sr': L_culture_sr,
+        'L_culture_total': L_culture_router + L_culture_share + L_culture_sr
+    }
+
+
 def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
     """
     计算文化感知损失
@@ -327,6 +468,42 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                             "use_kl_loss": True
                         }
                     )
+                elif use_culture_loss == "csl":
+                    # 文化感知路由模式下的CSL损失
+                    enhanced_loss_dict = integrate_enhanced_moe_loss(
+                        model_outputs=outputs,
+                        labels=labels,
+                        culture_labels=culture_labels,
+                        use_culture_loss=False,
+                        loss_weights={
+                            "alpha": 1e-2,  # L_aux权重
+                            "beta": 0.0,    # 不使用原有的L_o
+                            "gamma": 0.0,   # 不使用L_v
+                            "use_cultural_aware": False,
+                            "use_kl_loss": False
+                        }
+                    )
+
+                    # 提取专家输出用于CSL计算
+                    expert_weights = getattr(outputs, 'expert_weights', None)
+                    shared_expert_outputs = getattr(outputs, 'shared_expert_outputs', None)
+                    router_expert_outputs = getattr(outputs, 'router_expert_outputs', None)
+
+                    # 计算CSL损失
+                    csl_loss_dict = compute_csl_culture_loss(
+                        expert_weights=expert_weights,
+                        shared_expert_outputs=shared_expert_outputs,
+                        router_expert_outputs=router_expert_outputs,
+                        culture_labels=culture_labels,
+                        loss_weight=culture_loss_weight
+                    )
+
+                    # 更新损失字典
+                    enhanced_loss_dict["L_culture"] = csl_loss_dict["L_culture_total"]
+                    enhanced_loss_dict["L_culture_router"] = csl_loss_dict["L_culture_router"]
+                    enhanced_loss_dict["L_culture_share"] = csl_loss_dict["L_culture_share"]
+                    enhanced_loss_dict["L_culture_sr"] = csl_loss_dict["L_culture_sr"]
+                    enhanced_loss_dict["L_total"] = enhanced_loss_dict["L_h"] + enhanced_loss_dict["L_aux"] + csl_loss_dict["L_culture_total"]
                 else:
                     # 即使use_culture_loss="false"，文化感知路由模式下也使用扩展损失（但不含文化损失组件）
                     enhanced_loss_dict = integrate_enhanced_moe_loss(
@@ -394,6 +571,51 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                     }
                 )
                 total_batch_loss = enhanced_loss_dict["L_total"]
+
+            elif use_culture_loss == "csl":
+                # CSL文化相似性损失：L = L_h + L_balance + L_culture_csl
+                # 首先获取基础损失（不包含文化损失）
+                enhanced_loss_dict = integrate_enhanced_moe_loss(
+                    model_outputs=outputs,
+                    labels=labels,
+                    culture_labels=culture_labels,
+                    use_culture_loss=False,
+                    loss_weights={
+                        "alpha": 1e-2,  # L_aux权重
+                        "beta": 0.0,    # 不使用原有的L_o
+                        "gamma": 0.0,   # 不使用L_v
+                        "use_cultural_aware": False,
+                        "use_kl_loss": False
+                    }
+                )
+
+                # 提取专家输出用于CSL计算
+                expert_weights = getattr(outputs, 'expert_weights', None)
+                shared_expert_outputs = getattr(outputs, 'shared_expert_outputs', None)
+                router_expert_outputs = getattr(outputs, 'router_expert_outputs', None)
+
+                # 计算CSL损失
+                csl_loss_dict = compute_csl_culture_loss(
+                    expert_weights=expert_weights,
+                    shared_expert_outputs=shared_expert_outputs,
+                    router_expert_outputs=router_expert_outputs,
+                    culture_labels=culture_labels,
+                    loss_weight=culture_loss_weight
+                )
+
+                # 组合总损失
+                lm_loss = enhanced_loss_dict["L_h"]
+                aux_loss = enhanced_loss_dict["L_aux"]
+                csl_total_loss = csl_loss_dict["L_culture_total"]
+
+                total_batch_loss = lm_loss + aux_loss + csl_total_loss
+
+                # 更新损失字典以包含CSL组件
+                enhanced_loss_dict["L_culture"] = csl_total_loss
+                enhanced_loss_dict["L_culture_router"] = csl_loss_dict["L_culture_router"]
+                enhanced_loss_dict["L_culture_share"] = csl_loss_dict["L_culture_share"]
+                enhanced_loss_dict["L_culture_sr"] = csl_loss_dict["L_culture_sr"]
+                enhanced_loss_dict["L_total"] = total_batch_loss
 
             elif use_culture_loss == "false" or use_culture_loss is False:
                 # 简化损失函数：L = L_h + αL_aux (只有主任务损失和负载均衡)
