@@ -38,6 +38,7 @@ from enhanced_moe_losses import integrate_enhanced_moe_loss
 from ft_lora_only_gen import (
     CultureLLMNewFormatDataset,
     load_and_process_data,
+    load_and_process_data_8_1_1,
     extract_answer_from_text,
     generate_answer,
     dynamic_padding_collate_fn
@@ -314,7 +315,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
 
 
 def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
-                     num_accumulation_steps=1, rank=0, use_culture_loss=True, use_culture_router=False, culture_loss_weight=0.01):
+                     num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
     """
     联合训练一个epoch：同时训练LoRA和MoE
     """
@@ -421,107 +422,8 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             soft_routing_scores = getattr(outputs, 'soft_routing_scores', expert_weights)
             activated_experts = getattr(outputs, 'activated_experts', list(expert_outputs.keys()))
 
-            # 根据use_culture_router和use_culture_loss参数决定损失函数模式
-            if use_culture_router:
-                # 🚀 文化感知路由模式：使用扩展损失函数
-                # L_total = L_h + L_balance + L_cultural + L_conflict + L_consistency + L_specialization
-                # 注意：目前扩展损失组件尚未实现，暂时使用标准损失函数
-                if use_culture_loss == "ori":
-                    enhanced_loss_dict = integrate_enhanced_moe_loss(
-                        model_outputs=outputs,
-                        labels=labels,
-                        culture_labels=culture_labels,
-                        use_culture_loss=False,
-                        loss_weights={
-                            "alpha": 1e-2,  # L_aux权重
-                            "beta": 1e-3,   # L_o权重（原始）
-                            "gamma": 1e-3,  # L_v权重
-                            "use_cultural_aware": False,
-                            "use_kl_loss": False
-                        }
-                    )
-                elif use_culture_loss == "new":
-                    enhanced_loss_dict = integrate_enhanced_moe_loss(
-                        model_outputs=outputs,
-                        labels=labels,
-                        culture_labels=culture_labels,
-                        use_culture_loss=False,
-                        loss_weights={
-                            "alpha": 1e-2,  # L_aux权重
-                            "beta": 1e-3,   # L_o权重（文化感知）
-                            "gamma": 1e-3,  # L_v权重
-                            "use_cultural_aware": True,
-                            "use_kl_loss": False
-                        }
-                    )
-                elif use_culture_loss == "kl":
-                    enhanced_loss_dict = integrate_enhanced_moe_loss(
-                        model_outputs=outputs,
-                        labels=labels,
-                        culture_labels=culture_labels,
-                        use_culture_loss=False,
-                        loss_weights={
-                            "alpha": 1e-2,  # L_aux权重
-                            "beta": 1e-3,   # L_o权重（KL散度）
-                            "gamma": 1e-3,  # L_v权重
-                            "use_cultural_aware": False,
-                            "use_kl_loss": True
-                        }
-                    )
-                elif use_culture_loss == "csl":
-                    # 文化感知路由模式下的CSL损失
-                    enhanced_loss_dict = integrate_enhanced_moe_loss(
-                        model_outputs=outputs,
-                        labels=labels,
-                        culture_labels=culture_labels,
-                        use_culture_loss=False,
-                        loss_weights={
-                            "alpha": 1e-2,  # L_aux权重
-                            "beta": 0.0,    # 不使用原有的L_o
-                            "gamma": 0.0,   # 不使用L_v
-                            "use_cultural_aware": False,
-                            "use_kl_loss": False
-                        }
-                    )
-
-                    # 提取专家输出用于CSL计算
-                    expert_weights = getattr(outputs, 'expert_weights', None)
-                    shared_expert_outputs = getattr(outputs, 'shared_expert_outputs', None)
-                    router_expert_outputs = getattr(outputs, 'router_expert_outputs', None)
-
-                    # 计算CSL损失
-                    csl_loss_dict = compute_csl_culture_loss(
-                        expert_weights=expert_weights,
-                        shared_expert_outputs=shared_expert_outputs,
-                        router_expert_outputs=router_expert_outputs,
-                        culture_labels=culture_labels,
-                        loss_weight=culture_loss_weight
-                    )
-
-                    # 更新损失字典
-                    enhanced_loss_dict["L_culture"] = csl_loss_dict["L_culture_total"]
-                    enhanced_loss_dict["L_culture_router"] = csl_loss_dict["L_culture_router"]
-                    enhanced_loss_dict["L_culture_share"] = csl_loss_dict["L_culture_share"]
-                    enhanced_loss_dict["L_culture_sr"] = csl_loss_dict["L_culture_sr"]
-                    enhanced_loss_dict["L_total"] = enhanced_loss_dict["L_h"] + enhanced_loss_dict["L_aux"] + csl_loss_dict["L_culture_total"]
-                else:
-                    # 即使use_culture_loss="false"，文化感知路由模式下也使用扩展损失（但不含文化损失组件）
-                    enhanced_loss_dict = integrate_enhanced_moe_loss(
-                        model_outputs=outputs,
-                        labels=labels,
-                        culture_labels=culture_labels,
-                        use_culture_loss=False,
-                        loss_weights={
-                            "alpha": 1e-2,  # L_aux权重
-                            "beta": 0.0,    # 不使用L_o
-                            "gamma": 0.0,   # 不使用L_v
-                            "use_cultural_aware": False,
-                            "use_kl_loss": False
-                        }
-                    )
-                total_batch_loss = enhanced_loss_dict["L_total"]
-
-            elif use_culture_loss == "ori":
+            # 根据use_culture_loss参数决定损失函数模式
+            if use_culture_loss == "ori":
                 # 原始损失函数：L = L_h + L_balance (L_balance = αL_aux + βL_o + γL_v)
                 enhanced_loss_dict = integrate_enhanced_moe_loss(
                     model_outputs=outputs,
@@ -790,7 +692,7 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
     }
 
 
-def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_loss=True, use_culture_router=False, culture_loss_weight=0.01):
+def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
     """
     联合模型验证
     """
@@ -860,54 +762,8 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
 
             # 🔧 增强MoE损失计算（评估时）
             if use_culture_loss != 'false':
-                # 根据use_culture_router和use_culture_loss参数决定损失函数模式（评估时）
-                if use_culture_router:
-                    # 🚀 文化感知路由模式（评估时）
-                    if use_culture_loss == "ori":
-                        enhanced_loss_dict = integrate_enhanced_moe_loss(
-                            model_outputs=outputs,
-                            labels=labels,
-                            culture_labels=culture_labels,
-                            use_culture_loss=False,
-                            loss_weights={
-                                "alpha": 1e-2, "beta": 1e-3, "gamma": 1e-3,
-                                "use_cultural_aware": False, "use_kl_loss": False
-                            }
-                        )
-                    elif use_culture_loss == "new":
-                        enhanced_loss_dict = integrate_enhanced_moe_loss(
-                            model_outputs=outputs,
-                            labels=labels,
-                            culture_labels=culture_labels,
-                            use_culture_loss=False,
-                            loss_weights={
-                                "alpha": 1e-2, "beta": 1e-3, "gamma": 1e-3,
-                                "use_cultural_aware": True, "use_kl_loss": False
-                            }
-                        )
-                    elif use_culture_loss == "kl":
-                        enhanced_loss_dict = integrate_enhanced_moe_loss(
-                            model_outputs=outputs,
-                            labels=labels,
-                            culture_labels=culture_labels,
-                            use_culture_loss=False,
-                            loss_weights={
-                                "alpha": 1e-2, "beta": 1e-3, "gamma": 1e-3,
-                                "use_cultural_aware": False, "use_kl_loss": True
-                            }
-                        )
-                    else:
-                        enhanced_loss_dict = integrate_enhanced_moe_loss(
-                            model_outputs=outputs,
-                            labels=labels,
-                            culture_labels=culture_labels,
-                            use_culture_loss=False,
-                            loss_weights={
-                                "alpha": 1e-2, "beta": 0.0, "gamma": 0.0,
-                                "use_cultural_aware": False, "use_kl_loss": False
-                            }
-                        )
-                elif use_culture_loss == "ori":
+                # 根据use_culture_loss参数决定损失函数模式（评估时）
+                if use_culture_loss == "ori":
                     enhanced_loss_dict = integrate_enhanced_moe_loss(
                         model_outputs=outputs,
                         labels=labels,
@@ -1109,8 +965,6 @@ def main():
                         help="Weight decay")
     parser.add_argument("--max_length", type=int, default=512,
                         help="Maximum sequence length")
-    parser.add_argument("--val_split", type=float, default=0.1,
-                        help="Validation split ratio")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=8,
                         help="Gradient accumulation steps")
     parser.add_argument("--eval_interval", type=int, default=1,
@@ -1125,8 +979,6 @@ def main():
                         help="Number of activated experts (top-k), if equal to num_moe_experts then dense mode")
     parser.add_argument("--use_culture_loss", type=str, default="new",
                         help="Whether to use culture loss")
-    parser.add_argument("--use_culture_router", type=str, default="false",
-                        help="Whether to enable culture-aware conflict detection routing")
     parser.add_argument("--culture_loss_weight", type=float, default=0.01,
                         help="Culture loss weight")
     parser.add_argument("--use_lora", type=str, default="true",
@@ -1146,8 +998,7 @@ def main():
     args = parser.parse_args()
 
     # 转换字符串参数
-    use_culture_loss = args.use_culture_loss.lower() if args.use_culture_loss.lower() in ['ori', 'new', 'kl', 'false'] else 'ori'
-    use_culture_router = args.use_culture_router.lower() == 'true'
+    use_culture_loss = args.use_culture_loss.lower() if args.use_culture_loss.lower() in ['ori', 'new', 'kl', 'csl', 'false'] else 'ori'
     use_lora = args.use_lora.lower() == 'true'
 
     # 🔧 根据backbone和data_id组合设置MoE影响权重
@@ -1211,7 +1062,6 @@ def main():
         print(f"MoE experts: {args.num_moe_experts}")
         print(f"Activated experts: {args.num_activated_experts} ({'dense mode' if args.num_activated_experts == args.num_moe_experts else f'top-{args.num_activated_experts}'})")
         print(f"Use culture loss: {use_culture_loss}")
-        print(f"Use culture router: {use_culture_router}")
         if use_culture_loss != 'false':
             print(f"Culture loss weight: {args.culture_loss_weight}")
         print(f"Use pre-trained LoRA: {use_lora}")
@@ -1455,15 +1305,16 @@ def main():
 
     # 加载数据
     print("\nLoading and processing data...")
-    datasets = load_and_process_data(
+    datasets = load_and_process_data_8_1_1(
         args.train_file,
         tokenizer,
         max_length=args.max_length,
-        val_split=args.val_split
+        output_dir=args.output_dir
     )
     train_dataset = datasets['train']
     val_dataset = datasets['validation']
-    print("✅ Data loaded")
+    test_dataset = datasets['test']  # 保存测试集引用，但暂时不在训练中使用
+    print("✅ Data loaded with 8:1:1 split")
 
     # 创建分布式采样器
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank) if world_size > 1 else None
@@ -1619,7 +1470,6 @@ def main():
             num_accumulation_steps=args.gradient_accumulation_steps,
             rank=rank,
             use_culture_loss=use_culture_loss,
-            use_culture_router=use_culture_router,
             culture_loss_weight=args.culture_loss_weight
         )
 
@@ -1653,7 +1503,6 @@ def main():
             val_metrics = evaluate_joint(
                 model, val_loader, device, tokenizer, rank=rank,
                 use_culture_loss=use_culture_loss,
-                use_culture_router=use_culture_router,
                 culture_loss_weight=args.culture_loss_weight
             )
 
@@ -1754,7 +1603,6 @@ def main():
             'num_moe_experts': args.num_moe_experts,
             'num_activated_experts': args.num_activated_experts,
             'use_culture_loss': use_culture_loss,
-            'use_culture_router': use_culture_router,
             'culture_loss_weight': args.culture_loss_weight,
             'use_lora': use_lora,
             'lora_config': {
@@ -1785,7 +1633,6 @@ def main():
         print(f"Activated experts: {args.num_activated_experts} ({'dense mode' if args.num_activated_experts == args.num_moe_experts else f'top-{args.num_activated_experts}'})")
         print(f"Use LoRA: {use_lora}")
         print(f"Culture loss: {use_culture_loss}")
-        print(f"Culture router: {'enabled' if use_culture_router else 'disabled'}")
         print("="*80)
 
     # 清理分布式训练

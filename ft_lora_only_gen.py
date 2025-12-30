@@ -514,6 +514,96 @@ def load_and_process_data(
     }
 
 
+def load_and_process_data_8_1_1(
+    data_path: str,
+    tokenizer,
+    max_length: int = 512,
+    output_dir: str = None,
+    seed: int = 42
+):
+    """
+    加载并处理数据，按 8:1:1 比例划分训练集、验证集和测试集
+
+    Args:
+        data_path: 数据文件路径
+        tokenizer: Tokenizer
+        max_length: 最大序列长度
+        output_dir: 输出目录，用于保存划分信息
+        seed: 随机种子
+
+    Returns:
+        dict: 包含 'train', 'validation', 'test' 的字典
+    """
+    import pickle
+    from sklearn.model_selection import train_test_split
+
+    # 设置随机种子
+    torch.manual_seed(seed)
+
+    dataset = CultureLLMNewFormatDataset(data_path, tokenizer, max_length)
+
+    # 获取所有数据的索引和文化标签，用于分层采样
+    indices = list(range(len(dataset)))
+    culture_labels = []
+
+    # 提取文化标签用于分层采样
+    for i in range(len(dataset)):
+        sample = dataset.data[i]
+        culture_labels.append(sample.get('label', '0'))
+
+    # 第一次划分：80% 训练，20% 临时（验证+测试）
+    train_indices, temp_indices, train_labels, temp_labels = train_test_split(
+        indices, culture_labels,
+        test_size=0.2,
+        random_state=seed,
+        stratify=culture_labels
+    )
+
+    # 第二次划分：从20%中分出10%验证，10%测试
+    val_indices, test_indices, _, _ = train_test_split(
+        temp_indices, temp_labels,
+        test_size=0.5,  # 0.5 * 0.2 = 0.1 (10%)
+        random_state=seed,
+        stratify=temp_labels
+    )
+
+    # 创建子数据集
+    train_dataset = torch.utils.data.Subset(dataset, train_indices)
+    val_dataset = torch.utils.data.Subset(dataset, val_indices)
+    test_dataset = torch.utils.data.Subset(dataset, test_indices)
+
+    print(f"Train set size: {len(train_dataset)} ({len(train_dataset)/len(dataset)*100:.1f}%)")
+    print(f"Validation set size: {len(val_dataset)} ({len(val_dataset)/len(dataset)*100:.1f}%)")
+    print(f"Test set size: {len(test_dataset)} ({len(test_dataset)/len(dataset)*100:.1f}%)")
+
+    # 保存划分信息到pickle文件
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        split_info = {
+            'train_indices': train_indices,
+            'val_indices': val_indices,
+            'test_indices': test_indices,
+            'train_size': len(train_dataset),
+            'val_size': len(val_dataset),
+            'test_size': len(test_dataset),
+            'total_size': len(dataset),
+            'data_path': data_path,
+            'seed': seed,
+            'split_ratio': '8:1:1'
+        }
+
+        split_file = os.path.join(output_dir, 'data_split_8_1_1.pkl')
+        with open(split_file, 'wb') as f:
+            pickle.dump(split_info, f)
+        print(f"Dataset split info saved to: {split_file}")
+
+    return {
+        'train': train_dataset,
+        'validation': val_dataset,
+        'test': test_dataset
+    }
+
+
 def extract_answer_from_text(text: str) -> str:
     """
     从生成的文本中提取答案

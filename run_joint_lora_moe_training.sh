@@ -12,20 +12,19 @@ echo "======================================="
 # 参数设置
 BACKBONE=${1:-"llama"}  # 默认使用llama
 DATA_ID=${2:-"2"}
-USE_SHARED=${3:-"false"}  # 是否使用共享专家，默认为false
-USE_GATE=${4:-"false"}    # 是否使用MoE内部融合Gate，默认为false
+USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
+USE_GATE=${4:-"true"}     # 是否使用MoE内部融合Gate，默认为true
 NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
 USE_CULTURE_LOSS=${6:-"csl"}  # ori/new/kl/csl/false，默认使用CSL文化相似性损失
 NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
-USE_CULTURE_ROUTER=${8:-"false"}  # 是否使用文化感知冲突检测路由，默认为false
-USE_LORA=${9:-"true"}   # 是否启用预训练LoRA微调，默认为true
-NUM_GPUS=${10:-"2"}
-LORA_RANK=${11:-"16"}   # LoRA rank
-LORA_ALPHA=${12:-"32"}  # LoRA alpha
+USE_LORA=${8:-"true"}   # 是否启用预训练LoRA微调，默认为true
+NUM_GPUS=${9:-"2"}
+LORA_RANK=${10:-"16"}   # LoRA rank
+LORA_ALPHA=${11:-"32"}  # LoRA alpha
 
 # 检查参数
-if [ "$#" -gt 12 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_culture_router] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 11 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
     exit 1
 fi
 
@@ -96,7 +95,6 @@ echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
 echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, csl=CSL三组件损失, false=仅L_aux)"
-echo "  文化感知路由: $USE_CULTURE_ROUTER (true=启用文化感知冲突检测路由, false=标准路由)"
 echo "  启用预训练LoRA: $USE_LORA"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
 echo "  GPU: $NUM_GPUS卡"
@@ -186,7 +184,6 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "moe_experts": $NUM_MOE_EXPERTS,
         "activated_experts": $NUM_ACTIVATED_EXPERTS,
         "use_culture_loss": $USE_CULTURE_LOSS,
-        "use_culture_router": $USE_CULTURE_ROUTER,
         "use_lora": $USE_LORA,
         "lora_rank": $LORA_RANK,
         "lora_alpha": $LORA_ALPHA,
@@ -233,7 +230,6 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --num_moe_experts $NUM_MOE_EXPERTS \
         --num_activated_experts $NUM_ACTIVATED_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
-        --use_culture_router $USE_CULTURE_ROUTER \
         --use_lora $USE_LORA \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
@@ -261,7 +257,6 @@ else
         --num_moe_experts $NUM_MOE_EXPERTS \
         --num_activated_experts $NUM_ACTIVATED_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
-        --use_culture_router $USE_CULTURE_ROUTER \
         --use_lora $USE_LORA \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
@@ -291,7 +286,6 @@ if [ $TRAINING_SUCCESS -eq 0 ]; then
         echo "  - MoE内部Gate: $USE_GATE"
         echo "  - 分层学习率: Base LoRA=$LEARNING_RATE_BASE, MoE=$LEARNING_RATE_MOE"
         echo "  - 文化损失模式: $USE_CULTURE_LOSS"
-        echo "  - 文化感知路由: $USE_CULTURE_ROUTER"
         echo "  - 序列长度: $MAX_SEQ_LEN"
     else
         echo "⚠️  训练完成但未找到最佳模型"
