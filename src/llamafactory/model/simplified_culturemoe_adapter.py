@@ -731,16 +731,13 @@ class SimplifiedCultureMoEAdapter:
         # 🔍 调试：检查推理时的模型结构
         print(f"🔍 推理时base_model类型: {type(actual_model)}")
 
-        # 检查MoE层是否存在
-        layers = None
-        if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
-            layers = actual_model.model.layers
-            print(f"🔍 通过actual_model.model.layers访问层")
-        elif hasattr(actual_model, 'layers'):
-            layers = actual_model.layers
-            print(f"🔍 直接通过actual_model.layers访问层")
-        else:
-            print("❌ 无法找到模型层！")
+        # 🔧 关键修复：使用与训练时一致的层访问方式
+        try:
+            layers, target_layers = self._get_target_layers()
+            print(f"🔍 通过_get_target_layers访问层（与训练时一致）")
+        except Exception as e:
+            print(f"❌ 无法通过_get_target_layers访问层: {e}")
+            layers = None
 
         if layers and len(layers) > 0:
             layer0_mlp = layers[0].mlp
