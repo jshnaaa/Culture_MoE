@@ -658,28 +658,86 @@ class SimplifiedCultureMoEAdapter:
         return outputs
 
     def save_model(self, save_path: str):
-        """保存模型权重"""
+        """保存模型权重 - 修复版：确保LoRA和MoE权重都被保存"""
         import os
 
         # 创建目录
         os.makedirs(save_path, exist_ok=True)
+        print(f"📁 保存模型到: {save_path}")
 
-        # 保存LoRA权重（如果有）
+        # 🔧 修复：更全面的LoRA权重保存
+        lora_saved = False
         if hasattr(self.base_model, 'save_pretrained'):
-            lora_path = os.path.join(save_path, 'lora_weights')
-            self.base_model.save_pretrained(lora_path)
+            try:
+                lora_path = os.path.join(save_path, 'lora_weights')
+                self.base_model.save_pretrained(lora_path)
+                # 检查是否真的保存了文件
+                if os.path.exists(lora_path) and os.listdir(lora_path):
+                    print(f"✅ LoRA权重已保存到: {lora_path}")
+                    lora_saved = True
+                else:
+                    print(f"⚠️ LoRA权重保存目录为空: {lora_path}")
+            except Exception as e:
+                print(f"⚠️ LoRA权重保存失败: {e}")
 
-        # 保存MoE权重
+        # 🔧 备用方案：手动保存所有LoRA相关参数
+        if not lora_saved:
+            print("🔧 使用备用方案保存LoRA权重...")
+            lora_state_dict = {}
+            model_to_save = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
+
+            for name, param in model_to_save.named_parameters():
+                if param.requires_grad and 'lora' in name.lower() and 'experts' not in name.lower():
+                    lora_state_dict[name] = param.data.clone()
+                    print(f"  📎 LoRA参数: {name}, shape: {param.shape}, dtype: {param.dtype}")
+
+            if lora_state_dict:
+                lora_manual_path = os.path.join(save_path, 'lora_weights_manual.pt')
+                torch.save(lora_state_dict, lora_manual_path)
+                print(f"✅ 手动保存LoRA权重: {len(lora_state_dict)}个参数 -> {lora_manual_path}")
+
+        # 🔧 保存MoE权重 + NaN检测
         moe_state_dict = {}
         model_to_save = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
+        nan_count = 0
+        total_moe_params = 0
+
         for name, param in model_to_save.named_parameters():
             if any(keyword in name.lower() for keyword in ['experts', 'router']) and param.requires_grad:
-                moe_state_dict[name] = param.data
+                # 🔧 NaN检测
+                param_nan_count = torch.isnan(param.data).sum().item()
+                param_inf_count = torch.isinf(param.data).sum().item()
+
+                if param_nan_count > 0:
+                    print(f"⚠️ 警告：MoE参数 {name} 包含 {param_nan_count} 个NaN值！")
+                    nan_count += param_nan_count
+
+                if param_inf_count > 0:
+                    print(f"⚠️ 警告：MoE参数 {name} 包含 {param_inf_count} 个Inf值！")
+
+                # 记录数值类型信息
+                if 'expert' in name.lower() and total_moe_params < 5:  # 只为前几个专家参数打印详细信息
+                    param_norm = param.data.norm().item()
+                    param_mean = param.data.mean().item()
+                    param_std = param.data.std().item()
+                    print(f"📊 MoE参数 {name}:")
+                    print(f"     dtype: {param.dtype}, shape: {param.shape}")
+                    print(f"     norm: {param_norm:.6f}, mean: {param_mean:.6f}, std: {param_std:.6f}")
+
+                moe_state_dict[name] = param.data.clone()
+                total_moe_params += param.numel()
+
+        if nan_count > 0:
+            print(f"❌ 严重警告：MoE权重中发现 {nan_count} 个NaN值！这会导致推理失败！")
+            print(f"💡 建议：检查训练过程的数值稳定性，可能需要降低学习率或使用梯度裁剪")
 
         if moe_state_dict:
             moe_path = os.path.join(save_path, 'moe_weights.pt')
             torch.save(moe_state_dict, moe_path)
+            print(f"✅ MoE权重已保存: {len(moe_state_dict)}个参数 -> {moe_path}")
+        else:
+            print("⚠️ 没有找到MoE权重参数")
 
         # 保存配置
         config_path = os.path.join(save_path, 'simplified_culturemoe_config.json')

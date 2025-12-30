@@ -152,26 +152,70 @@ class CultureMoEEvaluator:
             config=self.config
         )
 
-        # 加载LoRA权重
+        # 🔧 修复：加载LoRA权重（支持多种格式）
+        lora_loaded = False
+
+        # 方法1：尝试加载标准PEFT格式
         lora_weights_dir = os.path.join(self.model_dir, 'lora_weights')
         if os.path.exists(lora_weights_dir):
-            print(f"加载LoRA权重: {lora_weights_dir}")
+            print(f"🔍 尝试加载标准LoRA权重: {lora_weights_dir}")
             try:
-                # 使用PEFT的加载方法
                 from peft import PeftModel
                 if hasattr(model_adapter.base_model, 'load_adapter'):
                     model_adapter.base_model.load_adapter(lora_weights_dir)
                 else:
-                    # 手动加载LoRA权重
                     lora_config_path = os.path.join(lora_weights_dir, 'adapter_config.json')
                     if os.path.exists(lora_config_path):
                         model_adapter.base_model = PeftModel.from_pretrained(
                             model_adapter.base_model,
                             lora_weights_dir
                         )
-                print("✅ LoRA权重加载成功")
+                print("✅ 标准LoRA权重加载成功")
+                lora_loaded = True
             except Exception as e:
-                print(f"⚠️  LoRA权重加载失败: {e}")
+                print(f"⚠️ 标准LoRA权重加载失败: {e}")
+
+        # 方法2：尝试加载手动保存的LoRA权重
+        if not lora_loaded:
+            lora_manual_path = os.path.join(self.model_dir, 'lora_weights_manual.pt')
+            if os.path.exists(lora_manual_path):
+                print(f"🔍 尝试加载手动保存的LoRA权重: {lora_manual_path}")
+                try:
+                    lora_state_dict = torch.load(lora_manual_path, map_location='cpu')
+
+                    # 加载权重到模型
+                    model_to_load = model_adapter.base_model.module if hasattr(model_adapter.base_model, 'module') else model_adapter.base_model
+
+                    loaded_count = 0
+                    missing_count = 0
+
+                    for name, param_data in lora_state_dict.items():
+                        try:
+                            # 查找对应的参数
+                            target_param = model_to_load
+                            for attr in name.split('.'):
+                                target_param = getattr(target_param, attr)
+
+                            if hasattr(target_param, 'data'):
+                                target_param.data.copy_(param_data)
+                                loaded_count += 1
+                                print(f"  ✅ 加载LoRA参数: {name}, dtype: {param_data.dtype}")
+                            else:
+                                missing_count += 1
+                                print(f"  ❌ 找不到参数: {name}")
+                        except AttributeError:
+                            missing_count += 1
+                            print(f"  ❌ 参数路径错误: {name}")
+
+                    print(f"✅ 手动LoRA权重加载完成: 成功{loaded_count}个, 失败{missing_count}个")
+                    if loaded_count > 0:
+                        lora_loaded = True
+
+                except Exception as e:
+                    print(f"⚠️ 手动LoRA权重加载失败: {e}")
+
+        if not lora_loaded:
+            print("⚠️ 没有找到任何LoRA权重文件，将只使用MoE权重")
 
         # 加载MoE权重
         moe_weights_path = os.path.join(self.model_dir, 'moe_weights.pt')

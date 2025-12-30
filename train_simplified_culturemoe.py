@@ -32,6 +32,72 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.llamafactory.model.simplified_culturemoe import SimplifiedCultureMoEConfig
 from src.llamafactory.model.simplified_culturemoe_adapter import create_simplified_culturemoe_model
 
+
+def _check_moe_weights_for_nan(model_adapter, batch_idx):
+    """
+    检查MoE专家权重是否包含NaN值
+
+    Args:
+        model_adapter: SimplifiedCultureMoEAdapter实例
+        batch_idx: 当前batch索引
+    """
+    try:
+        layers, target_layers = model_adapter._get_target_layers()
+
+        total_nan_count = 0
+        total_inf_count = 0
+        checked_params = 0
+
+        for layer_idx in target_layers:
+            moe_layer = layers[layer_idx].mlp
+            if hasattr(moe_layer, 'experts'):
+                # 检查每个专家的权重
+                for expert_idx, expert in enumerate(moe_layer.experts):
+                    for param_name, param in expert.named_parameters():
+                        if param.requires_grad:
+                            nan_count = torch.isnan(param.data).sum().item()
+                            inf_count = torch.isinf(param.data).sum().item()
+
+                            if nan_count > 0:
+                                print(f"⚠️ 警告 [Batch {batch_idx}]: 层{layer_idx} 专家{expert_idx} 参数 {param_name} 包含 {nan_count} 个NaN值！")
+                                print(f"    参数dtype: {param.dtype}, shape: {param.shape}")
+                                total_nan_count += nan_count
+
+                            if inf_count > 0:
+                                print(f"⚠️ 警告 [Batch {batch_idx}]: 层{layer_idx} 专家{expert_idx} 参数 {param_name} 包含 {inf_count} 个Inf值！")
+                                total_inf_count += inf_count
+
+                            checked_params += 1
+
+                            # 记录权重的数值类型信息（仅前几个参数，避免日志过多）
+                            if checked_params <= 3:
+                                param_norm = param.data.norm().item()
+                                param_max = param.data.abs().max().item()
+                                print(f"📊 [Batch {batch_idx}] 层{layer_idx} 专家{expert_idx} {param_name}:")
+                                print(f"    dtype: {param.dtype}, norm: {param_norm:.6f}, max_abs: {param_max:.6f}")
+
+                # 检查路由器权重
+                if hasattr(moe_layer, 'router'):
+                    for param_name, param in moe_layer.router.named_parameters():
+                        if param.requires_grad:
+                            nan_count = torch.isnan(param.data).sum().item()
+                            inf_count = torch.isinf(param.data).sum().item()
+
+                            if nan_count > 0:
+                                print(f"⚠️ 警告 [Batch {batch_idx}]: 层{layer_idx} 路由器 {param_name} 包含 {nan_count} 个NaN值！")
+                                total_nan_count += nan_count
+
+                            if inf_count > 0:
+                                print(f"⚠️ 警告 [Batch {batch_idx}]: 层{layer_idx} 路由器 {param_name} 包含 {inf_count} 个Inf值！")
+                                total_inf_count += inf_count
+
+        if total_nan_count > 0 or total_inf_count > 0:
+            print(f"❌ 严重警告 [Batch {batch_idx}]: 发现 {total_nan_count} 个NaN值, {total_inf_count} 个Inf值!")
+            print(f"💡 建议：立即停止训练，检查学习率和梯度裁剪设置")
+
+    except Exception as e:
+        print(f"⚠️ MoE权重检查失败 [Batch {batch_idx}]: {e}")
+
 # 复用现有的数据集类
 from ft_lora_only_gen import (
     CultureLLMNewFormatDataset,
@@ -511,6 +577,10 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             # 在多GPU模式下确保梯度同步完成
             if hasattr(model_adapter.base_model, 'module'):  # DDP wrapped
                 torch.distributed.barrier()
+
+            # 🔧 新增：MoE专家权重NaN监控（在梯度更新前）
+            if batch_idx % 100 == 0:  # 每100个batch检查一次，避免过于频繁
+                _check_moe_weights_for_nan(model_adapter, batch_idx)
 
             # 梯度裁剪防止梯度爆炸
             torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=1.0)
