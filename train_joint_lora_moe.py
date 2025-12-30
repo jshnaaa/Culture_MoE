@@ -126,7 +126,9 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
                     router_expert_outputs.unsqueeze(0)
                 )
                 if not (torch.isnan(similarity) or torch.isinf(similarity)):
-                    L_culture_sr = similarity.mean() * loss_weight
+                    # 确保similarity是标量值，避免张量形状不匹配
+                    similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
+                    L_culture_sr = similarity_scalar * loss_weight
 
         return {
             'L_culture_router': L_culture_router,
@@ -153,12 +155,15 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
                 if torch.isnan(similarity) or torch.isinf(similarity):
                     continue
 
+                # 确保similarity是标量值，避免张量形状不匹配
+                similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
+
                 if culture_labels[i] == culture_labels[j]:
                     # 相同文化，鼓励相似的专家权重
-                    router_loss += (1.0 - similarity)
+                    router_loss += (1.0 - similarity_scalar)
                 else:
                     # 不同文化，惩罚相似的专家权重
-                    router_loss += similarity
+                    router_loss += similarity_scalar
 
                 count_router += 1
 
@@ -183,8 +188,11 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
                 if torch.isnan(similarity) or torch.isinf(similarity):
                     continue
 
+                # 确保similarity是标量值，避免张量形状不匹配
+                similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
+
                 # 不考虑文化标签，强制共享专家输出一致
-                share_loss += (1.0 - similarity)
+                share_loss += (1.0 - similarity_scalar)
                 count_share += 1
 
         if count_share > 0:
@@ -207,8 +215,11 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
             if torch.isnan(similarity) or torch.isinf(similarity):
                 continue
 
+            # 确保similarity是标量值，避免张量形状不匹配
+            similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
+
             # 惩罚同一样本的共享和路由专家输出相似性
-            sr_loss += similarity
+            sr_loss += similarity_scalar
             count_sr += 1
 
         if count_sr > 0:
