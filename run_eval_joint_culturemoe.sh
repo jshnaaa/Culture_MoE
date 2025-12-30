@@ -79,11 +79,18 @@ esac
 echo "🔍 在 $MODEL_PATH 中查找联合训练模型..."
 
 # 查找所有可能的模型目录（按时间倒序）
-CANDIDATE_DIRS=$(find "$MODEL_PATH" -maxdepth 1 -type d -name "*${MODEL_NAME}_${DATASET_TAG}*" 2>/dev/null | sort -r)
+if [ "$DATA_ID" = "0" ]; then
+    # 对于pkl文件模式，查找任何包含指定backbone的模型目录
+    CANDIDATE_DIRS=$(find "$MODEL_PATH" -maxdepth 1 -type d -name "*${MODEL_NAME}_*" 2>/dev/null | sort -r)
+    echo "   查找模式: *${MODEL_NAME}_* (pkl文件模式，匹配任何数据集)"
+else
+    # 对于特定数据集，使用精确匹配
+    CANDIDATE_DIRS=$(find "$MODEL_PATH" -maxdepth 1 -type d -name "*${MODEL_NAME}_${DATASET_TAG}*" 2>/dev/null | sort -r)
+    echo "   查找模式: *${MODEL_NAME}_${DATASET_TAG}*"
+fi
 
 if [ -z "$CANDIDATE_DIRS" ]; then
     echo "❌ 在 $MODEL_PATH 中未找到匹配的模型目录"
-    echo "   查找模式: *${MODEL_NAME}_${DATASET_TAG}*"
     echo "   请检查模型路径和参数设置"
     exit 1
 fi
