@@ -2,26 +2,30 @@
 
 ## 概述
 
-CultureMoE是一个基于Mixture of Experts (MoE)架构的文化感知语言模型，旨在通过专家路由机制和文化损失函数来提升模型对不同文化背景的理解和生成能力。
+CultureMoE是一个基于Mixture of Experts (MoE)架构的文化感知语言模型，旨在通过专家路由机制和文化损失函数来提升模型对不同文化背景的理解和生成能力。本文档描述了联合训练版本的CultureMoE架构，该版本通过同时优化基础LoRA适配器和MoE专家层实现端到端的文化感知训练。
 
 ### 主要特点
 
-- **纯MoE架构**: 所有层的FFN都替换为LoRA MoE结构
+- **联合训练架构**: 同时优化预训练LoRA适配器和新增MoE专家层
+- **端到端优化**: 避免预训练LoRA权重冻结，实现真正的联合优化
+- **CSL文化损失**: 创新的Culture Similarity Loss (CSL)，包含三个互补的损失组件
 - **文化感知路由**: 通过文化损失引导专家学习文化特定模式
 - **内存高效**: 基于LoRA的专家设计，显著降低参数量和内存需求
+- **分层学习率**: 基础LoRA和MoE组件使用不同学习率的精细化优化
 
 ## 整体架构
 
-CultureMoE架构包含以下主要组件：
+CultureMoE联合训练架构包含以下主要组件：
 
 1. **基础模型层**: LLaMA 3.1-8B-Instruct 或 Qwen 2.5-7B-Instruct 作为骨干网络
-2. **注意力层LoRA**: 可选的注意力层低秩适应
-3. **MoE层替换**: 将所有FFN层替换为MoE结构，包含：
-   - MoE路由器：负责专家选择和权重分配
-   - LoRA专家群：多个基于LoRA的专家网络
-   - 共享专家：可选的始终激活专家
-   - 门控网络：可选的专家融合机制
-   - 文化损失函数：促进文化专业化的对比学习
+2. **联合LoRA适配器**: 同时训练的基础模型LoRA适配器，实现端到端优化
+3. **MoE专家层**: 新增的专家混合层，包含：
+   - **路由专家群**: 多个基于LoRA的文化专家网络
+   - **共享专家**: 学习文化无关表示的共享专家（可选）
+   - **MoE路由器**: 负责专家选择和权重分配的路由网络
+   - **门控网络**: 可选的专家输出融合机制
+4. **CSL文化损失函数**: 三组件文化相似性损失，促进专家文化专业化
+5. **分层优化器**: 基础LoRA和MoE组件的差异化学习率优化
 
 ## 核心组件详细说明
 
@@ -105,20 +109,23 @@ MoE FFN层是完整的专家混合前馈网络，整合了路由、专家计算�
 
 ### 4. 损失函数体系 (Loss Function System)
 
-CultureMoE采用多组件损失函数设计，通过不同损失项的协同优化实现模型性能和文化专业化的平衡。
+CultureMoE联合训练采用多组件损失函数设计，通过不同损失项的协同优化实现模型性能和文化专业化的平衡。核心创新是Culture Similarity Loss (CSL)，通过三个互补的损失组件实现更精细的文化感知训练。
 
 #### 4.1 总损失函数 (Total Loss)
 
 **总损失公式**:
-$$L_{total} = L_{generation} + \lambda \times (\alpha \times L_{balance} + \beta \times L_{culture})$$
+$$L_{total} = L_{generation} + \lambda \times (\alpha \times L_{aux} + \beta \times L_{culture})$$
 
 其中：
 - $L_{generation}$: 主要生成损失（语言建模损失）
-- $L_{balance}$: 负载均衡损失（辅助损失）
-- $L_{culture}$: 文化对比损失（对比学习损失）
+- $L_{aux}$: 负载均衡损失（辅助损失）
+- $L_{culture}$: 文化损失（根据配置选择不同实现）
 - $\lambda$: 辅助损失总权重 (默认1.0)
 - $\alpha$: 负载均衡损失权重 (默认0.1)
-- $\beta$: 文化对比损失权重 (默认0.5)
+- $\beta$: 文化损失权重 (默认0.5)
+
+当USE_CULTURE_LOSS=csl时，文化损失采用创新的CSL设计：
+$$L_{culture} = L_{culture\_router} + L_{culture\_share} + L_{culture\_sr}$$
 
 #### 4.2 生成损失 (Generation Loss)
 
@@ -153,63 +160,85 @@ $$L_{balance}^{(l)} = \text{MSE}(\bar{u}^{(l)}, \frac{1}{E} \mathbf{1})$$
 **作用机制**:
 负载均衡损失通过最小化实际专家使用率与均匀分布的均方误差，防止专家使用不均衡，确保所有专家都能得到充分训练。
 
-#### 4.4 文化对比损失函数 (Culture Contrastive Loss)
+#### 4.4 CSL文化相似性损失函数 (Culture Similarity Loss)
 
-文化损失函数是CultureMoE的核心创新，通过对比学习促进专家的文化专业化。
+CSL是CultureMoE联合训练的核心创新，通过三个互补的损失组件实现精细的文化感知训练。与传统的单一文化损失不同，CSL分别针对路由专家、共享专家和专家解耦设计专门的损失函数。
 
 #### 设计理念
-- 基于专家权重的余弦相似度进行对比学习
-- 相同文化样本鼓励使用相似的专家权重分布
-- 不同文化样本鼓励使用差异化的专家权重分布
-- 通过梯度反传指导路由器学习文化感知的专家选择
+- **路由专家文化专业化**: 相同文化样本激活相似专家组合，不同文化样本激活不同专家组合
+- **共享专家文化无关性**: 强制共享专家学习文化无关的表示，提供稳定的基础能力
+- **专家表示解耦**: 确保路由专家和共享专家学习互补而非重复的表示
 
-#### 数学公式
+#### 符号定义
+- $B$: 批次大小
+- $i, j$: 样本索引
+- $cul_i$: 样本$i$的文化标签
+- $wr_i \in \mathbb{R}^K$: 样本$i$的路由器专家激活权重向量（来自softmax输出）
+- $es_i \in \mathbb{R}^H$: 样本$i$的共享专家输出向量
+- $er_i \in \mathbb{R}^H$: 样本$i$的路由专家融合输出向量
+- $sim(x, y) = \frac{x \cdot y}{\|x\|_2 \|y\|_2}$: 余弦相似度函数
 
-**总体损失函数**:
-$$L_{culture} = \lambda_{culture} \cdot \frac{1}{|P|} \sum_{(i,j) \in P} L_{ij}$$
+#### 4.4.1 路由专家文化相似性损失 (L_culture_router)
+
+**设计目标**: 同文化样本应激活相似的专家组合，不同文化样本应激活不同的专家组合。
+
+**数学公式**:
+$$L_{culture\_router} = \frac{1}{|P|} \sum_{(i,j) \in P} L_{router}^{(i,j)}$$
 
 其中：
-- $\lambda_{culture}$: 文化损失权重 (默认0.01)
-- $P$: 所有样本对的集合 $P = \{(i,j) | i < j, i,j \in [1,B]\}$
-- $B$: 批次大小
-- $L_{ij}$: 样本对$(i,j)$的对比损失
-
-**样本对损失计算**:
-$$L_{ij} = \begin{cases}
-1 - \cos(w_i, w_j) & \text{if } c_i = c_j \text{ (相同文化)} \\
-\cos(w_i, w_j) & \text{if } c_i \neq c_j \text{ (不同文化)}
+$$L_{router}^{(i,j)} = \begin{cases}
+1 - sim(wr_i, wr_j) & \text{if } cul_i = cul_j \text{ (鼓励相似)} \\
+sim(wr_i, wr_j) & \text{if } cul_i \neq cul_j \text{ (惩罚相似)}
 \end{cases}$$
 
-其中：
-- $w_i, w_j$: 样本$i,j$的专家权重向量 $w \in \mathbb{R}^E$ ($E$为专家数量)
-- $c_i, c_j$: 样本$i,j$的文化标签
-- $\cos(w_i, w_j)$: 余弦相似度
+$P = \{(i,j) | i < j, i,j \in [1,B]\}$为所有样本对的集合。
 
-**余弦相似度计算**:
-$$\cos(w_i, w_j) = \frac{w_i \cdot w_j}{\|w_i\|_2 \|w_j\|_2}$$
+#### 4.4.2 共享专家文化无关损失 (L_culture_share)
 
-**专家权重获取**:
-专家权重$w_i$通过对序列维度平均得到：
-$$w_i = \frac{1}{L} \sum_{t=1}^{L} \text{router\_weights}_i[t]$$
+**设计目标**: 不论文化是否相同，共享专家的输出表示都应尽可能一致，强制学习文化无关的表示。
 
-其中$L$为序列长度，$\text{router\_weights}_i[t] \in \mathbb{R}^E$为时间步$t$的专家权重分布。
+**数学公式**:
+$$L_{culture\_share} = \frac{1}{|P|} \sum_{(i,j) \in P} (1 - sim(es_i, es_j))$$
+
+注意：该损失项完全不使用文化标签，强制共享专家学到culture-invariant表示。
+
+#### 4.4.3 共享-路由专家解耦损失 (L_culture_sr)
+
+**设计目标**: 对于同一个样本，共享专家和路由专家的输出表示应尽可能不同，促进互补学习。
+
+**数学公式**:
+$$L_{culture\_sr} = \frac{1}{B} \sum_{i=1}^{B} sim(es_i, er_i)$$
+
+该损失项鼓励共享专家和路由专家学习正交的表示空间，避免功能重复。
 
 #### 数值稳定性保障
-- **零向量检测**: 检查$\|w_i\|_2 < 10^{-8}$避免除零错误
-- **NaN/Inf处理**: 检测无效相似度并跳过对应样本对
+- **零向量检测**: 检查向量范数$\|x\|_2 < 10^{-8}$，避免余弦相似度计算中的除零错误
+- **NaN/Inf处理**: 检测无效相似度值并跳过对应计算
 - **精度控制**: 使用float16精度节省显存同时保持数值稳定
-- **梯度安全**: 确保返回张量具有正确的梯度属性
+- **梯度保持**: 确保所有相似度计算保持梯度流，支持端到端优化
+
+#### CSL优势分析
+1. **精细化控制**: 三个损失组件分别优化不同方面的文化感知能力
+2. **互补学习**: 路由专家专注文化特异性，共享专家提供文化无关基础
+3. **表示解耦**: 避免专家功能重叠，提升模型表达能力
+4. **数值稳定**: 完善的边界情况处理确保训练稳定性
 
 
-### 5. 简化版CultureMoE适配器
+### 5. 联合训练模型架构 (JointLoRAMoEModel)
 
-SimplifiedCultureMoEAdapter是整个系统的控制中心，负责模型改造、训练管理和推理协调。
+JointLoRAMoEModel是联合训练版本的核心架构，实现了基础LoRA适配器和MoE专家层的同时优化。与简化版不同，联合训练模型避免了预训练LoRA权重冻结，实现真正的端到端优化。
 
 #### 设计理念
-- 实现"单一真源"原则，彻底解包PeftModel避免嵌套包装
-- 替换所有transformer层的FFN为MoE结构
-- 确保设备一致性和数据类型统一
-- 提供统一的训练和推理接口
+- **端到端优化**: 同时训练基础模型LoRA适配器和新增MoE专家层
+- **分层学习率**: 基础LoRA和MoE组件使用不同学习率的精细化优化
+- **统一架构**: 集成LoRA微调和MoE专家训练于单一模型框架
+- **内存高效**: 优化的参数管理和梯度计算，支持大规模联合训练
+
+#### 核心特性
+- **联合优化**: 避免预训练LoRA权重冻结，实现基础适配器和专家层的协同学习
+- **差异化学习率**: 基础LoRA使用较小学习率保持稳定性，MoE使用较大学习率促进专业化
+- **CSL损失集成**: 原生支持三组件CSL文化损失，优化文化感知能力
+- **灵活配置**: 支持不同的专家数量、激活模式和共享专家配置
 
 #### 核心功能
 
@@ -233,7 +262,7 @@ SimplifiedCultureMoEAdapter是整个系统的控制中心，负责模型改造�
 - 提供generate方法委托给base_model进行文本生成
 - 处理DDP包装确保推理时的模型访问
 
-## 训练配置
+## 联合训练配置
 
 ### 模型参数
 | 参数 | 默认值 | 描述 |
@@ -244,22 +273,30 @@ SimplifiedCultureMoEAdapter是整个系统的控制中心，负责模型改造�
 | lora_alpha | 32 | LoRA alpha |
 | use_shared | false | 是否使用共享专家 |
 | use_gate | false | 是否使用门控网络 |
+| use_culture_loss | csl | 文化损失模式 (csl/new/ori/kl/false) |
+| use_culture_router | false | 是否使用文化感知路由 |
+| use_lora | true | 是否启用基础LoRA训练 |
 
 ### 训练参数
 | 参数 | 默认值 | 描述 |
 |------|--------|------|
-| learning_rate | 1e-4 | 学习率 |
-| batch_size | 4 | 批次大小 |
-| gradient_accumulation | 8 | 梯度累积步数 |
-| num_epochs | 7 | 训练轮数 |
-| max_seq_len | 384/850 | 最大序列长度 |
+| learning_rate_base | 2e-4 (LLaMA) / 1e-4 (Qwen) | 基础LoRA学习率 |
+| learning_rate_moe | 8e-5 (LLaMA) / 2e-5 (Qwen) | MoE学习率 |
+| batch_size | 2 | 批次大小 (支持CSL多样本计算) |
+| gradient_accumulation | 16 | 梯度累积步数 |
+| num_epochs | 8 | 训练轮数 |
+| max_seq_len | 384/850 | 最大序列长度 (动态设置) |
 
-### 损失函数权重
+### CSL损失函数权重
 | 损失类型 | 权重 | 描述 |
 |----------|------|------|
 | generation_loss | 1.0 | 主要生成损失 |
-| culture_loss | 0.01 | 文化感知损失 |
-| aux_loss | 0.001 | 辅助损失（负载均衡） |
+| L_culture_router | β/3 | 路由专家文化相似性损失 |
+| L_culture_share | β/3 | 共享专家文化无关损失 |
+| L_culture_sr | β/3 | 共享-路由解耦损失 |
+| aux_loss | α | 辅助损失（负载均衡） |
+
+其中λ=1.0, α=0.1, β=0.5为默认权重配置。
 
 ## 内存优化策略
 
@@ -299,40 +336,72 @@ DDP配置针对MoE特点优化：
 
 ## 使用示例
 
-### 基础训练命令
-使用默认配置启动训练：
-```
-./run_simplified_culturemoe.sh llama 2 true true true 4 new 2 true 2 16 32
+### 联合训练基础命令
+使用默认CSL配置启动联合训练：
+```bash
+./run_joint_lora_moe_training.sh llama 2 false false 4 csl 2 false true 2 16 32
 ```
 
-### 参数说明
+### 联合训练参数说明
 - backbone: 基础模型类型 (llama/qwen)
 - data_id: 数据集编号
 - use_shared: 是否启用共享专家
 - use_gate: 是否启用门控网络
-- num_experts: MoE专家总数
-- culture_loss: 文化损失模式 (new/ori/kl/false)
-- activated_experts: 激活专家数量
-- use_lora: 是否启用LoRA微调
+- num_moe_experts: MoE专家总数
+- use_culture_loss: 文化损失模式 (csl/new/ori/kl/false)
+- num_activated_experts: 激活专家数量
+- use_culture_router: 是否启用文化感知路由
+- use_lora: 是否启用基础LoRA训练
 - num_gpus: 使用的GPU数量
 - lora_rank: LoRA秩
 - lora_alpha: LoRA缩放参数
 
-### 消融实验配置
+### 联合训练vs简化训练对比
+
+**联合训练特点**:
+- 同时优化基础LoRA和MoE专家层
+- 支持CSL三组件文化损失
+- 分层学习率优化
+- 端到端梯度流
+
+**简化训练特点**:
+- 预训练LoRA权重冻结
+- 仅训练MoE专家层
+- 单一学习率
+- 两阶段训练流程
+
+### CSL配置实验
+
+**启用CSL文化损失**:
+```bash
+./run_joint_lora_moe_training.sh llama 2 false false 4 csl 2 false true 2 16 32
+```
+
+**使用传统文化损失**:
+```bash
+./run_joint_lora_moe_training.sh llama 2 false false 4 new 2 false true 2 16 32
+```
 
 **禁用文化损失**:
+```bash
+./run_joint_lora_moe_training.sh llama 2 false false 4 false 2 false true 2 16 32
 ```
-./run_simplified_culturemoe.sh llama 2 true true true 4 false 2 true 2 16 32
+
+### 专家配置实验
+
+**启用共享专家**:
+```bash
+./run_joint_lora_moe_training.sh llama 2 true false 4 csl 2 false true 2 16 32
 ```
 
 **增加专家数量**:
-```
-./run_simplified_culturemoe.sh llama 2 true true true 8 new 4 true 2 16 32
+```bash
+./run_joint_lora_moe_training.sh llama 2 false false 8 csl 4 false true 2 16 32
 ```
 
 **Dense模式（激活所有专家）**:
-```
-./run_simplified_culturemoe.sh llama 2 true true true 4 new 4 true 2 16 32
+```bash
+./run_joint_lora_moe_training.sh llama 2 false false 4 csl 4 false true 2 16 32
 ```
 
 ## 技术创新点
