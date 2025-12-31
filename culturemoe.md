@@ -224,7 +224,92 @@ $$L_{culture\_sr} = \frac{1}{B} \sum_{i=1}^{B} sim(es_i, er_i)$$
 4. **数值稳定**: 完善的边界情况处理确保训练稳定性
 
 
-### 5. 联合训练模型架构 (JointLoRAMoEModel)
+### 5. MASK机制与双路输入处理 (MASK Mechanism)
+
+MASK机制是CultureMoE联合训练的创新特性，通过双路输入处理实现更精细的文化感知训练。该机制允许共享专家和路由专家接收不同版本的输入，从而学习互补的表示。
+
+#### 设计理念
+- **双路输入**: 共享专家接收带MASK的输入，路由专家接收原始输入
+- **表示分化**: 促进共享专家和路由专家学习不同的语义表示
+- **文化解耦**: 通过输入差异化增强文化感知专业化能力
+- **灵活配置**: 支持启用/禁用MASK机制的灵活切换
+
+#### 核心机制
+
+**双路输入处理**:
+- **路由专家输入**: `instruction + input` (原始完整输入)
+- **共享专家输入**: `instruction_mask + input` (带MASK标记的输入)
+- **输出融合**: 通过门控网络融合两路专家的输出表示
+
+**数据格式支持**:
+```json
+{
+    "instruction": "Give me the answer from 1 to 4: Do you agree with ...",
+    "instruction_mask": "Give me the answer from 1 to 4: Do you agree with ... [MASK]",
+    "input": "This question is for a country or language that is Arabic.",
+    "output": "2",
+    "label": "0"
+}
+```
+
+#### 工作流程
+
+**USE_MASK=true时** (双路处理模式):
+1. **数据预处理**: 同时tokenize instruction和instruction_mask版本的输入
+2. **路由专家**: 接收`instruction + input`，学习完整的语义理解
+3. **共享专家**: 接收`instruction_mask + input`，学习文化无关的基础表示
+4. **输出融合**: 通过门控网络加权融合两路专家输出
+5. **损失计算**: CSL损失基于不同输入版本计算专家表示差异
+
+**USE_MASK=false时** (单路处理模式):
+1. **统一输入**: 共享专家和路由专家都接收相同的`instruction + input`
+2. **传统MoE**: 回退到标准的专家混合架构
+3. **兼容性**: 保持与现有训练流程的完全兼容
+
+#### 技术实现
+
+**数据处理层面**:
+- `CultureLLMNewFormatDataset`支持instruction_mask字段的自动处理
+- `dynamic_padding_collate_fn`同时处理原始和MASK版本的tensor
+- 自动fallback机制：当instruction_mask不存在时使用原始instruction
+
+**模型架构层面**:
+- `JointLoRAMoEConfig`新增use_mask配置参数
+- `MoELayer`支持双路输入的前向传播
+- 门控网络实现两路输出的智能融合
+
+**训练流程层面**:
+- 训练脚本自动传递USE_MASK参数
+- 支持单卡和多卡分布式训练
+- 梯度计算考虑双路输入的复杂性
+
+#### 配置参数
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| use_mask | true | 是否启用MASK机制双路输入处理 |
+
+#### 使用示例
+
+**启用MASK机制**:
+```bash
+./run_joint_lora_moe_training.sh llama 2 false false 4 csl 2 false true true 2 16 32
+```
+
+**禁用MASK机制**:
+```bash
+./run_joint_lora_moe_training.sh llama 2 false false 4 csl 2 false true false 2 16 32
+```
+
+#### MASK机制优势
+
+1. **表示分化**: 促进共享专家和路由专家学习互补表示
+2. **文化解耦**: 增强文化感知能力和专家专业化
+3. **灵活性**: 支持动态启用/禁用，适应不同训练需求
+4. **兼容性**: 完全向后兼容现有训练流程
+5. **数据高效**: 充分利用数据集中的instruction_mask信息
+
+### 6. 联合训练模型架构 (JointLoRAMoEModel)
 
 JointLoRAMoEModel是联合训练版本的核心架构，实现了基础LoRA适配器和MoE专家层的同时优化。与简化版不同，联合训练模型避免了预训练LoRA权重冻结，实现真正的端到端优化。
 

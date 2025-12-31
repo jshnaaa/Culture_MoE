@@ -83,6 +83,7 @@ class CultureLLMNewFormatDataset(Dataset):
 
         # 新格式：instruction + input + output
         instruction = item.get('instruction', '')
+        instruction_mask = item.get('instruction_mask', instruction)  # 如果没有instruction_mask，使用原instruction
         input_text = item.get('input', '')
         output_text = item.get('output', '')
         label = item.get('label', '')
@@ -91,12 +92,15 @@ class CultureLLMNewFormatDataset(Dataset):
         # 格式：instruction + input → output
         if input_text:
             full_input = f"{instruction}\n{input_text}"
+            full_input_mask = f"{instruction_mask}\n{input_text}"  # MASK版本的输入
         else:
             full_input = instruction
+            full_input_mask = instruction_mask
 
         # 完整的文本（用于语言建模）
         # 🔧 修复：确保训练和推理格式完全一致，不添加额外空格
         full_text = f"{full_input.rstrip()}{output_text}"
+        full_text_mask = f"{full_input_mask.rstrip()}{output_text}"  # MASK版本的完整文本
 
         # 🔍 关键调试：检查构建后的full_text（注释掉详细调试）
         # if idx < 5:
@@ -117,6 +121,19 @@ class CultureLLMNewFormatDataset(Dataset):
 
         input_ids = encoded['input_ids'].squeeze(0)
         attention_mask = encoded['attention_mask'].squeeze(0)
+
+        # 同时tokenize mask版本的文本
+        encoded_mask = self.tokenizer(
+            full_text_mask,
+            max_length=self.max_length,
+            truncation=True,
+            padding=False,
+            return_tensors='pt',
+            add_special_tokens=True
+        )
+
+        input_ids_mask = encoded_mask['input_ids'].squeeze(0)
+        attention_mask_mask = encoded_mask['attention_mask'].squeeze(0)
 
         # 🔍 关键调试：检查tokenization结果（注释掉详细调试）
         # if idx < 5:
@@ -393,7 +410,10 @@ class CultureLLMNewFormatDataset(Dataset):
             'input_ids': input_ids,
             'attention_mask': attention_mask,
             'labels': labels,
+            'input_ids_mask': input_ids_mask,
+            'attention_mask_mask': attention_mask_mask,
             'instruction': instruction,
+            'instruction_mask': instruction_mask,
             'input': input_text,
             'output': output_text,
             'label': label,
@@ -416,7 +436,7 @@ def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
         批次数据字典
     """
     # 找到batch内最长的序列长度，但限制在指定长度以内
-    max_length = min(max(len(item['input_ids']) for item in batch), max_seq_length)
+    max_length = min(max(max(len(item['input_ids']), len(item.get('input_ids_mask', []))) for item in batch), max_seq_length)
 
     # 🔧 额外安全检查：如果仍然过长，强制截断到更安全的长度
     if max_length > max_seq_length:
@@ -427,7 +447,10 @@ def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
     batch_input_ids = []
     batch_attention_mask = []
     batch_labels = []
+    batch_input_ids_mask = []
+    batch_attention_mask_mask = []
     batch_instructions = []
+    batch_instruction_masks = []
     batch_inputs = []
     batch_outputs = []
     batch_labels_culture = []
@@ -437,14 +460,23 @@ def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
         attention_mask = item['attention_mask']
         labels = item['labels']
 
+        # 处理mask版本的数据
+        input_ids_mask = item.get('input_ids_mask', input_ids)  # 如果没有mask版本，使用原版本
+        attention_mask_mask = item.get('attention_mask_mask', attention_mask)
+
         # 🔧 如果样本超过max_seq_length，进行截断
         if len(input_ids) > max_seq_length:
             input_ids = input_ids[:max_seq_length]
             attention_mask = attention_mask[:max_seq_length]
             labels = labels[:max_seq_length]
 
+        if len(input_ids_mask) > max_seq_length:
+            input_ids_mask = input_ids_mask[:max_seq_length]
+            attention_mask_mask = attention_mask_mask[:max_seq_length]
+
         # 计算需要padding的长度
         pad_length = max_length - len(input_ids)
+        pad_length_mask = max_length - len(input_ids_mask)
 
         if pad_length > 0:
             # 右侧padding
@@ -456,10 +488,21 @@ def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
             padded_attention_mask = attention_mask
             padded_labels = labels
 
+        if pad_length_mask > 0:
+            # 右侧padding for mask version
+            padded_input_ids_mask = F.pad(input_ids_mask, (0, pad_length_mask), value=tokenizer.pad_token_id)
+            padded_attention_mask_mask = F.pad(attention_mask_mask, (0, pad_length_mask), value=0)
+        else:
+            padded_input_ids_mask = input_ids_mask
+            padded_attention_mask_mask = attention_mask_mask
+
         batch_input_ids.append(padded_input_ids)
         batch_attention_mask.append(padded_attention_mask)
         batch_labels.append(padded_labels)
+        batch_input_ids_mask.append(padded_input_ids_mask)
+        batch_attention_mask_mask.append(padded_attention_mask_mask)
         batch_instructions.append(item['instruction'])
+        batch_instruction_masks.append(item.get('instruction_mask', item['instruction']))
         batch_inputs.append(item['input'])
         batch_outputs.append(item['output'])
         batch_labels_culture.append(item['label'])
@@ -469,7 +512,10 @@ def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
         'input_ids': torch.stack(batch_input_ids),
         'attention_mask': torch.stack(batch_attention_mask),
         'labels': torch.stack(batch_labels),
+        'input_ids_mask': torch.stack(batch_input_ids_mask),
+        'attention_mask_mask': torch.stack(batch_attention_mask_mask),
         'instruction': batch_instructions,
+        'instruction_mask': batch_instruction_masks,
         'input': batch_inputs,
         'output': batch_outputs,
         'label': batch_labels_culture

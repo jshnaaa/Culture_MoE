@@ -40,6 +40,9 @@ class JointLoRAMoEConfig:
     use_culture_loss: bool = True
     culture_loss_weight: float = 0.01
 
+    # MASK机制配置
+    use_mask: bool = True  # 是否启用MASK机制双路输入处理
+
     # 其他配置
     dropout: float = 0.1
 

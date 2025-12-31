@@ -994,6 +994,8 @@ def main():
                         help="Culture loss weight")
     parser.add_argument("--use_lora", type=str, default="true",
                         help="Whether to enable pre-trained LoRA fine-tuning")
+    parser.add_argument("--use_mask", type=str, default="true",
+                        help="Whether to enable MASK mechanism with dual-path input processing")
 
     # LoRA参数
     parser.add_argument("--lora_rank", type=int, default=8,
@@ -1011,6 +1013,7 @@ def main():
     # 转换字符串参数
     use_culture_loss = args.use_culture_loss.lower() if args.use_culture_loss.lower() in ['ori', 'new', 'kl', 'csl', 'false'] else 'ori'
     use_lora = args.use_lora.lower() == 'true'
+    use_mask = args.use_mask.lower() == 'true'
 
     # 🔧 根据backbone和data_id组合设置MoE影响权重
     if args.backbone == "llama":
@@ -1076,6 +1079,7 @@ def main():
         if use_culture_loss != 'false':
             print(f"Culture loss weight: {args.culture_loss_weight}")
         print(f"Use pre-trained LoRA: {use_lora}")
+        print(f"Use MASK mechanism: {use_mask} ({'dual-path input processing' if use_mask else 'single-path input processing'})")
         print(f"LoRA config: rank={args.lora_rank}, alpha={args.lora_alpha}")
         print("="*80 + "\n")
 
@@ -1405,6 +1409,9 @@ def main():
         # 文化损失配置
         use_culture_loss=use_culture_loss,
         culture_loss_weight=args.culture_loss_weight,
+
+        # MASK机制配置
+        use_mask=use_mask,
 
         # 其他配置
         dropout=0.1

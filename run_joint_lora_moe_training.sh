@@ -18,13 +18,14 @@ NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
 USE_CULTURE_LOSS=${6:-"csl"}  # ori/new/kl/csl/false，默认使用CSL文化相似性损失
 NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
 USE_LORA=${8:-"true"}   # 是否启用预训练LoRA微调，默认为true
-NUM_GPUS=${9:-"2"}
-LORA_RANK=${10:-"16"}   # LoRA rank
-LORA_ALPHA=${11:-"32"}  # LoRA alpha
+USE_MASK=${9:-"true"}   # 是否启用MASK机制双路输入，默认为true
+NUM_GPUS=${10:-"2"}
+LORA_RANK=${11:-"16"}   # LoRA rank
+LORA_ALPHA=${12:-"32"}  # LoRA alpha
 
 # 检查参数
-if [ "$#" -gt 11 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 12 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_lora] [use_mask] [num_gpus] [lora_rank] [lora_alpha]"
     exit 1
 fi
 
@@ -79,7 +80,7 @@ fi
 
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="/root/autodl-fs/joint_lora_moe/${MODEL_NAME}_${DATASET_TAG}_shared${USE_SHARED}_gate${USE_GATE}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/joint_lora_moe/${MODEL_NAME}_${DATASET_TAG}_shared${USE_SHARED}_gate${USE_GATE}_mask${USE_MASK}_${TIMESTAMP}"
 
 echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
@@ -96,6 +97,7 @@ echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
 echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, csl=CSL三组件损失, false=仅L_aux)"
 echo "  启用预训练LoRA: $USE_LORA"
+echo "  启用MASK机制: $USE_MASK (true=双路输入处理, false=单路输入处理)"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
 echo "  GPU: $NUM_GPUS卡"
 echo "  输出: $OUTPUT_DIR"
@@ -185,6 +187,7 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "activated_experts": $NUM_ACTIVATED_EXPERTS,
         "use_culture_loss": $USE_CULTURE_LOSS,
         "use_lora": $USE_LORA,
+        "use_mask": $USE_MASK,
         "lora_rank": $LORA_RANK,
         "lora_alpha": $LORA_ALPHA,
         "num_epochs": $NUM_EPOCHS,
@@ -231,6 +234,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --num_activated_experts $NUM_ACTIVATED_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
         --use_lora $USE_LORA \
+        --use_mask $USE_MASK \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
@@ -258,6 +262,7 @@ else
         --num_activated_experts $NUM_ACTIVATED_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
         --use_lora $USE_LORA \
+        --use_mask $USE_MASK \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
