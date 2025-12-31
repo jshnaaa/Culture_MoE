@@ -10,15 +10,17 @@ echo "专用于联合训练模型 (best_joint_model/)"
 echo "======================================="
 
 # 参数设置
-MODEL_PATH=${1:-"/root/autodl-fs/joint_lora_moe"}  # 默认联合训练模型根目录
-DATA_ID=${2:-"2"}  # 数据集ID，0=使用pkl文件，1-5=使用完整数据集
-BACKBONE=${3:-"qwen"}  # 模型骨干：llama/qwen
+MODEL_PATH=${1}  # 默认联合训练模型根目录
+BACKBONE=${2:-"llama"}  # 模型骨干：llama/qwen
+DATA_ID=${3:-"0"}  # 数据集ID，0=使用pkl文件，1-5=使用完整数据集
 USE_SHARED=${4:-"true"}  # 是否使用共享专家
-USE_GATE=${5:-"true"}  # 是否使用MoE内部融合Gate
-NUM_MOE_EXPERTS=${6:-"4"}  # MoE专家数量
-NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量
-USE_CULTURE_LOSS=${8:-"csl"}  # 文化损失类型
-USE_MASK=${9:-"false"}  # 占位符参数，暂无实际意义
+USE_MASK=${5:-"true"}  # 占位符参数，暂无实际意义
+USE_GATE=${6:-"true"}  # 是否使用MoE内部融合Gate
+USE_CULTURE_LOSS=${7:-"csl"}  # 文化损失类型
+NUM_MOE_EXPERTS=${8:-"4"}  # MoE专家数量
+NUM_ACTIVATED_EXPERTS=${9:-"2"}  # 激活的专家数量
+
+
 NUM_GPUS=${10:-"1"}  # GPU数量
 
 # 检查参数
