@@ -177,9 +177,22 @@ if [ "$DATA_ID" = "0" ]; then
     echo "✅ 找到数据集划分文件: $PKL_FILE"
 fi
 
+# 动态设置max_seq_len：与训练脚本保持一致
+echo "🔧 调试信息: DATA_ID='$DATA_ID'"
+if [ "$DATA_ID" = "3" ] || [ "$DATA_ID" = "0" ] || [ "$DATA_ID" = "1" ]; then
+    MAX_SEQ_LEN=850       # 长文本数据集使用850，给答案部分留更多空间
+    echo "🔧 检测到长文本数据集(DATA_ID=$DATA_ID)，使用MAX_SEQ_LEN=850"
+else
+    MAX_SEQ_LEN=384       # 其他数据集使用384
+    echo "🔧 使用标准序列长度MAX_SEQ_LEN=384"
+fi
+
+# 验证变量设置
+echo "🔧 最终MAX_SEQ_LEN设置为: $MAX_SEQ_LEN"
+
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="/root/autodl-fs/joint_eval_results/${MODEL_NAME}_${DATASET_TAG}_eval_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/joint_eval_results/${MODEL_NAME}_${DATASET_TAG}_SHARED${USE_SHARED}_MASK_${USE_MASK}_GATE${USE_GATE}_CULTURELOSS_${USE_CULTURE_LOSS}_${TIMESTAMP}"
 
 echo ""
 echo "评估配置信息:"
@@ -197,6 +210,7 @@ echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS"
 echo "  文化损失类型: $USE_CULTURE_LOSS"
 echo "  MASK机制: $USE_MASK (支持消融评估)"
+echo "  最大序列长度: $MAX_SEQ_LEN (动态设置)"
 echo "  GPU数量: $NUM_GPUS"
 echo "  输出目录: $OUTPUT_DIR"
 echo ""
@@ -262,6 +276,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --use_gate "$USE_GATE" \
         --use_culture_loss "$USE_CULTURE_LOSS" \
         --use_mask "$USE_MASK" \
+        --max_length "$MAX_SEQ_LEN" \
         2>&1 | tee "$OUTPUT_DIR/eval.log"
 else
     # 多卡评估
@@ -283,6 +298,7 @@ else
         --use_gate "$USE_GATE" \
         --use_culture_loss "$USE_CULTURE_LOSS" \
         --use_mask "$USE_MASK" \
+        --max_length "$MAX_SEQ_LEN" \
         2>&1 | tee "$OUTPUT_DIR/eval.log"
 fi
 
