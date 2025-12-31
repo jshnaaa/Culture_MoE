@@ -46,9 +46,13 @@ fi
 
 # 设置数据文件路径
 case $DATA_ID in
-    1)
+    0)
         TRAIN_FILE="/root/autodl-fs/unified_all_datasets.json"
         DATASET_TAG="unified"
+        ;;
+    1)
+        TRAIN_FILE="/root/autodl-fs/blend_merge_gen.json"
+        DATASET_TAG="blend"
         ;;
     2)
         TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
@@ -61,6 +65,10 @@ case $DATA_ID in
     4)
         TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
+        ;;
+    5)
+        TRAIN_FILE="/root/autodl-fs/cultureAtlas_merge_gen.json"
+        DATASET_TAG="cultureAtlas"
         ;;
     *)
         echo "❌ 无效的DATA_ID: $DATA_ID (支持: 2, 3, 4)"

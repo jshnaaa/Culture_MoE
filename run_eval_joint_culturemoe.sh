@@ -50,8 +50,8 @@ case $DATA_ID in
         echo "📋 使用模型目录中的pkl文件测试集"
         ;;
     1)
-        TRAIN_FILE="/root/autodl-fs/unified_all_datasets.json"
-        DATASET_TAG="unified"
+        TRAIN_FILE="/root/autodl-fs/blend_merge_gen.json"
+        DATASET_TAG="blend"
         ;;
     2)
         TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"

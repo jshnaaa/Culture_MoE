@@ -58,15 +58,17 @@ class CultureLLMNewFormatDataset(Dataset):
     }
     """
 
-    def __init__(self, data_path: str, tokenizer, max_length: int = 512):
+    def __init__(self, data_path: str, tokenizer, max_length: int = 512, use_mask_inference: bool = True):
         """
         Args:
             data_path: 数据文件路径
             tokenizer: Tokenizer
             max_length: 最大序列长度
+            use_mask_inference: 推理时是否启用MASK机制（双路输入处理）
         """
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.use_mask_inference = use_mask_inference
 
         print(f"Loading data from: {data_path}")
         with open(data_path, 'r', encoding='utf-8') as f:
@@ -87,6 +89,11 @@ class CultureLLMNewFormatDataset(Dataset):
         input_text = item.get('input', '')
         output_text = item.get('output', '')
         label = item.get('label', '')
+
+        # 🔧 推理时MASK机制控制：根据use_mask_inference决定是否启用双路输入处理
+        if not self.use_mask_inference:
+            # 禁用MASK机制：instruction_mask使用原始instruction，实现单路输入处理
+            instruction_mask = instruction
 
         # 构建完整的输入和输出
         # 格式：instruction + input → output

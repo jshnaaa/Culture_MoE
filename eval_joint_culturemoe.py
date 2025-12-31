@@ -84,7 +84,7 @@ def is_main_process(rank):
     return rank == 0
 
 
-def load_test_dataset_from_pkl(pkl_file_path: str, tokenizer, max_length: int = 512):
+def load_test_dataset_from_pkl(pkl_file_path: str, tokenizer, max_length: int = 512, use_mask: bool = True):
     """
     从pkl文件加载测试集
 
@@ -92,6 +92,7 @@ def load_test_dataset_from_pkl(pkl_file_path: str, tokenizer, max_length: int = 
         pkl_file_path: pkl文件路径
         tokenizer: tokenizer
         max_length: 最大序列长度
+        use_mask: 是否启用MASK机制（推理时消融研究）
 
     Returns:
         测试数据集
@@ -117,8 +118,8 @@ def load_test_dataset_from_pkl(pkl_file_path: str, tokenizer, max_length: int = 
     print(f"Total samples: {total_samples}")
     print(f"Split ratio: {len(train_indices)/total_samples:.1f}:{len(val_indices)/total_samples:.1f}:{len(test_indices)/total_samples:.1f}")
 
-    # 创建完整数据集
-    full_dataset = CultureLLMNewFormatDataset(original_data_path, tokenizer, max_length)
+    # 创建完整数据集，传递use_mask参数控制MASK机制
+    full_dataset = CultureLLMNewFormatDataset(original_data_path, tokenizer, max_length, use_mask_inference=use_mask)
 
     # 🔧 验证数据集大小一致性
     if len(full_dataset) != total_samples:
@@ -130,7 +131,7 @@ def load_test_dataset_from_pkl(pkl_file_path: str, tokenizer, max_length: int = 
     return test_dataset
 
 
-def load_test_dataset_from_file(data_file_path: str, tokenizer, max_length: int = 512):
+def load_test_dataset_from_file(data_file_path: str, tokenizer, max_length: int = 512, use_mask: bool = True):
     """
     从完整数据文件加载测试集（使用全部数据）
 
@@ -138,13 +139,14 @@ def load_test_dataset_from_file(data_file_path: str, tokenizer, max_length: int 
         data_file_path: 数据文件路径
         tokenizer: tokenizer
         max_length: 最大序列长度
+        use_mask: 是否启用MASK机制（推理时消融研究）
 
     Returns:
         测试数据集
     """
     print(f"Loading test dataset from full data file: {data_file_path}")
 
-    test_dataset = CultureLLMNewFormatDataset(data_file_path, tokenizer, max_length)
+    test_dataset = CultureLLMNewFormatDataset(data_file_path, tokenizer, max_length, use_mask_inference=use_mask)
 
     print(f"Test set size: {len(test_dataset)}")
 
@@ -693,17 +695,18 @@ def main():
     # 加载测试数据集
     if is_main_process(rank):
         print("Loading test dataset...")
+        print(f"🔧 MASK机制状态: {'启用' if use_mask else '禁用'} (推理时消融研究)")
 
     if args.data_id == "0":
         # 使用pkl文件测试集
         if not args.pkl_file or not os.path.exists(args.pkl_file):
             raise ValueError(f"pkl file not found: {args.pkl_file}")
-        test_dataset = load_test_dataset_from_pkl(args.pkl_file, tokenizer, args.max_length)
+        test_dataset = load_test_dataset_from_pkl(args.pkl_file, tokenizer, args.max_length, use_mask=use_mask)
     else:
         # 使用完整数据集
         if not os.path.exists(args.data_file):
             raise ValueError(f"Data file not found: {args.data_file}")
-        test_dataset = load_test_dataset_from_file(args.data_file, tokenizer, args.max_length)
+        test_dataset = load_test_dataset_from_file(args.data_file, tokenizer, args.max_length, use_mask=use_mask)
 
     if is_main_process(rank):
         print("✅ Test dataset loaded")
