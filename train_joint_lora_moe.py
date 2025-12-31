@@ -1318,18 +1318,96 @@ def main():
             print(f"  🚨 严重警告: padding token解码为有意义字符'{pad_token_text}'!")
             print(f"  这会导致训练标签包含大量无意义字符!")
 
-    # 加载数据
-    print("\nLoading and processing data...")
-    datasets = load_and_process_data_8_1_1(
-        args.train_file,
-        tokenizer,
-        max_length=args.max_length,
-        output_dir=args.output_dir
-    )
-    train_dataset = datasets['train']
-    val_dataset = datasets['validation']
-    test_dataset = datasets['test']  # 保存测试集引用，但暂时不在训练中使用
-    print("✅ Data loaded with 8:1:1 split")
+    # 🔧 新增：检测是否为多数据集联合训练模式
+    if ',' in args.train_file:
+        # 多数据集模式：DATA_ID=24
+        print("\n🔧 检测到多数据集联合训练模式")
+        file_list = [f.strip() for f in args.train_file.split(',')]
+        print(f"  - 数据集文件: {file_list}")
+        print(f"  - 将分别对每个数据集进行8:1:1划分")
+
+        all_train_datasets = []
+        all_val_datasets = []
+        all_test_datasets = []
+
+        for idx, data_file in enumerate(file_list, 1):
+            print(f"\n📁 处理数据集 {idx}: {os.path.basename(data_file)}")
+
+            # 🔧 为每个数据集独立进行8:1:1划分，但不保存默认pkl文件
+            # 临时禁用output_dir，避免覆盖原有的data_split_8_1_1.pkl
+            datasets = load_and_process_data_8_1_1(
+                data_file,
+                tokenizer,
+                max_length=args.max_length,
+                output_dir=None,  # 不保存默认pkl文件
+                seed=42  # 使用固定种子确保可重现性
+            )
+
+            # 🔧 手动保存独立的pkl文件，使用指定的命名格式
+            import pickle
+            pkl_filename = f"data_split_8_1_1_{idx}.pkl"
+            pkl_path = os.path.join(args.output_dir, pkl_filename)
+
+            # 获取Subset对象的indices
+            train_indices = datasets['train'].indices
+            val_indices = datasets['validation'].indices
+            test_indices = datasets['test'].indices
+            total_size = len(train_indices) + len(val_indices) + len(test_indices)
+
+            split_info = {
+                'data_path': data_file,
+                'train_indices': train_indices,
+                'val_indices': val_indices,
+                'test_indices': test_indices,
+                'train_size': len(datasets['train']),
+                'val_size': len(datasets['validation']),
+                'test_size': len(datasets['test']),
+                'total_size': total_size,
+                'seed': 42,
+                'split_ratio': '8:1:1',
+                'dataset_index': idx,
+                'dataset_name': os.path.basename(data_file)
+            }
+
+            with open(pkl_path, 'wb') as f:
+                pickle.dump(split_info, f)
+
+            print(f"  ✅ 数据集 {idx} 划分完成:")
+            print(f"    - 训练集: {len(datasets['train'])} 样本")
+            print(f"    - 验证集: {len(datasets['validation'])} 样本")
+            print(f"    - 测试集: {len(datasets['test'])} 样本")
+            print(f"    - pkl文件: {pkl_filename}")
+
+            # 收集所有数据集
+            all_train_datasets.append(datasets['train'])
+            all_val_datasets.append(datasets['validation'])
+            all_test_datasets.append(datasets['test'])
+
+        # 🔧 合并所有数据集
+        from torch.utils.data import ConcatDataset
+        train_dataset = ConcatDataset(all_train_datasets)
+        val_dataset = ConcatDataset(all_val_datasets)
+        test_dataset = ConcatDataset(all_test_datasets)
+
+        print(f"\n✅ 多数据集联合训练数据加载完成:")
+        print(f"  - 总训练集: {len(train_dataset)} 样本")
+        print(f"  - 总验证集: {len(val_dataset)} 样本")
+        print(f"  - 总测试集: {len(test_dataset)} 样本")
+        print(f"  - 已保存 {len(file_list)} 个独立的pkl文件")
+
+    else:
+        # 单数据集模式：原有逻辑
+        print("\nLoading and processing data...")
+        datasets = load_and_process_data_8_1_1(
+            args.train_file,
+            tokenizer,
+            max_length=args.max_length,
+            output_dir=args.output_dir
+        )
+        train_dataset = datasets['train']
+        val_dataset = datasets['validation']
+        test_dataset = datasets['test']  # 保存测试集引用，但暂时不在训练中使用
+        print("✅ Data loaded with 8:1:1 split")
 
     # 创建分布式采样器
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank) if world_size > 1 else None

@@ -149,24 +149,42 @@ if [ ! -d "$FOUND_MODEL/lora_weights" ]; then
     exit 1
 fi
 
-# 设置pkl文件路径（用于DATA_ID=0）
-PKL_FILE=""
+# 🔧 新增：设置pkl文件路径（用于DATA_ID=0），支持多pkl文件检测
+PKL_FILES=""
 if [ "$DATA_ID" = "0" ]; then
     # 🔧 修复：根据实际目录结构查找pkl文件
-    # 用户提供的目录结构：MODEL_PATH/data_split_8_1_1.pkl
+    # 用户提供的目录结构：MODEL_PATH/data_split_8_1_1.pkl 或 MODEL_PATH/data_split_8_1_1_*.pkl
     # FOUND_MODEL指向：MODEL_PATH/best_joint_model/
     # 所以pkl文件在FOUND_MODEL的父目录中
 
     MODEL_PARENT_DIR=$(dirname "$FOUND_MODEL")
-    PKL_FILE="$MODEL_PARENT_DIR/data_split_8_1_1.pkl"
 
     echo "🔍 查找pkl文件:"
     echo "  - FOUND_MODEL: $FOUND_MODEL"
     echo "  - MODEL_PARENT_DIR: $MODEL_PARENT_DIR"
-    echo "  - 期望的PKL文件路径: $PKL_FILE"
 
-    if [ ! -f "$PKL_FILE" ]; then
-        echo "❌ 数据集划分文件不存在: $PKL_FILE"
+    # 🔧 首先查找多数据集模式的pkl文件（data_split_8_1_1_*.pkl）
+    MULTI_PKL_FILES=$(find "$MODEL_PARENT_DIR" -maxdepth 1 -name "data_split_8_1_1_*.pkl" 2>/dev/null | sort)
+    SINGLE_PKL_FILE="$MODEL_PARENT_DIR/data_split_8_1_1.pkl"
+
+    if [ -n "$MULTI_PKL_FILES" ]; then
+        # 找到多个pkl文件（联合训练模式）
+        PKL_FILES="$MULTI_PKL_FILES"
+        echo "✅ 检测到多数据集训练模式，找到多个pkl文件:"
+        for pkl_file in $PKL_FILES; do
+            echo "  - $(basename "$pkl_file")"
+        done
+        echo "  - 将分别对每个pkl文件进行独立评估"
+    elif [ -f "$SINGLE_PKL_FILE" ]; then
+        # 找到单个pkl文件（传统模式）
+        PKL_FILES="$SINGLE_PKL_FILE"
+        echo "✅ 检测到单数据集训练模式，找到pkl文件:"
+        echo "  - $(basename "$SINGLE_PKL_FILE")"
+    else
+        # 没有找到任何pkl文件
+        echo "❌ 未找到数据集划分文件"
+        echo "  - 期望的单数据集文件: $SINGLE_PKL_FILE"
+        echo "  - 期望的多数据集文件: data_split_8_1_1_*.pkl"
         echo "请确保联合训练时保存了数据集划分信息"
         echo ""
         echo "🔍 调试信息：查找模型目录中的所有文件"
@@ -174,7 +192,6 @@ if [ "$DATA_ID" = "0" ]; then
         ls -la "$MODEL_PARENT_DIR" 2>/dev/null || echo "无法列出目录内容"
         exit 1
     fi
-    echo "✅ 找到数据集划分文件: $PKL_FILE"
 fi
 
 # 动态设置max_seq_len：与训练脚本保持一致
@@ -249,6 +266,7 @@ cat > "$OUTPUT_DIR/eval_config.json" << EOF
 }
 EOF
 
+# 🔧 新增：支持多pkl文件评估的循环逻辑
 echo "开始评估联合训练模型..."
 
 # 设置环境变量
@@ -257,52 +275,152 @@ export CUDA_LAUNCH_BLOCKING=0
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
 
-# 评估命令
-EVAL_SUCCESS=0
+# 🔧 检查是否为多pkl文件模式
+if [ "$DATA_ID" = "0" ] && [ $(echo "$PKL_FILES" | wc -w) -gt 1 ]; then
+    # 多pkl文件模式：分别对每个pkl文件进行评估
+    echo "🔧 多数据集评估模式：将分别评估每个数据集"
 
-if [ "$NUM_GPUS" -eq 1 ]; then
-    # 单卡评估
-    python eval_joint_culturemoe.py \
-        --base_model_path "$BASE_MODEL" \
-        --joint_model_path "$FOUND_MODEL" \
-        --data_file "$TRAIN_FILE" \
-        --pkl_file "$PKL_FILE" \
-        --data_id "$DATA_ID" \
-        --output_dir "$OUTPUT_DIR" \
-        --backbone "$BACKBONE" \
-        --num_moe_experts "$NUM_MOE_EXPERTS" \
-        --num_activated_experts "$NUM_ACTIVATED_EXPERTS" \
-        --use_shared "$USE_SHARED" \
-        --use_gate "$USE_GATE" \
-        --use_culture_loss "$USE_CULTURE_LOSS" \
-        --use_mask "$USE_MASK" \
-        --max_length "$MAX_SEQ_LEN" \
-        2>&1 | tee "$OUTPUT_DIR/eval.log"
+    OVERALL_SUCCESS=0
+    PKL_COUNT=0
+
+    for PKL_FILE in $PKL_FILES; do
+        PKL_COUNT=$((PKL_COUNT + 1))
+        PKL_BASENAME=$(basename "$PKL_FILE" .pkl)
+
+        echo ""
+        echo "======================================="
+        echo "📊 评估数据集 $PKL_COUNT: $PKL_BASENAME"
+        echo "======================================="
+
+        # 为每个pkl文件创建独立的输出目录
+        CURRENT_OUTPUT_DIR="${OUTPUT_DIR}_${PKL_BASENAME}"
+        mkdir -p "$CURRENT_OUTPUT_DIR"
+
+        # 复制配置文件到当前输出目录
+        cp "$OUTPUT_DIR/eval_config.json" "$CURRENT_OUTPUT_DIR/"
+
+        # 评估当前pkl文件
+        EVAL_SUCCESS=0
+
+        if [ "$NUM_GPUS" -eq 1 ]; then
+            # 单卡评估
+            python eval_joint_culturemoe.py \
+                --base_model_path "$BASE_MODEL" \
+                --joint_model_path "$FOUND_MODEL" \
+                --data_file "$TRAIN_FILE" \
+                --pkl_file "$PKL_FILE" \
+                --data_id "$DATA_ID" \
+                --output_dir "$CURRENT_OUTPUT_DIR" \
+                --backbone "$BACKBONE" \
+                --num_moe_experts "$NUM_MOE_EXPERTS" \
+                --num_activated_experts "$NUM_ACTIVATED_EXPERTS" \
+                --use_shared "$USE_SHARED" \
+                --use_gate "$USE_GATE" \
+                --use_culture_loss "$USE_CULTURE_LOSS" \
+                --use_mask "$USE_MASK" \
+                --max_length "$MAX_SEQ_LEN" \
+                2>&1 | tee "$CURRENT_OUTPUT_DIR/eval.log"
+        else
+            # 多卡评估
+            export CUDA_VISIBLE_DEVICES=0,1
+            torchrun \
+                --nproc_per_node=$NUM_GPUS \
+                --master_port=29600 \
+                eval_joint_culturemoe.py \
+                --base_model_path "$BASE_MODEL" \
+                --joint_model_path "$FOUND_MODEL" \
+                --data_file "$TRAIN_FILE" \
+                --pkl_file "$PKL_FILE" \
+                --data_id "$DATA_ID" \
+                --output_dir "$CURRENT_OUTPUT_DIR" \
+                --backbone "$BACKBONE" \
+                --num_moe_experts "$NUM_MOE_EXPERTS" \
+                --num_activated_experts "$NUM_ACTIVATED_EXPERTS" \
+                --use_shared "$USE_SHARED" \
+                --use_gate "$USE_GATE" \
+                --use_culture_loss "$USE_CULTURE_LOSS" \
+                --use_mask "$USE_MASK" \
+                --max_length "$MAX_SEQ_LEN" \
+                2>&1 | tee "$CURRENT_OUTPUT_DIR/eval.log"
+        fi
+
+        EVAL_SUCCESS=$?
+
+        if [ $EVAL_SUCCESS -eq 0 ]; then
+            echo "✅ 数据集 $PKL_COUNT ($PKL_BASENAME) 评估成功"
+        else
+            echo "❌ 数据集 $PKL_COUNT ($PKL_BASENAME) 评估失败"
+            OVERALL_SUCCESS=$EVAL_SUCCESS
+        fi
+    done
+
+    EVAL_SUCCESS=$OVERALL_SUCCESS
+
+    echo ""
+    echo "======================================="
+    echo "📊 多数据集评估完成汇总"
+    echo "======================================="
+    echo "  - 总共评估了 $PKL_COUNT 个数据集"
+    echo "  - 结果保存在各自的输出目录中:"
+    for PKL_FILE in $PKL_FILES; do
+        PKL_BASENAME=$(basename "$PKL_FILE" .pkl)
+        echo "    * ${OUTPUT_DIR}_${PKL_BASENAME}/"
+    done
+
 else
-    # 多卡评估
-    export CUDA_VISIBLE_DEVICES=0,1
-    torchrun \
-        --nproc_per_node=$NUM_GPUS \
-        --master_port=29600 \
-        eval_joint_culturemoe.py \
-        --base_model_path "$BASE_MODEL" \
-        --joint_model_path "$FOUND_MODEL" \
-        --data_file "$TRAIN_FILE" \
-        --pkl_file "$PKL_FILE" \
-        --data_id "$DATA_ID" \
-        --output_dir "$OUTPUT_DIR" \
-        --backbone "$BACKBONE" \
-        --num_moe_experts "$NUM_MOE_EXPERTS" \
-        --num_activated_experts "$NUM_ACTIVATED_EXPERTS" \
-        --use_shared "$USE_SHARED" \
-        --use_gate "$USE_GATE" \
-        --use_culture_loss "$USE_CULTURE_LOSS" \
-        --use_mask "$USE_MASK" \
-        --max_length "$MAX_SEQ_LEN" \
-        2>&1 | tee "$OUTPUT_DIR/eval.log"
-fi
+    # 单pkl文件模式：原有逻辑
+    if [ "$DATA_ID" = "0" ]; then
+        # 提取单个PKL_FILE
+        PKL_FILE=$(echo "$PKL_FILES" | head -n1)
+        echo "🔧 单数据集评估模式，使用pkl文件: $(basename "$PKL_FILE")"
+    fi
 
-EVAL_SUCCESS=$?
+    EVAL_SUCCESS=0
+
+    if [ "$NUM_GPUS" -eq 1 ]; then
+        # 单卡评估
+        python eval_joint_culturemoe.py \
+            --base_model_path "$BASE_MODEL" \
+            --joint_model_path "$FOUND_MODEL" \
+            --data_file "$TRAIN_FILE" \
+            --pkl_file "$PKL_FILE" \
+            --data_id "$DATA_ID" \
+            --output_dir "$OUTPUT_DIR" \
+            --backbone "$BACKBONE" \
+            --num_moe_experts "$NUM_MOE_EXPERTS" \
+            --num_activated_experts "$NUM_ACTIVATED_EXPERTS" \
+            --use_shared "$USE_SHARED" \
+            --use_gate "$USE_GATE" \
+            --use_culture_loss "$USE_CULTURE_LOSS" \
+            --use_mask "$USE_MASK" \
+            --max_length "$MAX_SEQ_LEN" \
+            2>&1 | tee "$OUTPUT_DIR/eval.log"
+    else
+        # 多卡评估
+        export CUDA_VISIBLE_DEVICES=0,1
+        torchrun \
+            --nproc_per_node=$NUM_GPUS \
+            --master_port=29600 \
+            eval_joint_culturemoe.py \
+            --base_model_path "$BASE_MODEL" \
+            --joint_model_path "$FOUND_MODEL" \
+            --data_file "$TRAIN_FILE" \
+            --pkl_file "$PKL_FILE" \
+            --data_id "$DATA_ID" \
+            --output_dir "$OUTPUT_DIR" \
+            --backbone "$BACKBONE" \
+            --num_moe_experts "$NUM_MOE_EXPERTS" \
+            --num_activated_experts "$NUM_ACTIVATED_EXPERTS" \
+            --use_shared "$USE_SHARED" \
+            --use_gate "$USE_GATE" \
+            --use_culture_loss "$USE_CULTURE_LOSS" \
+            --use_mask "$USE_MASK" \
+            --max_length "$MAX_SEQ_LEN" \
+            2>&1 | tee "$OUTPUT_DIR/eval.log"
+    fi
+
+    EVAL_SUCCESS=$?
+fi
 
 # 检查评估结果
 echo "======================================="

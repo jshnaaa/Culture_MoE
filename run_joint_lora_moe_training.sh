@@ -70,8 +70,16 @@ case $DATA_ID in
         TRAIN_FILE="/root/autodl-fs/cultureAtlas_merge_gen.json"
         DATASET_TAG="cultureAtlas"
         ;;
+    24)
+        # 🔧 新增：CulturalBench + cultureLLM 联合数据集
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json,/root/autodl-fs/cultureLLM_merge_gen.json"
+        DATASET_TAG="CulturalBench_cultureLLM"
+        echo "🔧 联合数据集模式: CulturalBench + cultureLLM"
+        echo "  - 将分别对两个数据集进行8:1:1划分"
+        echo "  - 生成独立的pkl文件: data_split_8_1_1_1.pkl, data_split_8_1_1_2.pkl"
+        ;;
     *)
-        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 2, 3, 4)"
+        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 0, 1, 2, 3, 4, 5, 24)"
         exit 1
         ;;
 esac
@@ -82,9 +90,25 @@ if [ ! -f "$BASE_MODEL/config.json" ]; then
     exit 1
 fi
 
-if [ ! -f "$TRAIN_FILE" ]; then
-    echo "❌ 数据文件不存在: $TRAIN_FILE"
-    exit 1
+# 🔧 修复：检查数据文件存在性（支持多文件）
+if [[ "$TRAIN_FILE" == *","* ]]; then
+    # 多文件模式：检查每个文件
+    echo "🔧 检查多个数据文件..."
+    IFS=',' read -ra FILES <<< "$TRAIN_FILE"
+    for file in "${FILES[@]}"; do
+        if [ ! -f "$file" ]; then
+            echo "❌ 数据文件不存在: $file"
+            exit 1
+        else
+            echo "✅ 找到数据文件: $file"
+        fi
+    done
+else
+    # 单文件模式
+    if [ ! -f "$TRAIN_FILE" ]; then
+        echo "❌ 数据文件不存在: $TRAIN_FILE"
+        exit 1
+    fi
 fi
 
 # 设置输出目录

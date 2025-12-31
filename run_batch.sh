@@ -1,3 +1,5 @@
+bash run_joint_lora_moe_training.sh llama 24
+
 #bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_gatetrue_20251230_212244 llama 0 true true true false
 #bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_gatetrue_20251230_212244 llama 0 true true false
 bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_gatetrue_20251230_212244 llama 0 true false

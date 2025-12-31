@@ -95,7 +95,7 @@ def load_test_dataset_from_pkl(pkl_file_path: str, tokenizer, max_length: int = 
         use_mask: 是否启用MASK机制（推理时消融研究）
 
     Returns:
-        测试数据集
+        测试数据集和数据集信息
     """
     print(f"Loading test dataset from pkl file: {pkl_file_path}")
 
@@ -108,7 +108,13 @@ def load_test_dataset_from_pkl(pkl_file_path: str, tokenizer, max_length: int = 
     train_indices = split_info.get('train_indices', [])
     val_indices = split_info.get('val_indices', [])
 
+    # 🔧 新增：获取数据集信息，用于多数据集模式的标识
+    dataset_index = split_info.get('dataset_index', None)
+    dataset_name = split_info.get('dataset_name', os.path.basename(original_data_path))
+
     print(f"Original data path: {original_data_path}")
+    if dataset_index is not None:
+        print(f"Dataset index: {dataset_index} ({dataset_name})")
     print(f"Train set size: {len(train_indices)} ({len(train_indices)/len(train_indices + val_indices + test_indices)*100:.1f}%)")
     print(f"Validation set size: {len(val_indices)} ({len(val_indices)/len(train_indices + val_indices + test_indices)*100:.1f}%)")
     print(f"Test set size: {len(test_indices)} ({len(test_indices)/len(train_indices + val_indices + test_indices)*100:.1f}%)")
@@ -128,7 +134,13 @@ def load_test_dataset_from_pkl(pkl_file_path: str, tokenizer, max_length: int = 
     # 创建测试集子集
     test_dataset = Subset(full_dataset, test_indices)
 
-    return test_dataset
+    # 🔧 返回数据集和元信息，用于多数据集模式
+    return test_dataset, {
+        'dataset_index': dataset_index,
+        'dataset_name': dataset_name,
+        'original_data_path': original_data_path,
+        'test_size': len(test_indices)
+    }
 
 
 def load_test_dataset_from_file(data_file_path: str, tokenizer, max_length: int = 512, use_mask: bool = True):
