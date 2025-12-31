@@ -464,9 +464,9 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     return joint_model
 
 
-def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0):
+def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True):
     """
-    评估联合模型
+    🔧 修复版本：评估联合模型，支持MASK机制双路输入
 
     Args:
         model: 联合模型
@@ -474,6 +474,7 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0):
         tokenizer: tokenizer
         device: 设备
         rank: 进程rank
+        use_mask: 是否启用MASK机制
 
     Returns:
         评估结果字典
@@ -506,9 +507,19 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0):
                     true_output = batch['output']
                     label = batch['label']
 
-                # 生成答案
-                generated_text = generate_answer(
-                    actual_model, tokenizer, instruction, input_text, device
+                # 🔧 修复：支持MASK机制的生成答案
+                # 从batch中获取instruction_mask（如果使用修复版数据集）
+                instruction_mask = None
+                if hasattr(batch, 'get') and 'instruction_mask' in batch:
+                    instruction_mask = batch['instruction_mask'][i] if isinstance(batch['instruction_mask'], list) else batch['instruction_mask']
+                elif hasattr(batch, 'instruction_mask'):
+                    instruction_mask = batch.instruction_mask[i] if hasattr(batch.instruction_mask, '__getitem__') else batch.instruction_mask
+
+                # 生成答案（支持双路输入）
+                from generate_answer_fixed import generate_answer_fixed
+                generated_text = generate_answer_fixed(
+                    actual_model, tokenizer, instruction, input_text,
+                    instruction_mask=instruction_mask, device=device, use_mask=use_mask
                 )
 
                 # 提取答案
@@ -713,7 +724,14 @@ def main():
         # 使用pkl文件测试集
         if not args.pkl_file or not os.path.exists(args.pkl_file):
             raise ValueError(f"pkl file not found: {args.pkl_file}")
-        test_dataset = load_test_dataset_from_pkl(args.pkl_file, tokenizer, args.max_length, use_mask=use_mask)
+        test_dataset, dataset_metadata = load_test_dataset_from_pkl(args.pkl_file, tokenizer, args.max_length, use_mask=use_mask)
+
+        if is_main_process(rank):
+            if dataset_metadata.get('dataset_index') is not None:
+                print(f"✅ 加载数据集 {dataset_metadata['dataset_index']}: {dataset_metadata['dataset_name']}")
+                print(f"  - 测试集大小: {dataset_metadata['test_size']} 样本")
+            else:
+                print(f"✅ 加载单数据集测试集: {dataset_metadata['test_size']} 样本")
     else:
         # 使用完整数据集
         if not os.path.exists(args.data_file):
@@ -780,7 +798,7 @@ def main():
         print("Starting evaluation...")
         print("="*80 + "\n")
 
-    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank)
+    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask)
 
     # 保存结果（只在主进程执行）
     if is_main_process(rank):
