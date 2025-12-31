@@ -453,8 +453,8 @@ def main():
                         help="Whether to use MoE gate")
     parser.add_argument("--use_culture_loss", type=str, default="csl",
                         help="Culture loss type")
-    parser.add_argument("--use_mask", type=str, default="false",
-                        help="Placeholder parameter")
+    parser.add_argument("--use_mask", type=str, default="true",
+                        help="Whether to use MASK mechanism for ablation study")
 
     # 评估参数
     parser.add_argument("--batch_size", type=int, default=1,
@@ -467,6 +467,7 @@ def main():
     # 转换字符串参数
     use_shared = args.use_shared.lower() == 'true'
     use_gate = args.use_gate.lower() == 'true'
+    use_mask = args.use_mask.lower() == 'true'  # 🔧 添加use_mask参数转换
 
     # 设置设备
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
@@ -487,6 +488,7 @@ def main():
         print(f"Activated experts: {args.num_activated_experts}")
         print(f"Use shared: {use_shared}")
         print(f"Use gate: {use_gate}")
+        print(f"Use mask: {use_mask}")  # 🔧 添加use_mask参数显示
         print(f"Culture loss: {args.use_culture_loss}")
         print(f"Output directory: {args.output_dir}")
         print("="*80 + "\n")
