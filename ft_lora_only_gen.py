@@ -173,26 +173,51 @@ class CultureLLMNewFormatDataset(Dataset):
         # 不能分别编码full_input，因为tokenizer可能在边界处产生不同分词
         # 应该在完整的full_text中找到output_text的起始位置
 
-        # 方法：在token级别找到output开始的位置
-        # 先编码output_text看它的token是什么
+        # 🔧 修复：更robust的input_length计算
+        # 方法1：尝试精确匹配output_tokens
         output_tokens = self.tokenizer(output_text, add_special_tokens=False)['input_ids']
-
-        # 在完整的input_ids中找到output_tokens的起始位置
-        input_length = len(input_ids)  # 默认全部掩码
+        input_length = len(input_ids)  # 默认值：如果找不到匹配，保守处理
 
         if len(output_tokens) > 0:
             # 从后往前搜索，找到output_tokens的匹配位置
+            found_match = False
             for start_pos in range(len(input_ids) - len(output_tokens), -1, -1):
                 if start_pos >= 0 and input_ids[start_pos:start_pos + len(output_tokens)].tolist() == output_tokens:
                     input_length = start_pos
+                    found_match = True
                     break
 
-        # 🔧 安全检查：确保input_length不超过总长度
+            # 🔧 如果精确匹配失败，使用fallback方法
+            if not found_match:
+                # 方法2：基于full_input的token长度估算
+                try:
+                    full_input_tokens = self.tokenizer(full_input, add_special_tokens=True, truncation=True, max_length=self.max_length)['input_ids']
+                    input_length = len(full_input_tokens)
+
+                    # 确保input_length合理：应该占大部分序列，但要给output留空间
+                    total_length = len(input_ids)
+                    if input_length > total_length - 3:  # 至少给output留3个token空间
+                        input_length = max(0, total_length - 3)
+
+                    if idx < 5:  # 只对前5个样本显示fallback信息
+                        print(f"  🔧 样本{idx}: 精确匹配失败，使用fallback方法")
+                        print(f"    output_text: '{output_text}'")
+                        print(f"    output_tokens: {output_tokens}")
+                        print(f"    fallback input_length: {input_length}/{total_length}")
+
+                except Exception as e:
+                    # 最后的fallback：保守估计
+                    total_length = len(input_ids)
+                    input_length = max(0, total_length - 5)  # 给output留5个token空间
+                    if idx < 5:
+                        print(f"  ⚠️ 样本{idx}: 所有方法都失败，使用最保守估计: {input_length}/{total_length}")
+
+        # 🔧 最终安全检查
         total_length = len(input_ids)
         if input_length >= total_length:
-            # 如果计算出的input_length过大，使用保守的估计
-            # 假设output至少有1个token
             input_length = max(0, total_length - 2)
+        elif input_length < 10:  # 如果input_length异常小，也是有问题的
+            input_length = max(10, total_length - 5)  # 确保有合理的输入长度
 
         # 🔍 调试：检查input_length计算
         # 注释掉详细调试信息
@@ -284,18 +309,29 @@ class CultureLLMNewFormatDataset(Dataset):
         #         print(f"  🚨 问题: input_length({input_length})过大，几乎占满整个序列!")
         #         print(f"    这会导致几乎没有训练目标")
 
-        # 🔧 只在出现异常情况时打印调试信息
+        # 🔧 只在出现真正异常情况时打印调试信息
         # 检查是否存在潜在问题：有效标签数过少或过多
         if valid_labels == 0:
-            print(f"⚠️ 警告: 样本 {idx} 没有有效训练标签!")
+            print(f"⚠️ 严重警告: 样本 {idx} 没有有效训练标签!")
             print(f"  原始output: '{output_text}'")
             print(f"  output_tokens: {output_tokens}")
             print(f"  input_length: {input_length}, 总长度: {len(input_ids)}")
-        elif valid_labels > 10:
-            print(f"⚠️ 警告: 样本 {idx} 有效标签数异常多 ({valid_labels})")
-            print(f"  可能存在padding token掩码问题")
+        elif valid_labels > 50:  # 🔧 提高阈值，只在真正异常时警告
+            print(f"⚠️ 严重警告: 样本 {idx} 有效标签数异常多 ({valid_labels})")
+            print(f"  可能存在input_length计算错误")
             print(f"  原始output: '{output_text}'")
             print(f"  input_length: {input_length}, 总长度: {len(input_ids)}")
+            # 显示实际的有效标签内容帮助调试
+            valid_positions = (labels != -100).nonzero(as_tuple=True)[0]
+            print(f"  前10个有效标签token:")
+            for i, pos in enumerate(valid_positions[:10]):
+                pos_idx = pos.item()
+                token_id = labels[pos_idx].item()
+                try:
+                    token_text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+                    print(f"    位置{pos_idx}: {token_id}='{token_text}'")
+                except:
+                    print(f"    位置{pos_idx}: {token_id}=(解码失败)")
         # 🔧 移除误导性的input_length检查：对于选择题任务，答案通常只有1个数字token，
         # 所以input_length接近总长度是完全正常的，不需要警告
 
