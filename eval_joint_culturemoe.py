@@ -235,7 +235,6 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
         print(f"Loading LoRA weights from: {lora_path}")
 
         # 检查LoRA权重目录的内容
-        import os
         lora_files = os.listdir(lora_path)
         print(f"  - LoRA files found: {lora_files}")
 
