@@ -19,8 +19,6 @@ USE_GATE=${6:-"true"}   # 是否使用MoE内部融合Gate，支持消融评估
 USE_CULTURE_LOSS=${7:-"csl"}  # 文化损失类型
 NUM_MOE_EXPERTS=${8:-"4"}  # MoE专家数量
 NUM_ACTIVATED_EXPERTS=${9:-"2"}  # 激活的专家数量
-
-
 NUM_GPUS=${10:-"1"}  # GPU数量
 
 # 检查参数
