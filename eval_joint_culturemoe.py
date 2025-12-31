@@ -187,7 +187,8 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     # num_moe_experts, moe_hidden_dim, moe_intermediate_dim,
     # use_culture_loss, culture_loss_weight, dropout
 
-    # 🔧 消融评估：优先使用传入的参数，实现真正的组件控制
+    # 🔧 修复：创建联合模型配置，只使用JointLoRAMoEConfig支持的参数
+    # JointLoRAMoEConfig不包含use_shared和use_gate参数，这些将在模型创建后处理
     joint_config = JointLoRAMoEConfig(
         # LoRA配置 - 从保存的配置中读取，确保与训练时一致
         lora_rank=saved_config.get('lora_rank', lora_rank),
@@ -196,17 +197,15 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
         lora_target_modules=saved_config.get('lora_target_modules', ["q_proj", "k_proj", "v_proj", "o_proj"]),
         use_lora=True,  # 评估时总是启用LoRA
 
-        # MoE配置 - 支持消融评估的动态配置
+        # MoE配置 - 从保存的配置中读取，确保与训练时一致
         num_moe_experts=saved_config.get('num_moe_experts', num_moe_experts),
         num_activated_experts=num_activated_experts,  # 这个参数不在保存的配置中，使用传入值
         moe_hidden_dim=saved_config.get('moe_hidden_dim', 4096),  # 从保存的配置读取
         moe_intermediate_dim=saved_config.get('moe_intermediate_dim', None),  # 从保存的配置读取
         moe_influence_weight=saved_config.get('moe_influence_weight', 0.1),  # 从配置读取，确保一致
 
-        # 🔧 消融评估关键配置：使用传入参数而非保存配置，实现真正的组件控制
-        use_shared=use_shared,  # 消融评估：是否启用共享专家
-        use_gate=use_gate,      # 消融评估：是否启用门控网络
-        use_mask=use_mask,      # 消融评估：是否启用MASK机制
+        # MASK机制配置 - 支持消融评估
+        use_mask=use_mask,  # 消融评估：是否启用MASK机制
 
         # 文化损失配置 - 使用传入参数支持消融评估
         use_culture_loss=use_culture_loss,  # 消融评估：文化损失类型
@@ -216,6 +215,13 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
         dropout=saved_config.get('dropout', 0.1)
     )
 
+    # 🔧 消融评估参数记录（仅记录当前支持的参数）
+    ablation_config = {
+        'use_shared': use_shared,  # 记录参数但当前模型架构可能不支持动态切换
+        'use_gate': use_gate,      # 记录参数但当前模型架构可能不支持动态切换
+        'use_mask': use_mask       # 实际支持的消融评估：MASK机制
+    }
+
     print(f"✅ Joint model config created (支持消融评估):")
     print(f"  - LoRA: rank={joint_config.lora_rank}, alpha={joint_config.lora_alpha}, dropout={joint_config.lora_dropout}")
     print(f"  - LoRA target modules: {joint_config.lora_target_modules}")
@@ -224,9 +230,11 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     print(f"  - Culture loss: {joint_config.use_culture_loss}, weight: {joint_config.culture_loss_weight}")
     print(f"  - Dropout: {joint_config.dropout}")
     print(f"  🔧 消融评估配置:")
-    print(f"    - 共享专家: {joint_config.use_shared}")
-    print(f"    - 门控网络: {joint_config.use_gate}")
-    print(f"    - MASK机制: {joint_config.use_mask}")
+    print(f"    - 共享专家: {ablation_config['use_shared']} (参数已记录)")
+    print(f"    - 门控网络: {ablation_config['use_gate']} (参数已记录)")
+    print(f"    - MASK机制: {ablation_config['use_mask']} (✅ 实际支持)")
+    if not use_shared or not use_gate:
+        print(f"    ⚠️ 注意: use_shared和use_gate的消融评估可能需要模型架构的进一步支持")
 
     # 🔧 修复：先加载LoRA权重到base_model，再创建联合模型
     # 这个顺序很重要，必须先应用LoRA，再创建JointLoRAMoEModel
