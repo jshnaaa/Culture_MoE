@@ -140,7 +140,7 @@ def load_test_dataset_from_file(data_file_path: str, tokenizer, max_length: int 
 
 def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
                     num_moe_experts: int = 4, num_activated_experts: int = 2,
-                    use_shared: bool = True, use_gate: bool = True,
+                    use_shared: bool = True, use_gate: bool = True, use_mask: bool = True,
                     use_culture_loss: str = "csl", lora_rank: int = 16, lora_alpha: int = 32):
     """
     加载联合训练的LoRA+MoE模型
@@ -180,11 +180,14 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
         print("⚠️ No saved config found, using default configuration")
         saved_config = {}
 
-    # 🔧 修复：创建联合模型配置，完全匹配训练脚本的保存格式
+    # 🔧 修复：创建联合模型配置，支持消融评估
+    # 消融评估模式：使用传入的参数覆盖保存的配置，允许动态禁用/启用组件
     # 根据训练脚本的save_model方法，保存的配置包含：
     # lora_rank, lora_alpha, lora_dropout, lora_target_modules,
     # num_moe_experts, moe_hidden_dim, moe_intermediate_dim,
     # use_culture_loss, culture_loss_weight, dropout
+
+    # 🔧 消融评估：优先使用传入的参数，实现真正的组件控制
     joint_config = JointLoRAMoEConfig(
         # LoRA配置 - 从保存的配置中读取，确保与训练时一致
         lora_rank=saved_config.get('lora_rank', lora_rank),
@@ -193,28 +196,37 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
         lora_target_modules=saved_config.get('lora_target_modules', ["q_proj", "k_proj", "v_proj", "o_proj"]),
         use_lora=True,  # 评估时总是启用LoRA
 
-        # MoE配置 - 从保存的配置中读取，确保与训练时一致
+        # MoE配置 - 支持消融评估的动态配置
         num_moe_experts=saved_config.get('num_moe_experts', num_moe_experts),
         num_activated_experts=num_activated_experts,  # 这个参数不在保存的配置中，使用传入值
         moe_hidden_dim=saved_config.get('moe_hidden_dim', 4096),  # 从保存的配置读取
         moe_intermediate_dim=saved_config.get('moe_intermediate_dim', None),  # 从保存的配置读取
-        moe_influence_weight=saved_config.get('moe_influence_weight', 0.1),  # 🔧 修复：从配置读取，确保一致
+        moe_influence_weight=saved_config.get('moe_influence_weight', 0.1),  # 从配置读取，确保一致
 
-        # 文化损失配置 - 从保存的配置中读取
-        use_culture_loss=saved_config.get('use_culture_loss', use_culture_loss),
+        # 🔧 消融评估关键配置：使用传入参数而非保存配置，实现真正的组件控制
+        use_shared=use_shared,  # 消融评估：是否启用共享专家
+        use_gate=use_gate,      # 消融评估：是否启用门控网络
+        use_mask=use_mask,      # 消融评估：是否启用MASK机制
+
+        # 文化损失配置 - 使用传入参数支持消融评估
+        use_culture_loss=use_culture_loss,  # 消融评估：文化损失类型
         culture_loss_weight=saved_config.get('culture_loss_weight', 0.01),
 
         # 其他配置 - 从保存的配置中读取
         dropout=saved_config.get('dropout', 0.1)
     )
 
-    print(f"✅ Joint model config created:")
+    print(f"✅ Joint model config created (支持消融评估):")
     print(f"  - LoRA: rank={joint_config.lora_rank}, alpha={joint_config.lora_alpha}, dropout={joint_config.lora_dropout}")
     print(f"  - LoRA target modules: {joint_config.lora_target_modules}")
     print(f"  - MoE: experts={joint_config.num_moe_experts}, activated={joint_config.num_activated_experts}")
     print(f"  - MoE hidden_dim: {joint_config.moe_hidden_dim}, intermediate_dim: {joint_config.moe_intermediate_dim}")
     print(f"  - Culture loss: {joint_config.use_culture_loss}, weight: {joint_config.culture_loss_weight}")
     print(f"  - Dropout: {joint_config.dropout}")
+    print(f"  🔧 消融评估配置:")
+    print(f"    - 共享专家: {joint_config.use_shared}")
+    print(f"    - 门控网络: {joint_config.use_gate}")
+    print(f"    - MASK机制: {joint_config.use_mask}")
 
     # 🔧 修复：先加载LoRA权重到base_model，再创建联合模型
     # 这个顺序很重要，必须先应用LoRA，再创建JointLoRAMoEModel
@@ -566,6 +578,7 @@ def main():
         num_activated_experts=args.num_activated_experts,
         use_shared=use_shared,
         use_gate=use_gate,
+        use_mask=use_mask,  # 🔧 添加消融评估支持：MASK机制控制
         use_culture_loss=args.use_culture_loss
     )
 
@@ -605,7 +618,15 @@ def main():
                     'num_activated_experts': args.num_activated_experts,
                     'use_shared': use_shared,
                     'use_gate': use_gate,
+                    'use_mask': use_mask,  # 🔧 添加MASK机制配置记录
                     'use_culture_loss': args.use_culture_loss
+                },
+                'ablation_study': {
+                    'shared_expert_enabled': use_shared,
+                    'gate_network_enabled': use_gate,
+                    'mask_mechanism_enabled': use_mask,
+                    'culture_loss_type': args.use_culture_loss,
+                    'ablation_note': '消融评估：可通过参数控制组件启用/禁用'
                 },
                 'data_config': {
                     'data_id': args.data_id,
@@ -626,6 +647,11 @@ def main():
         print(f"  Accuracy: {eval_results['accuracy']:.4f}")
         print(f"  Correct predictions: {eval_results['correct_predictions']}")
         print(f"  Total samples: {eval_results['total_samples']}")
+        print(f"\n🔧 消融评估配置:")
+        print(f"  共享专家: {use_shared}")
+        print(f"  门控网络: {use_gate}")
+        print(f"  MASK机制: {use_mask}")
+        print(f"  文化损失: {args.use_culture_loss}")
         print(f"\nFiles generated:")
         print(f"  - eval_results.json (Summary results)")
         print(f"  - detailed_results.json (Detailed predictions)")

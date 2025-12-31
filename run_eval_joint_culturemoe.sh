@@ -13,9 +13,9 @@ echo "======================================="
 MODEL_PATH=${1}  # 默认联合训练模型根目录
 BACKBONE=${2:-"llama"}  # 模型骨干：llama/qwen
 DATA_ID=${3:-"0"}  # 数据集ID，0=使用pkl文件，1-5=使用完整数据集
-USE_SHARED=${4:-"true"}  # 是否使用共享专家
-USE_MASK=${5:-"true"}  # 占位符参数，暂无实际意义
-USE_GATE=${6:-"true"}  # 是否使用MoE内部融合Gate
+USE_SHARED=${4:-"true"}  # 是否使用共享专家，支持消融评估
+USE_MASK=${5:-"true"}   # 是否启用MASK机制，支持消融评估
+USE_GATE=${6:-"true"}   # 是否使用MoE内部融合Gate，支持消融评估
 USE_CULTURE_LOSS=${7:-"csl"}  # 文化损失类型
 NUM_MOE_EXPERTS=${8:-"4"}  # MoE专家数量
 NUM_ACTIVATED_EXPERTS=${9:-"2"}  # 激活的专家数量
@@ -198,7 +198,7 @@ echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS"
 echo "  文化损失类型: $USE_CULTURE_LOSS"
-echo "  USE_MASK: $USE_MASK (占位符)"
+echo "  MASK机制: $USE_MASK (支持消融评估)"
 echo "  GPU数量: $NUM_GPUS"
 echo "  输出目录: $OUTPUT_DIR"
 echo ""

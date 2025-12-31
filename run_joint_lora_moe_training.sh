@@ -105,8 +105,8 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 针对长序列优化
-BATCH_SIZE=2              # 调整为2，支持culture loss多样本计算
-GRADIENT_ACCUMULATION=16   # 相应增加梯度累积，保持有效batch size
+BATCH_SIZE=4              # 调整为4，充分利用2×48GB GPU内存
+GRADIENT_ACCUMULATION=8   # 相应调整梯度累积，保持有效batch size=64
 
 # 🔧 根据backbone设置不同的学习率
 if [ "$BACKBONE" = "llama" ]; then
