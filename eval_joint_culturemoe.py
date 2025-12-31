@@ -410,8 +410,8 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0):
                     'is_correct': is_correct
                 })
 
-                # 更新进度条
-                if total % 10 == 0:
+                # 更新进度条 - 降低更新频率
+                if total % 50 == 0:  # 每50个样本更新一次
                     current_accuracy = correct / total if total > 0 else 0
                     pbar.set_postfix({
                         'accuracy': f'{current_accuracy:.4f}',
@@ -666,12 +666,35 @@ def main():
         print(f"  - detailed_results.json (Detailed predictions)")
         print("="*80)
 
-        # 显示前几个预测示例
-        print("\n📋 Sample predictions:")
-        for i in range(min(3, len(eval_results['detailed_results']))):
-            result = eval_results['detailed_results'][i]
-            correct_mark = '✅' if result['is_correct'] else '❌'
-            print(f"  Sample {i+1}: True={result['true_output']}, Pred={result['predicted_answer']}, Generated='{result['generated_text'][:20]}...' {correct_mark}")
+        # 统计生成问题
+        detailed_results = eval_results['detailed_results']
+        empty_generations = sum(1 for r in detailed_results if not r['generated_text'].strip())
+        non_digit_generations = sum(1 for r in detailed_results if not r['predicted_answer'])
+
+        print(f"\n📊 生成质量统计:")
+        print(f"  空生成: {empty_generations}")
+        print(f"  未提取到数字: {non_digit_generations}")
+
+        # 只在存在生成问题时显示问题样本
+        if empty_generations > 0 or non_digit_generations > 0:
+            print(f"\n⚠️ 发现生成问题，显示前3个有问题的样本:")
+            problem_count = 0
+            for i, result in enumerate(detailed_results):
+                if problem_count >= 3:
+                    break
+                if (not result['generated_text'].strip() or
+                    not result['predicted_answer'] or
+                    result['predicted_answer'] not in ['1', '2', '3', '4']):
+                    print(f"  问题样本 {i+1}: True={result['true_output']}, Pred='{result['predicted_answer']}', Generated='{result['generated_text'][:30]}...'")
+                    problem_count += 1
+        else:
+            print("✅ 所有样本都成功生成了有效的数字答案")
+            # 只显示少数几个正确的示例
+            print(f"\n📋 随机正确样本 (前3个):")
+            for i in range(min(3, len(detailed_results))):
+                result = detailed_results[i]
+                if result['is_correct']:
+                    print(f"  样本 {i+1}: True={result['true_output']}, Pred={result['predicted_answer']} ✅")
 
     # 清理分布式评估
     cleanup_distributed()

@@ -235,11 +235,14 @@ class CultureLLMNewFormatDataset(Dataset):
         # 7. 🔧 最终验证：确保padding token被正确掩码
         remaining_pad_tokens = (labels == pad_token_id).sum().item()
         if remaining_pad_tokens > 0:
-            print(f"⚠️ 警告: 样本{idx}中仍有{remaining_pad_tokens}个padding token未被掩码!")
+            # 只在前几个样本或严重问题时打印警告
+            if idx < 3 or remaining_pad_tokens > 5:
+                print(f"⚠️ 警告: 样本{idx}中仍有{remaining_pad_tokens}个padding token未被掩码!")
             # 强制掩码剩余的padding token
             labels[labels == pad_token_id] = -100
             valid_labels = (labels != -100).sum().item()
-            print(f"   强制掩码后有效标签数: {valid_labels}")
+            if idx < 3 or remaining_pad_tokens > 5:
+                print(f"   强制掩码后有效标签数: {valid_labels}")
 
         # 🔍 详细的labels调试信息（注释掉详细调试）
         # if idx < 5:
@@ -274,31 +277,22 @@ class CultureLLMNewFormatDataset(Dataset):
         #         print(f"  🚨 问题: input_length({input_length})过大，几乎占满整个序列!")
         #         print(f"    这会导致几乎没有训练目标")
 
-        # 🔧 临时启用调试信息来验证标签掩码
-        if idx < 3:
-            print(f"\n📋 样本 {idx} - 标签掩码验证:")
-            print(f"  🔍 原始instruction: '{instruction}'")
-            print(f"  🔍 原始input: '{input_text}'")
-            print(f"  🔍 原始output: '{output_text}'")
-            print(f"  🔍 output_tokens: {output_tokens}")
-            print(f"  原始文本: '{full_text[:100]}...'")
-            print(f"  full_input: '{full_input[:80]}...'")
-            print(f"  精确计算的input_length: {input_length}")
-            print(f"  总序列长度: {len(input_ids)}")
-            print(f"  有效训练标签数: {valid_labels}")
-
-            # 检查input_length位置的token
-            if input_length < len(input_ids):
-                print(f"  input_length位置的token: {input_ids[input_length].item()}")
-                print(f"  input_length位置解码: '{self.tokenizer.decode([input_ids[input_length].item()], skip_special_tokens=True)}'")
-
-            # 检查前几个和后几个token的掩码情况
-            print(f"  前10个labels: {labels[:10].tolist()}")
-            print(f"  后10个labels: {labels[-10:].tolist()}")
-
-            # 解码前几个和后几个token看看内容
-            print(f"  前10个tokens: {self.tokenizer.decode(input_ids[:10], skip_special_tokens=True)}")
-            print(f"  后10个tokens: {self.tokenizer.decode(input_ids[-10:], skip_special_tokens=True)}")
+        # 🔧 只在出现异常情况时打印调试信息
+        # 检查是否存在潜在问题：有效标签数过少或过多
+        if valid_labels == 0:
+            print(f"⚠️ 警告: 样本 {idx} 没有有效训练标签!")
+            print(f"  原始output: '{output_text}'")
+            print(f"  output_tokens: {output_tokens}")
+            print(f"  input_length: {input_length}, 总长度: {len(input_ids)}")
+        elif valid_labels > 10:
+            print(f"⚠️ 警告: 样本 {idx} 有效标签数异常多 ({valid_labels})")
+            print(f"  可能存在padding token掩码问题")
+            print(f"  原始output: '{output_text}'")
+            print(f"  input_length: {input_length}, 总长度: {len(input_ids)}")
+        elif input_length >= len(input_ids) - 2:
+            print(f"⚠️ 警告: 样本 {idx} input_length过大，几乎没有训练目标")
+            print(f"  input_length: {input_length}, 总长度: {len(input_ids)}")
+            print(f"  原始output: '{output_text}'")
 
         # 注释掉其他调试信息
         # if idx < 5:
@@ -441,7 +435,10 @@ def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
     # 🔧 额外安全检查：如果仍然过长，强制截断到更安全的长度
     if max_length > max_seq_length:
         max_length = max_seq_length
-        print(f"⚠️ 强制截断序列长度到 {max_seq_length}")
+        # 只在第一次截断时打印警告，避免重复输出
+        if not hasattr(dynamic_padding_collate_fn, '_truncation_warned'):
+            print(f"⚠️ 强制截断序列长度到 {max_seq_length}")
+            dynamic_padding_collate_fn._truncation_warned = True
 
     # 为每个样本进行padding
     batch_input_ids = []
@@ -722,17 +719,17 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     else:
         full_input = instruction
 
-    # 🔧 修复：确保生成时的输入格式与训练时完全一致
+    # 🔧 修复：确保生成时的输入格式与训练时完全一致，并添加引导
     # 训练时格式：full_input + output_text (不添加空格)
-    # 生成时格式：full_input (让模型生成output_text)
+    # 生成时格式：full_input + 引导文本，让模型生成数字答案
 
-    # 不添加额外空格，让模型直接从full_input后生成答案
+    # 🔧 关键修复：保持与训练时完全一致的格式
+    # 训练时的数据格式：instruction + input → output (直接是数字)
+    # 数据集的instruction已经包含了完整的提示，例如：
+    # "Give me the answer from 1 to 4: ... ### Answer:"
+    # 所以不需要添加任何额外的引导文本
     full_input = full_input.rstrip()
 
-    # 🔍 调试生成时的输入 - 启用来调试问题
-    print(f"🔍 原始instruction末尾: {repr(instruction[-100:])}")
-    print(f"🔍 原始input: {repr(input_text)}")
-    print(f"🔍 生成时输入末尾: {repr(full_input[-150:])}")  # 显示输入的最后150个字符
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512, padding=False)
     inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -741,19 +738,10 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     if 'attention_mask' not in inputs:
         inputs['attention_mask'] = torch.ones_like(inputs['input_ids'])
 
-    # 🔍 调试tokenization结果 - 启用来调试问题
-    input_length = inputs['input_ids'].shape[1]
-    print(f"🔍 生成时input_ids长度: {input_length}")
-    print(f"🔍 输入token IDs: {inputs['input_ids'][0].tolist()}")
-    print(f"🔍 输入解码: {repr(tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=True))}")
 
     with torch.no_grad():
         # 检查模型类型，确定使用哪种generate方法
         model_class_name = model.__class__.__name__
-        print(f"🔍 生成时模型类型: {model_class_name}")
-        print(f"🔍 模型属性检查: hasattr(model, 'moe_layer')={hasattr(model, 'moe_layer')}")
-        print(f"🔍 模型属性检查: hasattr(model, 'base_model')={hasattr(model, 'base_model')}")
-        print(f"🔍 模型属性检查: hasattr(model, 'generate')={hasattr(model, 'generate')}")
 
         # 🔧 修复：统一使用模型的generate方法
         # SimplifiedCultureMoEAdapter现在有自己的generate方法，可以直接调用
@@ -764,120 +752,44 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
             hasattr(model, 'generate')):
 
             # 🔧 统一调用：所有MoE模型都直接使用model.generate()
-            print(f"🔍 调用模型generate方法...")
-            print(f"🔍 输入shape: {inputs['input_ids'].shape}")
-            print(f"🔍 pad_token_id: {tokenizer.pad_token_id}")
-            print(f"🔍 eos_token_id: {tokenizer.eos_token_id}")
 
-            # 🔧 创建数字约束：只允许生成1、2、3、4
-            digit_tokens = []
-            for digit in ['1', '2', '3', '4']:
-                token_ids = tokenizer.encode(digit, add_special_tokens=False)
-                if len(token_ids) == 1:  # 确保是单个token
-                    digit_tokens.append(token_ids[0])
-
-            print(f"🔍 数字token约束: {digit_tokens}")
-
-            # 🔧 修复生成参数：允许模型自然生成数字答案
+            # 🔧 简化生成参数：与训练时保持一致的生成策略
+            # 不添加过多约束，让模型自然生成，就像训练时验证阶段一样
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=3,  # 🔧 允许生成最多3个token，给模型更多空间
+                max_new_tokens=5,  # 🔧 给足够空间生成答案
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,  # 🔧 关闭采样，使用贪心解码确保确定性
+                do_sample=False,  # 🔧 使用贪心解码，与训练时一致
                 num_beams=1,
-                early_stopping=False  # 🔧 关闭早停，让模型完成生成
+                early_stopping=True,  # 🔧 启用早停
+                repetition_penalty=1.0  # 🔧 不添加重复惩罚
             )
-            print(f"🔍 生成完成，输出shape: {outputs.shape}")
         else:
             # 回退到标准generate方法
-            print(f"🔍 使用标准模型generate方法")
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=3,  # 🔧 允许生成最多3个token，给模型更多空间
-                min_new_tokens=1,  # 🔧 至少生成1个token
+                max_new_tokens=5,  # 🔧 与上面保持一致
+                min_new_tokens=1,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,  # 🔧 关闭采样，使用贪心解码确保确定性
+                do_sample=False,
                 num_beams=1,
-                early_stopping=False  # 🔧 关闭早停，让模型完成生成
+                early_stopping=True
             )
 
     # 解码
     generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
 
-    # 🔧 修复：处理多token生成，提取第一个有效数字
+    # 🔧 简化生成处理：直接解码生成的token，不添加调试输出
     if len(generated_ids) > 0:
-        # 解码所有生成的token
-        full_generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-
-        # 🔍 调试信息：显示所有生成的token
-        print(f"🔍 生成的所有token: {generated_ids.tolist()}")
-        print(f"🔍 完整解码结果: '{full_generated_text}'")
-
-        # 检查每个token，找到第一个数字token
-        for i, token_id in enumerate(generated_ids.tolist()):
-            token_text = tokenizer.decode([token_id], skip_special_tokens=True)
-            print(f"  Token {i}: {token_id} -> '{token_text}'")
-
-            # 如果找到数字token，使用它
-            if token_text.strip() in ['1', '2', '3', '4']:
-                generated_text = token_text.strip()
-                print(f"✅ 找到有效数字: '{generated_text}' (token {i})")
-                break
-        else:
-            # 如果没有找到数字token，使用完整解码的第一个字符
-            generated_text = full_generated_text.strip()
-            if generated_text and generated_text[0] in '1234':
-                generated_text = generated_text[0]
-                print(f"✅ 从完整文本提取数字: '{generated_text}'")
-            else:
-                generated_text = full_generated_text
-                print(f"⚠️ 没有找到有效数字，使用完整结果: '{generated_text}'")
+        # 解码生成的token
+        generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
     else:
         generated_text = ""
-        print(f"⚠️ 没有生成任何token")
 
-    # 🔍 详细的生成调试信息 - 启用来调试问题
-    print(f"🔍 生成结果调试:")
-    print(f"  输入token数量: {inputs['input_ids'].shape[1]}")
-    print(f"  输出总token数量: {outputs.shape[1]}")
-    print(f"  生成的token数量: {len(generated_ids)}")
-    print(f"  生成的token IDs: {generated_ids.tolist()}")
-    print(f"  生成的文本: {repr(generated_text)}")
-    print(f"  生成文本长度: {len(generated_text)}")
-
-    if len(generated_text.strip()) == 0:
-        print(f"⚠️ 生成为空!")
-        # 如果生成为空，检查生成的token是否是特殊token
-        if len(generated_ids) > 0:
-            for i, token_id in enumerate(generated_ids.tolist()):
-                try:
-                    token_text = tokenizer.decode([token_id], skip_special_tokens=False)  # 不跳过特殊token
-                    print(f"  生成token {i}: {token_id} -> '{token_text}' (特殊token: {token_id in [tokenizer.pad_token_id, tokenizer.eos_token_id]})")
-                except Exception as e:
-                    print(f"  生成token {i}: {token_id} -> ERROR: {e}")
-    elif len(generated_ids) > 0:
-        # 检查第一个生成的token
-        first_token_id = generated_ids[0].item()
-        first_token_text = tokenizer.decode([first_token_id], skip_special_tokens=True)
-        print(f"  第一个token: {first_token_id} -> '{first_token_text}'")
-
-    # 检查生成的token是否在合理范围内
-    # vocab_size = tokenizer.vocab_size
-    # valid_tokens = [tid for tid in generated_ids.tolist() if 0 <= tid < vocab_size]
-    # print(f"🔍 Valid tokens: {len(valid_tokens)}/{len(generated_ids)}")  # 注释掉详细调试
-
-    # if len(generated_ids) > 0:
-        # 检查前几个生成的token
-        # for i, token_id in enumerate(generated_ids[:5].tolist()):
-        #     try:
-        #         token_text = tokenizer.decode([token_id], skip_special_tokens=True)
-        #         print(f"🔍 Token {i}: {token_id} -> {repr(token_text)}")
-        #     except Exception as e:
-        #         print(f"🔍 Token {i}: {token_id} -> ERROR: {e}")  # 注释掉详细调试
 
     return generated_text
 
@@ -1071,19 +983,48 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
         with open(epoch_answers_file, 'w', encoding='utf-8') as f:
             json.dump(generated_data, f, indent=2, ensure_ascii=False)
 
-    # 打印前五条生成的答案
-    print("\n📋 前五条生成的答案:")
-    print("-" * 100)
-    for idx in range(min(5, len(generated_data))):
-        item = generated_data[idx]
-        print(f"\n样本 {idx + 1}:")
-        print(f"  Instruction: {item['instruction'][:80]}...")
-        print(f"  Input: {item['input']}")
-        print(f"  True Output: {item['true_output']}")
-        print(f"  Generated Text: {item['generated_text']}")
-        print(f"  Predicted Answer: {item['predicted_answer']}")
-        print(f"  Correct: {'✅' if item['correct'] else '❌'}")
-    print("\n" + "-" * 100)
+    # 统计异常情况
+    empty_generations = 0
+    non_digit_generations = 0
+    incorrect_predictions = 0
+
+    for item in generated_data:
+        if not item['generated_text'].strip():
+            empty_generations += 1
+        elif not item['predicted_answer']:
+            non_digit_generations += 1
+        elif not item['correct']:
+            incorrect_predictions += 1
+
+    # 打印汇总信息
+    print(f"\n📊 生成评估汇总:")
+    print(f"  总样本数: {len(generated_data)}")
+    print(f"  准确率: {accuracy:.4f}")
+    print(f"  空生成: {empty_generations}")
+    print(f"  未提取到数字: {non_digit_generations}")
+    print(f"  错误预测: {incorrect_predictions}")
+
+    # 只在存在问题时打印详细示例
+    if empty_generations > 0 or non_digit_generations > 0:
+        print(f"\n⚠️ 发现生成问题，显示前3个有问题的样本:")
+        print("-" * 80)
+        problem_count = 0
+        for idx, item in enumerate(generated_data):
+            if problem_count >= 3:
+                break
+            # 只显示有问题的样本
+            if (not item['generated_text'].strip() or
+                not item['predicted_answer'] or
+                item['predicted_answer'] not in ['1', '2', '3', '4']):
+                print(f"\n问题样本 {idx + 1}:")
+                print(f"  Instruction: {item['instruction'][:80]}...")
+                print(f"  True Output: {item['true_output']}")
+                print(f"  Generated Text: '{item['generated_text']}'")
+                print(f"  Predicted Answer: '{item['predicted_answer']}'")
+                problem_count += 1
+        print("-" * 80)
+    else:
+        print("✅ 所有样本都成功生成了有效的数字答案")
 
     return {
         'accuracy': accuracy,
