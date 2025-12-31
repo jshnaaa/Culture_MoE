@@ -104,12 +104,25 @@ def load_test_dataset_from_pkl(pkl_file_path: str, tokenizer, max_length: int = 
     # 获取原始数据路径和测试集索引
     original_data_path = split_info['data_path']
     test_indices = split_info['test_indices']
+    train_indices = split_info.get('train_indices', [])
+    val_indices = split_info.get('val_indices', [])
 
     print(f"Original data path: {original_data_path}")
-    print(f"Test set size: {len(test_indices)}")
+    print(f"Train set size: {len(train_indices)} ({len(train_indices)/len(train_indices + val_indices + test_indices)*100:.1f}%)")
+    print(f"Validation set size: {len(val_indices)} ({len(val_indices)/len(train_indices + val_indices + test_indices)*100:.1f}%)")
+    print(f"Test set size: {len(test_indices)} ({len(test_indices)/len(train_indices + val_indices + test_indices)*100:.1f}%)")
+
+    # 🔧 新增：检查数据集划分的一致性
+    total_samples = len(train_indices) + len(val_indices) + len(test_indices)
+    print(f"Total samples: {total_samples}")
+    print(f"Split ratio: {len(train_indices)/total_samples:.1f}:{len(val_indices)/total_samples:.1f}:{len(test_indices)/total_samples:.1f}")
 
     # 创建完整数据集
     full_dataset = CultureLLMNewFormatDataset(original_data_path, tokenizer, max_length)
+
+    # 🔧 验证数据集大小一致性
+    if len(full_dataset) != total_samples:
+        print(f"⚠️ Warning: Full dataset size ({len(full_dataset)}) != split total ({total_samples})")
 
     # 创建测试集子集
     test_dataset = Subset(full_dataset, test_indices)
@@ -315,8 +328,18 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
         # 检查是否是PEFT模型（LoRA已加载）
         if 'PeftModel' in base_model_type:
             print(f"  ✅ LoRA adapter is loaded (PeftModel detected)")
+            # 🔧 新增：验证LoRA适配器的具体信息
+            if hasattr(joint_model.base_model, 'peft_config'):
+                peft_config = joint_model.base_model.peft_config
+                print(f"    - LoRA config keys: {list(peft_config.keys())}")
+                if 'default' in peft_config:
+                    config = peft_config['default']
+                    print(f"    - LoRA rank: {getattr(config, 'r', 'unknown')}")
+                    print(f"    - LoRA alpha: {getattr(config, 'lora_alpha', 'unknown')}")
+                    print(f"    - Target modules: {getattr(config, 'target_modules', 'unknown')}")
         else:
-            print(f"  ⚠️ No LoRA adapter detected (base model type: {base_model_type})")
+            print(f"  ❌ CRITICAL: No LoRA adapter detected! (base model type: {base_model_type})")
+            print(f"    - This will cause significant performance degradation!")
 
     if hasattr(joint_model, 'moe_layer') and joint_model.moe_layer is not None:
         moe_type = type(joint_model.moe_layer).__name__
@@ -327,10 +350,40 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
             expert_count = len(joint_model.moe_layer.experts)
             print(f"  - Number of experts: {expert_count}")
 
+            # 🔧 新增：验证MoE专家的参数状态
+            expert_param_count = sum(p.numel() for p in joint_model.moe_layer.experts.parameters())
+            print(f"  - MoE experts parameters: {expert_param_count:,}")
+
+            # 检查第一个专家的LoRA参数
+            if expert_count > 0:
+                first_expert = joint_model.moe_layer.experts[0]
+                if hasattr(first_expert, 'gate_lora_A'):
+                    print(f"  ✅ MoE experts have LoRA parameters")
+                    # 检查参数是否为零（可能表示加载失败）
+                    gate_lora_A_norm = first_expert.gate_lora_A.weight.norm().item()
+                    print(f"    - First expert gate_lora_A norm: {gate_lora_A_norm:.6f}")
+                    if gate_lora_A_norm < 1e-6:
+                        print(f"    ⚠️ Warning: MoE expert parameters seem to be zero-initialized")
+                else:
+                    print(f"  ❌ CRITICAL: MoE experts missing LoRA parameters!")
+
         # 检查路由器
         if hasattr(joint_model.moe_layer, 'router'):
             router_type = type(joint_model.moe_layer.router).__name__
             print(f"  - Router type: {router_type}")
+
+            # 🔧 新增：检查路由器参数
+            router_param_count = sum(p.numel() for p in joint_model.moe_layer.router.parameters())
+            print(f"  - Router parameters: {router_param_count:,}")
+
+            # 检查路由器权重
+            if hasattr(joint_model.moe_layer.router, 'linear'):
+                router_weight_norm = joint_model.moe_layer.router.linear.weight.norm().item()
+                print(f"  - Router weight norm: {router_weight_norm:.6f}")
+                if router_weight_norm < 1e-6:
+                    print(f"    ⚠️ Warning: Router parameters seem to be zero-initialized")
+    else:
+        print(f"  ❌ CRITICAL: No MoE layer found! Model will behave like base LoRA only!")
 
     # 计算总参数量
     total_params = sum(p.numel() for p in joint_model.parameters())
@@ -338,6 +391,16 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     print(f"  - Total parameters: {total_params:,}")
     print(f"  - Trainable parameters: {trainable_params:,}")
     print(f"  - Trainable ratio: {trainable_params/total_params:.2%}")
+
+    # 🔧 新增：模型完整性检查
+    print(f"\n🔧 Model integrity check:")
+    if hasattr(joint_model, 'base_model') and 'PeftModel' in type(joint_model.base_model).__name__:
+        if hasattr(joint_model, 'moe_layer') and joint_model.moe_layer is not None:
+            print(f"  ✅ Model appears to be correctly loaded (LoRA + MoE)")
+        else:
+            print(f"  ❌ Model is missing MoE layer - will perform like LoRA-only!")
+    else:
+        print(f"  ❌ Model is missing LoRA adapter - will perform like base model!")
 
     return joint_model
 
@@ -392,6 +455,16 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0):
                 # 提取答案
                 predicted_answer = extract_answer_from_text(generated_text)
 
+                # 🔧 新增：前10个样本的详细调试输出
+                if total < 10 and rank == 0:
+                    print(f"\n📋 Sample {total + 1} debug:")
+                    print(f"  Instruction: {instruction[:100]}...")
+                    print(f"  Input: {input_text[:50]}...")
+                    print(f"  True output: '{true_output}'")
+                    print(f"  Generated text: '{generated_text}'")
+                    print(f"  Predicted answer: '{predicted_answer}'")
+                    print(f"  Correct: {predicted_answer == true_output}")
+
                 # 判断正确性
                 is_correct = (predicted_answer == true_output)
                 if is_correct:
@@ -426,6 +499,38 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0):
         'total_samples': total,
         'detailed_results': detailed_results
     }
+
+
+def quick_model_test(model, tokenizer, device):
+    """
+    快速测试模型的基本功能
+    """
+    print(f"\n🧪 Quick model functionality test:")
+
+    # 简单的测试样本
+    test_instruction = "Give me the answer from 1 to 4: What is 1+1?"
+    test_input = "This is a simple math question."
+
+    try:
+        generated_text = generate_answer(model, tokenizer, test_instruction, test_input, device, max_new_tokens=10)
+        predicted_answer = extract_answer_from_text(generated_text)
+
+        print(f"  Test input: '{test_instruction}'")
+        print(f"  Generated: '{generated_text}'")
+        print(f"  Extracted: '{predicted_answer}'")
+
+        if generated_text.strip():
+            print(f"  ✅ Model can generate text")
+        else:
+            print(f"  ❌ Model generates empty text!")
+
+        if predicted_answer in ['1', '2', '3', '4']:
+            print(f"  ✅ Model generates valid answers")
+        else:
+            print(f"  ⚠️ Model doesn't generate expected answer format")
+
+    except Exception as e:
+        print(f"  ❌ Model test failed: {e}")
 
 
 def main():
@@ -603,6 +708,11 @@ def main():
 
         if is_main_process(rank):
             print("✅ Model wrapped with DDP")
+
+    # 🔧 新增：快速模型功能测试
+    if is_main_process(rank):
+        actual_model = model.module if isinstance(model, DDP) else model
+        quick_model_test(actual_model, tokenizer, device)
 
     # 开始评估
     if is_main_process(rank):

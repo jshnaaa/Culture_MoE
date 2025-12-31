@@ -289,10 +289,8 @@ class CultureLLMNewFormatDataset(Dataset):
             print(f"  可能存在padding token掩码问题")
             print(f"  原始output: '{output_text}'")
             print(f"  input_length: {input_length}, 总长度: {len(input_ids)}")
-        elif input_length >= len(input_ids) - 2:
-            print(f"⚠️ 警告: 样本 {idx} input_length过大，几乎没有训练目标")
-            print(f"  input_length: {input_length}, 总长度: {len(input_ids)}")
-            print(f"  原始output: '{output_text}'")
+        # 🔧 移除误导性的input_length检查：对于选择题任务，答案通常只有1个数字token，
+        # 所以input_length接近总长度是完全正常的，不需要警告
 
         # 注释掉其他调试信息
         # if idx < 5:
