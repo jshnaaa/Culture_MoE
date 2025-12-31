@@ -13,15 +13,16 @@ echo "======================================="
 BACKBONE=${1:-"llama"}  # 默认使用llama
 DATA_ID=${2:-"2"}
 USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
-USE_GATE=${4:-"true"}     # 是否使用MoE内部融合Gate，默认为true
-NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
+USE_MASK=${4:-"true"}   # 是否启用MASK机制双路输入，默认为true
+USE_GATE=${5:-"true"}     # 是否使用MoE内部融合Gate，默认为true
 USE_CULTURE_LOSS=${6:-"csl"}  # ori/new/kl/csl/false，默认使用CSL文化相似性损失
-NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
-USE_LORA=${8:-"true"}   # 是否启用预训练LoRA微调，默认为true
-USE_MASK=${9:-"true"}   # 是否启用MASK机制双路输入，默认为true
-NUM_GPUS=${10:-"2"}
-LORA_RANK=${11:-"16"}   # LoRA rank
-LORA_ALPHA=${12:-"32"}  # LoRA alpha
+NUM_MOE_EXPERTS=${7:-"4"}  # MoE专家数量
+NUM_ACTIVATED_EXPERTS=${8:-"2"}  # 激活的专家数量，默认为top-2
+LORA_RANK=${9:-"16"}   # LoRA rank
+LORA_ALPHA=${10:-"32"}  # LoRA alpha
+USE_LORA=${11:-"true"}   # 是否启用预训练LoRA微调，默认为true
+NUM_GPUS=${12:-"2"}
+
 
 # 检查参数
 if [ "$#" -gt 12 ]; then
