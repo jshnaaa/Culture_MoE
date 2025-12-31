@@ -249,33 +249,51 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     if not use_shared or not use_gate:
         print(f"    ⚠️ 注意: use_shared和use_gate的消融评估可能需要模型架构的进一步支持")
 
-    # 🔧 修复：先加载LoRA权重到base_model，再创建联合模型
-    # 这个顺序很重要，必须先应用LoRA，再创建JointLoRAMoEModel
+    # 🔧 修复：根据配置决定LoRA加载策略，避免重复应用
     lora_path = os.path.join(joint_model_path, 'lora_weights')
-    if os.path.exists(lora_path):
-        print(f"Loading LoRA weights from: {lora_path}")
+    lora_loaded_externally = False
 
-        # 检查LoRA权重目录的内容
+    if os.path.exists(lora_path):
+        print(f"Found LoRA weights at: {lora_path}")
         lora_files = os.listdir(lora_path)
         print(f"  - LoRA files found: {lora_files}")
 
+        # 检查是否应该外部加载LoRA（推荐方式）
+        # 外部加载可以确保与训练时的加载顺序完全一致
         try:
             from peft import PeftModel
-            # 加载LoRA权重到基础模型
+            print("🔧 Loading LoRA externally (before JointLoRAMoEModel creation)")
             base_model = PeftModel.from_pretrained(base_model, lora_path)
+            lora_loaded_externally = True
             print("✅ LoRA weights loaded successfully")
+
+            # 🔧 关键：既然已经外部加载LoRA，需要告诉JointLoRAMoEModel不要再次应用
+            joint_config.use_lora = False  # 避免重复应用LoRA
+            print("🔧 Set joint_config.use_lora=False to avoid duplicate LoRA application")
+
         except Exception as e:
-            print(f"❌ Failed to load LoRA weights: {e}")
-            print("  - Using base model without LoRA")
+            print(f"❌ Failed to load LoRA externally: {e}")
+            print("  - Will let JointLoRAMoEModel handle LoRA loading internally")
+            lora_loaded_externally = False
+            # 保持joint_config.use_lora=True，让JointLoRAMoEModel内部处理
     else:
         print(f"⚠️ LoRA weights directory not found: {lora_path}")
-        print("  - Using base model without LoRA")
+        print("  - Will proceed without LoRA or let JointLoRAMoEModel handle it")
 
-    # 创建联合模型（基于已加载LoRA的base_model）
+    # 创建联合模型
     print("Creating JointLoRAMoEModel...")
     try:
         joint_model = JointLoRAMoEModel(base_model, joint_config)
         print("✅ JointLoRAMoEModel created successfully")
+
+        # 🔧 验证LoRA加载状态
+        if lora_loaded_externally:
+            print("🔧 LoRA was loaded externally before model creation")
+        elif joint_config.use_lora:
+            print("🔧 LoRA will be applied internally by JointLoRAMoEModel")
+        else:
+            print("🔧 No LoRA will be applied (base model only)")
+
     except Exception as e:
         print(f"❌ Failed to create JointLoRAMoEModel: {e}")
         raise e
@@ -354,18 +372,29 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
             expert_param_count = sum(p.numel() for p in joint_model.moe_layer.experts.parameters())
             print(f"  - MoE experts parameters: {expert_param_count:,}")
 
-            # 检查第一个专家的LoRA参数
+            # 🔧 修复：检查第一个专家的完整线性层参数（而非LoRA参数）
+            # JointLoRAMoEModel使用完整的线性层专家，不是LoRA结构
             if expert_count > 0:
                 first_expert = joint_model.moe_layer.experts[0]
-                if hasattr(first_expert, 'gate_lora_A'):
-                    print(f"  ✅ MoE experts have LoRA parameters")
+                if hasattr(first_expert, 'gate_proj') and hasattr(first_expert, 'up_proj') and hasattr(first_expert, 'down_proj'):
+                    print(f"  ✅ MoE experts have complete linear layer structure")
                     # 检查参数是否为零（可能表示加载失败）
-                    gate_lora_A_norm = first_expert.gate_lora_A.weight.norm().item()
-                    print(f"    - First expert gate_lora_A norm: {gate_lora_A_norm:.6f}")
-                    if gate_lora_A_norm < 1e-6:
-                        print(f"    ⚠️ Warning: MoE expert parameters seem to be zero-initialized")
+                    gate_proj_norm = first_expert.gate_proj.weight.norm().item()
+                    up_proj_norm = first_expert.up_proj.weight.norm().item()
+                    down_proj_norm = first_expert.down_proj.weight.norm().item()
+                    print(f"    - First expert gate_proj norm: {gate_proj_norm:.6f}")
+                    print(f"    - First expert up_proj norm: {up_proj_norm:.6f}")
+                    print(f"    - First expert down_proj norm: {down_proj_norm:.6f}")
+                    if gate_proj_norm < 1e-6 or up_proj_norm < 1e-6 or down_proj_norm < 1e-6:
+                        print(f"    ⚠️ Warning: Some MoE expert parameters seem to be zero-initialized")
+                elif hasattr(first_expert, 'gate_lora_A'):
+                    # 这是旧的LoRA专家结构，不应该出现在JointLoRAMoEModel中
+                    print(f"  ❌ CRITICAL: Found LoRA expert structure, expected complete linear layers!")
+                    print(f"    - This indicates architecture mismatch between training and evaluation")
                 else:
-                    print(f"  ❌ CRITICAL: MoE experts missing LoRA parameters!")
+                    print(f"  ❌ CRITICAL: MoE experts missing expected linear layer structure!")
+                    print(f"    - Expected: gate_proj, up_proj, down_proj")
+                    print(f"    - Found attributes: {[attr for attr in dir(first_expert) if not attr.startswith('_')]}")
 
         # 检查路由器
         if hasattr(joint_model.moe_layer, 'router'):
@@ -392,15 +421,31 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     print(f"  - Trainable parameters: {trainable_params:,}")
     print(f"  - Trainable ratio: {trainable_params/total_params:.2%}")
 
-    # 🔧 新增：模型完整性检查
+    # 🔧 修复：模型完整性检查，验证JointLoRAMoEModel架构
     print(f"\n🔧 Model integrity check:")
-    if hasattr(joint_model, 'base_model') and 'PeftModel' in type(joint_model.base_model).__name__:
-        if hasattr(joint_model, 'moe_layer') and joint_model.moe_layer is not None:
-            print(f"  ✅ Model appears to be correctly loaded (LoRA + MoE)")
+    base_lora_ok = hasattr(joint_model, 'base_model') and 'PeftModel' in type(joint_model.base_model).__name__
+    moe_layer_ok = hasattr(joint_model, 'moe_layer') and joint_model.moe_layer is not None
+
+    if base_lora_ok and moe_layer_ok:
+        # 进一步检查MoE专家是否为完整线性层结构
+        moe_experts_ok = False
+        if hasattr(joint_model.moe_layer, 'experts') and len(joint_model.moe_layer.experts) > 0:
+            first_expert = joint_model.moe_layer.experts[0]
+            moe_experts_ok = (hasattr(first_expert, 'gate_proj') and
+                            hasattr(first_expert, 'up_proj') and
+                            hasattr(first_expert, 'down_proj'))
+
+        if moe_experts_ok:
+            print(f"  ✅ JointLoRAMoEModel appears to be correctly loaded (LoRA + Complete Linear MoE)")
         else:
-            print(f"  ❌ Model is missing MoE layer - will perform like LoRA-only!")
-    else:
+            print(f"  ❌ CRITICAL: MoE experts have wrong structure - expected complete linear layers!")
+            print(f"    - This will cause severe performance degradation!")
+    elif base_lora_ok:
+        print(f"  ❌ Model is missing MoE layer - will perform like LoRA-only!")
+    elif moe_layer_ok:
         print(f"  ❌ Model is missing LoRA adapter - will perform like base model!")
+    else:
+        print(f"  ❌ Model is missing both LoRA adapter and MoE layer!")
 
     return joint_model
 
