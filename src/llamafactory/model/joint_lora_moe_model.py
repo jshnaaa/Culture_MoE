@@ -345,8 +345,9 @@ class MoELayer(nn.Module):
         self.gate_network = None
         if config.use_gate and config.use_shared:
             # 门控网络用于融合路由专家输出和共享专家输出
-            self.gate_network = nn.Linear(config.moe_hidden_dim, 2, bias=True, dtype=dtype)
-            print(f"🔧 Gate network created for expert fusion")
+            # 🔧 关键修复：门控网络使用Float32提高数值稳定性，类似路由器
+            self.gate_network = nn.Linear(config.moe_hidden_dim, 2, bias=True, dtype=torch.float32)
+            print(f"🔧 Gate network created for expert fusion (Float32 for stability)")
 
         # 🔧 确保专家分化：每个专家使用不同的初始化
         print("🔧 Force reinitializing all experts with different seeds...")
@@ -567,22 +568,62 @@ class MoELayer(nn.Module):
                     use_gate_current = self.config.use_gate if use_gate is None else use_gate
 
                     if self.gate_network is not None and self.config.use_gate and use_gate_current:
-                        # 使用门控网络融合
+                        # 使用门控网络融合 - 数值稳定版本
                         try:
-                            # 使用平均池化作为门控输入
+                            # 🔧 步骤1: 计算并验证门控输入
                             gate_input = hidden_states.mean(dim=1)  # [B, H]
-                            gate_weights = torch.softmax(self.gate_network(gate_input), dim=-1)  # [B, 2]
 
-                            # gate_weights[:, 0] -> 路由专家权重
-                            # gate_weights[:, 1] -> 共享专家权重
-                            routing_weight = gate_weights[:, 0].unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
-                            shared_weight = gate_weights[:, 1].unsqueeze(1).unsqueeze(2)   # [B, 1, 1]
+                            # 检查gate_input有效性
+                            if torch.isnan(gate_input).any() or torch.isinf(gate_input).any():
+                                print("⚠️ Gate input contains NaN/Inf, using fixed weights")
+                                final_output = 0.5 * routing_output + 0.5 * shared_output
+                            else:
+                                # 限制gate_input范围，防止极值
+                                gate_input = torch.clamp(gate_input, min=-10.0, max=10.0)
 
-                            final_output = routing_weight * routing_output + shared_weight * shared_output
-                            print(f"🔧 Gate fusion: routing_weight={routing_weight.mean().item():.3f}, shared_weight={shared_weight.mean().item():.3f}")
+                                # 🔧 步骤2: 检查门控网络权重
+                                gate_weight_norm = self.gate_network.weight.norm().item()
+                                if gate_weight_norm > 100.0 or gate_weight_norm < 1e-6:
+                                    print(f"⚠️ Gate network weights abnormal (norm={gate_weight_norm:.6f}), reinitializing")
+                                    with torch.no_grad():
+                                        nn.init.normal_(self.gate_network.weight, mean=0.0, std=0.01)
+                                        nn.init.constant_(self.gate_network.bias, 0.0)
+
+                                # 🔧 步骤3: 计算门控logits并限制范围
+                                gate_logits = self.gate_network(gate_input)  # [B, 2]
+                                gate_logits = torch.clamp(gate_logits, min=-10.0, max=10.0)
+
+                                # 🔧 步骤4: 数值稳定的softmax
+                                # 使用shifted softmax避免溢出
+                                max_logits = torch.max(gate_logits, dim=-1, keepdim=True)[0]
+                                shifted_logits = gate_logits - max_logits
+                                exp_logits = torch.exp(shifted_logits)
+                                gate_weights = exp_logits / (torch.sum(exp_logits, dim=-1, keepdim=True) + 1e-8)
+
+                                # 🔧 步骤5: 验证gate_weights有效性
+                                if torch.isnan(gate_weights).any() or torch.isinf(gate_weights).any():
+                                    print("⚠️ Gate weights contain NaN/Inf after softmax, using fixed weights")
+                                    final_output = 0.5 * routing_output + 0.5 * shared_output
+                                else:
+                                    # 确保权重和为1（数值稳定性）
+                                    gate_weights = gate_weights / (torch.sum(gate_weights, dim=-1, keepdim=True) + 1e-8)
+
+                                    # gate_weights[:, 0] -> 路由专家权重
+                                    # gate_weights[:, 1] -> 共享专家权重
+                                    routing_weight = gate_weights[:, 0].unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
+                                    shared_weight = gate_weights[:, 1].unsqueeze(1).unsqueeze(2)   # [B, 1, 1]
+
+                                    # 最终检查权重有效性
+                                    if (torch.isnan(routing_weight).any() or torch.isnan(shared_weight).any() or
+                                        torch.isinf(routing_weight).any() or torch.isinf(shared_weight).any()):
+                                        print("⚠️ Final gate weights invalid, using fixed weights")
+                                        final_output = 0.5 * routing_output + 0.5 * shared_output
+                                    else:
+                                        final_output = routing_weight * routing_output + shared_weight * shared_output
+                                        print(f"🔧 Gate fusion: routing_weight={routing_weight.mean().item():.3f}, shared_weight={shared_weight.mean().item():.3f}")
 
                         except Exception as e:
-                            print(f"⚠️ Gate network failed: {e}, using simple average")
+                            print(f"⚠️ Gate network completely failed: {e}, using fixed weights")
                             final_output = 0.5 * routing_output + 0.5 * shared_output
                     else:
                         # 🔧 消融模式：使用固定权重融合
@@ -723,6 +764,11 @@ class JointLoRAMoEModel(nn.Module):
 
         # 确保路由器保持Float32
         self.moe_layer.router = self.moe_layer.router.to(device=device, dtype=torch.float32)
+
+        # 🔧 确保门控网络也保持Float32并在正确设备上
+        if self.moe_layer.gate_network is not None:
+            self.moe_layer.gate_network = self.moe_layer.gate_network.to(device=device, dtype=torch.float32)
+            print(f"🔧 Gate network moved to device={device}, dtype=Float32")
 
         logging.info(f"Joint LoRA+MoE model initialized with {config.num_moe_experts} experts")
 
