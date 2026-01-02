@@ -543,20 +543,20 @@ class MoELayer(nn.Module):
                     # 🔧 MASK机制：共享专家使用MASK隐藏状态（如果可用）
                     if mask_hidden_states is not None and self.config.use_mask:
                         shared_input = mask_hidden_states
-                        print("🔧 Shared expert using MASK hidden states")
+                        # print("🔧 Shared expert using MASK hidden states")
                     else:
                         shared_input = hidden_states
-                        print("🔧 Shared expert using original hidden states")
+                        # print("🔧 Shared expert using original hidden states")
 
                     shared_output = self.shared_expert(shared_input)
 
                     # 检查共享专家输出
                     if torch.isnan(shared_output).any() or torch.isinf(shared_output).any():
-                        print("⚠️ Shared expert output invalid, skipping")
+                        # print("⚠️ Shared expert output invalid, skipping")
                         shared_output = None
                     else:
                         shared_output = torch.clamp(shared_output, min=-5.0, max=5.0)
-                        print("✅ Shared expert output computed")
+                        # print("✅ Shared expert output computed")
 
                 except Exception as e:
                     print(f"⚠️ Shared expert computation failed: {e}")
@@ -626,7 +626,7 @@ class MoELayer(nn.Module):
                                         final_output = 0.5 * routing_output + 0.5 * shared_output
                                     else:
                                         final_output = routing_weight * routing_output + shared_weight * shared_output
-                                        print(f"🔧 Gate fusion: routing_weight={routing_weight.mean().item():.3f}, shared_weight={shared_weight.mean().item():.3f}")
+                                        # print(f"🔧 Gate fusion: routing_weight={routing_weight.mean().item():.3f}, shared_weight={shared_weight.mean().item():.3f}")
 
                         except Exception as e:
                             print(f"⚠️ Gate network completely failed: {e}, using fixed weights")
@@ -635,28 +635,36 @@ class MoELayer(nn.Module):
                         # 🔧 消融模式：使用固定权重融合
                         final_output = 0.5 * routing_output + 0.5 * shared_output
                         if use_gate is False:
-                            print("🔧 消融研究模式: 推理时禁用门控网络，使用固定权重融合 (use_gate=False)")
+                            # print("🔧 消融研究模式: 推理时禁用门控网络，使用固定权重融合 (use_gate=False)")
+                            pass
                         elif not self.config.use_gate:
-                            print("🔧 Fixed weight fusion: gate network disabled by config")
+                            # print("🔧 Fixed weight fusion: gate network disabled by config")
+                            pass
                         elif self.gate_network is None:
-                            print("🔧 Fixed weight fusion: gate network not available")
+                            # print("🔧 Fixed weight fusion: gate network not available")
+                            pass
                         else:
-                            print("🔧 Fixed weight fusion of routing and shared experts")
+                            # print("🔧 Fixed weight fusion of routing and shared experts")
+                            pass
                 else:
                     # 共享专家失效，只使用路由专家
                     final_output = routing_output
-                    print("🔧 Using routing experts only (shared expert failed)")
+                    # print("🔧 Using routing experts only (shared expert failed)")
             else:
                 # 不使用共享专家
                 final_output = routing_output
                 if use_shared is False:
-                    print("🔧 消融研究模式: 推理时禁用共享专家和MASK分化机制 (use_shared=False)")
+                    # print("🔧 消融研究模式: 推理时禁用共享专家和MASK分化机制 (use_shared=False)")
+                    pass
                 elif not self.config.use_shared:
-                    print("🔧 Shared expert disabled by config")
+                    # print("🔧 Shared expert disabled by config")
+                    pass
                 elif self.shared_expert is None:
-                    print("🔧 Shared expert not available")
+                    # print("🔧 Shared expert not available")
+                    pass
                 else:
-                    print("🔧 Using routing experts only")
+                    # print("🔧 Using routing experts only")
+                    pass
 
             # 4. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
