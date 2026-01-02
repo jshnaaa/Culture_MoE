@@ -43,6 +43,10 @@ class JointLoRAMoEConfig:
     # MASK机制配置
     use_mask: bool = True  # 是否启用MASK机制双路输入处理
 
+    # 消融实验配置
+    use_shared: bool = True  # 是否使用共享专家
+    use_gate: bool = True    # 是否使用门控网络
+
     # 其他配置
     dropout: float = 0.1
 
@@ -349,12 +353,13 @@ class MoELayer(nn.Module):
         self.nan_count = 0
         self.total_forward_calls = 0
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, mask_hidden_states=None):
         """
-        前向传播 - 增强损失版本，返回完整信息
+        前向传播 - 增强损失版本，支持MASK机制的双路处理
 
         Args:
-            hidden_states: [B, L, H] 输入隐藏状态
+            hidden_states: [B, L, H] 输入隐藏状态（用于路由专家）
+            mask_hidden_states: [B, L, H] MASK版本隐藏状态（用于共享专家），可选
 
         Returns:
             output: [B, L, H] 输出隐藏状态
@@ -423,7 +428,21 @@ class MoELayer(nn.Module):
 
             for expert_idx in activated_experts:
                 try:
-                    expert_output = self.experts[expert_idx](hidden_states)  # [B, L, H]
+                    # 🔧 MASK机制：不同专家使用不同的隐藏状态
+                    # 如果启用MASK机制且有MASK隐藏状态，可以实现专家分化
+                    if mask_hidden_states is not None and self.config.use_mask:
+                        # 简化的专家分化策略：奇数专家使用原始输入，偶数专家使用MASK输入
+                        if expert_idx % 2 == 0:
+                            # 偶数专家使用MASK隐藏状态
+                            expert_input = mask_hidden_states
+                        else:
+                            # 奇数专家使用原始隐藏状态
+                            expert_input = hidden_states
+                    else:
+                        # 单路模式：所有专家使用原始隐藏状态
+                        expert_input = hidden_states
+
+                    expert_output = self.experts[expert_idx](expert_input)  # [B, L, H]
 
                     # 添加调试信息：检查每个专家的输出（简化版）
                     # expert_mean = expert_output.mean().item()
@@ -634,29 +653,64 @@ class JointLoRAMoEModel(nn.Module):
         logging.info("Base model frozen (LoRA disabled)")
         print("🔒 基础模型已冻结，仅训练MoE专家层和路由器")
 
-    def forward(self, input_ids=None, attention_mask=None, labels=None, culture_labels=None, **kwargs):
+    def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None,
+                labels=None, culture_labels=None, **kwargs):
         """
         前向传播
 
         Args:
             input_ids: [B, L] 输入token IDs
             attention_mask: [B, L] 注意力掩码
+            input_ids_mask: [B, L] 可选的mask输入（用于MASK机制双路处理）
+            attention_mask_mask: [B, L] mask输入的注意力掩码
             labels: [B, L] 标签（用于计算损失）
             culture_labels: [B] 文化标签（用于计算文化损失）
 
         Returns:
             outputs: 包含loss、logits、expert_weights等的字典
         """
-        # 1. 基础模型前向传播（包含LoRA）
-        base_outputs = self.base_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-            return_dict=True
-        )
+        # 1. 🔧 MASK机制双路输入处理
+        if self.config.use_mask and input_ids_mask is not None and attention_mask_mask is not None:
+            # 双路处理模式：分别处理原始输入和MASK输入
+            # 原始输入用于路由专家
+            base_outputs_original = self.base_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True
+            )
 
-        # 2. 获取最后一层隐藏状态
-        hidden_states = base_outputs.hidden_states[-1]  # [B, L, H]
+            # MASK输入用于共享专家
+            base_outputs_mask = self.base_model(
+                input_ids=input_ids_mask,
+                attention_mask=attention_mask_mask,
+                output_hidden_states=True,
+                return_dict=True
+            )
+
+            # 获取两路隐藏状态
+            hidden_states_original = base_outputs_original.hidden_states[-1]  # [B, L, H] 路由专家用
+            hidden_states_mask = base_outputs_mask.hidden_states[-1]  # [B, L, H] 共享专家用
+
+            # 使用原始输入的输出作为主要基础输出（用于后续logits计算）
+            base_outputs = base_outputs_original
+            hidden_states = hidden_states_original
+
+            # 保存MASK版本的隐藏状态供MoE层使用
+            self._mask_hidden_states = hidden_states_mask
+
+        else:
+            # 单路处理模式：所有专家使用相同输入
+            base_outputs = self.base_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True
+            )
+
+            # 2. 获取最后一层隐藏状态
+            hidden_states = base_outputs.hidden_states[-1]  # [B, L, H]
+            self._mask_hidden_states = None
 
         # 🔍 调试基础模型输出（简化版）
         # base_range = f"min={hidden_states.min().item():.3f}, max={hidden_states.max().item():.3f}"
@@ -680,9 +734,12 @@ class JointLoRAMoEModel(nn.Module):
                 self.add_module('hidden_proj', self.hidden_proj)
             hidden_states = self.hidden_proj(hidden_states)
 
-        # 3. MoE层处理 - 增量架构实现，获取增强损失所需信息
+        # 3. MoE层处理 - 增量架构实现，支持MASK机制的双路处理
         # print("🔧 启用增量MoE架构：MoE作为基础LoRA的增量调整")  # 减少日志
-        moe_delta, expert_weights, moe_aux_loss, expert_outputs, soft_routing_scores, activated_experts = self.moe_layer(hidden_states)
+        moe_delta, expert_weights, moe_aux_loss, expert_outputs, soft_routing_scores, activated_experts = self.moe_layer(
+            hidden_states,
+            mask_hidden_states=getattr(self, '_mask_hidden_states', None)
+        )
 
         # 关键调试：检查MoE增量输出（只在异常时打印）- 暂时注释掉
         moe_std = moe_delta.std().item()

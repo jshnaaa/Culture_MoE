@@ -11,7 +11,7 @@ echo "======================================="
 
 # 参数设置
 BACKBONE=${1:-"llama"}  # 默认使用llama
-DATA_ID=${2:-"2"}
+DATA_ID=${2:-"24"}
 USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
 USE_MASK=${4:-"true"}   # 是否启用MASK机制双路输入，默认为true
 USE_GATE=${5:-"true"}     # 是否使用MoE内部融合Gate，默认为true
@@ -268,6 +268,8 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --use_culture_loss $USE_CULTURE_LOSS \
         --use_lora $USE_LORA \
         --use_mask $USE_MASK \
+        --use_shared $USE_SHARED \
+        --use_gate $USE_GATE \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \
@@ -296,6 +298,8 @@ else
         --use_culture_loss $USE_CULTURE_LOSS \
         --use_lora $USE_LORA \
         --use_mask $USE_MASK \
+        --use_shared $USE_SHARED \
+        --use_gate $USE_GATE \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
         --eval_interval 1 \

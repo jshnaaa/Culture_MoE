@@ -105,9 +105,9 @@ class CultureLLMNewFormatDataset(Dataset):
             full_input_mask = instruction_mask
 
         # 完整的文本（用于语言建模）
-        # 🔧 修复：确保训练和推理格式完全一致，不添加额外空格
-        full_text = f"{full_input.rstrip()}{output_text}"
-        full_text_mask = f"{full_input_mask.rstrip()}{output_text}"  # MASK版本的完整文本
+        # 🔧 修复：添加明确分隔符，确保input和output部分可以准确区分
+        full_text = f"{full_input.rstrip()}\n{output_text}"
+        full_text_mask = f"{full_input_mask.rstrip()}\n{output_text}"  # MASK版本的完整文本
 
         # 🔍 关键调试：检查构建后的full_text（注释掉详细调试）
         # if idx < 5:
@@ -169,61 +169,22 @@ class CultureLLMNewFormatDataset(Dataset):
         # 实际数据格式：full_input + output_text (不添加空格)
         # 我们需要计算full_input的token数量
 
-        # 🔧 关键修复：精确计算input_length，避免tokenizer边界问题
-        # 不能分别编码full_input，因为tokenizer可能在边界处产生不同分词
-        # 应该在完整的full_text中找到output_text的起始位置
+        # 🔧 修复：基于明确分隔符的精确input_length计算
+        # 现在有了明确的'\n'分隔符，可以准确计算input部分长度
+        full_input_with_sep = f"{full_input.rstrip()}\n"
+        input_tokens = self.tokenizer(full_input_with_sep, add_special_tokens=True, truncation=False)['input_ids']
+        input_length = len(input_tokens)
 
-        # 🔧 修复：更robust的input_length计算
-        # 方法1：尝试精确匹配output_tokens
-        output_tokens = self.tokenizer(output_text, add_special_tokens=False)['input_ids']
-        input_length = len(input_ids)  # 默认值：如果找不到匹配，保守处理
-
-        if len(output_tokens) > 0:
-            # 从后往前搜索，找到output_tokens的匹配位置
-            found_match = False
-            for start_pos in range(len(input_ids) - len(output_tokens), -1, -1):
-                if start_pos >= 0 and input_ids[start_pos:start_pos + len(output_tokens)].tolist() == output_tokens:
-                    input_length = start_pos
-                    found_match = True
-                    break
-
-            # 🔧 如果精确匹配失败，使用fallback方法
-            if not found_match:
-                # 方法2：基于full_input的token长度估算
-                try:
-                    full_input_tokens = self.tokenizer(full_input, add_special_tokens=True, truncation=True, max_length=self.max_length)['input_ids']
-                    input_length = len(full_input_tokens)
-
-                    # 确保input_length合理：应该占大部分序列，但要给output留空间
-                    total_length = len(input_ids)
-                    if input_length > total_length - 3:  # 至少给output留3个token空间
-                        input_length = max(0, total_length - 3)
-
-                    if idx < 5:  # 只对前5个样本显示fallback信息
-                        print(f"  🔧 样本{idx}: 精确匹配失败，使用fallback方法")
-                        print(f"    output_text: '{output_text}'")
-                        print(f"    output_tokens: {output_tokens}")
-                        print(f"    fallback input_length: {input_length}/{total_length}")
-
-                except Exception as e:
-                    # 最后的fallback：保守估计
-                    total_length = len(input_ids)
-                    input_length = max(0, total_length - 5)  # 给output留5个token空间
-                    if idx < 5:
-                        print(f"  ⚠️ 样本{idx}: 所有方法都失败，使用最保守估计: {input_length}/{total_length}")
-
-        # 🔧 最终安全检查
+        # 安全检查：确保input_length不超过总长度
         total_length = len(input_ids)
         if input_length >= total_length:
-            input_length = max(0, total_length - 2)
-        elif input_length < 10:  # 如果input_length异常小，也是有问题的
-            input_length = max(10, total_length - 5)  # 确保有合理的输入长度
+            input_length = max(10, total_length - 5)  # 至少给output留5个token空间，确保有合理的输入长度
 
         # 🔍 调试：检查input_length计算
         # 注释掉详细调试信息
         # if idx < 5:
         #     print(f"  🔧 Input length计算:")
-        #     print(f"    input_until_answer_prompt: {repr(input_until_answer_prompt)}")
+        #     print(f"    full_input_with_sep: {repr(full_input_with_sep[-50:])}")
         #     print(f"    计算出的input_length: {input_length}")
         #     print(f"    应该掩码的部分: 0 到 {input_length-1}")
         #     print(f"    应该学习的部分: {input_length} 开始")
@@ -235,14 +196,13 @@ class CultureLLMNewFormatDataset(Dataset):
             # 如果没有设置pad_token，使用默认的eos_token
             pad_token_id = self.tokenizer.eos_token_id
 
-        # 🔧 新的精确计算方法不需要调整，因为我们已经精确定位到"### Answer: "后面
-        # 旧的调整逻辑会破坏我们精确计算的结果，所以删除
+        # 🔧 新的精确计算方法基于明确分隔符，不需要额外调整
         # 验证：确保input_length合理
         total_non_pad = (input_ids != pad_token_id).sum().item()
 
         # 注释掉验证调试信息，避免训练时输出过多日志
         # if idx < 5:
-        #     print(f"  🔧 验证: 总非padding长度={total_non_pad}, 精确input_length={input_length}")
+        #     print(f"  🔧 验证: 总非padding长度={total_non_pad}, input_length={input_length}")
         #     if input_length >= total_non_pad:
         #         print(f"  ⚠️ 警告: input_length >= 总长度，这会导致没有训练目标")
 
