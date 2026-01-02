@@ -51,7 +51,7 @@ from ft_lora_only_gen import (
 
 def generate_answer_with_shared_control(model, tokenizer, instruction: str, input_text: str,
                                       instruction_mask: str = None, device: str = 'cuda',
-                                      use_mask: bool = True, use_shared: bool = None,
+                                      use_mask: bool = True, use_shared: bool = None, use_gate: bool = None,
                                       max_new_tokens: int = 5) -> str:
     """
     支持推理时共享专家控制的生成答案函数
@@ -65,6 +65,7 @@ def generate_answer_with_shared_control(model, tokenizer, instruction: str, inpu
         device: 设备
         use_mask: 是否启用MASK机制
         use_shared: 推理时是否使用共享专家（None使用训练配置，True/False覆盖配置进行消融研究）
+        use_gate: 推理时是否使用门控网络（None使用训练配置，True/False覆盖配置进行消融研究）
         max_new_tokens: 最大生成token数
 
     Returns:
@@ -128,9 +129,11 @@ def generate_answer_with_shared_control(model, tokenizer, instruction: str, inpu
                         'attention_mask_mask': inputs_mask['attention_mask']
                     })
 
-                # 🔧 关键：传递推理时共享专家控制参数
+                # 🔧 关键：传递推理时消融控制参数
                 if use_shared is not None:
                     generate_kwargs['use_shared'] = use_shared
+                if use_gate is not None:
+                    generate_kwargs['use_gate'] = use_gate
 
                 outputs = model.generate(**generate_kwargs)
 
@@ -587,9 +590,9 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     return joint_model
 
 
-def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True, use_shared=None):
+def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True, use_shared=None, use_gate=None):
     """
-    🔧 修复版本：评估联合模型，支持MASK机制双路输入和推理时共享专家控制
+    🔧 修复版本：评估联合模型，支持MASK机制双路输入和推理时消融控制
 
     Args:
         model: 联合模型
@@ -599,6 +602,7 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
         rank: 进程rank
         use_mask: 是否启用MASK机制
         use_shared: 推理时是否使用共享专家（None使用训练配置，True/False覆盖配置进行消融研究）
+        use_gate: 推理时是否使用门控网络（None使用训练配置，True/False覆盖配置进行消融研究）
 
     Returns:
         评估结果字典
@@ -644,7 +648,7 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
                 generated_text = generate_answer_with_shared_control(
                     actual_model, tokenizer, instruction, input_text,
                     instruction_mask=instruction_mask, device=device,
-                    use_mask=use_mask, use_shared=use_shared
+                    use_mask=use_mask, use_shared=use_shared, use_gate=use_gate
                 )
 
                 # 提取答案
@@ -757,7 +761,7 @@ def main():
     parser.add_argument("--use_shared", type=str, default="true",
                         help="Whether to use shared expert")
     parser.add_argument("--use_gate", type=str, default="true",
-                        help="Whether to use MoE gate")
+                        help="Whether to use MoE gate network for inference-time ablation study")
     parser.add_argument("--use_culture_loss", type=str, default="csl",
                         help="Culture loss type")
     parser.add_argument("--use_mask", type=str, default="true",
@@ -780,6 +784,10 @@ def main():
     # None时使用训练配置，True/False时覆盖配置进行消融研究
     use_shared_for_inference = use_shared  # 直接使用USE_SHARED参数进行推理时控制
 
+    # 🔧 use_gate参数控制推理时是否使用门控网络
+    # None时使用训练配置，True/False时覆盖配置进行消融研究
+    use_gate_for_inference = use_gate  # 直接使用USE_GATE参数进行推理时控制
+
     # 设置设备
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
@@ -801,6 +809,7 @@ def main():
         print(f"Use gate: {use_gate}")
         print(f"Use mask: {use_mask}")  # 🔧 添加use_mask参数显示
         print(f"Use shared inference: {use_shared} (消融研究: 推理时是否使用共享专家)")  # 🔧 使用USE_SHARED参数控制推理
+        print(f"Use gate inference: {use_gate} (消融研究: 推理时是否使用门控网络)")  # 🔧 使用USE_GATE参数控制推理
         print(f"Culture loss: {args.use_culture_loss}")
         print(f"Output directory: {args.output_dir}")
         print("="*80 + "\n")
@@ -928,7 +937,7 @@ def main():
         print("Starting evaluation...")
         print("="*80 + "\n")
 
-    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask, use_shared=use_shared_for_inference)
+    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask, use_shared=use_shared_for_inference, use_gate=use_gate_for_inference)
 
     # 保存结果（只在主进程执行）
     if is_main_process(rank):
@@ -954,7 +963,8 @@ def main():
                     'mask_mechanism_enabled': use_mask,
                     'culture_loss_type': args.use_culture_loss,
                     'shared_expert_inference_actual': use_shared_for_inference,
-                    'ablation_note': '消融评估：可通过USE_SHARED参数控制推理时是否使用共享专家'
+                    'gate_network_inference_actual': use_gate_for_inference,
+                    'ablation_note': '消融评估：可通过USE_SHARED和USE_GATE参数控制推理时是否使用共享专家和门控网络'
                 },
                 'data_config': {
                     'data_id': args.data_id,

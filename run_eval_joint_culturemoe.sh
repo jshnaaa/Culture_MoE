@@ -15,7 +15,7 @@ BACKBONE=${2:-"llama"}  # 模型骨干：llama/qwen
 DATA_ID=${3:-"0"}  # 数据集ID，0=使用pkl文件，1-5=使用完整数据集
 USE_SHARED=${4:-"true"}  # 是否使用共享专家，支持消融评估
 USE_MASK=${5:-"true"}   # 是否启用MASK机制，支持消融评估
-USE_GATE=${6:-"true"}   # 是否使用MoE内部融合Gate，支持消融评估
+USE_GATE=${6:-"true"}   # 是否使用MoE内部融合Gate，支持消融评估(false=固定权重0.5:0.5)
 USE_CULTURE_LOSS=${7:-"csl"}  # 文化损失类型
 NUM_MOE_EXPERTS=${8:-"4"}  # MoE专家数量
 NUM_ACTIVATED_EXPERTS=${9:-"2"}  # 激活的专家数量
@@ -228,6 +228,7 @@ echo "  激活专家数: $NUM_ACTIVATED_EXPERTS"
 echo "  文化损失类型: $USE_CULTURE_LOSS"
 echo "  MASK机制: $USE_MASK (支持消融评估)"
 echo "  推理时共享专家: $USE_SHARED (消融评估: true=启用共享专家+MASK分化, false=仅使用路由专家+禁用MASK分化)"
+echo "  推理时门控网络: $USE_GATE (消融评估: true=使用训练的门控权重, false=使用固定权重融合0.5:0.5)"
 echo "  最大序列长度: $MAX_SEQ_LEN (动态设置)"
 echo "  GPU数量: $NUM_GPUS"
 echo "  输出目录: $OUTPUT_DIR"

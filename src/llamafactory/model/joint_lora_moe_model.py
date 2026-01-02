@@ -380,7 +380,7 @@ class MoELayer(nn.Module):
         self.nan_count = 0
         self.total_forward_calls = 0
 
-    def forward(self, hidden_states, mask_hidden_states=None, use_shared=None):
+    def forward(self, hidden_states, mask_hidden_states=None, use_shared=None, use_gate=None):
         """
         前向传播 - 增强损失版本，支持MASK机制的双路处理和推理时共享专家控制
 
@@ -389,6 +389,8 @@ class MoELayer(nn.Module):
             mask_hidden_states: [B, L, H] MASK版本隐藏状态（用于共享专家），可选
             use_shared: bool, 推理时是否使用共享专家。
                        None时使用训练配置，True/False时覆盖配置进行消融研究
+            use_gate: bool, 推理时是否使用门控网络。
+                     None时使用训练配置，True/False时覆盖配置进行消融研究
 
         Returns:
             output: [B, L, H] 输出隐藏状态
@@ -561,7 +563,10 @@ class MoELayer(nn.Module):
 
                 # 融合路由专家和共享专家输出
                 if shared_output is not None:
-                    if self.gate_network is not None and self.config.use_gate:
+                    # 🔧 决定是否在当前推理中使用门控网络
+                    use_gate_current = self.config.use_gate if use_gate is None else use_gate
+
+                    if self.gate_network is not None and self.config.use_gate and use_gate_current:
                         # 使用门控网络融合
                         try:
                             # 使用平均池化作为门控输入
@@ -580,9 +585,16 @@ class MoELayer(nn.Module):
                             print(f"⚠️ Gate network failed: {e}, using simple average")
                             final_output = 0.5 * routing_output + 0.5 * shared_output
                     else:
-                        # 简单平均融合
+                        # 🔧 消融模式：使用固定权重融合
                         final_output = 0.5 * routing_output + 0.5 * shared_output
-                        print("🔧 Simple average fusion of routing and shared experts")
+                        if use_gate is False:
+                            print("🔧 消融研究模式: 推理时禁用门控网络，使用固定权重融合 (use_gate=False)")
+                        elif not self.config.use_gate:
+                            print("🔧 Fixed weight fusion: gate network disabled by config")
+                        elif self.gate_network is None:
+                            print("🔧 Fixed weight fusion: gate network not available")
+                        else:
+                            print("🔧 Fixed weight fusion of routing and shared experts")
                 else:
                     # 共享专家失效，只使用路由专家
                     final_output = routing_output
@@ -749,7 +761,7 @@ class JointLoRAMoEModel(nn.Module):
         print("🔒 基础模型已冻结，仅训练MoE专家层和路由器")
 
     def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None,
-                labels=None, culture_labels=None, use_shared=None, **kwargs):
+                labels=None, culture_labels=None, use_shared=None, use_gate=None, **kwargs):
         """
         前向传播
 
@@ -762,6 +774,8 @@ class JointLoRAMoEModel(nn.Module):
             culture_labels: [B] 文化标签（用于计算文化损失）
             use_shared: bool, 推理时是否使用共享专家。
                        None时使用训练配置，True/False时覆盖配置进行消融研究
+            use_gate: bool, 推理时是否使用门控网络。
+                     None时使用训练配置，True/False时覆盖配置进行消融研究
 
         Returns:
             outputs: 包含loss、logits、expert_weights等的字典
@@ -840,7 +854,8 @@ class JointLoRAMoEModel(nn.Module):
         moe_delta, expert_weights, moe_aux_loss, expert_outputs, soft_routing_scores, activated_experts = self.moe_layer(
             hidden_states,
             mask_hidden_states=getattr(self, '_mask_hidden_states', None),
-            use_shared=use_shared
+            use_shared=use_shared,
+            use_gate=use_gate
         )
 
         # 关键调试：检查MoE增量输出（只在异常时打印）- 暂时注释掉
