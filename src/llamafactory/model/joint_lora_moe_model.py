@@ -457,9 +457,12 @@ class MoELayer(nn.Module):
 
             for expert_idx in activated_experts:
                 try:
-                    # 🔧 MASK机制：不同专家使用不同的隐藏状态
-                    # 如果启用MASK机制且有MASK隐藏状态，可以实现专家分化
-                    if mask_hidden_states is not None and self.config.use_mask:
+                    # 🔧 MASK机制：根据shared专家使用状态决定专家输入分化策略
+                    # 决定当前是否使用共享专家
+                    use_shared_current = self.config.use_shared if use_shared is None else use_shared
+
+                    if mask_hidden_states is not None and self.config.use_mask and use_shared_current:
+                        # 完整模式（有shared专家）：路由专家使用分化策略
                         # 简化的专家分化策略：奇数专家使用原始输入，偶数专家使用MASK输入
                         if expert_idx % 2 == 0:
                             # 偶数专家使用MASK隐藏状态
@@ -468,7 +471,7 @@ class MoELayer(nn.Module):
                             # 奇数专家使用原始隐藏状态
                             expert_input = hidden_states
                     else:
-                        # 单路模式：所有专家使用原始隐藏状态
+                        # 消融模式（无shared专家）或单路模式：所有路由专家使用原始隐藏状态
                         expert_input = hidden_states
 
                     expert_output = self.experts[expert_idx](expert_input)  # [B, L, H]
@@ -588,7 +591,7 @@ class MoELayer(nn.Module):
                 # 不使用共享专家
                 final_output = routing_output
                 if use_shared is False:
-                    print("🔧 消融研究模式: 推理时禁用共享专家 (use_shared=False)")
+                    print("🔧 消融研究模式: 推理时禁用共享专家和MASK分化机制 (use_shared=False)")
                 elif not self.config.use_shared:
                     print("🔧 Shared expert disabled by config")
                 elif self.shared_expert is None:
@@ -764,7 +767,10 @@ class JointLoRAMoEModel(nn.Module):
             outputs: 包含loss、logits、expert_weights等的字典
         """
         # 1. 🔧 MASK机制双路输入处理
-        if self.config.use_mask and input_ids_mask is not None and attention_mask_mask is not None:
+        # 决定是否在当前推理中使用共享专家（影响MASK机制）
+        use_shared_current = self.config.use_shared if use_shared is None else use_shared
+
+        if self.config.use_mask and input_ids_mask is not None and attention_mask_mask is not None and use_shared_current:
             # 双路处理模式：分别处理原始输入和MASK输入
             # 原始输入用于路由专家
             base_outputs_original = self.base_model(
@@ -795,6 +801,7 @@ class JointLoRAMoEModel(nn.Module):
 
         else:
             # 单路处理模式：所有专家使用相同输入
+            # 包括：1) MASK机制禁用时 2) 消融模式禁用共享专家时
             base_outputs = self.base_model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
