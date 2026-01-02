@@ -581,6 +581,9 @@ class MoELayer(nn.Module):
                                 # 限制gate_input范围，防止极值
                                 gate_input = torch.clamp(gate_input, min=-10.0, max=10.0)
 
+                                # 🔧 关键修复：转换为Float32以匹配gate network的dtype
+                                gate_input = gate_input.float()  # 从Float16转换为Float32
+
                                 # 🔧 步骤2: 检查门控网络权重
                                 gate_weight_norm = self.gate_network.weight.norm().item()
                                 if gate_weight_norm > 100.0 or gate_weight_norm < 1e-6:
@@ -607,6 +610,9 @@ class MoELayer(nn.Module):
                                 else:
                                     # 确保权重和为1（数值稳定性）
                                     gate_weights = gate_weights / (torch.sum(gate_weights, dim=-1, keepdim=True) + 1e-8)
+
+                                    # 🔧 转换回原始dtype以保持一致性
+                                    gate_weights = gate_weights.to(routing_output.dtype)
 
                                     # gate_weights[:, 0] -> 路由专家权重
                                     # gate_weights[:, 1] -> 共享专家权重
