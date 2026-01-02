@@ -49,6 +49,129 @@ from ft_lora_only_gen import (
 )
 
 
+def generate_answer_with_shared_control(model, tokenizer, instruction: str, input_text: str,
+                                      instruction_mask: str = None, device: str = 'cuda',
+                                      use_mask: bool = True, use_shared: bool = None,
+                                      max_new_tokens: int = 5) -> str:
+    """
+    支持推理时共享专家控制的生成答案函数
+
+    Args:
+        model: 联合训练模型
+        tokenizer: tokenizer
+        instruction: 指令
+        input_text: 输入文本
+        instruction_mask: MASK版本指令（可选）
+        device: 设备
+        use_mask: 是否启用MASK机制
+        use_shared: 推理时是否使用共享专家（None使用训练配置，True/False覆盖配置进行消融研究）
+        max_new_tokens: 最大生成token数
+
+    Returns:
+        生成的文本
+    """
+    # 构建输入 - 与训练时格式保持一致
+    if input_text:
+        full_input = f"{instruction}\n{input_text}"
+        if instruction_mask and use_mask:
+            full_input_mask = f"{instruction_mask}\n{input_text}"
+        else:
+            full_input_mask = full_input
+    else:
+        full_input = instruction
+        full_input_mask = instruction_mask if instruction_mask and use_mask else instruction
+
+    # 🔧 关键：保持与训练时完全一致的格式
+    full_input = full_input.rstrip()
+    full_input_mask = full_input_mask.rstrip()
+
+    # Tokenize输入
+    inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512, padding=False)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+
+    # 🔧 MASK机制：如果启用且有instruction_mask，同时tokenize mask版本
+    inputs_mask = None
+    if use_mask and instruction_mask and instruction_mask != instruction:
+        inputs_mask = tokenizer(full_input_mask, return_tensors="pt", truncation=True, max_length=512, padding=False)
+        inputs_mask = {k: v.to(device) for k, v in inputs_mask.items()}
+
+    # 确保attention_mask存在
+    if 'attention_mask' not in inputs:
+        inputs['attention_mask'] = torch.ones_like(inputs['input_ids'])
+    if inputs_mask and 'attention_mask' not in inputs_mask:
+        inputs_mask['attention_mask'] = torch.ones_like(inputs_mask['input_ids'])
+
+    with torch.no_grad():
+        # 🔧 关键修改：调用模型的generate方法，传递use_shared参数
+        # 检查模型是否支持use_shared参数
+        try:
+            # 尝试使用联合训练模型的generate方法，传递MASK机制和共享专家控制参数
+            if hasattr(model, 'generate') and hasattr(model, 'moe_layer'):
+                # 这是联合训练模型，支持完整的参数控制
+                generate_kwargs = {
+                    'input_ids': inputs['input_ids'],
+                    'attention_mask': inputs.get('attention_mask'),
+                    'max_new_tokens': max_new_tokens,
+                    'min_new_tokens': 1,
+                    'pad_token_id': tokenizer.pad_token_id,
+                    'eos_token_id': tokenizer.eos_token_id,
+                    'do_sample': False,
+                    'num_beams': 1,
+                    'early_stopping': True,
+                    'repetition_penalty': 1.0
+                }
+
+                # 🔧 如果启用MASK机制且有mask版本输入，传递双路输入
+                if use_mask and inputs_mask is not None:
+                    generate_kwargs.update({
+                        'input_ids_mask': inputs_mask['input_ids'],
+                        'attention_mask_mask': inputs_mask['attention_mask']
+                    })
+
+                # 🔧 关键：传递推理时共享专家控制参数
+                if use_shared is not None:
+                    generate_kwargs['use_shared'] = use_shared
+
+                outputs = model.generate(**generate_kwargs)
+
+            else:
+                # 回退到标准generate方法
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    min_new_tokens=1,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                    do_sample=False,
+                    num_beams=1,
+                    early_stopping=True
+                )
+
+        except Exception as e:
+            print(f"⚠️ Generate with shared control failed: {e}")
+            # 回退到标准generate
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                min_new_tokens=1,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                do_sample=False,
+                num_beams=1,
+                early_stopping=True
+            )
+
+    # 解码生成的部分
+    generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
+
+    if len(generated_ids) > 0:
+        generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+    else:
+        generated_text = ""
+
+    return generated_text
+
+
 def setup_distributed():
     """初始化分布式评估"""
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
@@ -464,9 +587,9 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     return joint_model
 
 
-def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True):
+def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True, use_shared=None):
     """
-    🔧 修复版本：评估联合模型，支持MASK机制双路输入
+    🔧 修复版本：评估联合模型，支持MASK机制双路输入和推理时共享专家控制
 
     Args:
         model: 联合模型
@@ -475,6 +598,7 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
         device: 设备
         rank: 进程rank
         use_mask: 是否启用MASK机制
+        use_shared: 推理时是否使用共享专家（None使用训练配置，True/False覆盖配置进行消融研究）
 
     Returns:
         评估结果字典
@@ -515,11 +639,12 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
                 elif hasattr(batch, 'instruction_mask'):
                     instruction_mask = batch.instruction_mask[i] if hasattr(batch.instruction_mask, '__getitem__') else batch.instruction_mask
 
-                # 生成答案（支持双路输入）
-                from generate_answer_fixed import generate_answer_fixed
-                generated_text = generate_answer_fixed(
+                # 🔧 修复：支持推理时共享专家控制的生成答案
+                # 使用改进的generate_answer函数，支持use_shared参数
+                generated_text = generate_answer_with_shared_control(
                     actual_model, tokenizer, instruction, input_text,
-                    instruction_mask=instruction_mask, device=device, use_mask=use_mask
+                    instruction_mask=instruction_mask, device=device,
+                    use_mask=use_mask, use_shared=use_shared
                 )
 
                 # 提取答案
@@ -651,6 +776,10 @@ def main():
     use_gate = args.use_gate.lower() == 'true'
     use_mask = args.use_mask.lower() == 'true'  # 🔧 添加use_mask参数转换
 
+    # 🔧 use_shared参数控制推理时是否使用共享专家
+    # None时使用训练配置，True/False时覆盖配置进行消融研究
+    use_shared_for_inference = use_shared  # 直接使用USE_SHARED参数进行推理时控制
+
     # 设置设备
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
@@ -671,6 +800,7 @@ def main():
         print(f"Use shared: {use_shared}")
         print(f"Use gate: {use_gate}")
         print(f"Use mask: {use_mask}")  # 🔧 添加use_mask参数显示
+        print(f"Use shared inference: {use_shared} (消融研究: 推理时是否使用共享专家)")  # 🔧 使用USE_SHARED参数控制推理
         print(f"Culture loss: {args.use_culture_loss}")
         print(f"Output directory: {args.output_dir}")
         print("="*80 + "\n")
@@ -798,7 +928,7 @@ def main():
         print("Starting evaluation...")
         print("="*80 + "\n")
 
-    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask)
+    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask, use_shared=use_shared_for_inference)
 
     # 保存结果（只在主进程执行）
     if is_main_process(rank):
@@ -823,7 +953,8 @@ def main():
                     'gate_network_enabled': use_gate,
                     'mask_mechanism_enabled': use_mask,
                     'culture_loss_type': args.use_culture_loss,
-                    'ablation_note': '消融评估：可通过参数控制组件启用/禁用'
+                    'shared_expert_inference_actual': use_shared_for_inference,
+                    'ablation_note': '消融评估：可通过USE_SHARED参数控制推理时是否使用共享专家'
                 },
                 'data_config': {
                     'data_id': args.data_id,

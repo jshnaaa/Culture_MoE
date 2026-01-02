@@ -298,7 +298,7 @@ class MoERouter(nn.Module):
 
 
 class MoELayer(nn.Module):
-    """MoE层"""
+    """MoE层 - 支持共享专家和推理时的消融控制"""
 
     def __init__(self, config: JointLoRAMoEConfig, dtype: torch.dtype = torch.float16):
         super().__init__()
@@ -320,7 +320,7 @@ class MoELayer(nn.Module):
             dtype=torch.float32  # 强制Float32，忽略传入的dtype
         )
 
-        # 创建专家
+        # 创建路由专家（通过路由器选择的专家）
         self.experts = nn.ModuleList([
             MoEExpert(
                 hidden_dim=config.moe_hidden_dim,
@@ -330,16 +330,43 @@ class MoELayer(nn.Module):
             ) for _ in range(config.num_moe_experts)
         ])
 
+        # 🔧 创建共享专家（如果启用）
+        self.shared_expert = None
+        if config.use_shared:
+            self.shared_expert = MoEExpert(
+                hidden_dim=config.moe_hidden_dim,
+                intermediate_dim=config.moe_intermediate_dim,
+                dropout=config.dropout,
+                dtype=dtype
+            )
+            print(f"🔧 Shared expert created")
+
+        # 🔧 创建门控网络（如果启用）
+        self.gate_network = None
+        if config.use_gate and config.use_shared:
+            # 门控网络用于融合路由专家输出和共享专家输出
+            self.gate_network = nn.Linear(config.moe_hidden_dim, 2, bias=True, dtype=dtype)
+            print(f"🔧 Gate network created for expert fusion")
+
         # 🔧 确保专家分化：每个专家使用不同的初始化
         print("🔧 Force reinitializing all experts with different seeds...")
         for i, expert in enumerate(self.experts):
             # 为每个专家设置不同的随机种子，确保分化
             torch.manual_seed(42 + i * 100)  # 不同的种子
             expert._init_weights()
-            print(f"🔧 Expert {i} reinitialized with seed {42 + i * 100}")
+            print(f"🔧 Routing expert {i} reinitialized with seed {42 + i * 100}")
 
-        # 简化：移除复杂的门控和共享专家机制，只保留基本的专家混合
-        # 不使用共享专家和门控，避免额外的复杂性
+        # 初始化共享专家
+        if self.shared_expert is not None:
+            torch.manual_seed(42 + 1000)  # 独特的种子
+            self.shared_expert._init_weights()
+            print(f"🔧 Shared expert reinitialized with seed {42 + 1000}")
+
+        # 初始化门控网络
+        if self.gate_network is not None:
+            nn.init.normal_(self.gate_network.weight, mean=0.0, std=0.01)
+            nn.init.constant_(self.gate_network.bias, 0.0)
+            print(f"🔧 Gate network initialized")
 
     def get_nan_stats(self):
         """获取NaN统计信息"""
@@ -353,13 +380,15 @@ class MoELayer(nn.Module):
         self.nan_count = 0
         self.total_forward_calls = 0
 
-    def forward(self, hidden_states, mask_hidden_states=None):
+    def forward(self, hidden_states, mask_hidden_states=None, use_shared=None):
         """
-        前向传播 - 增强损失版本，支持MASK机制的双路处理
+        前向传播 - 增强损失版本，支持MASK机制的双路处理和推理时共享专家控制
 
         Args:
             hidden_states: [B, L, H] 输入隐藏状态（用于路由专家）
             mask_hidden_states: [B, L, H] MASK版本隐藏状态（用于共享专家），可选
+            use_shared: bool, 推理时是否使用共享专家。
+                       None时使用训练配置，True/False时覆盖配置进行消融研究
 
         Returns:
             output: [B, L, H] 输出隐藏状态
@@ -471,13 +500,13 @@ class MoELayer(nn.Module):
                     expert_outputs[expert_idx] = torch.zeros_like(hidden_states)
                     current_nan_detected = True
 
-            # 3. 动态Top-k专家输出混合
+            # 3. 动态Top-k专家输出混合（路由专家）
             if valid_experts == 0:
                 print(f"🚨 所有激活专家都失效，使用输入passthrough! (k={k})")
-                final_output = hidden_states
+                routing_output = hidden_states
             else:
                 # 动态Top-k加权融合
-                final_output = torch.zeros_like(hidden_states)
+                routing_output = torch.zeros_like(hidden_states)
                 total_weight = 0.0
 
                 for i in range(expert_weights.size(1)):  # 遍历所有专家
@@ -486,23 +515,86 @@ class MoELayer(nn.Module):
                         if i in expert_outputs:
                             weight = weight_val.unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
                             weight = torch.clamp(weight, min=0.0, max=1.0)
-                            final_output += weight * expert_outputs[i]
+                            routing_output += weight * expert_outputs[i]
                             total_weight += weight_val.mean().item()
 
                 # 降低总权重阈值，避免过早使用passthrough
                 if total_weight < 0.001:  # 从0.01降到0.001
                     print("⚠️ Expert weights too small, using passthrough")
-                    final_output = hidden_states
+                    routing_output = hidden_states
                 else:
                     # 🔧 增量架构：限制MoE输出为小的增量调整
                     # 目标：增量约为基础LoRA输出的5-10%，范围约[-5, +5]
-                    final_output = torch.clamp(final_output, min=-5.0, max=5.0)
-                    # 添加调试信息：检查混合后的输出
-                    # final_mean = final_output.mean().item()
-                    # final_std = final_output.std().item()
-                    # final_min = final_output.min().item()
-                    # final_max = final_output.max().item()
-                    # print(f"🔍 Mixed output: mean={final_mean:.6f}, std={final_std:.6f}, range=[{final_min:.3f}, {final_max:.3f}], total_weight={total_weight:.6f}")
+                    routing_output = torch.clamp(routing_output, min=-5.0, max=5.0)
+
+            # 4. 🔧 共享专家处理和融合
+            # 决定是否在当前推理中使用共享专家
+            use_shared_current = self.config.use_shared if use_shared is None else use_shared
+
+            if use_shared_current and self.shared_expert is not None:
+                # 计算共享专家输出
+                try:
+                    # 🔧 MASK机制：共享专家使用MASK隐藏状态（如果可用）
+                    if mask_hidden_states is not None and self.config.use_mask:
+                        shared_input = mask_hidden_states
+                        print("🔧 Shared expert using MASK hidden states")
+                    else:
+                        shared_input = hidden_states
+                        print("🔧 Shared expert using original hidden states")
+
+                    shared_output = self.shared_expert(shared_input)
+
+                    # 检查共享专家输出
+                    if torch.isnan(shared_output).any() or torch.isinf(shared_output).any():
+                        print("⚠️ Shared expert output invalid, skipping")
+                        shared_output = None
+                    else:
+                        shared_output = torch.clamp(shared_output, min=-5.0, max=5.0)
+                        print("✅ Shared expert output computed")
+
+                except Exception as e:
+                    print(f"⚠️ Shared expert computation failed: {e}")
+                    shared_output = None
+
+                # 融合路由专家和共享专家输出
+                if shared_output is not None:
+                    if self.gate_network is not None and self.config.use_gate:
+                        # 使用门控网络融合
+                        try:
+                            # 使用平均池化作为门控输入
+                            gate_input = hidden_states.mean(dim=1)  # [B, H]
+                            gate_weights = torch.softmax(self.gate_network(gate_input), dim=-1)  # [B, 2]
+
+                            # gate_weights[:, 0] -> 路由专家权重
+                            # gate_weights[:, 1] -> 共享专家权重
+                            routing_weight = gate_weights[:, 0].unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
+                            shared_weight = gate_weights[:, 1].unsqueeze(1).unsqueeze(2)   # [B, 1, 1]
+
+                            final_output = routing_weight * routing_output + shared_weight * shared_output
+                            print(f"🔧 Gate fusion: routing_weight={routing_weight.mean().item():.3f}, shared_weight={shared_weight.mean().item():.3f}")
+
+                        except Exception as e:
+                            print(f"⚠️ Gate network failed: {e}, using simple average")
+                            final_output = 0.5 * routing_output + 0.5 * shared_output
+                    else:
+                        # 简单平均融合
+                        final_output = 0.5 * routing_output + 0.5 * shared_output
+                        print("🔧 Simple average fusion of routing and shared experts")
+                else:
+                    # 共享专家失效，只使用路由专家
+                    final_output = routing_output
+                    print("🔧 Using routing experts only (shared expert failed)")
+            else:
+                # 不使用共享专家
+                final_output = routing_output
+                if use_shared is False:
+                    print("🔧 消融研究模式: 推理时禁用共享专家 (use_shared=False)")
+                elif not self.config.use_shared:
+                    print("🔧 Shared expert disabled by config")
+                elif self.shared_expert is None:
+                    print("🔧 Shared expert not available")
+                else:
+                    print("🔧 Using routing experts only")
 
             # 4. 最终检查
             if torch.isnan(final_output).any() or torch.isinf(final_output).any():
@@ -654,7 +746,7 @@ class JointLoRAMoEModel(nn.Module):
         print("🔒 基础模型已冻结，仅训练MoE专家层和路由器")
 
     def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None,
-                labels=None, culture_labels=None, **kwargs):
+                labels=None, culture_labels=None, use_shared=None, **kwargs):
         """
         前向传播
 
@@ -665,6 +757,8 @@ class JointLoRAMoEModel(nn.Module):
             attention_mask_mask: [B, L] mask输入的注意力掩码
             labels: [B, L] 标签（用于计算损失）
             culture_labels: [B] 文化标签（用于计算文化损失）
+            use_shared: bool, 推理时是否使用共享专家。
+                       None时使用训练配置，True/False时覆盖配置进行消融研究
 
         Returns:
             outputs: 包含loss、logits、expert_weights等的字典
@@ -734,11 +828,12 @@ class JointLoRAMoEModel(nn.Module):
                 self.add_module('hidden_proj', self.hidden_proj)
             hidden_states = self.hidden_proj(hidden_states)
 
-        # 3. MoE层处理 - 增量架构实现，支持MASK机制的双路处理
+        # 3. MoE层处理 - 增量架构实现，支持MASK机制的双路处理和推理时共享专家控制
         # print("🔧 启用增量MoE架构：MoE作为基础LoRA的增量调整")  # 减少日志
         moe_delta, expert_weights, moe_aux_loss, expert_outputs, soft_routing_scores, activated_experts = self.moe_layer(
             hidden_states,
-            mask_hidden_states=getattr(self, '_mask_hidden_states', None)
+            mask_hidden_states=getattr(self, '_mask_hidden_states', None),
+            use_shared=use_shared
         )
 
         # 关键调试：检查MoE增量输出（只在异常时打印）- 暂时注释掉

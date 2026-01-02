@@ -23,7 +23,7 @@ NUM_GPUS=${10:-"1"}  # GPU数量
 
 # 检查参数
 if [ "$#" -gt 10 ]; then
-    echo "❌ 参数过多！用法: $0 [model_path] [data_id] [backbone] [use_shared] [use_gate] [num_moe_experts] [num_activated_experts] [use_culture_loss] [use_mask] [num_gpus]"
+    echo "❌ 参数过多！用法: $0 [model_path] [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss] [num_moe_experts] [num_activated_experts] [num_gpus]"
     exit 1
 fi
 
@@ -227,6 +227,7 @@ echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS"
 echo "  文化损失类型: $USE_CULTURE_LOSS"
 echo "  MASK机制: $USE_MASK (支持消融评估)"
+echo "  推理时共享专家: $USE_SHARED (消融评估: true=启用共享专家, false=仅使用路由专家)"
 echo "  最大序列长度: $MAX_SEQ_LEN (动态设置)"
 echo "  GPU数量: $NUM_GPUS"
 echo "  输出目录: $OUTPUT_DIR"

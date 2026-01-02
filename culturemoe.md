@@ -411,3 +411,45 @@ CultureMoE联合训练通过端到端的LoRA+MoE架构和创新的CSL损失函�
 5. **训练稳定**: 数值稳定的实现和完善的异常处理
 
 该架构为跨文化语言理解和生成任务提供了一个强大、高效、可解释的解决方案，在文化多样性建模方面具有重要的理论价值和实用意义。
+
+## 推理评估脚本功能说明
+
+### run_eval_joint_culturemoe.sh 脚本功能
+
+`run_eval_joint_culturemoe.sh` 脚本提供了完整的联合训练模型推理评估功能，支持所有训练时的配置参数，包括关键的MASK机制配置。
+
+#### 脚本参数说明（按顺序）
+
+```bash
+./run_eval_joint_culturemoe.sh MODEL_PATH BACKBONE DATA_ID USE_SHARED USE_MASK USE_GATE USE_CULTURE_LOSS NUM_MOE_EXPERTS NUM_ACTIVATED_EXPERTS NUM_GPUS
+```
+
+1. **MODEL_PATH**: 训练好的联合模型路径
+2. **BACKBONE**: 基础模型类型 (llama/qwen)
+3. **DATA_ID**: 数据集编号 (0-5, 24)
+4. **USE_SHARED**: 是否使用共享专家 (true/false)
+5. **USE_MASK**: 是否启用MASK机制双路输入处理 (true/false)
+6. **USE_GATE**: 是否使用门控网络 (true/false)
+7. **USE_CULTURE_LOSS**: 文化损失模式 (ori/new/kl/csl/false)
+8. **NUM_MOE_EXPERTS**: MoE专家数量
+9. **NUM_ACTIVATED_EXPERTS**: 激活的专家数量
+10. **NUM_GPUS**: 使用的GPU数量
+
+#### USE_MASK参数功能详解
+
+**USE_MASK=true (推荐默认值)**:
+- **双路推理模式**: 模型在推理时使用与训练时一致的MASK机制
+- **输入处理**:
+  - 路由专家接收原始输入 (`instruction + input`)
+  - 共享专家接收MASK版本输入 (`instruction_mask + input`)
+- **专家分化**: 奇数专家使用原始隐藏状态，偶数专家使用MASK隐藏状态
+- **性能优势**: 充分利用训练时学到的双路表示分化能力
+- **适用场景**: 模型使用MASK机制训练时的标准推理模式
+
+**USE_MASK=false**:
+- **单路推理模式**: 所有专家使用相同的原始输入
+- **兼容性**: 适用于未使用MASK机制训练的模型
+- **简化处理**: 回退到标准MoE推理流程
+- **性能影响**: 可能无法充分发挥MASK训练模型的性能优势
+
+通过USE_MASK参数的灵活配置，可以验证MASK机制对模型性能的具体影响，为模型优化和部署提供重要参考。
