@@ -133,12 +133,19 @@ case $DATA_ID in
         TRAIN_FILE="/autodl-fs/data/culemo_merge_gen_samples.json"
         DATASET_TAG="culemo_icl"
         ;;
-    16)
+    161)
         # blend dataset with country grouping
         DATASET_NAME="blend"
         TRAIN_FILE="/root/autodl-fs/blend_merge_gen.json"
         DATASET_TAG="blend"
         echo "Using blend dataset (with country field for grouping)"
+        ;;
+    162)
+        # blend dataset with country grouping
+        DATASET_NAME="blend_rp"
+        TRAIN_FILE="/root/autodl-fs/blend_merge_rp_gen.json"
+        DATASET_TAG="blend_rp"
+        echo "Using blend rp dataset (with country field for grouping)"
         ;;
     # 501)
     #     TRAIN_FILE="/root/autodl-fs/wvs_merge_gen_id.json"

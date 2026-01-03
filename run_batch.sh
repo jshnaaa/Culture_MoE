@@ -1,5 +1,12 @@
-bash run_ft_base.sh llama 16
-bash run_ft_base.sh qwen 16
+echo "blend llama (with country field for grouping)"
+bash run_ft_base.sh llama 161
+echo "blend rp qwen (with country field for grouping)"
+bash run_ft_base.sh qwen 161
+echo "blend rp llama (with country field for grouping)"
+bash run_ft_base.sh llama 162
+echo "blend rp qwen (with country field for grouping)"
+bash run_ft_base.sh qwen 162
+echo "blend joint llama (with country field for grouping)"
 bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 16
 
 #bash run_joint_lora_moe_training.sh qwen 24
