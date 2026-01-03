@@ -1,7 +1,7 @@
-echo "blend llama (with country field for grouping)"
-bash run_ft_base.sh llama 161
-echo "blend qwen (with country field for grouping)"
-bash run_ft_base.sh qwen 161
+#echo "blend llama (with country field for grouping)"
+#bash run_ft_base.sh llama 161
+#echo "blend qwen (with country field for grouping)"
+#bash run_ft_base.sh qwen 161
 echo "blend rp llama (with country field for grouping)"
 bash run_ft_base.sh llama 162
 echo "blend rp qwen (with country field for grouping)"
