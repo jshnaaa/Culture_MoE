@@ -99,6 +99,8 @@ class CultureLLMNewFormatDataset:
         input_text = item.get('input', '')
         output_text = item.get('output', '')
         label = item.get('label', '')
+        # 🔧 新增：获取country字段（用于blend数据集分组统计）
+        country = item.get('country', None)
 
         # ✅ 调试：检查数据是否为空
         if not instruction and not input_text:
@@ -115,7 +117,8 @@ class CultureLLMNewFormatDataset:
         return {
             'text': full_text,
             'output': output_text,
-            'label': label
+            'label': label,
+            'country': country
         }
 
 
@@ -194,7 +197,7 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
     return generated_text
 
 
-def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_size=4, max_length=512):
+def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_size=4, max_length=512, group_by_country=False):
     """
     在数据集上评估 Base 模型
 
@@ -206,6 +209,7 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_siz
         output_dir: 输出目录
         batch_size: 批次大小（当前实现为逐个处理，参数保留用于未来优化）
         max_length: 输入序列的最大长度
+        group_by_country: 是否按country分组统计结果（用于blend数据集）
 
     Returns:
         dict: 包含评估指标的字典
@@ -216,16 +220,23 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_siz
     total = 0
     generated_data = []
 
+    # 🔧 新增：country分组统计
+    country_stats = {}  # {country: {'correct': 0, 'total': 0, 'accuracy': 0.0}}
+
     print(f"\nGenerating answers on dataset...")
     print(f"📊 Batch size: {batch_size} (memory optimization)")
     print(f"📏 Max length: {max_length} tokens")
     print(f"📋 Processing {len(dataset)} samples...")
+    if group_by_country:
+        print(f"🌍 Country grouping: enabled")
 
     for idx in tqdm(range(len(dataset)), desc="Generating"):
         sample = dataset[idx]
         text = sample['text']
         true_output = sample['output']
         label = sample['label']
+        # 🔧 新增：获取country字段（用于blend数据集分组统计）
+        country = sample.get('country', None)
 
         # 生成答案
         generated_text = generate_answer(model, tokenizer, text, device, max_new_tokens=10, max_length=max_length)
@@ -234,19 +245,34 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_siz
         predicted_answer = extract_answer_from_text(generated_text)
 
         # 比对答案
-        if predicted_answer == true_output:
+        is_correct = (predicted_answer == true_output)
+        if is_correct:
             correct += 1
         total += 1
 
+        # 🔧 新增：更新country分组统计
+        if group_by_country and country is not None:
+            if country not in country_stats:
+                country_stats[country] = {'correct': 0, 'total': 0, 'accuracy': 0.0}
+
+            country_stats[country]['total'] += 1
+            if is_correct:
+                country_stats[country]['correct'] += 1
+            country_stats[country]['accuracy'] = country_stats[country]['correct'] / country_stats[country]['total']
+
         # 保存生成的数据
-        generated_data.append({
+        result_item = {
             'text': text,
             'true_output': true_output,
             'label': label,
             'generated_text': generated_text,
             'predicted_answer': predicted_answer,
-            'correct': predicted_answer == true_output
-        })
+            'correct': is_correct
+        }
+        # 🔧 新增：如果有country字段，也保存到结果中
+        if country is not None:
+            result_item['country'] = country
+        generated_data.append(result_item)
 
         # 内存清理（特别是对于长序列）
         if idx % 50 == 0 and torch.cuda.is_available():
@@ -271,12 +297,27 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_siz
         print(f"  Correct: {'✅' if item['correct'] else '❌'}")
     print("\n" + "-" * 100)
 
-    return {
+    # 🔧 新增：显示country分组统计结果
+    if group_by_country and country_stats:
+        print(f"\n🌍 Country-wise Statistics:")
+        print("-" * 100)
+        for country, stats in sorted(country_stats.items()):
+            print(f"  {country}: {stats['correct']}/{stats['total']} ({stats['accuracy']:.4f})")
+        print("-" * 100)
+
+    # 🔧 新增：准备返回结果
+    result = {
         'accuracy': accuracy,
         'correct': correct,
         'total': total,
         'generated_data': generated_data
     }
+
+    # 🔧 新增：如果启用了country分组统计，添加分组结果
+    if group_by_country and country_stats:
+        result['country_stats'] = country_stats
+
+    return result
 
 
 def main():
@@ -295,8 +336,13 @@ def main():
                         help="Batch size for evaluation")
     parser.add_argument("--device", type=str, default='cuda',
                         help="Device to use (cuda or cpu)")
+    parser.add_argument("--data_id", type=str, default="",
+                        help="Data ID to determine if country grouping is needed (16 for blend dataset)")
 
     args = parser.parse_args()
+
+    # 🔧 新增：检查是否需要按country分组统计（DATA_ID=16的blend数据集）
+    group_by_country = (args.data_id == "16")
 
     print("\n" + "="*80)
     print("Evaluating Base Model on CultureLLM Dataset (New Format)")
@@ -304,6 +350,8 @@ def main():
     print(f"Base model: {args.base_model_path}")
     print(f"Training data: {args.train_file}")
     print(f"Output directory: {args.output_dir}")
+    if group_by_country:
+        print(f"🌍 Country grouping: enabled (DATA_ID={args.data_id})")
     print("="*80 + "\n")
 
     # 创建输出目录
@@ -353,15 +401,20 @@ def main():
     print("Starting evaluation...")
     print("="*80 + "\n")
 
-    eval_metrics = evaluate_base_model(model, tokenizer, dataset, args.device, args.output_dir, args.batch_size, args.max_length)
+    eval_metrics = evaluate_base_model(model, tokenizer, dataset, args.device, args.output_dir, args.batch_size, args.max_length, group_by_country)
 
     # 保存评估结果
     results = {
         'accuracy': eval_metrics['accuracy'],
         'correct': eval_metrics['correct'],
         'total': eval_metrics['total'],
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now().isoformat(),
+        'group_by_country': group_by_country
     }
+
+    # 🔧 新增：如果有country分组统计，添加到结果中
+    if 'country_stats' in eval_metrics:
+        results['country_stats'] = eval_metrics['country_stats']
 
     with open(os.path.join(args.output_dir, 'eval_results.json'), 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
@@ -382,6 +435,14 @@ def main():
     print("="*80)
     print(f"Accuracy: {eval_metrics['accuracy']:.4f}")
     print(f"Correct: {eval_metrics['correct']}/{eval_metrics['total']}")
+
+    # 🔧 新增：显示country分组统计结果
+    if 'country_stats' in eval_metrics:
+        print(f"\n🌍 Country-wise Statistics (DATA_ID={args.data_id} blend dataset):")
+        country_stats = eval_metrics['country_stats']
+        for country, stats in sorted(country_stats.items()):
+            print(f"  {country}: {stats['correct']}/{stats['total']} ({stats['accuracy']:.4f})")
+
     print("="*80)
 
     print(f"\n✅ Evaluation completed!")

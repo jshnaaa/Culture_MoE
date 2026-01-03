@@ -590,7 +590,7 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     return joint_model
 
 
-def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True, use_shared=None, use_gate=None):
+def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True, use_shared=None, use_gate=None, group_by_country=False):
     """
     🔧 修复版本：评估联合模型，支持MASK机制双路输入和推理时消融控制
 
@@ -603,6 +603,7 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
         use_mask: 是否启用MASK机制
         use_shared: 推理时是否使用共享专家（None使用训练配置，True/False覆盖配置进行消融研究）
         use_gate: 推理时是否使用门控网络（None使用训练配置，True/False覆盖配置进行消融研究）
+        group_by_country: 是否按country分组统计结果（用于blend数据集）
 
     Returns:
         评估结果字典
@@ -612,6 +613,9 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
     correct = 0
     total = 0
     detailed_results = []
+
+    # 🔧 新增：country分组统计
+    country_stats = {}  # {country: {'correct': 0, 'total': 0, 'accuracy': 0.0}}
 
     # 获取实际的模型（处理DDP包装）
     actual_model = model.module if isinstance(model, DDP) else model
@@ -629,11 +633,15 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
                     input_text = batch['input'][i]
                     true_output = batch['output'][i]
                     label = batch['label'][i]
+                    # 🔧 新增：获取country字段（用于blend数据集分组统计）
+                    country = batch.get('country', [None] * batch_size)[i] if 'country' in batch else None
                 else:
                     instruction = batch['instruction']
                     input_text = batch['input']
                     true_output = batch['output']
                     label = batch['label']
+                    # 🔧 新增：获取country字段（用于blend数据集分组统计）
+                    country = batch.get('country', None) if 'country' in batch else None
 
                 # 🔧 修复：支持MASK机制的生成答案
                 # 从batch中获取instruction_mask（如果使用修复版数据集）
@@ -670,8 +678,18 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
                     correct += 1
                 total += 1
 
+                # 🔧 新增：更新country分组统计
+                if group_by_country and country is not None:
+                    if country not in country_stats:
+                        country_stats[country] = {'correct': 0, 'total': 0, 'accuracy': 0.0}
+
+                    country_stats[country]['total'] += 1
+                    if is_correct:
+                        country_stats[country]['correct'] += 1
+                    country_stats[country]['accuracy'] = country_stats[country]['correct'] / country_stats[country]['total']
+
                 # 保存详细结果
-                detailed_results.append({
+                result_item = {
                     'sample_id': total - 1,
                     'instruction': instruction,
                     'input': input_text,
@@ -680,7 +698,11 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
                     'generated_text': generated_text,
                     'predicted_answer': predicted_answer,
                     'is_correct': is_correct
-                })
+                }
+                # 🔧 新增：如果有country字段，也保存到结果中
+                if country is not None:
+                    result_item['country'] = country
+                detailed_results.append(result_item)
 
                 # 更新进度条 - 降低更新频率
                 if total % 50 == 0:  # 每50个样本更新一次
@@ -692,12 +714,19 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
 
     accuracy = correct / total if total > 0 else 0
 
-    return {
+    # 🔧 新增：准备返回结果
+    result = {
         'accuracy': accuracy,
         'correct_predictions': correct,
         'total_samples': total,
         'detailed_results': detailed_results
     }
+
+    # 🔧 新增：如果启用了country分组统计，添加分组结果
+    if group_by_country and country_stats:
+        result['country_stats'] = country_stats
+
+    return result
 
 
 def quick_model_test(model, tokenizer, device):
@@ -937,40 +966,52 @@ def main():
         print("Starting evaluation...")
         print("="*80 + "\n")
 
-    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask, use_shared=use_shared_for_inference, use_gate=use_gate_for_inference)
+    # 🔧 新增：检查是否需要按country分组统计（DATA_ID=16的blend数据集）
+    group_by_country = (args.data_id == "16")
+
+    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask, use_shared=use_shared_for_inference, use_gate=use_gate_for_inference, group_by_country=group_by_country)
 
     # 保存结果（只在主进程执行）
     if is_main_process(rank):
         # 保存评估结果
         results_file = os.path.join(args.output_dir, 'eval_results.json')
+
+        # 🔧 新增：准备保存的结果数据
+        save_data = {
+            'accuracy': eval_results['accuracy'],
+            'correct_predictions': eval_results['correct_predictions'],
+            'total_samples': eval_results['total_samples'],
+            'model_config': {
+                'backbone': args.backbone,
+                'num_moe_experts': args.num_moe_experts,
+                'num_activated_experts': args.num_activated_experts,
+                'use_shared': use_shared,
+                'use_gate': use_gate,
+                'use_mask': use_mask,  # 🔧 添加MASK机制配置记录
+                'use_culture_loss': args.use_culture_loss
+            },
+            'ablation_study': {
+                'shared_expert_enabled': use_shared,
+                'gate_network_enabled': use_gate,
+                'mask_mechanism_enabled': use_mask,
+                'culture_loss_type': args.use_culture_loss,
+                'shared_expert_inference_actual': use_shared_for_inference,
+                'gate_network_inference_actual': use_gate_for_inference,
+                'ablation_note': '消融评估：可通过USE_SHARED和USE_GATE参数控制推理时是否使用共享专家和门控网络'
+            },
+            'data_config': {
+                'data_id': args.data_id,
+                'use_pkl_split': args.data_id == "0",
+                'group_by_country': group_by_country
+            }
+        }
+
+        # 🔧 新增：如果有country分组统计，添加到结果中
+        if 'country_stats' in eval_results:
+            save_data['country_stats'] = eval_results['country_stats']
+
         with open(results_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                'accuracy': eval_results['accuracy'],
-                'correct_predictions': eval_results['correct_predictions'],
-                'total_samples': eval_results['total_samples'],
-                'model_config': {
-                    'backbone': args.backbone,
-                    'num_moe_experts': args.num_moe_experts,
-                    'num_activated_experts': args.num_activated_experts,
-                    'use_shared': use_shared,
-                    'use_gate': use_gate,
-                    'use_mask': use_mask,  # 🔧 添加MASK机制配置记录
-                    'use_culture_loss': args.use_culture_loss
-                },
-                'ablation_study': {
-                    'shared_expert_enabled': use_shared,
-                    'gate_network_enabled': use_gate,
-                    'mask_mechanism_enabled': use_mask,
-                    'culture_loss_type': args.use_culture_loss,
-                    'shared_expert_inference_actual': use_shared_for_inference,
-                    'gate_network_inference_actual': use_gate_for_inference,
-                    'ablation_note': '消融评估：可通过USE_SHARED和USE_GATE参数控制推理时是否使用共享专家和门控网络'
-                },
-                'data_config': {
-                    'data_id': args.data_id,
-                    'use_pkl_split': args.data_id == "0"
-                }
-            }, f, indent=2, ensure_ascii=False)
+            json.dump(save_data, f, indent=2, ensure_ascii=False)
 
         # 保存详细结果
         detailed_file = os.path.join(args.output_dir, 'detailed_results.json')
@@ -985,11 +1026,21 @@ def main():
         print(f"  Accuracy: {eval_results['accuracy']:.4f}")
         print(f"  Correct predictions: {eval_results['correct_predictions']}")
         print(f"  Total samples: {eval_results['total_samples']}")
+
+        # 🔧 新增：显示country分组统计结果
+        if 'country_stats' in eval_results:
+            print(f"\n🌍 Country-wise Statistics (DATA_ID=16 blend dataset):")
+            country_stats = eval_results['country_stats']
+            for country, stats in sorted(country_stats.items()):
+                print(f"  {country}: {stats['correct']}/{stats['total']} ({stats['accuracy']:.4f})")
+
         print(f"\n🔧 消融评估配置:")
         print(f"  共享专家: {use_shared}")
         print(f"  门控网络: {use_gate}")
         print(f"  MASK机制: {use_mask}")
         print(f"  文化损失: {args.use_culture_loss}")
+        if group_by_country:
+            print(f"  Country分组: 启用 (DATA_ID={args.data_id})")
         print(f"\nFiles generated:")
         print(f"  - eval_results.json (Summary results)")
         print(f"  - detailed_results.json (Detailed predictions)")

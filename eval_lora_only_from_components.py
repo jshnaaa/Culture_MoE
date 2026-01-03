@@ -571,7 +571,7 @@ def extract_label_robust(answer: str, num_classes: int = 10):
     return extract_label_enhanced(answer, num_classes)
 
 
-def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_dir: str = None):
+def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_dir: str = None, group_by_country: bool = False):
     """
     评估模型
 
@@ -581,22 +581,30 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
         test_data: 测试数据
         num_classes: 类别数量
         output_dir: 输出目录
+        group_by_country: 是否按country分组统计结果（用于blend数据集）
 
     Returns:
         results: 评估结果
     """
     print("\nRunning evaluation...")
     print(f"Number of classes: {num_classes}")
+    if group_by_country:
+        print(f"🌍 Country grouping: enabled")
 
     all_preds = []
     all_labels = []
     all_answers = []
+
+    # 🔧 新增：country分组统计
+    country_stats = {}  # {country: {'correct': 0, 'total': 0, 'accuracy': 0.0}}
 
     failed_count = 0
 
     for item in tqdm(test_data, desc="Evaluating"):
         instruction = item['instruction']
         input_text = item['input']
+        # 🔧 新增：获取country字段（用于blend数据集分组统计）
+        country = item.get('country', None)
 
         # 处理标签（1-indexed -> 0-indexed）
         label = int(item['output'])
@@ -610,18 +618,35 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
         if pred == num_classes // 2 and raw_answer and not raw_answer.isdigit():
             failed_count += 1
 
+        # 判断正确性
+        is_correct = (pred == label)
+
+        # 🔧 新增：更新country分组统计
+        if group_by_country and country is not None:
+            if country not in country_stats:
+                country_stats[country] = {'correct': 0, 'total': 0, 'accuracy': 0.0}
+
+            country_stats[country]['total'] += 1
+            if is_correct:
+                country_stats[country]['correct'] += 1
+            country_stats[country]['accuracy'] = country_stats[country]['correct'] / country_stats[country]['total']
+
         all_preds.append(pred)
         all_labels.append(label)
 
         # 保存详细答案
-        all_answers.append({
+        answer_item = {
             "instruction": instruction,
             "input": input_text,
             "true_label": label,
             "predicted_label": pred,
             "raw_answer": raw_answer,
-            "correct": (pred == label)
-        })
+            "correct": is_correct
+        }
+        # 🔧 新增：如果有country字段，也保存到结果中
+        if country is not None:
+            answer_item['country'] = country
+        all_answers.append(answer_item)
 
     # 转换为 numpy 数组
     all_preds = np.array(all_preds)
@@ -661,6 +686,14 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
     print(f"   Out-of-range answers: {out_of_range_count} ({100 * out_of_range_count / len(test_data):.1f}%)")
     print(f"   Failed extractions: {failed_count} ({100 * failed_count / len(test_data):.1f}%)")
 
+    # 🔧 新增：显示country分组统计结果
+    if group_by_country and country_stats:
+        print(f"\n🌍 Country-wise Statistics:")
+        print("-" * 100)
+        for country, stats in sorted(country_stats.items()):
+            print(f"  {country}: {stats['correct']}/{stats['total']} ({stats['accuracy']:.4f})")
+        print("-" * 100)
+
     # 计算指标
     print("\n" + "="*80)
     print("Evaluation Results")
@@ -695,8 +728,13 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
         "text_answers": text_answers,
         "text_answer_rate": float(text_answers / len(test_data)) if len(test_data) > 0 else 0.0,
         "out_of_range_answers": out_of_range_count,
-        "out_of_range_rate": float(out_of_range_count / len(test_data)) if len(test_data) > 0 else 0.0
+        "out_of_range_rate": float(out_of_range_count / len(test_data)) if len(test_data) > 0 else 0.0,
+        "group_by_country": group_by_country
     }
+
+    # 🔧 新增：如果启用了country分组统计，添加分组结果
+    if group_by_country and country_stats:
+        results['country_stats'] = country_stats
 
     return results
 
@@ -717,8 +755,13 @@ def main():
                         help="设备")
     parser.add_argument("--use_multi_gpu", action="store_true",
                         help="使用多 GPU 评估（DataParallel）")
+    parser.add_argument("--data_id", type=str, default="",
+                        help="Data ID to determine if country grouping is needed (16 for blend dataset)")
 
     args = parser.parse_args()
+
+    # 🔧 新增：检查是否需要按country分组统计（DATA_ID=16的blend数据集）
+    group_by_country = (args.data_id == "16")
 
     # 创建输出目录
     os.makedirs(args.output_dir, exist_ok=True)
@@ -732,6 +775,8 @@ def main():
     print(f"Test file: {args.test_file}")
     print(f"Output directory: {args.output_dir}")
     print(f"Num classes: {args.num_classes}")
+    if group_by_country:
+        print(f"🌍 Country grouping: enabled (DATA_ID={args.data_id})")
     print("="*80)
     print(f"🔧 Root Cause Fixes Applied:")
     print(f"  ✅ Fixed prompt format mismatch (use dataset's ### Answer: format)")
@@ -774,7 +819,8 @@ def main():
         tokenizer,
         test_data,
         num_classes=args.num_classes,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        group_by_country=group_by_country
     )
 
     # 保存评估结果
@@ -818,6 +864,16 @@ def main():
     print(f"   Empty answers: {results['empty_answers']} ({results['empty_answer_rate']:.1%})")
     print(f"   Text answers: {results['text_answers']} ({results['text_answer_rate']:.1%})")
     print(f"   Out-of-range: {results['out_of_range_answers']} ({results['out_of_range_rate']:.1%})")
+
+    # 🔧 新增：显示country分组统计结果
+    if 'country_stats' in results:
+        print(f"\n🌍 Country-wise Statistics (DATA_ID=16 blend dataset):")
+        country_stats = results['country_stats']
+        for country, stats in sorted(country_stats.items()):
+            print(f"  {country}: {stats['correct']}/{stats['total']} ({stats['accuracy']:.4f})")
+
+    if group_by_country:
+        print(f"  Country分组: 启用 (DATA_ID={args.data_id})")
     print("")
     print("🔧 All fixes successfully applied!")
     print("")

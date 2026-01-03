@@ -149,6 +149,13 @@ case $DATA_ID in
         TRAIN_FILE="/autodl-fs/data/culemo_merge_gen_samples.json"
         DATASET_TAG="culemo_icl"
         ;;
+    16)
+        # blend dataset with country grouping
+        DATASET_NAME="blend"
+        TRAIN_FILE="/root/autodl-fs/blend_merge_gen.json"
+        DATASET_TAG="blend"
+        echo "Using blend dataset (with country field for grouping)"
+        ;;
     # 501)
     #     TRAIN_FILE="/root/autodl-fs/wvs_merge_gen_id.json"
     #     DATASET_NAME="WVS_Gen_ID"
@@ -158,13 +165,14 @@ case $DATA_ID in
     #     DATASET_NAME="WVS_Gen_OOD"
     #     ;;
     *)
-        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, or 5."
+        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, 5, or 16."
         echo ""
         echo "DATA_ID options:"
         echo "  2 - CulturalBench"
         echo "  3 - NormAD"
         echo "  4 - CultureLLM (default)"
         echo "  5 - wvs"
+        echo "  16 - blend (with country grouping)"
         exit 1
         ;;
 esac
@@ -267,7 +275,8 @@ python ft_base_gen.py \
     --output_dir "$OUTPUT_DIR" \
     --max_length "$MAX_LENGTH" \
     --batch_size "$BATCH_SIZE" \
-    --device cuda
+    --device cuda \
+    --data_id "$DATA_ID"
 
 if [ $? -eq 0 ]; then
     echo ""

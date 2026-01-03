@@ -69,8 +69,12 @@ case $DATA_ID in
         TRAIN_FILE="/root/autodl-fs/cultureAtlas_merge_gen.json"
         DATASET_TAG="cultureAtlas"
         ;;
+    16)
+        TRAIN_FILE="/root/autodl-fs/blend_merge_gen.json"
+        DATASET_TAG="blend"
+        ;;
     *)
-        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 0=pkl文件, 1=unified, 2=CulturalBench, 3=normad, 4=cultureLLM, 5=cultureAtlas)"
+        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 0=pkl文件, 1=unified, 2=CulturalBench, 3=normad, 4=cultureLLM, 5=cultureAtlas, 16=blend)"
         exit 1
         ;;
 esac

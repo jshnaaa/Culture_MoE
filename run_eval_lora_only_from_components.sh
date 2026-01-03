@@ -99,6 +99,13 @@ case $DATA_ID in
         DATASET_NAME="culemo"
         NUM_CLASSES=6
         ;;
+    16)
+        # blend dataset with country grouping
+        TEST_FILE="/root/autodl-fs/blend_merge_gen.json"
+        DATASET_NAME="blend"
+        NUM_CLASSES=4
+        echo "Using blend dataset (with country field for grouping)"
+        ;;
 esac
 
 OUTPUT_DIR="/root/autodl-fs/data/ft_test_results/ft_lora_only_${DATASET_NAME}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
@@ -172,6 +179,7 @@ if [ $NUM_GPUS -gt 1 ]; then
         --output_dir $OUTPUT_DIR \
         --num_classes $NUM_CLASSES \
         --device cuda \
+        --data_id $DATA_ID \
         --use_multi_gpu
 else
     echo "Using single-GPU evaluation"
@@ -184,7 +192,8 @@ else
         --test_file $TEST_FILE \
         --output_dir $OUTPUT_DIR \
         --num_classes $NUM_CLASSES \
-        --device cuda
+        --device cuda \
+        --data_id $DATA_ID
 fi
 
 if [ $? -eq 0 ]; then
