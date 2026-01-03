@@ -610,15 +610,22 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
     """
     model.eval()
 
+    # 🔧 关键修复：设置消融配置，确保参数真正影响模型计算
+    actual_model = model.module if isinstance(model, DDP) else model
+    if hasattr(actual_model, 'set_ablation_config'):
+        actual_model.set_ablation_config(use_shared=use_shared, use_gate=use_gate, use_mask=use_mask)
+        if rank == 0:
+            print(f"🔧 消融配置已设置: use_shared={use_shared}, use_gate={use_gate}, use_mask={use_mask}")
+    else:
+        if rank == 0:
+            print("⚠️  模型不支持消融配置，使用默认行为")
+
     correct = 0
     total = 0
     detailed_results = []
 
     # 🔧 新增：country分组统计
     country_stats = {}  # {country: {'correct': 0, 'total': 0, 'accuracy': 0.0}}
-
-    # 获取实际的模型（处理DDP包装）
-    actual_model = model.module if isinstance(model, DDP) else model
 
     pbar = tqdm(test_loader, desc="Evaluating", disable=(rank != 0), mininterval=1.0)
 

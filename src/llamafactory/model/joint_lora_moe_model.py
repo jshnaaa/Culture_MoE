@@ -403,6 +403,23 @@ class MoELayer(nn.Module):
         """
         batch_size, seq_len, hidden_dim = hidden_states.shape
 
+        # 🔧 消融配置检查：动态控制专家使用和门控融合
+        use_shared_actual = use_shared
+        use_gate_actual = use_gate
+
+        # 如果设置了ablation_config，使用消融配置覆盖参数
+        if hasattr(self, 'ablation_config') and self.ablation_config is not None:
+            if use_shared_actual is None:
+                use_shared_actual = self.ablation_config.get('use_shared', True)
+            if use_gate_actual is None:
+                use_gate_actual = self.ablation_config.get('use_gate', True)
+
+        # 如果仍为None，使用默认值
+        if use_shared_actual is None:
+            use_shared_actual = True
+        if use_gate_actual is None:
+            use_gate_actual = True
+
         # 🔧 增加前向传播调用计数
         self.total_forward_calls += 1
         current_nan_detected = False
@@ -461,10 +478,8 @@ class MoELayer(nn.Module):
             for expert_idx in activated_experts:
                 try:
                     # 🔧 MASK机制：根据shared专家使用状态决定专家输入分化策略
-                    # 决定当前是否使用共享专家
-                    use_shared_current = self.config.use_shared if use_shared is None else use_shared
-
-                    if mask_hidden_states is not None and self.config.use_mask and use_shared_current:
+                    # 使用消融配置控制共享专家
+                    if mask_hidden_states is not None and self.config.use_mask and use_shared_actual:
                         # 完整模式（有shared专家）：路由专家使用分化策略
                         # 简化的专家分化策略：奇数专家使用原始输入，偶数专家使用MASK输入
                         if expert_idx % 2 == 0:
@@ -534,10 +549,8 @@ class MoELayer(nn.Module):
                     routing_output = torch.clamp(routing_output, min=-5.0, max=5.0)
 
             # 4. 🔧 共享专家处理和融合
-            # 决定是否在当前推理中使用共享专家
-            use_shared_current = self.config.use_shared if use_shared is None else use_shared
-
-            if use_shared_current and self.shared_expert is not None:
+            # 使用消融配置控制共享专家
+            if use_shared_actual and self.shared_expert is not None:
                 # 计算共享专家输出
                 try:
                     # 🔧 MASK机制：共享专家使用MASK隐藏状态（如果可用）
@@ -564,10 +577,8 @@ class MoELayer(nn.Module):
 
                 # 融合路由专家和共享专家输出
                 if shared_output is not None:
-                    # 🔧 决定是否在当前推理中使用门控网络
-                    use_gate_current = self.config.use_gate if use_gate is None else use_gate
-
-                    if self.gate_network is not None and self.config.use_gate and use_gate_current:
+                    # 🔧 使用消融配置控制门控网络使用
+                    if self.gate_network is not None and use_gate_actual:
                         # 使用门控网络融合 - 数值稳定版本
                         try:
                             # 🔧 步骤1: 计算并验证门控输入
@@ -634,11 +645,8 @@ class MoELayer(nn.Module):
                     else:
                         # 🔧 消融模式：使用固定权重融合
                         final_output = 0.5 * routing_output + 0.5 * shared_output
-                        if use_gate is False:
+                        if not use_gate_actual:
                             # print("🔧 消融研究模式: 推理时禁用门控网络，使用固定权重融合 (use_gate=False)")
-                            pass
-                        elif not self.config.use_gate:
-                            # print("🔧 Fixed weight fusion: gate network disabled by config")
                             pass
                         elif self.gate_network is None:
                             # print("🔧 Fixed weight fusion: gate network not available")
@@ -653,7 +661,7 @@ class MoELayer(nn.Module):
             else:
                 # 不使用共享专家
                 final_output = routing_output
-                if use_shared is False:
+                if use_shared_actual is False:
                     # print("🔧 消融研究模式: 推理时禁用共享专家和MASK分化机制 (use_shared=False)")
                     pass
                 elif not self.config.use_shared:
@@ -783,6 +791,13 @@ class JointLoRAMoEModel(nn.Module):
         if self.moe_layer.gate_network is not None:
             self.moe_layer.gate_network = self.moe_layer.gate_network.to(device=device, dtype=torch.float32)
             print(f"🔧 Gate network moved to device={device}, dtype=Float32")
+
+        # 🔧 添加消融评估配置（推理时动态控制）
+        self.ablation_config = {
+            'use_shared': None,  # None使用训练配置，True/False覆盖配置
+            'use_gate': None,
+            'use_mask': None
+        }
 
         logging.info(f"Joint LoRA+MoE model initialized with {config.num_moe_experts} experts")
 
@@ -1444,3 +1459,24 @@ class JointLoRAMoEModel(nn.Module):
                     break
 
             return current_ids
+
+    def set_ablation_config(self, use_shared=None, use_gate=None, use_mask=None):
+        """
+        设置推理时消融配置，用于动态控制模型行为
+
+        Args:
+            use_shared: 是否使用共享专家 (None使用训练配置，True/False覆盖配置)
+            use_gate: 是否使用门控网络 (None使用训练配置，True/False覆盖配置)
+            use_mask: 是否使用MASK机制 (None使用训练配置，True/False覆盖配置)
+        """
+        self.ablation_config.update({
+            'use_shared': use_shared,
+            'use_gate': use_gate,
+            'use_mask': use_mask
+        })
+
+        # 将配置传递给MoE层
+        if hasattr(self, 'moe_layer') and self.moe_layer is not None:
+            self.moe_layer.ablation_config = self.ablation_config
+
+        print(f"🔧 消融配置已更新: use_shared={use_shared}, use_gate={use_gate}, use_mask={use_mask}")
