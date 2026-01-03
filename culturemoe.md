@@ -496,3 +496,8 @@ USE_SHARED参数控制推理时是否使用共享专家，支持对训练好的�
 4. **理论分析**: 深入理解MoE架构中不同组件的作用机制
 
 这种灵活的消融控制机制为CultureMoE模型的深入分析和优化部署提供了重要工具。
+
+## 脚本
+- base: run_ft_base.sh
+- lora only: run_ft_lora_only_gen.sh, run_eval_lora_only_from_components.sh
+- joint: run_joint_lora_moe_training.sh, run_eval_joint_culturemoe.sh
