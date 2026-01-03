@@ -337,12 +337,12 @@ def main():
     parser.add_argument("--device", type=str, default='cuda',
                         help="Device to use (cuda or cpu)")
     parser.add_argument("--data_id", type=str, default="",
-                        help="Data ID to determine if country grouping is needed (16 for blend dataset)")
+                        help="Data ID to determine if country grouping is needed (16, 161 or 162 for blend dataset)")
 
     args = parser.parse_args()
 
-    # 🔧 新增：检查是否需要按country分组统计（DATA_ID=16的blend数据集）
-    group_by_country = (args.data_id == "16")
+    # 🔧 新增：检查是否需要按country分组统计（DATA_ID=16、161或162的blend数据集）
+    group_by_country = (args.data_id in ["16", "161", "162"])
 
     print("\n" + "="*80)
     print("Evaluating Base Model on CultureLLM Dataset (New Format)")
