@@ -1,24 +1,8 @@
 #!/bin/bash
 
 # ============================================================
-# 在新格式 CultureLLM 数据集上评估 Base 模型（LLaMA 或 Qwen）
-#
 # 使用方法：
-#   sh run_ft_base_new_format.sh <BACKBONE> <DATA_ID>
-#
-# 参数说明：
-#   BACKBONE: llama 或 qwen (默认 llama)
-#   DATA_ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认 4)
-#
-# 示例：
-#   # 评估 LLaMA Base 模型 + CultureLLM 数据集（新格式）
-#   sh run_ft_base_new_format.sh llama 4
-#
-#   # 评估 Qwen Base 模型 + CultureLLM 数据集（新格式）
-#   sh run_ft_base_new_format.sh qwen 4
-#
-#   # 评估 LLaMA Base 模型 + CulturalBench 数据集（新格式）
-#   sh run_ft_base_new_format.sh llama 2
+#   sh run_ft_base.sh <BACKBONE> <DATA_ID>
 # ============================================================
 
 # ✅ 配置参数
