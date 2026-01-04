@@ -270,20 +270,36 @@ def load_model_and_tokenizer(
             raise FileNotFoundError(f"Joint config not found: {joint_config_path}")
 
         with open(joint_config_path, 'r') as f:
-            joint_config = json.load(f)
+            joint_config_dict = json.load(f)
         print("✅ Joint config loaded")
+
+        # 导入JointLoRAMoEConfig
+        from src.llamafactory.model.joint_lora_moe_model import JointLoRAMoEConfig
+
+        # 创建JointLoRAMoEConfig对象
+        joint_config = JointLoRAMoEConfig(
+            lora_rank=joint_config_dict.get('lora_rank', 16),
+            lora_alpha=joint_config_dict.get('lora_alpha', 32),
+            lora_dropout=joint_config_dict.get('lora_dropout', 0.1),
+            lora_target_modules=joint_config_dict.get('lora_target_modules', ["q_proj", "k_proj", "v_proj", "o_proj"]),
+            use_lora=True,
+            num_moe_experts=joint_config_dict.get('num_moe_experts', 4),
+            num_activated_experts=2,  # 固定为2
+            moe_hidden_dim=joint_config_dict.get('moe_hidden_dim', 4096),
+            moe_intermediate_dim=joint_config_dict.get('moe_intermediate_dim', None),
+            moe_influence_weight=joint_config_dict.get('moe_influence_weight', 0.1),
+            use_mask=True,  # 启用MASK机制
+            use_culture_loss=joint_config_dict.get('use_culture_loss', 'csl'),
+            culture_loss_weight=joint_config_dict.get('culture_loss_weight', 0.01),
+            use_shared=True,  # 启用共享专家
+            use_gate=True,    # 启用门控网络
+            dropout=joint_config_dict.get('dropout', 0.1)
+        )
 
         # 创建JointLoRAMoEModel
         model = JointLoRAMoEModel(
             base_model=base_model,
-            num_moe_experts=joint_config.get('num_moe_experts', 4),
-            num_activated_experts=joint_config.get('num_activated_experts', 2),
-            use_shared=joint_config.get('use_shared', True),
-            use_gate=joint_config.get('use_gate', True),
-            use_mask=joint_config.get('use_mask', True),
-            use_culture_loss=joint_config.get('use_culture_loss', 'csl'),
-            lora_rank=joint_config.get('lora_rank', 16),
-            lora_alpha=joint_config.get('lora_alpha', 32)
+            config=joint_config
         )
         print("✅ Joint model structure created")
 
