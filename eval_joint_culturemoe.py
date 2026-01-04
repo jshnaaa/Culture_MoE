@@ -253,6 +253,14 @@ def load_test_dataset_from_pkl(pkl_file_path: str, tokenizer, max_length: int = 
     # 创建完整数据集，传递use_mask参数控制MASK机制
     full_dataset = CultureLLMNewFormatDataset(original_data_path, tokenizer, max_length, use_mask_inference=use_mask)
 
+    # 🔧 调试：检查数据集中是否有country字段
+    if len(full_dataset) > 0:
+        sample_item = full_dataset[0]
+        has_country = 'country' in sample_item
+        print(f"🔍 数据集country字段检查: {has_country}")
+        if has_country:
+            print(f"    第一个样本的country: {sample_item.get('country', 'None')}")
+
     # 🔧 验证数据集大小一致性
     if len(full_dataset) != total_samples:
         print(f"⚠️ Warning: Full dataset size ({len(full_dataset)}) != split total ({total_samples})")
@@ -287,6 +295,14 @@ def load_test_dataset_from_file(data_file_path: str, tokenizer, max_length: int 
     test_dataset = CultureLLMNewFormatDataset(data_file_path, tokenizer, max_length, use_mask_inference=use_mask)
 
     print(f"Test set size: {len(test_dataset)}")
+
+    # 🔧 调试：检查测试数据集中是否有country字段
+    if len(test_dataset) > 0:
+        sample_item = test_dataset[0]
+        has_country = 'country' in sample_item
+        print(f"🔍 测试数据集country字段检查: {has_country}")
+        if has_country:
+            print(f"    第一个样本的country: {sample_item.get('country', 'None')}")
 
     return test_dataset
 
@@ -620,6 +636,10 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
         if rank == 0:
             print("⚠️  模型不支持消融配置，使用默认行为")
 
+    # 🔧 调试：检查country分组状态
+    if rank == 0 and group_by_country:
+        print(f"🌍 Country分组统计已启用，将收集country字段统计信息")
+
     correct = 0
     total = 0
     detailed_results = []
@@ -632,6 +652,16 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
     with torch.no_grad():
         for batch_idx, batch in enumerate(pbar):
             batch_size = len(batch['instruction'])
+
+            # 🔧 调试：检查前几个batch的country字段
+            if batch_idx < 2 and rank == 0 and group_by_country:
+                print(f"🔍 Batch {batch_idx}: batch_size={batch_size}")
+                print(f"    batch keys: {list(batch.keys())}")
+                if 'country' in batch:
+                    print(f"    batch['country'] type: {type(batch['country'])}")
+                    print(f"    batch['country'] length: {len(batch['country']) if hasattr(batch['country'], '__len__') else 'N/A'}")
+                    if hasattr(batch['country'], '__len__') and len(batch['country']) > 0:
+                        print(f"    first few countries: {batch['country'][:min(3, len(batch['country']))]}")
 
             for i in range(batch_size):
                 # 获取单个样本数据
@@ -686,14 +716,21 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
                 total += 1
 
                 # 🔧 新增：更新country分组统计
-                if group_by_country and country is not None:
-                    if country not in country_stats:
-                        country_stats[country] = {'correct': 0, 'total': 0, 'accuracy': 0.0}
+                if group_by_country:
+                    # 🔧 调试：检查前几个样本的country字段
+                    if total <= 3 and rank == 0:
+                        print(f"🔍 Sample {total}: country='{country}', batch has country field: {'country' in batch}")
+                        if 'country' in batch:
+                            print(f"    batch['country'] type: {type(batch['country'])}, content: {batch['country'][:3] if hasattr(batch['country'], '__len__') and len(batch['country']) > 3 else batch['country']}")
 
-                    country_stats[country]['total'] += 1
-                    if is_correct:
-                        country_stats[country]['correct'] += 1
-                    country_stats[country]['accuracy'] = country_stats[country]['correct'] / country_stats[country]['total']
+                    if country is not None:
+                        if country not in country_stats:
+                            country_stats[country] = {'correct': 0, 'total': 0, 'accuracy': 0.0}
+
+                        country_stats[country]['total'] += 1
+                        if is_correct:
+                            country_stats[country]['correct'] += 1
+                        country_stats[country]['accuracy'] = country_stats[country]['correct'] / country_stats[country]['total']
 
                 # 保存详细结果
                 result_item = {
@@ -975,6 +1012,11 @@ def main():
 
     # 🔧 新增：检查是否需要按country分组统计（DATA_ID=16的blend数据集）
     group_by_country = (args.data_id == "16")
+
+    if group_by_country:
+        print(f"🌍 启用country分组统计 (DATA_ID={args.data_id})")
+    else:
+        print(f"📊 使用标准评估模式 (DATA_ID={args.data_id})")
 
     eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask, use_shared=use_shared_for_inference, use_gate=use_gate_for_inference, group_by_country=group_by_country)
 

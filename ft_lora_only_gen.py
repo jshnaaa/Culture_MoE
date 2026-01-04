@@ -76,6 +76,22 @@ class CultureLLMNewFormatDataset(Dataset):
 
         print(f"Loaded {len(self.data)} samples")
 
+        # 🔧 调试：检查原始数据中是否包含country字段
+        if self.data and len(self.data) > 0:
+            first_item = self.data[0]
+            has_country = 'country' in first_item
+            print(f"🔍 原始数据country字段检查: {has_country}")
+            if has_country:
+                print(f"    第一个样本的country: {first_item.get('country', 'None')}")
+                # 统计不同country的数量
+                countries = set()
+                for item in self.data[:100]:  # 检查前100个样本
+                    if 'country' in item and item['country']:
+                        countries.add(item['country'])
+                print(f"    前100个样本中的country类型: {sorted(list(countries))}")
+            else:
+                print(f"    数据字段: {list(first_item.keys())}")
+
     def __len__(self):
         return len(self.data)
 
@@ -401,6 +417,9 @@ class CultureLLMNewFormatDataset(Dataset):
         #     elif valid_labels > 10:
         #         print(f"  🚨 发现问题: 有效标签数过多({valid_labels})，可能有其他token被错误包含")
 
+        # 🔧 新增：获取country字段（用于blend数据集分组统计）
+        country = item.get('country', None)
+
         return {
             'input_ids': input_ids,
             'attention_mask': attention_mask,
@@ -412,6 +431,7 @@ class CultureLLMNewFormatDataset(Dataset):
             'input': input_text,
             'output': output_text,
             'label': label,
+            'country': country,  # 🔧 新增：country字段
             'valid_labels': valid_labels,
             'total_tokens': total_tokens,
             'input_length': input_length  # 添加调试信息
@@ -506,6 +526,9 @@ def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
         batch_labels_culture.append(item['label'])
 
     # 堆叠成batch张量
+    # 🔧 新增：处理country字段
+    batch_countries = [item.get('country', None) for item in batch]
+
     return {
         'input_ids': torch.stack(batch_input_ids),
         'attention_mask': torch.stack(batch_attention_mask),
@@ -516,7 +539,8 @@ def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
         'instruction_mask': batch_instruction_masks,
         'input': batch_inputs,
         'output': batch_outputs,
-        'label': batch_labels_culture
+        'label': batch_labels_culture,
+        'country': batch_countries  # 🔧 新增：country字段
     }
 
 
