@@ -12,7 +12,7 @@ echo "======================================="
 
 # 参数设置
 BACKBONE=${1:-"llama"}  # 默认使用llama
-DATA_ID=${2:-"3"}
+DATA_ID=${2:-"24"}
 USE_SHARED=${3:-"false"}   # 是否使用共享专家，默认为false
 USE_GATE=${4:-"false"}     # 是否使用MoE内部融合Gate，默认为false
 NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
@@ -137,8 +137,12 @@ case $DATA_ID in
         TRAIN_FILE=""
         DATASET_TAG="blend + cultureAtlas"
         ;;
+    24)
+        TRAIN_FILE=""
+        DATASET_TAG="CulturalBench + cultureLLM"
+        ;;
     *)
-        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 1, 2, 3, 4, 5, 15)"
+        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 1, 2, 3, 4, 5, 15, 24)"
         exit 1
         ;;
 esac
@@ -190,6 +194,68 @@ print(f'  - 保存至: $MERGED_FILE')
     if [ $? -eq 0 ]; then
         TRAIN_FILE="$MERGED_FILE"
         echo "✅ 使用合并数据集: $TRAIN_FILE"
+    else
+        echo "❌ 数据合并失败"
+        exit 1
+    fi
+fi
+
+# 特殊处理：DATA_ID=24时合并CulturalBench和cultureLLM数据集
+if [ "$DATA_ID" = "24" ]; then
+    echo "🔄 合并CulturalBench和cultureLLM数据集..."
+
+    CULTURALBENCH_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
+    CULTURELLM_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
+    MERGED_FILE="/root/autodl-fs/CulturalBench_cultureLLM_merged.json"
+
+    # 检查源文件是否存在
+    if [ ! -f "$CULTURALBENCH_FILE" ]; then
+        echo "❌ CulturalBench数据文件不存在: $CULTURALBENCH_FILE"
+        exit 1
+    fi
+
+    if [ ! -f "$CULTURELLM_FILE" ]; then
+        echo "❌ cultureLLM数据文件不存在: $CULTURELLM_FILE"
+        exit 1
+    fi
+
+    # 使用Python合并JSON数据并添加数据集标识
+    python3 -c "
+import json
+
+# 读取两个数据集
+with open('$CULTURALBENCH_FILE', 'r', encoding='utf-8') as f:
+    culturalbench_data = json.load(f)
+
+with open('$CULTURELLM_FILE', 'r', encoding='utf-8') as f:
+    culturellm_data = json.load(f)
+
+# 为每个数据样本添加数据集标识
+for item in culturalbench_data:
+    item['dataset_source'] = 'CulturalBench'
+
+for item in culturellm_data:
+    item['dataset_source'] = 'cultureLLM'
+
+# 合并数据
+merged_data = culturalbench_data + culturellm_data
+
+# 保存合并结果
+with open('$MERGED_FILE', 'w', encoding='utf-8') as f:
+    json.dump(merged_data, f, indent=2, ensure_ascii=False)
+
+print(f'✅ 数据合并完成:')
+print(f'  - CulturalBench: {len(culturalbench_data)} 条')
+print(f'  - cultureLLM: {len(culturellm_data)} 条')
+print(f'  - 合并后: {len(merged_data)} 条')
+print(f'  - 保存至: $MERGED_FILE')
+print(f'  - 每个样本都添加了dataset_source字段用于分别统计')
+"
+
+    if [ $? -eq 0 ]; then
+        TRAIN_FILE="$MERGED_FILE"
+        echo "✅ 使用合并数据集: $TRAIN_FILE"
+        echo "📊 数据集特点: 包含dataset_source字段，支持分别统计评估结果"
     else
         echo "❌ 数据合并失败"
         exit 1
@@ -248,6 +314,10 @@ OUTPUT_DIR="/root/autodl-fs/simplified_culturemoe/${MODEL_NAME}_${DATASET_TAG}_$
 echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
 echo "  数据: $DATASET_TAG ($TRAIN_FILE)"
+if [ "$DATA_ID" = "24" ]; then
+    echo "  📊 特殊功能: 支持分别统计CulturalBench和cultureLLM的评估结果"
+    echo "  📊 数据划分: 分别保存各数据集的8:1:1划分文件pkl"
+fi
 echo "  总层数: $TOTAL_LAYERS"
 echo "  MoE层: $MoE_LAYERS (所有层FFN替换为LoRA MoE)"
 if [ "$USE_LORA" = "true" ]; then
@@ -312,7 +382,9 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "data_id": "$DATA_ID",
         "data_file": "$TRAIN_FILE",
         "dataset_tag": "$DATASET_TAG",
-        "max_seq_length": $MAX_SEQ_LEN
+        "max_seq_length": $MAX_SEQ_LEN,
+        "supports_separate_eval": $([ "$DATA_ID" = "24" ] && echo "true" || echo "false"),
+        "separate_datasets": $([ "$DATA_ID" = "24" ] && echo "[\"CulturalBench\", \"cultureLLM\"]" || echo "null")
     },
     "training_config": {
         "training_mode": "simplified_all_layers_moe",
@@ -362,6 +434,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --learning_rate $LEARNING_RATE \
         --max_length $MAX_SEQ_LEN \
         --backbone $BACKBONE \
+        --data_id $DATA_ID \
         --use_shared $USE_SHARED \
         --use_gate $USE_GATE \
         --num_moe_experts $NUM_MOE_EXPERTS \
@@ -392,6 +465,7 @@ else
         --learning_rate $LEARNING_RATE \
         --max_length $MAX_SEQ_LEN \
         --backbone $BACKBONE \
+        --data_id $DATA_ID \
         --use_shared $USE_SHARED \
         --use_gate $USE_GATE \
         --num_moe_experts $NUM_MOE_EXPERTS \
