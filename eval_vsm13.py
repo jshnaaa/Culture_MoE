@@ -31,6 +31,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.llamafactory.model.CultureMoE import LlamaSharedRouterExpertsModel
 from src.llamafactory.model.moe_args import ModelArgs
+from src.llamafactory.model.joint_lora_moe_model import JointLoRAMoEModel
 
 # ✅ 10 个国家及其形容词形式
 COUNTRIES = {
@@ -109,17 +110,19 @@ def load_model_and_tokenizer(
     base_model_path: str = None,
     lora_weights_path: str = None,
     moe_weights_path: str = None,
+    joint_model_path: str = None,
     device: str = 'cuda'
 ):
     """
     加载模型和 tokenizer
 
     Args:
-        model_type: 模型类型 ('base', 'lora_only', 'moe' 或 'culturemoe')
+        model_type: 模型类型 ('base', 'lora_only', 'moe', 'culturemoe' 或 'joint')
         backbone: 基座模型 ('qwen' 或 'llama')
         base_model_path: Base 模型路径（可选，如果不提供则自动推断）
         lora_weights_path: LoRA 权重路径（仅用于 lora_only 和 moe）
         moe_weights_path: MOE 权重路径（仅用于 moe）
+        joint_model_path: Joint 模型路径（仅用于 joint）
         device: 设备
 
     Returns:
@@ -245,6 +248,63 @@ def load_model_and_tokenizer(
         )
         model.load_state_dict(moe_state_dict, strict=False)
         print("✅ MOE weights loaded and merged")
+
+    elif model_type == 'joint':
+        # Joint 模型：加载 base 模型 + joint 权重
+        print(f"\nLoading joint model from {joint_model_path}...")
+
+        # 加载基础模型
+        print(f"Loading base model from {base_model_path}...")
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_path,
+            torch_dtype=torch.float16,
+            device_map=None,
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
+        )
+        print("✅ Base model loaded")
+
+        # 加载joint配置
+        joint_config_path = os.path.join(joint_model_path, 'joint_config.json')
+        if not os.path.exists(joint_config_path):
+            raise FileNotFoundError(f"Joint config not found: {joint_config_path}")
+
+        with open(joint_config_path, 'r') as f:
+            joint_config = json.load(f)
+        print("✅ Joint config loaded")
+
+        # 创建JointLoRAMoEModel
+        model = JointLoRAMoEModel(
+            base_model=base_model,
+            num_moe_experts=joint_config.get('num_moe_experts', 4),
+            num_activated_experts=joint_config.get('num_activated_experts', 2),
+            use_shared=joint_config.get('use_shared', True),
+            use_gate=joint_config.get('use_gate', True),
+            use_mask=joint_config.get('use_mask', True),
+            use_culture_loss=joint_config.get('use_culture_loss', 'csl'),
+            lora_rank=joint_config.get('lora_rank', 16),
+            lora_alpha=joint_config.get('lora_alpha', 32)
+        )
+        print("✅ Joint model structure created")
+
+        # 加载LoRA权重
+        lora_weights_path = os.path.join(joint_model_path, 'lora_weights')
+        if os.path.exists(lora_weights_path):
+            print(f"Loading LoRA weights from {lora_weights_path}...")
+            model.load_lora_weights(lora_weights_path)
+            print("✅ LoRA weights loaded")
+
+        # 加载MoE权重
+        moe_weights_path = os.path.join(joint_model_path, 'moe_weights.pt')
+        if os.path.exists(moe_weights_path):
+            print(f"Loading MoE weights from {moe_weights_path}...")
+            moe_state_dict = torch.load(moe_weights_path, map_location='cpu')
+            model.load_moe_weights(moe_state_dict)
+            print("✅ MoE weights loaded")
+
+        # 移动到设备
+        model = model.to(device)
+        print("✅ Joint model loaded and moved to device")
 
     else:  # culturemoe
         # ⚠️ CultureMoE 模型：需要从 Base + LoRA + MOE 权重还原
@@ -400,8 +460,8 @@ def evaluate_vsm13(
             # 添加国家文化提示词
             instruction = sample['instruction']
 
-            # 在最前面添加国家提示词
-            instruction_with_country = f"You are a {country_adj} culture chatbot that knows {country_adj} culture very well. {instruction}"
+            # 🔧 修改国家提示词格式
+            instruction_with_country = f"You are a {country_adj} chatbot that know {country_adj} very well. Now your task is to represent the people in culture and answer the following question. Please be sure that you should only consider the culture of {country_adj} when answering the question. {instruction}"
 
             # 在最后面添加国家提示词
             instruction_with_country += f" This question is for a country or language that is {country}."
@@ -602,8 +662,8 @@ def main():
     parser = argparse.ArgumentParser(description="VSM13 Evaluation Script")
 
     parser.add_argument("--model_type", type=str, default='lora_only',
-                        choices=['base', 'lora_only', 'moe', 'culturemoe'],
-                        help="Model type: 'base', 'lora_only', 'moe' or 'culturemoe'")
+                        choices=['base', 'lora_only', 'moe', 'culturemoe', 'joint'],
+                        help="Model type: 'base', 'lora_only', 'moe', 'culturemoe' or 'joint'")
     parser.add_argument("--backbone", type=str, default='qwen',
                         choices=['qwen', 'llama'],
                         help="Backbone model: 'qwen' or 'llama'")
@@ -613,6 +673,8 @@ def main():
                         help="Path to LoRA weights (only for lora_only and moe model types)")
     parser.add_argument("--moe_weights_path", type=str, default=None,
                         help="Path to MOE weights (only for moe model type)")
+    parser.add_argument("--joint_model_path", type=str, default=None,
+                        help="Path to joint model directory (only for joint model type)")
     parser.add_argument("--data_path", type=str, required=True,
                         help="Path to VSM13 dataset (vsm13.json)")
     parser.add_argument("--output_dir", type=str, required=True,
@@ -633,6 +695,8 @@ def main():
         print(f"LoRA weights path: {args.lora_weights_path}")
     if args.moe_weights_path:
         print(f"MOE weights path: {args.moe_weights_path}")
+    if args.joint_model_path:
+        print(f"Joint model path: {args.joint_model_path}")
     print(f"Data path: {args.data_path}")
     print(f"Output directory: {args.output_dir}")
     print(f"Device: {args.device}")
@@ -646,6 +710,7 @@ def main():
         base_model_path=args.base_model_path,
         lora_weights_path=args.lora_weights_path,
         moe_weights_path=args.moe_weights_path,
+        joint_model_path=args.joint_model_path,
         device=args.device
     )
 
