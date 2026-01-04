@@ -296,31 +296,127 @@ def load_model_and_tokenizer(
             dropout=joint_config_dict.get('dropout', 0.1)
         )
 
-        # 创建JointLoRAMoEModel
-        model = JointLoRAMoEModel(
-            base_model=base_model,
-            config=joint_config
-        )
-        print("✅ Joint model structure created")
+        # 🔧 修复：根据配置决定LoRA加载策略，避免重复应用
+        lora_path = os.path.join(joint_model_path, 'lora_weights')
+        lora_loaded_externally = False
 
-        # 加载LoRA权重
-        lora_weights_path = os.path.join(joint_model_path, 'lora_weights')
-        if os.path.exists(lora_weights_path):
-            print(f"Loading LoRA weights from {lora_weights_path}...")
-            model.load_lora_weights(lora_weights_path)
-            print("✅ LoRA weights loaded")
+        if os.path.exists(lora_path):
+            print(f"Found LoRA weights at: {lora_path}")
+            lora_files = os.listdir(lora_path)
+            print(f"  - LoRA files found: {lora_files}")
+
+            # 检查是否应该外部加载LoRA（推荐方式）
+            # 外部加载可以确保与训练时的加载顺序完全一致
+            try:
+                from peft import PeftModel
+                print("🔧 Loading LoRA externally (before JointLoRAMoEModel creation)")
+                base_model = PeftModel.from_pretrained(base_model, lora_path)
+                lora_loaded_externally = True
+                print("✅ LoRA weights loaded successfully")
+
+                # 🔧 关键：既然已经外部加载LoRA，需要告诉JointLoRAMoEModel不要再次应用
+                joint_config.use_lora = False  # 避免重复应用LoRA
+                print("🔧 Set joint_config.use_lora=False to avoid duplicate LoRA application")
+
+            except Exception as e:
+                print(f"❌ Failed to load LoRA externally: {e}")
+                print("  - Will let JointLoRAMoEModel handle LoRA loading internally")
+                lora_loaded_externally = False
+                # 保持joint_config.use_lora=True，让JointLoRAMoEModel内部处理
+        else:
+            print(f"⚠️ LoRA weights directory not found: {lora_path}")
+            print("  - Will proceed without LoRA or let JointLoRAMoEModel handle it")
+
+        # 创建联合模型
+        print("Creating JointLoRAMoEModel...")
+        try:
+            model = JointLoRAMoEModel(base_model, joint_config)
+            print("✅ JointLoRAMoEModel created successfully")
+
+            # 🔧 验证LoRA加载状态
+            if lora_loaded_externally:
+                print("🔧 LoRA was loaded externally before model creation")
+            elif joint_config.use_lora:
+                print("🔧 LoRA will be applied internally by JointLoRAMoEModel")
+            else:
+                print("🔧 No LoRA will be applied (base model only)")
+
+        except Exception as e:
+            print(f"❌ Failed to create JointLoRAMoEModel: {e}")
+            raise e
 
         # 加载MoE权重
         moe_weights_path = os.path.join(joint_model_path, 'moe_weights.pt')
         if os.path.exists(moe_weights_path):
             print(f"Loading MoE weights from {moe_weights_path}...")
-            moe_state_dict = torch.load(moe_weights_path, map_location='cpu')
-            model.load_moe_weights(moe_state_dict)
-            print("✅ MoE weights loaded")
+            try:
+                moe_state_dict = torch.load(moe_weights_path, map_location=device)
+                print(f"  - MoE state dict keys: {list(moe_state_dict.keys())}")
+
+                # 🔧 修复：检查MoE层是否存在，并正确加载权重
+                if hasattr(model, 'moe_layer') and model.moe_layer is not None:
+                    # 确保state_dict的键匹配
+                    missing_keys, unexpected_keys = model.moe_layer.load_state_dict(moe_state_dict, strict=False)
+                    if missing_keys:
+                        print(f"  ⚠️ Missing keys in MoE state dict: {missing_keys}")
+                    if unexpected_keys:
+                        print(f"  ⚠️ Unexpected keys in MoE state dict: {unexpected_keys}")
+
+                    print("✅ MoE weights loaded successfully")
+
+                    # 🔧 验证MoE层参数是否正确加载
+                    moe_param_count = sum(p.numel() for p in model.moe_layer.parameters())
+                    print(f"  - MoE layer parameters count: {moe_param_count:,}")
+                else:
+                    print("❌ model.moe_layer not found or is None")
+                    print("  - Check if JointLoRAMoEModel was created correctly")
+
+            except Exception as e:
+                print(f"❌ Failed to load MoE weights: {e}")
+                print(f"  - Error details: {str(e)}")
+                print("  - Using randomly initialized MoE layer")
+        else:
+            print(f"⚠️ MoE weights file not found: {moe_weights_path}")
+            print("  - Using randomly initialized MoE layer")
 
         # 移动到设备
         model = model.to(device)
         print("✅ Joint model loaded and moved to device")
+
+        # 🔧 最终验证：检查模型结构和参数
+        print(f"\n🔍 Final model verification:")
+        print(f"  - Model type: {type(model).__name__}")
+        print(f"  - Has base_model: {hasattr(model, 'base_model')}")
+        print(f"  - Has moe_layer: {hasattr(model, 'moe_layer')}")
+
+        if hasattr(model, 'base_model'):
+            base_model_type = type(model.base_model).__name__
+            print(f"  - Base model type: {base_model_type}")
+
+            # 检查是否是PEFT模型（LoRA已加载）
+            if 'PeftModel' in base_model_type:
+                print(f"  ✅ LoRA adapter is loaded (PeftModel detected)")
+            else:
+                print(f"  ❌ CRITICAL: No LoRA adapter detected! (base model type: {base_model_type})")
+                print(f"    - This will cause significant performance degradation!")
+
+        if hasattr(model, 'moe_layer') and model.moe_layer is not None:
+            moe_type = type(model.moe_layer).__name__
+            print(f"  - MoE layer type: {moe_type}")
+
+            # 检查MoE专家数量
+            if hasattr(model.moe_layer, 'experts'):
+                expert_count = len(model.moe_layer.experts)
+                print(f"  - Number of experts: {expert_count}")
+        else:
+            print(f"  ❌ CRITICAL: No MoE layer found! Model will behave like base LoRA only!")
+
+        # 计算总参数量
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"  - Total parameters: {total_params:,}")
+        print(f"  - Trainable parameters: {trainable_params:,}")
+        print(f"  - Trainable ratio: {trainable_params/total_params:.2%}")
 
     else:  # culturemoe
         # ⚠️ CultureMoE 模型：需要从 Base + LoRA + MOE 权重还原
