@@ -39,6 +39,7 @@ if [ "$#" -lt 1 ]; then
     echo "    2 - CulturalBench完整数据集"
     echo "    3 - normad完整数据集"
     echo "    4 - cultureLLM完整数据集"
+    echo "    16 - blend完整数据集 (启用country分组统计)"
     echo "  use_shared:          是否保留shared专家 (true/false, 默认: false)"
     echo "  use_mask:            是否保留MASK机制 (true/false, 默认: false, 占位符)"
     echo "  use_gate:            是否保留gate机制 (true/false, 默认: false)"
@@ -52,6 +53,10 @@ if [ "$#" -lt 1 ]; then
     echo "  # 使用CulturalBench完整数据集"
     echo "  bash run_ablation_study.sh \\"
     echo "    /autodl-fs/data/simplified_culturemoe/llama_blend_20251226_121046 llama 2"
+    echo ""
+    echo "  # 使用blend数据集（启用country分组统计）"
+    echo "  bash run_ablation_study.sh \\"
+    echo "    /autodl-fs/data/simplified_culturemoe/llama_blend_20251226_121046 llama 16"
     echo ""
     echo "  # 完整参数示例"
     echo "  bash run_ablation_study.sh \\"
@@ -88,6 +93,8 @@ if [[ "$BACKBONE" != "llama" && "$BACKBONE" != "qwen" ]]; then
 fi
 
 # 根据DATA_ID设置数据处理模式
+USE_COUNTRY_GROUPING=false  # 初始化country分组标志
+
 case $DATA_ID in
     0)
         # 使用pkl划分的测试集模式 - 支持多数据集
@@ -133,6 +140,14 @@ case $DATA_ID in
         USE_PKL_SPLIT=false
         USE_MULTI_DATASET_SPLIT=false
         echo "📊 数据模式: culturecultureAtlas完整数据集"
+        ;;
+    16)
+        DATA_FILE="/root/autodl-fs/blend_merge_gen.json"
+        DATASET_TAG="blend"
+        USE_PKL_SPLIT=false
+        USE_MULTI_DATASET_SPLIT=false
+        USE_COUNTRY_GROUPING=true
+        echo "📊 数据模式: blend完整数据集 (启用country分组统计)"
         ;;
 esac
 
@@ -185,6 +200,9 @@ echo "  训练输出目录: $TRAINING_OUTPUT_DIR"
 echo "  模型路径: $MODEL_PATH"
 echo "  基座模型: $BACKBONE ($BASE_MODEL_PATH)"
 echo "  数据集: $DATASET_TAG ($DATA_FILE)"
+if [ "$USE_COUNTRY_GROUPING" = "true" ]; then
+    echo "  🌍 特殊功能: 启用country分组统计（blend数据集）"
+fi
 echo "  使用shared专家: $USE_SHARED"
 echo "  使用MASK机制: $USE_MASK (占位符)"
 echo "  使用gate机制: $USE_GATE"
@@ -208,7 +226,8 @@ cat > "$OUTPUT_DIR/experiment_config.json" << EOF
         "use_shared": $USE_SHARED,
         "use_mask": $USE_MASK,
         "use_gate": $USE_GATE,
-        "use_culture_loss": $USE_CULTURE_LOSS
+        "use_culture_loss": $USE_CULTURE_LOSS,
+        "use_country_grouping": $USE_COUNTRY_GROUPING
     }
 }
 EOF
@@ -550,6 +569,12 @@ print(split_info.get('data_path', ''))")
         EVAL_ARGS="$EVAL_ARGS --disable_culture_loss"
     fi
 
+    # 添加country分组参数（仅对DATA_ID=16）
+    if [ "$USE_COUNTRY_GROUPING" = "true" ]; then
+        EVAL_ARGS="$EVAL_ARGS --enable_country_grouping"
+        echo "🌍 启用country分组统计（blend数据集）"
+    fi
+
     # 执行评估
     eval "python eval_simplified_culturemoe.py $EVAL_ARGS"
     EXPERIMENT_SUCCESS=$?
@@ -681,6 +706,13 @@ if os.path.exists(result_file):
     print(f"  验证损失: {eval_loss:.4f}")
     print(f"  文化损失: {culture_loss:.4f}")
 
+    # 显示country分组统计结果（如果有）
+    country_stats = result.get('country_stats', {})
+    if country_stats:
+        print(f"\\n🌍 Country分组统计结果:")
+        for country, stats in sorted(country_stats.items()):
+            print(f"  {country}: {stats['correct']}/{stats['total']} ({stats['accuracy']:.4f})")
+
     # 显示配置信息
     config = result.get('config', {})
     print(f"\\n🔧 有效配置:")
@@ -688,6 +720,8 @@ if os.path.exists(result_file):
     print(f"  MASK机制: {'启用' if config.get('use_mask', True) else '禁用'} (占位符)")
     print(f"  Gate网络: {'启用' if config.get('use_gate', True) else '禁用'}")
     print(f"  文化损失: {'启用' if config.get('use_culture_loss', True) else '禁用'}")
+    if config.get('use_country_grouping', False):
+        print(f"  🌍 Country分组: 启用（blend数据集）")
 else:
     print("❌ 未找到结果文件: $RESULT_FILE")
 
