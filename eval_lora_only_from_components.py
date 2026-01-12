@@ -654,6 +654,7 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
 
     # 保存详细答案
     if output_dir:
+        os.makedirs(output_dir, exist_ok=True)  # 确保输出目录存在
         answers_file = os.path.join(output_dir, "generated_answers.json")
         with open(answers_file, 'w', encoding='utf-8') as f:
             json.dump(all_answers, f, indent=2, ensure_ascii=False)
