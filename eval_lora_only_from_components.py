@@ -996,11 +996,22 @@ def main():
     print("✅ Enhanced LoRA Evaluation completed successfully!")
     print("="*80)
     print(f"\n📊 Final Results:")
-    print(f"   Accuracy: {results['accuracy']:.4f}")
-    print(f"   Samples: {results['num_samples']}")
-    print(f"   Empty answers: {results['empty_answers']} ({results['empty_answer_rate']:.1%})")
-    print(f"   Text answers: {results['text_answers']} ({results['text_answer_rate']:.1%})")
-    print(f"   Out-of-range: {results['out_of_range_answers']} ({results['out_of_range_rate']:.1%})")
+
+    # 🔧 根据评估模式使用不同的结果打印逻辑
+    if use_pkl_files:
+        # pkl文件模式的结果打印
+        print(f"   Average Accuracy: {results['summary']['average_accuracy']:.4f}")
+        print(f"   Total pkl files processed: {results['summary']['total_pkl_files']}")
+        print(f"   Individual Results:")
+        for pkl_name, pkl_result in results['individual_results'].items():
+            print(f"     {pkl_name}: {pkl_result['accuracy']:.4f} ({pkl_result['num_samples']} samples)")
+    else:
+        # 常规模式的结果打印
+        print(f"   Accuracy: {results['accuracy']:.4f}")
+        print(f"   Samples: {results['num_samples']}")
+        print(f"   Empty answers: {results['empty_answers']} ({results['empty_answer_rate']:.1%})")
+        print(f"   Text answers: {results['text_answers']} ({results['text_answer_rate']:.1%})")
+        print(f"   Out-of-range: {results['out_of_range_answers']} ({results['out_of_range_rate']:.1%})")
 
     # 🔧 新增：显示country分组统计结果
     if 'country_stats' in results:
