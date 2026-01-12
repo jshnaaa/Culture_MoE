@@ -8,19 +8,22 @@
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
-#   DATA_ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认 4)
+#   DATA_ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM, 24=CulturalBench+CultureLLM (默认 24)
 #
 # 示例：
-#   # 使用 LLaMA + CultureLLM 数据集（新格式）
-#   sh run_ft_lora_only_gen.sh llama 4
+#   # 使用 LLaMA + CulturalBench+CultureLLM 合并数据集（默认）
+#   sh run_ft_lora_only_gen.sh llama 24
 #
-#   # 使用 Qwen + CultureLLM 数据集（新格式）
-#   sh run_ft_lora_only_gen.sh qwen 4
+#   # 使用 Qwen + CulturalBench+CultureLLM 合并数据集
+#   sh run_ft_lora_only_gen.sh qwen 24
+#
+#   # 使用 LLaMA + 单独的CultureLLM 数据集
+#   sh run_ft_lora_only_gen.sh llama 4
 # ============================================================
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"              # 默认使用 llama
-DATA_ID="${2:-4}"                   # 默认 CultureLLM (4)
+DATA_ID="${2:-24}"                  # 默认 CulturalBench+CultureLLM (24)
 
 # 根据 backbone 选择 base 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -55,19 +58,27 @@ case $DATA_ID in
         echo "Using NormAD dataset (new format)"
         ;;
     4)
-        # CultureLLM (默认)
+        # CultureLLM
         DATASET_NAME="CultureLLM"
         TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
         echo "Using CultureLLM dataset (new format)"
         ;;
+    24)
+        # CulturalBench + CultureLLM 合并数据集（默认）
+        DATASET_NAME="CulturalBench+CultureLLM"
+        TRAIN_FILE="MERGED:CulturalBench+CultureLLM"  # 特殊标识，由Python脚本处理
+        DATASET_TAG="CulturalBench_CultureLLM"
+        echo "Using CulturalBench+CultureLLM merged dataset (new format)"
+        ;;
     *)
-        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, or 4."
+        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, or 24."
         echo ""
         echo "DATA_ID options:"
-        echo "  2 - CulturalBench"
-        echo "  3 - NormAD"
-        echo "  4 - CultureLLM (default)"
+        echo "  2  - CulturalBench"
+        echo "  3  - NormAD"
+        echo "  4  - CultureLLM"
+        echo "  24 - CulturalBench+CultureLLM (default)"
         exit 1
         ;;
 esac

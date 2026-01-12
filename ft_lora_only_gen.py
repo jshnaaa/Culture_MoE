@@ -44,6 +44,167 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
+class MergedDataset(Dataset):
+    """
+    合并多个数据集的数据集类
+
+    支持将多个JSON文件的数据合并，并标记来源数据集
+    """
+
+    def __init__(self, data_paths: list, dataset_names: list, tokenizer, max_length: int = 512, use_mask_inference: bool = True):
+        """
+        Args:
+            data_paths: 数据文件路径列表
+            dataset_names: 数据集名称列表（与data_paths对应）
+            tokenizer: Tokenizer
+            max_length: 最大序列长度
+            use_mask_inference: 推理时是否启用MASK机制（双路输入处理）
+        """
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.use_mask_inference = use_mask_inference
+        self.dataset_names = dataset_names
+
+        self.data = []
+        self.dataset_indices = []  # 记录每个样本来自哪个数据集
+
+        print(f"Loading merged dataset from {len(data_paths)} sources:")
+        for i, (data_path, dataset_name) in enumerate(zip(data_paths, dataset_names)):
+            print(f"  Loading {dataset_name} from: {data_path}")
+            with open(data_path, 'r', encoding='utf-8') as f:
+                dataset_data = json.load(f)
+
+            # 为每个样本添加数据集来源标识
+            for item in dataset_data:
+                item['source_dataset'] = dataset_name
+                item['source_index'] = i
+
+            self.data.extend(dataset_data)
+            self.dataset_indices.extend([i] * len(dataset_data))
+            print(f"    Loaded {len(dataset_data)} samples from {dataset_name}")
+
+        print(f"Total merged dataset size: {len(self.data)} samples")
+
+        # 统计各数据集的样本数量
+        dataset_counts = {}
+        for i, name in enumerate(dataset_names):
+            count = self.dataset_indices.count(i)
+            dataset_counts[name] = count
+            print(f"  {name}: {count} samples ({count/len(self.data)*100:.1f}%)")
+
+        # 🔧 调试：检查原始数据中是否包含country字段
+        if self.data and len(self.data) > 0:
+            first_item = self.data[0]
+            has_country = 'country' in first_item
+            print(f"🔍 合并数据country字段检查: {has_country}")
+            if has_country:
+                print(f"    第一个样本的country: {first_item.get('country', 'None')}")
+                # 统计不同country的数量
+                countries = set()
+                for item in self.data[:100]:  # 检查前100个样本
+                    if 'country' in item and item['country']:
+                        countries.add(item['country'])
+                print(f"    前100个样本中的country类型: {sorted(list(countries))}")
+            else:
+                print(f"    数据字段: {list(first_item.keys())}")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        item = self.data[idx]
+
+        # 获取基本信息
+        instruction = item['instruction']
+        instruction_mask = item.get('instruction_mask', instruction)  # 如果没有mask版本，使用原版
+        input_text = item['input']
+        output_text = item['output']
+        label = item['label']
+
+        # 🔧 新增：获取country字段（用于blend数据集分组统计）
+        country = item.get('country', None)
+
+        # 🔧 新增：获取数据集来源信息
+        source_dataset = item.get('source_dataset', 'unknown')
+        source_index = item.get('source_index', -1)
+
+        # 构建完整输入 - 与联合训练保持一致的格式
+        full_input = f"{instruction}\n{input_text}"
+        full_input_mask = f"{instruction_mask}\n{input_text}"
+
+        # 编码输入（原始版本）
+        encoded_input = self.tokenizer(
+            full_input,
+            truncation=True,
+            max_length=self.max_length - 10,  # 为输出预留空间
+            padding=False,
+            return_tensors=None
+        )
+
+        # 编码输入（MASK版本）
+        encoded_input_mask = self.tokenizer(
+            full_input_mask,
+            truncation=True,
+            max_length=self.max_length - 10,  # 为输出预留空间
+            padding=False,
+            return_tensors=None
+        )
+
+        # 编码输出
+        encoded_output = self.tokenizer(
+            output_text,
+            truncation=True,
+            max_length=10,  # 输出通常很短
+            padding=False,
+            return_tensors=None,
+            add_special_tokens=False
+        )
+
+        # 构建完整序列：input + " " + output
+        input_ids = encoded_input['input_ids'] + [self.tokenizer.convert_tokens_to_ids(" ")] + encoded_output['input_ids']
+        input_ids_mask = encoded_input_mask['input_ids'] + [self.tokenizer.convert_tokens_to_ids(" ")] + encoded_output['input_ids']
+
+        # 创建attention mask
+        attention_mask = [1] * len(input_ids)
+        attention_mask_mask = [1] * len(input_ids_mask)
+
+        # 创建labels：input部分为-100，output部分为token ids
+        labels = [-100] * len(encoded_input['input_ids']) + [-100] + encoded_output['input_ids']  # 空格也设为-100
+
+        # 转换为tensor
+        input_ids = torch.tensor(input_ids, dtype=torch.long)
+        attention_mask = torch.tensor(attention_mask, dtype=torch.long)
+        labels = torch.tensor(labels, dtype=torch.long)
+        input_ids_mask = torch.tensor(input_ids_mask, dtype=torch.long)
+        attention_mask_mask = torch.tensor(attention_mask_mask, dtype=torch.long)
+
+        # 计算有效标签数量（用于损失计算）
+        valid_labels = (labels != -100).sum().item()
+
+        # 计算统计信息
+        total_tokens = len(input_ids)
+        input_length = len(encoded_input['input_ids'])
+
+        return {
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'labels': labels,
+            'input_ids_mask': input_ids_mask,
+            'attention_mask_mask': attention_mask_mask,
+            'instruction': instruction,
+            'instruction_mask': instruction_mask,
+            'input': input_text,
+            'output': output_text,
+            'label': label,
+            'country': country,  # 🔧 新增：country字段
+            'source_dataset': source_dataset,  # 🔧 新增：数据集来源
+            'source_index': source_index,  # 🔧 新增：数据集索引
+            'valid_labels': valid_labels,
+            'total_tokens': total_tokens,
+            'input_length': input_length
+        }
+
+
 class CultureLLMNewFormatDataset(Dataset):
     """
     CultureLLM 新格式数据集
@@ -582,6 +743,151 @@ def load_and_process_data(
     }
 
 
+def load_and_process_merged_data_8_1_1(
+    data_paths: list,
+    dataset_names: list,
+    tokenizer,
+    max_length: int = 512,
+    output_dir: str = None,
+    seed: int = 42
+):
+    """
+    加载并处理合并数据集，分别对每个数据集按 8:1:1 比例划分，然后合并
+
+    Args:
+        data_paths: 数据文件路径列表
+        dataset_names: 数据集名称列表
+        tokenizer: Tokenizer
+        max_length: 最大序列长度
+        output_dir: 输出目录，用于保存划分信息
+        seed: 随机种子
+
+    Returns:
+        dict: 包含 'train', 'validation', 'test' 的字典，每个都包含合并后的数据集
+    """
+    import pickle
+    from sklearn.model_selection import train_test_split
+
+    # 设置随机种子
+    torch.manual_seed(seed)
+
+    print(f"Loading and splitting {len(data_paths)} datasets separately...")
+
+    all_train_datasets = []
+    all_val_datasets = []
+    all_test_datasets = []
+    split_info_all = {}
+
+    for data_path, dataset_name in zip(data_paths, dataset_names):
+        print(f"\n🔧 Processing {dataset_name} from {data_path}")
+
+        # 为每个数据集单独创建数据集对象
+        dataset = CultureLLMNewFormatDataset(data_path, tokenizer, max_length)
+
+        # 获取所有数据的索引和文化标签，用于分层采样
+        indices = list(range(len(dataset)))
+        culture_labels = []
+
+        # 提取文化标签用于分层采样
+        for i in range(len(dataset)):
+            sample = dataset.data[i]
+            culture_labels.append(sample.get('label', '0'))
+
+        # 第一次划分：80% 训练，20% 临时（验证+测试）
+        train_indices, temp_indices, train_labels, temp_labels = train_test_split(
+            indices, culture_labels,
+            test_size=0.2,
+            random_state=seed,
+            stratify=culture_labels
+        )
+
+        # 第二次划分：从20%中分出10%验证，10%测试
+        val_indices, test_indices, _, _ = train_test_split(
+            temp_indices, temp_labels,
+            test_size=0.5,  # 0.5 * 0.2 = 0.1 (10%)
+            random_state=seed,
+            stratify=temp_labels
+        )
+
+        # 创建子数据集
+        train_dataset = torch.utils.data.Subset(dataset, train_indices)
+        val_dataset = torch.utils.data.Subset(dataset, val_indices)
+        test_dataset = torch.utils.data.Subset(dataset, test_indices)
+
+        print(f"  {dataset_name} - Train: {len(train_dataset)} ({len(train_dataset)/len(dataset)*100:.1f}%)")
+        print(f"  {dataset_name} - Val: {len(val_dataset)} ({len(val_dataset)/len(dataset)*100:.1f}%)")
+        print(f"  {dataset_name} - Test: {len(test_dataset)} ({len(test_dataset)/len(dataset)*100:.1f}%)")
+
+        # 保存每个数据集的划分信息
+        split_info = {
+            'dataset_name': dataset_name,
+            'data_path': data_path,
+            'train_indices': train_indices,
+            'val_indices': val_indices,
+            'test_indices': test_indices,
+            'train_size': len(train_dataset),
+            'val_size': len(val_dataset),
+            'test_size': len(test_dataset),
+            'total_size': len(dataset),
+            'seed': seed,
+            'split_ratio': '8:1:1'
+        }
+        split_info_all[dataset_name] = split_info
+
+        # 保存单个数据集的划分信息到pkl文件
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            split_file = os.path.join(output_dir, f'data_split_8_1_1_{dataset_name}.pkl')
+            with open(split_file, 'wb') as f:
+                pickle.dump(split_info, f)
+            print(f"  {dataset_name} split info saved to: {split_file}")
+
+        # 收集到总列表
+        all_train_datasets.append(train_dataset)
+        all_val_datasets.append(val_dataset)
+        all_test_datasets.append(test_dataset)
+
+    # 合并所有数据集
+    print(f"\n🔧 Merging all datasets...")
+    merged_train = torch.utils.data.ConcatDataset(all_train_datasets)
+    merged_val = torch.utils.data.ConcatDataset(all_val_datasets)
+    merged_test = torch.utils.data.ConcatDataset(all_test_datasets)
+
+    print(f"Merged Train set size: {len(merged_train)}")
+    print(f"Merged Validation set size: {len(merged_val)}")
+    print(f"Merged Test set size: {len(merged_test)}")
+
+    # 保存合并后的划分信息
+    if output_dir:
+        merged_split_info = {
+            'datasets': dataset_names,
+            'data_paths': data_paths,
+            'individual_splits': split_info_all,
+            'merged_train_size': len(merged_train),
+            'merged_val_size': len(merged_val),
+            'merged_test_size': len(merged_test),
+            'total_merged_size': len(merged_train) + len(merged_val) + len(merged_test),
+            'seed': seed,
+            'split_ratio': '8:1:1'
+        }
+
+        merged_split_file = os.path.join(output_dir, 'data_split_8_1_1_merged.pkl')
+        with open(merged_split_file, 'wb') as f:
+            pickle.dump(merged_split_info, f)
+        print(f"Merged dataset split info saved to: {merged_split_file}")
+
+    return {
+        'train': merged_train,
+        'validation': merged_val,
+        'test': merged_test,
+        'individual_datasets': {
+            'train': all_train_datasets,
+            'validation': all_val_datasets,
+            'test': all_test_datasets
+        }
+    }
+
+
 def load_and_process_data_8_1_1(
     data_path: str,
     tokenizer,
@@ -932,7 +1238,7 @@ def evaluate(model, val_loader, device):
     }
 
 
-def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_dir, epoch=None):
+def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_dir, epoch=None, individual_datasets=None):
     """
     在验证集上生成答案并评估准确率（Post Eval）
 
@@ -941,25 +1247,32 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
     - 让模型生成答案
     - 通过正则表达式提取数字答案
     - 与真实答案比对
+    - 支持合并数据集的分离统计
 
     Args:
         model: 模型
-        val_dataset: 验证数据集
+        val_dataset: 验证数据集（可能是合并的）
         tokenizer: tokenizer
         device: 设备
         output_dir: 输出目录
         epoch: 当前 epoch 数（用于保存文件名）
+        individual_datasets: 各个数据集的验证集列表（用于分离统计）
 
     Returns:
         dict: 包含准确率等指标的字典
     """
     model.eval()
 
+    # 合并数据集的统计
     correct = 0
     total = 0
     generated_data = []
 
-    for idx in tqdm(range(len(val_dataset)), desc="Generating", disable=False, mininterval=1.0):
+    # 分离数据集的统计（如果有）
+    individual_stats = {}
+
+    # 1. 评估合并数据集（用于模型选择）
+    for idx in tqdm(range(len(val_dataset)), desc="Evaluating merged dataset", disable=False, mininterval=1.0):
         # 获取原始数据集（处理 Subset 对象）
         if hasattr(val_dataset, 'dataset'):
             # val_dataset 是 Subset 对象
@@ -981,32 +1294,136 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
         predicted_answer = extract_answer_from_text(generated_text)
 
         # 比对答案
-        if predicted_answer == true_output:
+        is_correct = predicted_answer == true_output
+        if is_correct:
             correct += 1
         total += 1
 
         # 保存生成的数据
-        generated_data.append({
+        item = {
             'instruction': instruction,
             'input': input_text,
             'true_output': true_output,
             'label': label,
             'generated_text': generated_text,
             'predicted_answer': predicted_answer,
-            'correct': predicted_answer == true_output
-        })
+            'correct': is_correct
+        }
 
-    accuracy = correct / total if total > 0 else 0
+        # 添加数据集来源信息（如果有）
+        if 'source_dataset' in sample:
+            item['source_dataset'] = sample['source_dataset']
 
-    # 保存生成的答案（最新的）
+        generated_data.append(item)
+
+    merged_accuracy = correct / total if total > 0 else 0
+
+    # 2. 分离评估各个数据集（如果有individual_datasets）
+    if individual_datasets is not None:
+        print(f"\n🔧 开始分离评估各个数据集...")
+
+        for dataset_idx, individual_dataset in enumerate(individual_datasets):
+            dataset_name = f"Dataset_{dataset_idx}"
+
+            # 尝试从数据集中获取名称
+            if hasattr(individual_dataset, 'dataset') and hasattr(individual_dataset.dataset, 'dataset_names'):
+                if dataset_idx < len(individual_dataset.dataset.dataset_names):
+                    dataset_name = individual_dataset.dataset.dataset_names[dataset_idx]
+
+            print(f"  评估 {dataset_name}...")
+
+            dataset_correct = 0
+            dataset_total = 0
+            dataset_generated_data = []
+
+            for idx in tqdm(range(len(individual_dataset)), desc=f"Evaluating {dataset_name}", disable=False, mininterval=1.0, leave=False):
+                # 获取样本
+                if hasattr(individual_dataset, 'dataset'):
+                    original_idx = individual_dataset.indices[idx]
+                    sample = individual_dataset.dataset[original_idx]
+                else:
+                    sample = individual_dataset[idx]
+
+                instruction = sample['instruction']
+                input_text = sample['input']
+                true_output = sample['output']
+                label = sample['label']
+
+                # 生成答案
+                generated_text = generate_answer(model, tokenizer, instruction, input_text, device)
+                predicted_answer = extract_answer_from_text(generated_text)
+
+                # 比对答案
+                is_correct = predicted_answer == true_output
+                if is_correct:
+                    dataset_correct += 1
+                dataset_total += 1
+
+                dataset_generated_data.append({
+                    'instruction': instruction,
+                    'input': input_text,
+                    'true_output': true_output,
+                    'label': label,
+                    'generated_text': generated_text,
+                    'predicted_answer': predicted_answer,
+                    'correct': is_correct
+                })
+
+            dataset_accuracy = dataset_correct / dataset_total if dataset_total > 0 else 0
+            individual_stats[dataset_name] = {
+                'accuracy': dataset_accuracy,
+                'correct': dataset_correct,
+                'total': dataset_total,
+                'generated_data': dataset_generated_data
+            }
+
+            print(f"    {dataset_name} - Accuracy: {dataset_accuracy:.4f} ({dataset_correct}/{dataset_total})")
+
+    accuracy = merged_accuracy
+
+    # 保存生成的答案（最新的）- 合并数据集结果
     with open(os.path.join(output_dir, 'generated_answers.json'), 'w', encoding='utf-8') as f:
         json.dump(generated_data, f, indent=2, ensure_ascii=False)
 
-    # ✅ 保存每个 epoch 的生成答案（不覆盖）
+    # ✅ 保存每个 epoch 的生成答案（不覆盖）- 合并数据集结果
     if epoch is not None:
         epoch_answers_file = os.path.join(output_dir, f'generated_answers_epoch_{epoch}.json')
         with open(epoch_answers_file, 'w', encoding='utf-8') as f:
             json.dump(generated_data, f, indent=2, ensure_ascii=False)
+
+    # 🔧 新增：保存分离数据集的结果（如果有）
+    if individual_stats:
+        # 保存分离统计结果
+        individual_results_file = os.path.join(output_dir, 'individual_dataset_results.json')
+        with open(individual_results_file, 'w', encoding='utf-8') as f:
+            # 只保存统计信息，不保存详细的generated_data（避免文件过大）
+            stats_only = {}
+            for dataset_name, stats in individual_stats.items():
+                stats_only[dataset_name] = {
+                    'accuracy': stats['accuracy'],
+                    'correct': stats['correct'],
+                    'total': stats['total']
+                }
+            json.dump(stats_only, f, indent=2, ensure_ascii=False)
+
+        # 保存每个epoch的分离统计结果
+        if epoch is not None:
+            epoch_individual_file = os.path.join(output_dir, f'individual_dataset_results_epoch_{epoch}.json')
+            with open(epoch_individual_file, 'w', encoding='utf-8') as f:
+                stats_only = {}
+                for dataset_name, stats in individual_stats.items():
+                    stats_only[dataset_name] = {
+                        'accuracy': stats['accuracy'],
+                        'correct': stats['correct'],
+                        'total': stats['total']
+                    }
+                json.dump(stats_only, f, indent=2, ensure_ascii=False)
+
+            # 为每个数据集保存详细的生成答案
+            for dataset_name, stats in individual_stats.items():
+                dataset_answers_file = os.path.join(output_dir, f'generated_answers_{dataset_name}_epoch_{epoch}.json')
+                with open(dataset_answers_file, 'w', encoding='utf-8') as f:
+                    json.dump(stats['generated_data'], f, indent=2, ensure_ascii=False)
 
     # 统计异常情况
     empty_generations = 0
@@ -1023,11 +1440,20 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
 
     # 打印汇总信息
     print(f"\n📊 生成评估汇总:")
-    print(f"  总样本数: {len(generated_data)}")
-    print(f"  准确率: {accuracy:.4f}")
-    print(f"  空生成: {empty_generations}")
-    print(f"  未提取到数字: {non_digit_generations}")
-    print(f"  错误预测: {incorrect_predictions}")
+    print(f"  📊 合并数据集统计（用于模型选择）:")
+    print(f"    总样本数: {len(generated_data)}")
+    print(f"    准确率: {accuracy:.4f}")
+    print(f"    空生成: {empty_generations}")
+    print(f"    未提取到数字: {non_digit_generations}")
+    print(f"    错误预测: {incorrect_predictions}")
+
+    # 打印分离统计信息
+    if individual_stats:
+        print(f"\n  📊 分离数据集统计（用于观察）:")
+        for dataset_name, stats in individual_stats.items():
+            print(f"    {dataset_name}:")
+            print(f"      准确率: {stats['accuracy']:.4f} ({stats['correct']}/{stats['total']})")
+        print(f"  💾 分离结果已保存到 individual_dataset_results*.json 文件")
 
     # 只在存在问题时打印详细示例
     if empty_generations > 0 or non_digit_generations > 0:
@@ -1051,11 +1477,23 @@ def generate_and_evaluate_answers(model, val_dataset, tokenizer, device, output_
     else:
         print("✅ 所有样本都成功生成了有效的数字答案")
 
-    return {
+    result = {
         'accuracy': accuracy,
         'correct': correct,
         'total': total
     }
+
+    # 添加分离统计信息（如果有）
+    if individual_stats:
+        result['individual_stats'] = {}
+        for dataset_name, stats in individual_stats.items():
+            result['individual_stats'][dataset_name] = {
+                'accuracy': stats['accuracy'],
+                'correct': stats['correct'],
+                'total': stats['total']
+            }
+
+    return result
 
 
 def main():
@@ -1323,15 +1761,55 @@ def main():
 
     # 加载数据
     print("\nLoading and processing data...")
-    datasets = load_and_process_data(
-        args.train_file,
-        tokenizer,
-        max_length=args.max_length,
-        val_split=args.val_split
-    )
-    train_dataset = datasets['train']
-    val_dataset = datasets['validation']
-    print("✅ Data loaded")
+
+    # 🔧 新增：检查是否为合并数据集
+    if args.train_file.startswith("MERGED:"):
+        # 处理合并数据集
+        merge_spec = args.train_file.replace("MERGED:", "")
+        print(f"🔧 检测到合并数据集: {merge_spec}")
+
+        if merge_spec == "CulturalBench+CultureLLM":
+            # CulturalBench + CultureLLM 合并
+            data_paths = [
+                "/root/autodl-fs/CulturalBench_merge_gen.json",
+                "/root/autodl-fs/cultureLLM_merge_gen.json"
+            ]
+            dataset_names = ["CulturalBench", "CultureLLM"]
+
+            print(f"🔧 使用合并数据集: {dataset_names}")
+            datasets = load_and_process_merged_data_8_1_1(
+                data_paths=data_paths,
+                dataset_names=dataset_names,
+                tokenizer=tokenizer,
+                max_length=args.max_length,
+                output_dir=args.output_dir,
+                seed=42
+            )
+
+            # 合并数据集的训练和验证集
+            train_dataset = datasets['train']
+            val_dataset = datasets['validation']
+
+            # 保存个体数据集信息，用于分离统计
+            individual_val_datasets = datasets['individual_datasets']['validation']
+
+        else:
+            raise ValueError(f"Unsupported merged dataset: {merge_spec}")
+
+        print("✅ Merged data loaded")
+    else:
+        # 处理单个数据集
+        datasets = load_and_process_data(
+            args.train_file,
+            tokenizer,
+            max_length=args.max_length,
+            val_split=args.val_split
+        )
+        train_dataset = datasets['train']
+        val_dataset = datasets['validation']
+        individual_val_datasets = None  # 单个数据集不需要分离统计
+
+        print("✅ Data loaded")
 
     # 创建数据加载器
     train_loader = DataLoader(
@@ -1414,11 +1892,18 @@ def main():
 
             # 生成答案并评估准确率（Post Eval）
             gen_metrics = generate_and_evaluate_answers(
-                model, val_dataset, tokenizer, args.device, args.output_dir, epoch=epoch+1
+                model, val_dataset, tokenizer, args.device, args.output_dir, epoch=epoch+1,
+                individual_datasets=individual_val_datasets
             )
 
             print(f"  Eval Loss: {val_metrics['loss']:.4f}")
-            print(f"  Eval Accuracy: {gen_metrics['accuracy']:.4f} ({gen_metrics['correct']}/{gen_metrics['total']})")
+            print(f"  Eval Accuracy (Merged): {gen_metrics['accuracy']:.4f} ({gen_metrics['correct']}/{gen_metrics['total']})")
+
+            # 🔧 新增：显示分离统计结果
+            if 'individual_stats' in gen_metrics:
+                print(f"  Individual Dataset Accuracies:")
+                for dataset_name, stats in gen_metrics['individual_stats'].items():
+                    print(f"    {dataset_name}: {stats['accuracy']:.4f} ({stats['correct']}/{stats['total']})")
 
             # ✅ 根据 accuracy 保存最好的模型
             if gen_metrics['accuracy'] > best_eval_accuracy:
@@ -1436,7 +1921,7 @@ def main():
                 print(f"  ✅ Best model saved (accuracy: {best_eval_accuracy:.4f})")
 
             # 记录结果
-            epoch_results.append({
+            epoch_result = {
                 'epoch': epoch + 1,
                 'train_loss': train_metrics['loss'],
                 'eval_loss': val_metrics['loss'],
@@ -1444,7 +1929,13 @@ def main():
                 'correct': gen_metrics['correct'],
                 'total': gen_metrics['total'],
                 'is_best': gen_metrics['accuracy'] == best_eval_accuracy  # ✅ 标记是否为最佳
-            })
+            }
+
+            # 🔧 新增：添加分离统计信息
+            if 'individual_stats' in gen_metrics:
+                epoch_result['individual_stats'] = gen_metrics['individual_stats']
+
+            epoch_results.append(epoch_result)
         else:
             # 不评估的 epoch，只记录训练损失
             epoch_results.append({
