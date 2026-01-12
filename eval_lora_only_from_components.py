@@ -734,7 +734,11 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
 
     # 🔧 新增：如果启用了country分组统计，添加分组结果
     if group_by_country and country_stats:
-        results['country_stats'] = country_stats
+        results['country_results'] = country_stats
+        # 打印country分组结果
+        print(f"\n🌍 Country-wise Results:")
+        for country, stats in country_stats.items():
+            print(f"    {country}: {stats['accuracy']:.4f} ({stats['correct']}/{stats['total']})")
 
     return results
 
@@ -757,11 +761,16 @@ def main():
                         help="使用多 GPU 评估（DataParallel）")
     parser.add_argument("--data_id", type=str, default="",
                         help="Data ID to determine if country grouping is needed (16 for blend dataset)")
+    parser.add_argument("--model_path", type=str, default="",
+                        help="Model directory path (for pkl file detection when data_id=0)")
 
     args = parser.parse_args()
 
     # 🔧 新增：检查是否需要按country分组统计（DATA_ID=16的blend数据集）
     group_by_country = (args.data_id == "16")
+
+    # 🔧 新增：检查是否使用pkl文件（DATA_ID=0）
+    use_pkl_files = (args.data_id == "0")
 
     # 创建输出目录
     os.makedirs(args.output_dir, exist_ok=True)
@@ -807,21 +816,119 @@ def main():
         print(f"✅ Model wrapped with DataParallel")
         print(f"{'='*80}\n")
 
-    # 加载测试数据
-    print(f"\nLoading test data from: {args.test_file}")
-    with open(args.test_file, 'r', encoding='utf-8') as f:
-        test_data = json.load(f)
-    print(f"✅ Loaded {len(test_data)} test samples")
+    # 🔧 根据DATA_ID决定数据加载方式
+    if use_pkl_files:
+        # DATA_ID=0: 使用pkl文件中的测试集
+        print(f"\n🔧 使用pkl文件模式 (DATA_ID=0)")
+        print(f"Model path: {args.model_path}")
 
-    # 评估模型
-    results = evaluate_model(
-        model,
-        tokenizer,
-        test_data,
-        num_classes=args.num_classes,
-        output_dir=args.output_dir,
-        group_by_country=group_by_country
-    )
+        # 查找pkl文件
+        import pickle
+        import glob
+
+        pkl_files = glob.glob(os.path.join(args.model_path, "*.pkl"))
+        if not pkl_files:
+            raise FileNotFoundError(f"No pkl files found in {args.model_path}")
+
+        print(f"Found {len(pkl_files)} pkl files:")
+        for pkl_file in pkl_files:
+            print(f"  - {os.path.basename(pkl_file)}")
+
+        # 对每个pkl文件分别进行评估
+        all_results = {}
+
+        for pkl_file in pkl_files:
+            pkl_name = os.path.splitext(os.path.basename(pkl_file))[0]
+            print(f"\n📋 Processing pkl file: {pkl_name}")
+
+            # 加载pkl文件
+            with open(pkl_file, 'rb') as f:
+                split_info = pickle.load(f)
+
+            # 检查pkl文件结构
+            if 'test_indices' not in split_info:
+                print(f"⚠️ Warning: {pkl_name} does not contain test_indices, skipping...")
+                continue
+
+            # 获取原始数据路径
+            if 'data_path' not in split_info:
+                print(f"⚠️ Warning: {pkl_name} does not contain data_path, skipping...")
+                continue
+
+            data_path = split_info['data_path']
+            test_indices = split_info['test_indices']
+
+            print(f"  Data path: {data_path}")
+            print(f"  Test indices: {len(test_indices)} samples")
+
+            # 加载原始数据
+            if not os.path.exists(data_path):
+                print(f"⚠️ Warning: Data file not found: {data_path}, skipping...")
+                continue
+
+            with open(data_path, 'r', encoding='utf-8') as f:
+                full_data = json.load(f)
+
+            # 提取测试集
+            test_data = [full_data[i] for i in test_indices]
+            print(f"  ✅ Extracted {len(test_data)} test samples")
+
+            # 评估模型
+            pkl_results = evaluate_model(
+                model,
+                tokenizer,
+                test_data,
+                num_classes=10,  # 默认使用10个类别
+                output_dir=os.path.join(args.output_dir, pkl_name),
+                group_by_country=False  # pkl文件模式不支持country分组
+            )
+
+            # 保存单个pkl文件的结果
+            pkl_output_dir = os.path.join(args.output_dir, pkl_name)
+            os.makedirs(pkl_output_dir, exist_ok=True)
+
+            pkl_results_file = os.path.join(pkl_output_dir, "evaluation_results.json")
+            with open(pkl_results_file, 'w', encoding='utf-8') as f:
+                json.dump(pkl_results, f, indent=2, ensure_ascii=False)
+
+            all_results[pkl_name] = {
+                'accuracy': pkl_results['accuracy'],
+                'precision': pkl_results['precision'],
+                'recall': pkl_results['recall'],
+                'f1': pkl_results['f1'],
+                'num_samples': pkl_results['num_samples'],
+                'data_path': data_path,
+                'test_indices_count': len(test_indices)
+            }
+
+            print(f"  📊 {pkl_name} - Accuracy: {pkl_results['accuracy']:.4f}")
+
+        # 合并结果
+        results = {
+            'evaluation_mode': 'pkl_files',
+            'individual_results': all_results,
+            'summary': {
+                'total_pkl_files': len(all_results),
+                'average_accuracy': np.mean([r['accuracy'] for r in all_results.values()]) if all_results else 0.0
+            }
+        }
+
+    else:
+        # 常规模式：使用JSON文件
+        print(f"\nLoading test data from: {args.test_file}")
+        with open(args.test_file, 'r', encoding='utf-8') as f:
+            test_data = json.load(f)
+        print(f"✅ Loaded {len(test_data)} test samples")
+
+        # 评估模型
+        results = evaluate_model(
+            model,
+            tokenizer,
+            test_data,
+            num_classes=args.num_classes,
+            output_dir=args.output_dir,
+            group_by_country=group_by_country
+        )
 
     # 保存评估结果
     print("\n" + "="*80)
@@ -834,21 +941,50 @@ def main():
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"✅ Detailed results saved to: {results_file}")
 
-    # 保存摘要
-    summary = {
-        "evaluation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        "base_model_path": args.base_model_path,
-        "lora_weights_path": args.lora_weights_path,
-        "test_file": args.test_file,
-        "num_samples": results['num_samples'],
-        "num_classes": args.num_classes,
-        "accuracy": results['accuracy'],
-        "precision": results['precision'],
-        "recall": results['recall'],
-        "f1": results['f1'],
-        "failed_extractions": results['failed_extractions'],
-        "failed_rate": results['failed_rate']
-    }
+    # 🔧 根据评估模式保存不同的摘要
+    if use_pkl_files:
+        # pkl文件模式的摘要
+        summary = {
+            "evaluation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "evaluation_mode": "pkl_files",
+            "base_model_path": args.base_model_path,
+            "lora_weights_path": args.lora_weights_path,
+            "model_path": args.model_path,
+            "data_id": args.data_id,
+            "total_pkl_files": results['summary']['total_pkl_files'],
+            "average_accuracy": results['summary']['average_accuracy'],
+            "individual_results": results['individual_results']
+        }
+
+        print(f"\n📊 PKL Files Evaluation Summary:")
+        print(f"  Total pkl files processed: {results['summary']['total_pkl_files']}")
+        print(f"  Average accuracy: {results['summary']['average_accuracy']:.4f}")
+        print(f"\n📋 Individual Results:")
+        for pkl_name, pkl_result in results['individual_results'].items():
+            print(f"    {pkl_name}: {pkl_result['accuracy']:.4f} ({pkl_result['num_samples']} samples)")
+
+    else:
+        # 常规模式的摘要
+        summary = {
+            "evaluation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "evaluation_mode": "json_file",
+            "base_model_path": args.base_model_path,
+            "lora_weights_path": args.lora_weights_path,
+            "test_file": args.test_file,
+            "data_id": args.data_id,
+            "num_samples": results['num_samples'],
+            "num_classes": args.num_classes,
+            "accuracy": results['accuracy'],
+            "precision": results['precision'],
+            "recall": results['recall'],
+            "f1": results['f1'],
+            "failed_extractions": results.get('failed_extractions', 0),
+            "failed_rate": results.get('failed_rate', 0.0)
+        }
+
+        # 添加country分组结果（如果有）
+        if 'country_results' in results:
+            summary['country_results'] = results['country_results']
 
     summary_file = os.path.join(args.output_dir, "evaluation_summary.json")
     with open(summary_file, 'w', encoding='utf-8') as f:
