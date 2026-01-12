@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -1811,13 +1812,17 @@ def main():
 
         print("✅ Data loaded")
 
+    # 创建 collate_fn
+    collate_fn = partial(dynamic_padding_collate_fn, tokenizer=tokenizer, max_seq_length=args.max_length)
+
     # 创建数据加载器
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
 
     val_loader = DataLoader(
@@ -1825,7 +1830,8 @@ def main():
         batch_size=args.eval_batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
 
     # 加载模型
