@@ -106,12 +106,19 @@ if [ ! -d "$BASE_MODEL_PATH" ]; then
     exit 1
 fi
 
-if [ ! -f "$TRAIN_FILE" ]; then
-    echo "❌ Error: Train file not found: $TRAIN_FILE"
-    echo ""
-    echo "Please ensure the data file exists in new format:"
-    echo "  {\"instruction\": ..., \"instruction_mask\": ..., \"input\": ..., \"output\": ..., \"label\": ...}"
-    exit 1
+# 🔧 修改：对于MERGED:开头的特殊标识，跳过文件检查
+if [[ "$TRAIN_FILE" == MERGED:* ]]; then
+    echo "✅ 检测到合并数据集标识: $TRAIN_FILE"
+    echo "将由Python脚本处理具体的数据文件..."
+else
+    # 对于普通文件，进行存在性检查
+    if [ ! -f "$TRAIN_FILE" ]; then
+        echo "❌ Error: Train file not found: $TRAIN_FILE"
+        echo ""
+        echo "Please ensure the data file exists in new format:"
+        echo "  {\"instruction\": ..., \"instruction_mask\": ..., \"input\": ..., \"output\": ..., \"label\": ...}"
+        exit 1
+    fi
 fi
 
 # 创建输出目录
