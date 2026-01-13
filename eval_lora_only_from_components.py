@@ -119,24 +119,18 @@ def create_natural_prompt(instruction: str, input_text: str, num_classes: int):
     """
     创建符合数据集格式的自然prompt（避免过度约束）
     """
-    # 直接使用数据集的原始格式，只在末尾添加轻微提示
-    # 🔧 格式统一：使用空格分隔，与训练格式一致
+    # 🔧 优化：创建更简洁的prompt格式，减少token数量
     if input_text and input_text.strip():
-        # 如果有input_text，按原格式组合，末尾加空格等待答案
-        full_prompt = f"{instruction}{input_text} "
+        # 如果有input_text，按原格式组合
+        full_prompt = f"{instruction} {input_text}"
     else:
-        # 如果没有input_text，直接使用instruction，末尾加空格等待答案
-        full_prompt = f"{instruction} "
+        # 如果没有input_text，直接使用instruction
+        full_prompt = instruction
 
-    # 确保prompt以适当的格式结束
-    if not full_prompt.rstrip().endswith((':', '：')):
-        # 如果不是以冒号结尾，检查是否是### Answer:格式
-        if "### Answer:" in full_prompt:
-            # 已经包含### Answer:，直接使用
-            pass
-        else:
-            # 添加简单的答案提示
-            full_prompt += " "
+    # 🔧 确保prompt以### Answer:结尾，引导模型生成简洁答案
+    if not full_prompt.rstrip().endswith("### Answer:"):
+        if "### Answer:" not in full_prompt:
+            full_prompt = full_prompt.rstrip() + " ### Answer:"
 
     return full_prompt
 
@@ -244,19 +238,16 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
     # 生成答案 - 针对Qwen模型优化的参数
     with torch.no_grad():
         try:
-            # 针对Qwen模型的平衡处理（避免过度约束）
+            # 针对选择题任务优化的生成参数
             generate_kwargs = {
                 **inputs,
-                'max_new_tokens': 3,              # 🔧 减少到3个token，防止过度生成
-                'min_new_tokens': 1,              # 强制至少生成1个token
+                'max_new_tokens': 1,              # 🔧 限制为1个token，强制单数字生成
+                'min_new_tokens': 1,              # 强制生成1个token
                 'do_sample': False,               # 贪婪解码，确保确定性
-                'temperature': 1.0,
                 'pad_token_id': tokenizer.pad_token_id,
                 'eos_token_id': tokenizer.eos_token_id,
                 'num_beams': 1,
-                'repetition_penalty': 1.0,       # 🔧 移除重复惩罚，保持简洁
-                'length_penalty': 0.0,           # 不惩罚长度，让模型自然生成
-                'early_stopping': True           # 🔧 启用早停，防止过度生成
+                'early_stopping': True           # 🔧 启用早停
             }
 
             # 简化停止tokens处理（避免过度约束）
@@ -389,22 +380,28 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
                     if first_number == 12 and num_classes >= 2:
                         # 随机选择1或2，或者根据上下文
                         raw_answer = "2"  # 倾向于选择2
-                        print(f"⚠️  Mapped 12 to 2 (intelligent mapping)")
+                        if random.random() < 0.01:  # 只在1%的情况下打印
+                            print(f"⚠️  Mapped 12 to 2 (intelligent mapping)")
                     elif first_number == 22:
                         raw_answer = "2"  # 22映射到2
-                        print(f"⚠️  Mapped 22 to 2 (intelligent mapping)")
+                        if random.random() < 0.01:  # 只在1%的情况下打印
+                            print(f"⚠️  Mapped 22 to 2 (intelligent mapping)")
                     elif first_number == 222:
                         raw_answer = "2"  # 222映射到2
-                        print(f"⚠️  Mapped 222 to 2 (intelligent mapping)")
+                        if random.random() < 0.01:  # 只在1%的情况下打印
+                            print(f"⚠️  Mapped 222 to 2 (intelligent mapping)")
                     elif str(first_number).startswith('1') and num_classes >= 1:
                         raw_answer = "1"  # 以1开头的映射到1
-                        print(f"⚠️  Mapped {first_number} to 1 (starts with 1)")
+                        if random.random() < 0.01:  # 只在1%的情况下打印
+                            print(f"⚠️  Mapped {first_number} to 1 (starts with 1)")
                     elif str(first_number).startswith('2') and num_classes >= 2:
                         raw_answer = "2"  # 以2开头的映射到2
-                        print(f"⚠️  Mapped {first_number} to 2 (starts with 2)")
+                        if random.random() < 0.01:  # 只在1%的情况下打印
+                            print(f"⚠️  Mapped {first_number} to 2 (starts with 2)")
                     elif str(first_number).startswith('3') and num_classes >= 3:
                         raw_answer = "3"  # 以3开头的映射到3
-                        print(f"⚠️  Mapped {first_number} to 3 (starts with 3)")
+                        if random.random() < 0.01:  # 只在1%的情况下打印
+                            print(f"⚠️  Mapped {first_number} to 3 (starts with 3)")
                     else:
                         # 取最后一位数字作为fallback
                         last_digit = first_number % 10
