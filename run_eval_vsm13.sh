@@ -53,44 +53,74 @@ else
     echo "✅ 使用指定的backbone: $BACKBONE"
 fi
 
-# 🔧 验证模型目录和best_joint_model子目录
-JOINT_MODEL_DIR="$MODEL_PATH/best_joint_model"
+# 🔧 自动检测模型类型和验证目录
 if [ ! -d "$MODEL_PATH" ]; then
     echo "❌ 模型目录不存在: $MODEL_PATH"
     exit 1
 fi
 
-if [ ! -d "$JOINT_MODEL_DIR" ]; then
-    echo "❌ joint模型子目录不存在: $JOINT_MODEL_DIR"
-    echo "请确保模型目录包含 best_joint_model/ 子目录"
+# 检测模型类型
+JOINT_MODEL_DIR="$MODEL_PATH/best_joint_model"
+LORA_MODEL_DIR="$MODEL_PATH/best_lora"
+
+if [ -d "$JOINT_MODEL_DIR" ]; then
+    # Joint模型
+    MODEL_TYPE="joint"
+    ACTUAL_MODEL_DIR="$JOINT_MODEL_DIR"
+
+    # 验证joint模型文件
+    REQUIRED_FILES=(
+        "$JOINT_MODEL_DIR/joint_config.json"
+        "$JOINT_MODEL_DIR/moe_weights.pt"
+    )
+
+    REQUIRED_DIRS=(
+        "$JOINT_MODEL_DIR/lora_weights"
+    )
+
+    for file in "${REQUIRED_FILES[@]}"; do
+        if [ ! -f "$file" ]; then
+            echo "❌ 缺少必需文件: $file"
+            exit 1
+        fi
+    done
+
+    for dir in "${REQUIRED_DIRS[@]}"; do
+        if [ ! -d "$dir" ]; then
+            echo "❌ 缺少必需目录: $dir"
+            exit 1
+        fi
+    done
+
+    echo "✅ 检测到Joint模型: $JOINT_MODEL_DIR"
+
+elif [ -d "$LORA_MODEL_DIR" ]; then
+    # LoRA Only模型
+    MODEL_TYPE="lora_only"
+    ACTUAL_MODEL_DIR="$LORA_MODEL_DIR"
+
+    # 验证LoRA模型文件
+    REQUIRED_FILES=(
+        "$LORA_MODEL_DIR/adapter_config.json"
+        "$LORA_MODEL_DIR/adapter_model.safetensors"
+    )
+
+    for file in "${REQUIRED_FILES[@]}"; do
+        if [ ! -f "$file" ]; then
+            echo "❌ 缺少必需文件: $file"
+            exit 1
+        fi
+    done
+
+    echo "✅ 检测到LoRA Only模型: $LORA_MODEL_DIR"
+
+else
+    echo "❌ 无法检测到有效的模型类型"
+    echo "请确保模型目录包含以下之一："
+    echo "  - best_joint_model/ (用于joint模型)"
+    echo "  - best_lora/ (用于LoRA only模型)"
     exit 1
 fi
-
-# 🔧 验证joint模型文件
-REQUIRED_FILES=(
-    "$JOINT_MODEL_DIR/joint_config.json"
-    "$JOINT_MODEL_DIR/moe_weights.pt"
-)
-
-REQUIRED_DIRS=(
-    "$JOINT_MODEL_DIR/lora_weights"
-)
-
-for file in "${REQUIRED_FILES[@]}"; do
-    if [ ! -f "$file" ]; then
-        echo "❌ 缺少必需文件: $file"
-        exit 1
-    fi
-done
-
-for dir in "${REQUIRED_DIRS[@]}"; do
-    if [ ! -d "$dir" ]; then
-        echo "❌ 缺少必需目录: $dir"
-        exit 1
-    fi
-done
-
-echo "✅ Joint模型验证通过: $JOINT_MODEL_DIR"
 
 # 🔧 根据backbone设置基础模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -104,17 +134,22 @@ fi
 # 🔧 数据集路径
 VSM13_DATA="/root/autodl-fs/vsm13.json"
 
-# 🔧 输出目录（基于joint模型路径）
+# 🔧 输出目录（基于模型类型和路径）
 MODEL_DIR_NAME=$(basename "$MODEL_PATH")
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/vsm13/joint_${MODEL_DIR_NAME}_$(date +%Y%m%d_%H%M)"
+OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/vsm13/${MODEL_TYPE}_${MODEL_DIR_NAME}_$(date +%Y%m%d_%H%M)"
 
 echo "============================================================"
-echo "VSM13 Evaluation - Joint Model"
+echo "VSM13 Evaluation - $MODEL_TYPE Model"
 echo "============================================================"
-echo "Model type: joint (LoRA + MoE)"
+if [ "$MODEL_TYPE" = "joint" ]; then
+    echo "Model type: joint (LoRA + MoE)"
+    echo "Joint model: $JOINT_MODEL_DIR"
+else
+    echo "Model type: lora_only (LoRA微调)"
+    echo "LoRA model: $LORA_MODEL_DIR"
+fi
 echo "Backbone: $BACKBONE ($MODEL_NAME)"
 echo "Base model: $BASE_MODEL_PATH"
-echo "Joint model: $JOINT_MODEL_DIR"
 echo "Dataset: $VSM13_DATA"
 echo "Output: $OUTPUT_DIR"
 echo "============================================================"
@@ -138,28 +173,46 @@ echo "✅ 所有必需文件验证通过"
 mkdir -p "$OUTPUT_DIR"
 
 # 🔧 运行评估
-echo "Starting joint model evaluation..."
+echo "Starting $MODEL_TYPE model evaluation..."
 echo ""
 
-python eval_vsm13.py \
-    --model_type "joint" \
-    --backbone "$BACKBONE" \
-    --base_model_path "$BASE_MODEL_PATH" \
-    --joint_model_path "$JOINT_MODEL_DIR" \
-    --data_path "$VSM13_DATA" \
-    --output_dir "$OUTPUT_DIR" \
-    --device cuda
+if [ "$MODEL_TYPE" = "joint" ]; then
+    # Joint模型评估
+    python eval_vsm13.py \
+        --model_type "joint" \
+        --backbone "$BACKBONE" \
+        --base_model_path "$BASE_MODEL_PATH" \
+        --joint_model_path "$JOINT_MODEL_DIR" \
+        --data_path "$VSM13_DATA" \
+        --output_dir "$OUTPUT_DIR" \
+        --device cuda
+else
+    # LoRA Only模型评估
+    python eval_vsm13.py \
+        --model_type "lora_only" \
+        --backbone "$BACKBONE" \
+        --base_model_path "$BASE_MODEL_PATH" \
+        --lora_weights_path "$LORA_MODEL_DIR" \
+        --data_path "$VSM13_DATA" \
+        --output_dir "$OUTPUT_DIR" \
+        --device cuda
+fi
 
 if [ $? -eq 0 ]; then
     echo ""
     echo "============================================================"
-    echo "✅ Joint Model Evaluation completed successfully!"
+    echo "✅ $MODEL_TYPE Model Evaluation completed successfully!"
     echo "============================================================"
     echo ""
     echo "Model information:"
-    echo "  Model type: joint (LoRA + MoE)"
+    if [ "$MODEL_TYPE" = "joint" ]; then
+        echo "  Model type: joint (LoRA + MoE)"
+        echo "  Joint model: $JOINT_MODEL_DIR"
+    else
+        echo "  Model type: lora_only (LoRA微调)"
+        echo "  LoRA model: $LORA_MODEL_DIR"
+    fi
     echo "  Backbone: $BACKBONE ($MODEL_NAME)"
-    echo "  Joint model: $JOINT_MODEL_DIR"
     echo ""
     echo "Results saved to: $OUTPUT_DIR"
     echo ""
