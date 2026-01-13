@@ -308,7 +308,6 @@ def load_model_and_tokenizer(
             # 检查是否应该外部加载LoRA（推荐方式）
             # 外部加载可以确保与训练时的加载顺序完全一致
             try:
-                from peft import PeftModel
                 print("🔧 Loading LoRA externally (before JointLoRAMoEModel creation)")
                 base_model = PeftModel.from_pretrained(base_model, lora_path)
                 lora_loaded_externally = True
