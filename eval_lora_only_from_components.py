@@ -247,16 +247,16 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, num_cla
             # 针对Qwen模型的平衡处理（避免过度约束）
             generate_kwargs = {
                 **inputs,
-                'max_new_tokens': 8,              # 增加到8个token，给更多生成空间
+                'max_new_tokens': 3,              # 🔧 减少到3个token，防止过度生成
                 'min_new_tokens': 1,              # 强制至少生成1个token
                 'do_sample': False,               # 贪婪解码，确保确定性
                 'temperature': 1.0,
                 'pad_token_id': tokenizer.pad_token_id,
                 'eos_token_id': tokenizer.eos_token_id,
                 'num_beams': 1,
-                'repetition_penalty': 1.05,      # 轻微重复惩罚，避免过度约束
+                'repetition_penalty': 1.0,       # 🔧 移除重复惩罚，保持简洁
                 'length_penalty': 0.0,           # 不惩罚长度，让模型自然生成
-                'early_stopping': False          # 不提前停止，确保生成内容
+                'early_stopping': True           # 🔧 启用早停，防止过度生成
             }
 
             # 简化停止tokens处理（避免过度约束）
