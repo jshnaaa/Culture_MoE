@@ -844,6 +844,8 @@ def main():
     # 模型参数 - 与joint版本保持一致
     parser.add_argument("--backbone", type=str, default="llama", choices=["llama", "qwen"],
                         help="Model backbone type")
+    parser.add_argument("--data_id", type=str, default="24",
+                        help="Data ID for dataset selection")
     parser.add_argument("--use_shared", type=str, default="false",
                         help="Whether to use shared expert (placeholder)")
     parser.add_argument("--use_gate", type=str, default="false",
