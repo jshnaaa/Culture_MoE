@@ -578,12 +578,25 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             if hasattr(model_adapter.base_model, 'module'):  # DDP wrapped
                 torch.distributed.barrier()
 
-            # 🔧 新增：MoE专家权重NaN监控（在梯度更新前）
-            if batch_idx % 100 == 0:  # 每100个batch检查一次，避免过于频繁
+            # 🔧 更频繁的MoE专家权重NaN监控（在梯度更新前）
+            if batch_idx % 10 == 0:  # 每10个batch检查一次，及早发现问题
                 _check_moe_weights_for_nan(model_adapter, batch_idx)
 
-            # 🔧 增强梯度裁剪防止LoRA权重NaN（从1.0降至0.5）
-            torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=0.5)
+            # 🔧 极严格梯度裁剪防止LoRA权重NaN（从0.5降至0.1）
+            # 先检查和清理任何NaN/Inf梯度
+            nan_grad_count = 0
+            for name, param in model_adapter.base_model.named_parameters():
+                if param.requires_grad and param.grad is not None:
+                    if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                        print(f"⚠️ 清理NaN/Inf梯度: {name}")
+                        param.grad.zero_()
+                        nan_grad_count += 1
+
+            if nan_grad_count > 0:
+                print(f"⚠️ 第{batch_idx}个batch清理了{nan_grad_count}个NaN/Inf梯度")
+
+            # 极严格的梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=0.1)
 
             optimizer.step()
             optimizer.zero_grad()

@@ -40,8 +40,10 @@ class LoRAExpert(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        """标准LoRA权重初始化"""
-        nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+        """保守的LoRA权重初始化 - 增强数值稳定性"""
+        # A矩阵：使用更小的标准差初始化
+        nn.init.normal_(self.lora_A.weight, mean=0.0, std=0.01)
+        # B矩阵：初始化为零，确保训练开始时LoRA贡献为零
         nn.init.zeros_(self.lora_B.weight)
 
     def forward(self, x):
@@ -57,10 +59,20 @@ class LoRAExpert(nn.Module):
         try:
             # 标准LoRA计算：Delta_h = B * A * x
             h = self.lora_A(x)
+
+            # 中间结果数值检查
+            if torch.isnan(h).any() or torch.isinf(h).any():
+                return torch.zeros_like(x)
+
+            # 限制中间值范围
+            h = torch.clamp(h, min=-10.0, max=10.0)
             h = self.dropout(h)
             delta = self.lora_B(h) * self.scaling
 
-            # 数值稳定性检查
+            # 限制输出范围
+            delta = torch.clamp(delta, min=-5.0, max=5.0)
+
+            # 最终数值稳定性检查
             if torch.isnan(delta).any() or torch.isinf(delta).any():
                 return torch.zeros_like(x)
 
@@ -82,8 +94,8 @@ class MoERouter(nn.Module):
         # 路由器网络
         self.router = nn.Linear(hidden_dim, num_experts, bias=False)
 
-        # 保守的初始化
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.01)
+        # 更保守的初始化 - 进一步降低标准差
+        nn.init.normal_(self.router.weight, mean=0.0, std=0.005)
 
     def forward(self, x):
         """
@@ -104,21 +116,29 @@ class MoERouter(nn.Module):
         try:
             # 计算路由logits
             router_logits = self.router(x)  # [B, L, num_experts]
-            router_logits = torch.clamp(router_logits, min=-10.0, max=10.0)
 
-            # 数值稳定的softmax
+            # 更严格的logits限制
+            router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)
+
+            # 增强的数值稳定softmax
             max_logits = torch.max(router_logits, dim=-1, keepdim=True)[0]
             shifted_logits = router_logits - max_logits
-            shifted_logits = torch.clamp(shifted_logits, min=-20.0, max=0.0)
+            shifted_logits = torch.clamp(shifted_logits, min=-15.0, max=0.0)
 
-            # 计算专家权重
-            expert_weights = F.softmax(shifted_logits, dim=-1)
+            # 添加小的epsilon避免数值下溢
+            epsilon = 1e-8
+            exp_logits = torch.exp(shifted_logits) + epsilon
+            expert_weights = exp_logits / (torch.sum(exp_logits, dim=-1, keepdim=True) + epsilon)
 
-            # 检查结果
+            # 检查结果并强制归一化
             if torch.isnan(expert_weights).any() or torch.isinf(expert_weights).any():
                 # 使用均匀分布作为fallback
                 expert_weights = torch.ones_like(expert_weights) / self.num_experts
                 router_logits = torch.zeros_like(router_logits)
+            else:
+                # 确保权重和为1
+                weights_sum = torch.sum(expert_weights, dim=-1, keepdim=True)
+                expert_weights = expert_weights / (weights_sum + epsilon)
 
             return expert_weights, router_logits
 

@@ -19,11 +19,11 @@ NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
 USE_CULTURE_LOSS=${6:-"false"}  # ori/new/kl/false，默认为false
 NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
 ALPHA=${8:-"0.1"}   # 负载均衡损失权重 (默认值0.1，用于平衡专家负载分布)
-BETA=${9:-"0.5"}    # 文化对比损失权重 (默认值0.5，用于促进专家文化专业化)
+BETA=${9:-"0.1"}    # 文化对比损失权重 (降低到0.1，减少数值不稳定)
 USE_LORA=${10:-"true"}   # 是否启用LoRA，默认为true
 NUM_GPUS=${11:-"2"}
 LORA_RANK=${12:-"16"}   # LoRA rank (平衡表达能力和显存)
-LORA_ALPHA=${13:-"32"}  # LoRA alpha (相应调整到32)
+LORA_ALPHA=${13:-"16"}  # LoRA alpha (降低到16，缩放因子为1.0)
 
 # 检查参数
 if [ "$#" -gt 13 ]; then
@@ -286,7 +286,7 @@ echo ""
 # 内存优化的训练参数 - 针对新架构调整
 BATCH_SIZE=2              # 🔧 改回2以支持文化损失对比学习
 GRADIENT_ACCUMULATION=8   # 🔧 调整梯度累积，保持有效batch size=32
-LEARNING_RATE=5e-5        # 🔧 降低学习率避免LoRA权重NaN（从1e-4降至5e-5）
+LEARNING_RATE=1e-5        # 🔧 进一步降低学习率避免LoRA权重NaN（从5e-5降至1e-5）
 NUM_EPOCHS=5              # 🔧 减少到5轮
 
 # 动态设置max_seq_len：参考joint版本逻辑，进一步降低应对显存问题
