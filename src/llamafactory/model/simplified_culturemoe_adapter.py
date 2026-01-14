@@ -15,123 +15,59 @@ from .simplified_culturemoe import SimplifiedCultureMoEConfig
 
 
 class LoRAExpert(nn.Module):
-    """LoRA专家层 - 为FFN的每个线性层添加LoRA分支"""
+    """标准LoRA专家层 - 简单的两层LoRA结构：hidden_dim -> rank -> hidden_dim"""
 
-    def __init__(self, original_ffn, lora_rank: int = 32, lora_alpha: int = 64, dropout: float = 0.1):
+    def __init__(self, original_ffn, lora_rank: int = 16, lora_alpha: int = 32, dropout: float = 0.1):
         super().__init__()
-        self.original_ffn = original_ffn  # 保持原始FFN不变
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
-        # 🔧 修复：使用标准LoRA缩放因子，不限制上限
         self.scaling = lora_alpha / lora_rank
 
-        # 获取原始FFN的维度和数据类型
+        # 获取隐藏层维度
         self.hidden_dim = original_ffn.gate_proj.in_features
-        self.intermediate_dim = original_ffn.gate_proj.out_features
 
-        # 🔧 修正方案：保持原始FFN冻结，只通过LoRA提供专家差异化
-        # 不创建独立的down_proj层，避免巨大的参数开销
-
-        # 为每个FFN线性层创建LoRA分支（增大rank提升表达能力）
-        # gate_proj LoRA: hidden_dim -> intermediate_dim
-        self.gate_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
-        self.gate_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
-
-        # up_proj LoRA: hidden_dim -> intermediate_dim
-        self.up_lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
-        self.up_lora_B = nn.Linear(lora_rank, self.intermediate_dim, bias=False)
-
-        # down_proj LoRA: intermediate_dim -> hidden_dim（作用于独立的expert_down_proj）
-        self.down_lora_A = nn.Linear(self.intermediate_dim, lora_rank, bias=False)
-        self.down_lora_B = nn.Linear(lora_rank, self.hidden_dim, bias=False)
-
+        # 标准两层LoRA结构：hidden_dim -> rank -> hidden_dim
+        self.lora_A = nn.Linear(self.hidden_dim, lora_rank, bias=False)
+        self.lora_B = nn.Linear(lora_rank, self.hidden_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-        # 🔧 获取原始FFN的数据类型和设备，确保LoRA层使用相同类型
+        # 设备和数据类型一致性
         target_dtype = original_ffn.gate_proj.weight.dtype
         target_device = original_ffn.gate_proj.weight.device
-
-        # 将所有LoRA层移动到正确设备和数据类型
         self.to(device=target_device, dtype=target_dtype)
 
         # LoRA权重初始化
-        self._init_lora_weights()
+        self._init_weights()
 
-    def _init_lora_weights(self):
-        """LoRA权重初始化"""
-        # A矩阵使用高斯初始化，B矩阵初始化为0
-        nn.init.kaiming_uniform_(self.gate_lora_A.weight, a=math.sqrt(5))
-        nn.init.zeros_(self.gate_lora_B.weight)
-
-        nn.init.kaiming_uniform_(self.up_lora_A.weight, a=math.sqrt(5))
-        nn.init.zeros_(self.up_lora_B.weight)
-
-        nn.init.kaiming_uniform_(self.down_lora_A.weight, a=math.sqrt(5))
-        nn.init.zeros_(self.down_lora_B.weight)
+    def _init_weights(self):
+        """标准LoRA权重初始化"""
+        nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B.weight)
 
     def forward(self, x):
-        """前向传播：只返回LoRA增量，不包含原始FFN"""
-        # 🔧 序列长度检查：如果输入过大，返回零增量
-        if x.dim() >= 2 and x.shape[-2] > 769:
-            print(f"⚠️ LoRA专家输入序列过长 ({x.shape[-2]} > 769)，返回零增量")
-            return torch.zeros_like(x)
-
-        # 检查输入
+        """前向传播：计算LoRA增量 Delta_h = B * A * x"""
+        # 输入验证
         if torch.isnan(x).any() or torch.isinf(x).any():
             return torch.zeros_like(x)
 
-        # 限制输入范围
-        x = torch.clamp(x, min=-10.0, max=10.0)
+        # 序列长度检查
+        if x.dim() >= 2 and x.shape[-2] > 769:
+            return torch.zeros_like(x)
 
         try:
-            # 🔧 修正：只计算LoRA增量部分
-            # 原始FFN计算（用于获取正确的intermediate基础）
-            gate_original = self.original_ffn.act_fn(self.original_ffn.gate_proj(x))
-            up_original = self.original_ffn.up_proj(x)
-            intermediate_original = gate_original * up_original
+            # 标准LoRA计算：Delta_h = B * A * x
+            h = self.lora_A(x)
+            h = self.dropout(h)
+            delta = self.lora_B(h) * self.scaling
 
-            # LoRA分支计算（数值稳定版本）
-            gate_lora_a = self.gate_lora_A(x)
-            gate_lora_a = torch.clamp(gate_lora_a, min=-5.0, max=5.0)  # 限制中间结果
-            gate_lora = self.gate_lora_B(gate_lora_a) * self.scaling
-
-            up_lora_a = self.up_lora_A(x)
-            up_lora_a = torch.clamp(up_lora_a, min=-5.0, max=5.0)  # 限制中间结果
-            up_lora = self.up_lora_B(up_lora_a) * self.scaling
-
-            # 计算修改后的intermediate
-            gate_combined = gate_original + gate_lora
-            up_combined = up_original + up_lora
-            intermediate_combined = gate_combined * up_combined
-
-            # 计算intermediate的增量
-            intermediate_delta = intermediate_combined - intermediate_original
-            intermediate_delta = torch.clamp(intermediate_delta, min=-20.0, max=20.0)
-
-            # Dropout
-            intermediate_delta = self.dropout(intermediate_delta)
-
-            # 计算最终的LoRA增量（只包含增量部分，数值稳定版本）
-            down_lora_a = self.down_lora_A(intermediate_delta)
-            down_lora_a = torch.clamp(down_lora_a, min=-5.0, max=5.0)  # 限制中间结果
-            down_lora_from_delta = self.down_lora_B(down_lora_a) * self.scaling
-            down_original_delta = self.original_ffn.down_proj(intermediate_delta)
-
-            # 返回总的增量
-            total_delta = down_original_delta + down_lora_from_delta
-            total_delta = torch.clamp(total_delta, min=-10.0, max=10.0)
-
-            # 检查输出
-            if torch.isnan(total_delta).any() or torch.isinf(total_delta).any():
+            # 数值稳定性检查
+            if torch.isnan(delta).any() or torch.isinf(delta).any():
                 return torch.zeros_like(x)
 
-            return total_delta
+            return delta
 
         except Exception as e:
             print(f"⚠️ LoRAExpert forward failed: {e}")
-            print(f"   输入shape: {x.shape if x is not None else 'None'}")
-            print(f"   设备: {x.device if x is not None else 'None'}")
-            print(f"   数据类型: {x.dtype if x is not None else 'None'}")
             return torch.zeros_like(x)
 
 
