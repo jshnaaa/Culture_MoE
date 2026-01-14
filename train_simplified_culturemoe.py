@@ -474,7 +474,7 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
 
 def train_epoch_simplified(model_adapter, train_loader, optimizer, device, tokenizer,
                          num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
-                         lambda_weight=1.0, alpha_weight=0.1, beta_weight=0.5):
+                         lambda_weight=1.0, alpha_weight=0.1, beta_weight=0.5, scheduler=None):
     """
     简化版CultureMoE训练一个epoch
     """
@@ -599,7 +599,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=0.1)
 
             optimizer.step()
-            scheduler.step()  # 🔧 更新学习率调度器
+            if scheduler is not None:
+                scheduler.step()  # 🔧 更新学习率调度器
             optimizer.zero_grad()
 
         # 定期清理GPU缓存
@@ -1243,7 +1244,8 @@ def main():
             culture_loss_weight=args.culture_loss_weight,
             lambda_weight=args.lambda_weight,
             alpha_weight=args.alpha_weight,
-            beta_weight=args.beta_weight
+            beta_weight=args.beta_weight,
+            scheduler=scheduler
         )
 
         if is_main_process(rank):
