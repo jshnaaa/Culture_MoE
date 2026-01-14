@@ -84,7 +84,12 @@ def is_main_process(rank):
 
 def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_expert_outputs, culture_labels, loss_weight=0.01):
     """
-    计算CSL文化相似性损失（三组件）
+    计算CSL文化相似性损失（两组件版本）
+
+    组件说明：
+    1. L_culture_router: 路由专家文化相似性损失
+    2. L_culture_sr: 共享-路由专家解耦损失
+    注：已移除L_culture_share（共享专家文化无关损失）组件
 
     Args:
         expert_weights: 路由器专家权重 [B, num_experts] (wr_i)
@@ -99,9 +104,9 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
     device = culture_labels.device if culture_labels is not None else torch.device('cuda')
     dtype = torch.float16
 
-    # 初始化损失组件
+    # 初始化损失组件（两组件版本）
     L_culture_router = torch.tensor(0.0, device=device, dtype=dtype)
-    L_culture_share = torch.tensor(0.0, device=device, dtype=dtype)
+    L_culture_share = torch.tensor(0.0, device=device, dtype=dtype)  # 保持为0，不再计算
     L_culture_sr = torch.tensor(0.0, device=device, dtype=dtype)
 
     # 输入验证
@@ -110,7 +115,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
             'L_culture_router': L_culture_router,
             'L_culture_share': L_culture_share,
             'L_culture_sr': L_culture_sr,
-            'L_culture_total': L_culture_router + L_culture_share + L_culture_sr
+            'L_culture_total': L_culture_router + L_culture_sr  # 两组件版本
         }
 
     batch_size = culture_labels.shape[0]
@@ -134,7 +139,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
             'L_culture_router': L_culture_router,
             'L_culture_share': L_culture_share,
             'L_culture_sr': L_culture_sr,
-            'L_culture_total': L_culture_router + L_culture_share + L_culture_sr
+            'L_culture_total': L_culture_router + L_culture_sr  # 两组件版本
         }
 
     # 计算L_culture_router（路由专家文化相似性损失）
@@ -170,33 +175,9 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
         if count_router > 0:
             L_culture_router = router_loss / count_router * loss_weight
 
-    # 计算L_culture_share（共享专家文化无关损失）
-    if shared_expert_outputs is not None:
-        share_loss = torch.tensor(0.0, device=device, dtype=dtype)
-        count_share = 0
-
-        for i in range(batch_size):
-            for j in range(i + 1, batch_size):
-                es_i = shared_expert_outputs[i]
-                es_j = shared_expert_outputs[j]
-
-                # 检查零向量
-                if torch.norm(es_i) < 1e-8 or torch.norm(es_j) < 1e-8:
-                    continue
-
-                similarity = F.cosine_similarity(es_i.unsqueeze(0), es_j.unsqueeze(0))
-                if torch.isnan(similarity) or torch.isinf(similarity):
-                    continue
-
-                # 确保similarity是标量值，避免张量形状不匹配
-                similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
-
-                # 不考虑文化标签，强制共享专家输出一致
-                share_loss += (1.0 - similarity_scalar)
-                count_share += 1
-
-        if count_share > 0:
-            L_culture_share = share_loss / count_share * loss_weight
+    # L_culture_share组件已移除（共享专家文化无关损失）
+    # 根据用户要求，CSL现在只包含两个组件：L_culture_router和L_culture_sr
+    # L_culture_share保持为0
 
     # 计算L_culture_sr（共享-路由解耦损失）
     if shared_expert_outputs is not None and router_expert_outputs is not None:
@@ -230,7 +211,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
         'L_culture_router': L_culture_router,
         'L_culture_share': L_culture_share,
         'L_culture_sr': L_culture_sr,
-        'L_culture_total': L_culture_router + L_culture_share + L_culture_sr
+        'L_culture_total': L_culture_router + L_culture_sr  # 两组件版本
     }
 
 
