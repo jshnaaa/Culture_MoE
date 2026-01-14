@@ -18,17 +18,16 @@ USE_GATE=${4:-"false"}     # 是否使用MoE内部融合Gate，默认为false
 NUM_MOE_EXPERTS=${5:-"4"}  # MoE专家数量
 USE_CULTURE_LOSS=${6:-"false"}  # ori/new/kl/false，默认为false
 NUM_ACTIVATED_EXPERTS=${7:-"2"}  # 激活的专家数量，默认为top-2
-LAMBDA=${8:-"1.0"}  # 🔧 提升lambda让辅助损失有意义
-ALPHA=${9:-"0.1"}   # 负载均衡损失权重
-BETA=${10:-"0.5"}   # 文化对比损失权重
-USE_LORA=${11:-"true"}   # 是否启用LoRA，默认为true
-NUM_GPUS=${12:-"2"}
-LORA_RANK=${13:-"16"}   # LoRA rank (平衡表达能力和显存)
-LORA_ALPHA=${14:-"32"}  # LoRA alpha (相应调整到32)
+ALPHA=${8:-"0.0"}   # 负载均衡损失权重 (默认配置下为0.0，仅在启用USE_CULTURE_LOSS时生效)
+BETA=${9:-"0.0"}    # 文化对比损失权重 (默认配置下为0.0，仅在启用USE_CULTURE_LOSS时生效)
+USE_LORA=${10:-"true"}   # 是否启用LoRA，默认为true
+NUM_GPUS=${11:-"2"}
+LORA_RANK=${12:-"16"}   # LoRA rank (平衡表达能力和显存)
+LORA_ALPHA=${13:-"32"}  # LoRA alpha (相应调整到32)
 
 # 检查参数
-if [ "$#" -gt 14 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [lambda] [alpha] [beta] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 13 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [alpha] [beta] [use_lora] [num_gpus] [lora_rank] [lora_alpha]"
     exit 1
 fi
 
@@ -133,72 +132,15 @@ case $DATA_ID in
         TRAIN_FILE="/autodl-fs/data/cultureAtlas_merge_gen.json"
         DATASET_TAG="cultureAtlas"
         ;;
-    15)
-        TRAIN_FILE=""
-        DATASET_TAG="blend + cultureAtlas"
-        ;;
     24)
         TRAIN_FILE=""
         DATASET_TAG="CulturalBench + cultureLLM"
         ;;
     *)
-        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 1, 2, 3, 4, 5, 15, 24)"
+        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 1, 2, 3, 4, 5, 24)"
         exit 1
         ;;
 esac
-
-# 特殊处理：DATA_ID=15时合并blend和cultureAtlas数据集
-if [ "$DATA_ID" = "15" ]; then
-    echo "🔄 合并blend和cultureAtlas数据集..."
-
-    BLEND_FILE="/root/autodl-fs/blend_merge_gen.json"
-    CULTUREATLAS_FILE="/autodl-fs/data/cultureAtlas_merge_gen.json"
-    MERGED_FILE="/root/autodl-fs/blend_cultureAtlas_merged.json"
-
-    # 检查源文件是否存在
-    if [ ! -f "$BLEND_FILE" ]; then
-        echo "❌ blend数据文件不存在: $BLEND_FILE"
-        exit 1
-    fi
-
-    if [ ! -f "$CULTUREATLAS_FILE" ]; then
-        echo "❌ cultureAtlas数据文件不存在: $CULTUREATLAS_FILE"
-        exit 1
-    fi
-
-    # 使用Python合并JSON数据
-    python3 -c "
-import json
-
-# 读取两个数据集
-with open('$BLEND_FILE', 'r', encoding='utf-8') as f:
-    blend_data = json.load(f)
-
-with open('$CULTUREATLAS_FILE', 'r', encoding='utf-8') as f:
-    cultureatlas_data = json.load(f)
-
-# 合并数据
-merged_data = blend_data + cultureatlas_data
-
-# 保存合并结果
-with open('$MERGED_FILE', 'w', encoding='utf-8') as f:
-    json.dump(merged_data, f, indent=2, ensure_ascii=False)
-
-print(f'✅ 数据合并完成:')
-print(f'  - blend: {len(blend_data)} 条')
-print(f'  - cultureAtlas: {len(cultureatlas_data)} 条')
-print(f'  - 合并后: {len(merged_data)} 条')
-print(f'  - 保存至: $MERGED_FILE')
-"
-
-    if [ $? -eq 0 ]; then
-        TRAIN_FILE="$MERGED_FILE"
-        echo "✅ 使用合并数据集: $TRAIN_FILE"
-    else
-        echo "❌ 数据合并失败"
-        exit 1
-    fi
-fi
 
 # 特殊处理：DATA_ID=24时合并CulturalBench和cultureLLM数据集
 if [ "$DATA_ID" = "24" ]; then
@@ -309,7 +251,7 @@ fi
 
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="/root/autodl-fs/simplified_culturemoe/${MODEL_NAME}_${DATASET_TAG}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/simplified_culturemoe/${MODEL_NAME}_${DATASET_TAG}_shared${USE_SHARED}_gate${USE_GATE}_loss${USE_CULTURE_LOSS}_${ALPHA}_${BETA}_${TIMESTAMP}"
 
 echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"
@@ -330,7 +272,11 @@ echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
 echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, false=仅L_aux)"
-echo "  损失函数权重: lambda=$LAMBDA, alpha=$ALPHA, beta=$BETA"
+if [ "$USE_CULTURE_LOSS" != "false" ]; then
+    echo "  损失函数权重: alpha=$ALPHA, beta=$BETA (总损失=CE损失+ALPHA*负载均衡损失+BETA*文化损失)"
+else
+    echo "  损失函数: 仅CE损失 (alpha=$ALPHA, beta=$BETA不生效)"
+fi
 echo "  启用LoRA: $USE_LORA"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
 echo "  GPU: $NUM_GPUS卡"
@@ -341,7 +287,7 @@ echo ""
 BATCH_SIZE=2              # 🔧 改回2以支持文化损失对比学习
 GRADIENT_ACCUMULATION=8   # 🔧 调整梯度累积，保持有效batch size=32
 LEARNING_RATE=1e-4        # 简化版使用单一学习率
-NUM_EPOCHS=6              # 🔧 减少到7轮，避免过拟合（观察到第8轮准确率下降）
+NUM_EPOCHS=5              # 🔧 减少到5轮
 
 # 动态设置max_seq_len：参考joint版本逻辑，进一步降低应对显存问题
 echo "🔧 调试信息: DATA_ID='$DATA_ID'"
@@ -393,7 +339,6 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "moe_experts": $NUM_MOE_EXPERTS,
         "activated_experts": $NUM_ACTIVATED_EXPERTS,
         "use_culture_loss": $USE_CULTURE_LOSS,
-        "lambda": $LAMBDA,
         "alpha": $ALPHA,
         "beta": $BETA,
         "use_lora": $USE_LORA,
@@ -440,7 +385,6 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --num_moe_experts $NUM_MOE_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
         --num_activated_experts $NUM_ACTIVATED_EXPERTS \
-        --lambda_weight $LAMBDA \
         --alpha_weight $ALPHA \
         --beta_weight $BETA \
         --use_lora $USE_LORA \
@@ -471,7 +415,6 @@ else
         --num_moe_experts $NUM_MOE_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
         --num_activated_experts $NUM_ACTIVATED_EXPERTS \
-        --lambda_weight $LAMBDA \
         --alpha_weight $ALPHA \
         --beta_weight $BETA \
         --use_lora $USE_LORA \
