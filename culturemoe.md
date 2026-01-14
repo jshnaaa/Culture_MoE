@@ -558,5 +558,9 @@ USE_SHARED参数控制推理时是否使用共享专家，支持对训练好的�
 ## 脚本
 - base: run_ft_base.sh
 - lora only: run_ft_lora_only_gen.sh, run_eval_lora_only_from_components.sh
-- moe: run_simplified_culturemoe.sh, run_ablation_study.sh
-- joint: run_joint_lora_moe_training.sh, run_eval_joint_culturemoe.sh
+- simplified culturemoe: run_simplified_culturemoe.sh, run_ablation_study.sh
+- joint culturemoe: run_joint_lora_moe_training.sh, run_eval_joint_culturemoe.sh
+- vsm：run_eval_vsm13.sh
+- milora：run_ft_milora_gen.sh
+- mixlora：run_ft_mixlora.sh
+
