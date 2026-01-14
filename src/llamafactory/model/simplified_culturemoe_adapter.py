@@ -765,30 +765,29 @@ class SimplifiedCultureMoEAdapter:
         # 🔧 关键修复：使用base_model（已经包含MoE层替换的模型）
         actual_model = self.base_model.module if hasattr(self.base_model, 'module') else self.base_model
 
-        # 🔍 调试：检查推理时的模型结构
-        print(f"🔍 推理时base_model类型: {type(actual_model)}")
-
         # 🔧 关键修复：使用与训练时一致的层访问方式
         try:
             layers, target_layers = self._get_target_layers()
-            print(f"🔍 通过_get_target_layers访问层（与训练时一致）")
+            # 只在调试模式下输出详细信息
+            # print(f"🔍 通过_get_target_layers访问层（与训练时一致）")
         except Exception as e:
             print(f"❌ 无法通过_get_target_layers访问层: {e}")
             layers = None
 
         if layers and len(layers) > 0:
             layer0_mlp = layers[0].mlp
-            print(f"🔍 第0层MLP类型: {type(layer0_mlp)}")
-            print(f"🔍 是否为MoE层: {'MoEFFNLoRA' in str(type(layer0_mlp))}")
+            # 只在调试模式下输出详细信息
+            # print(f"🔍 第0层MLP类型: {type(layer0_mlp)}")
+            # print(f"🔍 是否为MoE层: {'MoEFFNLoRA' in str(type(layer0_mlp))}")
             if hasattr(layer0_mlp, 'experts'):
-                print(f"🔍 专家数量: {len(layer0_mlp.experts) if hasattr(layer0_mlp.experts, '__len__') else 'unknown'}")
+                # print(f"🔍 专家数量: {len(layer0_mlp.experts) if hasattr(layer0_mlp.experts, '__len__') else 'unknown'}")
 
                 # 🔍 检查第一个专家的权重是否非零
                 if hasattr(layer0_mlp.experts, '__getitem__') and len(layer0_mlp.experts) > 0:
                     expert0 = layer0_mlp.experts[0]
                     if hasattr(expert0, 'gate_lora_A'):
                         weight_norm = expert0.gate_lora_A.weight.norm().item()
-                        print(f"🔍 第0个专家gate_lora_A权重范数: {weight_norm:.4f}")
+                        # print(f"🔍 第0个专家gate_lora_A权重范数: {weight_norm:.4f}")
         else:
             print("❌ 无法验证MoE层结构！")
 
