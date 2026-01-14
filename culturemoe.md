@@ -555,12 +555,42 @@ USE_SHARED参数控制推理时是否使用共享专家，支持对训练好的�
 
 这种灵活的消融控制机制为CultureMoE模型的深入分析和优化部署提供了重要工具。
 
-## 脚本
-- base: run_ft_base.sh
-- lora only: run_ft_lora_only_gen.sh, run_eval_lora_only_from_components.sh
-- simplified culturemoe: run_simplified_culturemoe.sh, run_ablation_study.sh
-- joint culturemoe: run_joint_lora_moe_training.sh, run_eval_joint_culturemoe.sh
-- vsm：run_eval_vsm13.sh
-- milora：run_ft_milora_gen.sh
-- mixlora：run_ft_mixlora.sh
+## 脚本依赖关系
+
+### 脚本到Python文件映射
+
+- **base**: run_ft_base.sh
+  - 调用文件: ft_base_gen.py
+
+- **lora only**: run_ft_lora_only_gen.sh, run_eval_lora_only_from_components.sh
+  - run_ft_lora_only_gen.sh → ft_lora_only_gen.py
+  - run_eval_lora_only_from_components.sh → eval_lora_only_from_components.py
+
+- **simplified culturemoe**: run_simplified_culturemoe.sh, run_ablation_study.sh
+  - run_simplified_culturemoe.sh → train_simplified_culturemoe.py
+  - run_ablation_study.sh → eval_simplified_culturemoe.py
+
+- **joint culturemoe**: run_joint_lora_moe_training.sh, run_eval_joint_culturemoe.sh
+  - run_joint_lora_moe_training.sh → train_joint_lora_moe.py
+  - run_eval_joint_culturemoe.sh → eval_joint_culturemoe.py
+
+- **vsm**: run_eval_vsm13.sh
+  - 调用文件: eval_vsm13.py
+
+- **milora**: run_ft_milora_gen.sh
+  - 调用文件: ft_milora_gen.py
+
+- **mixlora**: run_ft_mixlora.sh
+  - 调用文件: ft_mixlora.py
+
+### src/llamafactory/model依赖关系
+
+被使用的核心模型文件：
+- **joint_lora_moe_model.py**: 联合训练模型架构 (JointLoRAMoEModel, JointLoRAMoEConfig)
+- **CultureMoE.py**: 主要MoE模型类 (LlamaSharedRouterExpertsModel)
+- **simplified_culturemoe.py**: 简化版配置 (SimplifiedCultureMoEConfig)
+- **simplified_culturemoe_adapter.py**: 简化版适配器 (create_simplified_culturemoe_model)
+- **mixlora.py**: MixLoRA配置 (MixLoRAConfig)
+- **mixlora_adapter.py**: MixLoRA适配器 (create_mixlora_model)
+- **moe_args.py**: MoE参数配置 (ModelArgs)
 
