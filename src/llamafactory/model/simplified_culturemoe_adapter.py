@@ -375,8 +375,10 @@ class MoEFFNLoRA(nn.Module):
                               gate_weights[..., 1:2] * routed_final)
 
             elif self.use_shared:
-                # 当有shared专家但没有gate时，使用简单相加
-                final_output = original_output + shared_delta + routed_delta
+                # 当有shared专家但没有gate时，使用0.5权重融合
+                shared_final = original_output + shared_delta
+                routed_final = original_output + routed_delta
+                final_output = 0.5 * shared_final + 0.5 * routed_final
 
             else:
                 # 仅使用路由专家
@@ -779,7 +781,7 @@ class SimplifiedCultureMoEAdapter:
         print(f"  - Shared expert: {'enabled' if self.config.use_shared else 'disabled'}")
         print(f"  - Gate network: {'enabled' if self.config.use_gate else 'disabled'}")
         if self.config.use_shared and not self.config.use_gate:
-            print(f"  - Fusion method: simple addition (shared + routed)")
+            print(f"  - Fusion method: 0.5 weighted fusion (0.5*shared + 0.5*routed)")
 
     def generate(self, **kwargs):
         """
