@@ -391,7 +391,7 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
         culture_loss: 文化损失
     """
     if not hasattr(model_outputs, 'expert_weights') or model_outputs.expert_weights is None:
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=False)
+        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.bfloat16, requires_grad=False)
 
     expert_weights = model_outputs.expert_weights  # [B_expert, num_experts]
 
@@ -400,7 +400,7 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
         # 只对有expert_weights的样本计算文化损失
         if expert_weights.shape[0] < 2:
             # 激活路由专家的样本少于2个，无法计算文化损失
-            return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=False)
+            return torch.tensor(0.0, device=culture_labels.device, dtype=torch.bfloat16, requires_grad=False)
 
         # 使用前expert_weights.shape[0]个culture_labels
         culture_labels = culture_labels[:expert_weights.shape[0]]
@@ -426,8 +426,8 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
                     continue
 
                 similarity = F.cosine_similarity(vec1, vec2)
-                # 确保similarity使用float16并检查数值稳定性
-                similarity = similarity.to(dtype=torch.float16)
+                # 确保similarity使用bfloat16并检查数值稳定性
+                similarity = similarity.to(dtype=torch.bfloat16)
                 if torch.isnan(similarity) or torch.isinf(similarity):
                     continue  # 跳过无效的相似度计算
 
@@ -447,8 +447,8 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
                     continue
 
                 similarity = F.cosine_similarity(vec1, vec2)
-                # 确保similarity使用float16并检查数值稳定性
-                similarity = similarity.to(dtype=torch.float16)
+                # 确保similarity使用bfloat16并检查数值稳定性
+                similarity = similarity.to(dtype=torch.bfloat16)
                 if torch.isnan(similarity) or torch.isinf(similarity):
                     continue  # 跳过无效的相似度计算
 
@@ -459,15 +459,15 @@ def compute_culture_loss(model_outputs, culture_labels, loss_weight=0.01):
     if len(culture_losses) > 0:
         culture_loss = torch.stack(culture_losses).mean() * loss_weight
     else:
-        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.bfloat16)
 
     # 🔧 修复：确保返回的tensor有正确的梯度属性
     if not isinstance(culture_loss, torch.Tensor):
-        culture_loss = torch.tensor(culture_loss, device=culture_labels.device, dtype=torch.float16, requires_grad=True)
+        culture_loss = torch.tensor(culture_loss, device=culture_labels.device, dtype=torch.bfloat16, requires_grad=True)
 
     # 检查文化损失是否为NaN/Inf，如果是则返回零损失
     if torch.isnan(culture_loss) or torch.isinf(culture_loss):
-        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=True)
+        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.bfloat16, requires_grad=True)
 
     return culture_loss
 
@@ -534,8 +534,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
 
         loss = outputs.loss
 
-        # 计算文化损失 - 统一使用float16节省显存
-        culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
+        # 计算文化损失 - 统一使用bfloat16避免溢出
+        culture_loss = torch.tensor(0.0, device=device, dtype=torch.bfloat16, requires_grad=False)
         if use_culture_loss != 'false' and culture_labels is not None:
             if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
                 culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
@@ -543,8 +543,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
         # 获取MoE的z-loss用于稳定router
         z_loss = model_adapter.get_accumulated_z_loss()
 
-        # 将主损失转换为float16以保持一致性和节省显存
-        loss = loss.to(dtype=torch.float16)
+        # 将主损失转换为bfloat16以保持一致性和避免溢出
+        loss = loss.to(dtype=torch.bfloat16)
 
         # 新的损失函数：L_total = L_generation + lambda × (alpha × L_balance + beta × L_culture)
         auxiliary_loss = alpha_weight * z_loss + beta_weight * culture_loss
@@ -599,6 +599,7 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=0.1)
 
             optimizer.step()
+            scheduler.step()  # 🔧 更新学习率调度器
             optimizer.zero_grad()
 
         # 定期清理GPU缓存
@@ -694,8 +695,8 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
 
             loss = outputs.loss
 
-            # 计算文化损失 - 统一使用float16节省显存
-            culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16, requires_grad=False)
+            # 计算文化损失 - 统一使用bfloat16避免溢出
+            culture_loss = torch.tensor(0.0, device=device, dtype=torch.bfloat16, requires_grad=False)
             if use_culture_loss != 'false' and culture_labels is not None:
                 if hasattr(outputs, 'expert_weights') and outputs.expert_weights is not None:
                     culture_loss = compute_culture_loss(outputs, culture_labels, culture_loss_weight)
@@ -703,8 +704,8 @@ def evaluate_simplified(model_adapter, val_loader, device, tokenizer, rank=0, us
             # 获取MoE的z-loss用于稳定router
             z_loss = model_adapter.get_accumulated_z_loss()
 
-            # 将主损失转换为float16以保持一致性和节省显存
-            loss = loss.to(dtype=torch.float16)
+            # 将主损失转换为bfloat16以保持一致性和避免溢出
+            loss = loss.to(dtype=torch.bfloat16)
 
             # 新的损失函数：L_total = L_generation + lambda × (alpha × L_balance + beta × L_culture)
             auxiliary_loss = alpha_weight * z_loss + beta_weight * culture_loss
@@ -1093,7 +1094,7 @@ def main():
         print("\nLoading base model...")
 
     load_kwargs = {
-        'torch_dtype': torch.float16,
+        'torch_dtype': torch.bfloat16,  # 🔧 改用BF16避免FP16溢出
         'device_map': None,
         'trust_remote_code': True,
         'low_cpu_mem_usage': True
@@ -1195,6 +1196,25 @@ def main():
         lr=args.learning_rate,
         weight_decay=args.weight_decay
     )
+
+    # 🔧 添加warmup学习率调度器，防止训练初期梯度爆炸
+    from transformers import get_linear_schedule_with_warmup
+
+    total_steps = len(train_loader) * args.num_epochs // args.gradient_accumulation_steps
+    warmup_steps = min(100, total_steps // 10)  # warmup步数：总步数的10%，最少100步
+
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps
+    )
+
+    if is_main_process(rank):
+        print(f"🔧 Warmup调度器配置:")
+        print(f"  - 总训练步数: {total_steps}")
+        print(f"  - Warmup步数: {warmup_steps}")
+        print(f"  - 初始学习率: {args.learning_rate}")
+        print(f"  - Warmup期间学习率从0线性增长到{args.learning_rate}")
 
     # 训练循环
     if is_main_process(rank):

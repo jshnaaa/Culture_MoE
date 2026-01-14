@@ -64,19 +64,19 @@ class LoRAExpert(nn.Module):
             if torch.isnan(h).any() or torch.isinf(h).any():
                 return torch.zeros_like(x)
 
-            # 限制中间值范围
-            h = torch.clamp(h, min=-10.0, max=10.0)
+            # 更保守的中间值范围限制（BF16优化）
+            h = torch.clamp(h, min=-5.0, max=5.0)
             h = self.dropout(h)
             delta = self.lora_B(h) * self.scaling
 
-            # 限制输出范围
-            delta = torch.clamp(delta, min=-5.0, max=5.0)
+            # 更保守的输出范围限制（BF16优化）
+            delta = torch.clamp(delta, min=-2.0, max=2.0)
 
             # 最终数值稳定性检查
             if torch.isnan(delta).any() or torch.isinf(delta).any():
                 return torch.zeros_like(x)
 
-            return delta
+            return delta.to(dtype=torch.bfloat16)
 
         except Exception as e:
             print(f"⚠️ LoRAExpert forward failed: {e}")
@@ -91,11 +91,14 @@ class MoERouter(nn.Module):
         self.num_experts = num_experts
         self.hidden_dim = hidden_dim
 
+        # 🔧 添加LayerNorm防止Router输入过大
+        self.input_layernorm = nn.LayerNorm(hidden_dim, eps=1e-8)
+
         # 路由器网络
         self.router = nn.Linear(hidden_dim, num_experts, bias=False)
 
-        # 更保守的初始化 - 进一步降低标准差
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.005)
+        # 极保守的初始化 - 进一步降低标准差防止Inf
+        nn.init.normal_(self.router.weight, mean=0.0, std=0.002)
 
     def forward(self, x):
         """
@@ -114,16 +117,22 @@ class MoERouter(nn.Module):
         x = torch.clamp(x, min=-10.0, max=10.0)
 
         try:
-            # 计算路由logits
-            router_logits = self.router(x)  # [B, L, num_experts]
+            # 🔧 LayerNorm归一化输入，防止Router输入过大
+            x_norm = self.input_layernorm(x)
 
-            # 更严格的logits限制
-            router_logits = torch.clamp(router_logits, min=-5.0, max=5.0)
+            # 进一步限制归一化后的输入范围
+            x_norm = torch.clamp(x_norm, min=-3.0, max=3.0)
+
+            # 计算路由logits
+            router_logits = self.router(x_norm)  # [B, L, num_experts]
+
+            # 极严格的logits限制（BF16优化）
+            router_logits = torch.clamp(router_logits, min=-3.0, max=3.0)
 
             # 增强的数值稳定softmax
             max_logits = torch.max(router_logits, dim=-1, keepdim=True)[0]
             shifted_logits = router_logits - max_logits
-            shifted_logits = torch.clamp(shifted_logits, min=-15.0, max=0.0)
+            shifted_logits = torch.clamp(shifted_logits, min=-10.0, max=0.0)
 
             # 添加小的epsilon避免数值下溢
             epsilon = 1e-8
@@ -139,6 +148,10 @@ class MoERouter(nn.Module):
                 # 确保权重和为1
                 weights_sum = torch.sum(expert_weights, dim=-1, keepdim=True)
                 expert_weights = expert_weights / (weights_sum + epsilon)
+
+            # 转换为BF16
+            expert_weights = expert_weights.to(dtype=torch.bfloat16)
+            router_logits = router_logits.to(dtype=torch.bfloat16)
 
             return expert_weights, router_logits
 
@@ -212,8 +225,8 @@ class MoEFFNLoRA(nn.Module):
                 if isinstance(layer, nn.Linear):
                     nn.init.xavier_uniform_(layer.weight)
 
-        # 🔧 获取原始FFN的数据类型和设备，统一设置所有MoE组件
-        target_dtype = original_ffn.gate_proj.weight.dtype
+        # 🔧 强制使用BF16精度，避免FP16溢出
+        target_dtype = torch.bfloat16
         target_device = original_ffn.gate_proj.weight.device
 
         # 将所有MoE组件移动到正确设备和数据类型
