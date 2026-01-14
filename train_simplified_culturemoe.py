@@ -582,8 +582,8 @@ def train_epoch_simplified(model_adapter, train_loader, optimizer, device, token
             if batch_idx % 100 == 0:  # 每100个batch检查一次，避免过于频繁
                 _check_moe_weights_for_nan(model_adapter, batch_idx)
 
-            # 梯度裁剪防止梯度爆炸
-            torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=1.0)
+            # 🔧 增强梯度裁剪防止LoRA权重NaN（从1.0降至0.5）
+            torch.nn.utils.clip_grad_norm_(model_adapter.base_model.parameters(), max_norm=0.5)
 
             optimizer.step()
             optimizer.zero_grad()

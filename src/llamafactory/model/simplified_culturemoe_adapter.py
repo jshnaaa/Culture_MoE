@@ -22,8 +22,8 @@ class LoRAExpert(nn.Module):
         self.original_ffn = original_ffn  # 保持原始FFN不变
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
-        # 🔧 数值稳定性修复：限制scaling范围，避免梯度爆炸
-        self.scaling = min(lora_alpha / lora_rank, 1.0)  # 最大为1.0
+        # 🔧 修复：使用标准LoRA缩放因子，不限制上限
+        self.scaling = lora_alpha / lora_rank
 
         # 获取原始FFN的维度和数据类型
         self.hidden_dim = original_ffn.gate_proj.in_features

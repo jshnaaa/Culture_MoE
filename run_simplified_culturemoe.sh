@@ -286,7 +286,7 @@ echo ""
 # 内存优化的训练参数 - 针对新架构调整
 BATCH_SIZE=2              # 🔧 改回2以支持文化损失对比学习
 GRADIENT_ACCUMULATION=8   # 🔧 调整梯度累积，保持有效batch size=32
-LEARNING_RATE=1e-4        # 简化版使用单一学习率
+LEARNING_RATE=5e-5        # 🔧 降低学习率避免LoRA权重NaN（从1e-4降至5e-5）
 NUM_EPOCHS=5              # 🔧 减少到5轮
 
 # 动态设置max_seq_len：参考joint版本逻辑，进一步降低应对显存问题
