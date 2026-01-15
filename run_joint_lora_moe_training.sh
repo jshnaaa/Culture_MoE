@@ -16,17 +16,19 @@ USE_SHARED=${3:-"true"}   # 是否使用共享专家，默认为true
 USE_MASK=${4:-"true"}   # 是否启用MASK机制双路输入，默认为true
 USE_GATE=${5:-"true"}     # 是否使用MoE内部融合Gate，默认为true
 USE_CULTURE_LOSS=${6:-"csl"}  # ori/new/kl/csl/false，默认使用CSL文化相似性损失
-NUM_MOE_EXPERTS=${7:-"4"}  # MoE专家数量
-NUM_ACTIVATED_EXPERTS=${8:-"2"}  # 激活的专家数量，默认为top-2
-LORA_RANK=${9:-"16"}   # LoRA rank
-LORA_ALPHA=${10:-"32"}  # LoRA alpha
-USE_LORA=${11:-"true"}   # 是否启用预训练LoRA微调，默认为true
-NUM_GPUS=${12:-"2"}
+ALPHA=${7:-"0.01"}  # 负载均衡损失系数，默认为0.01
+BETA=${8:-"0.01"}   # 文化专注性损失CSL系数，默认为0.01
+NUM_MOE_EXPERTS=${9:-"4"}  # MoE专家数量
+NUM_ACTIVATED_EXPERTS=${10:-"2"}  # 激活的专家数量，默认为top-2
+LORA_RANK=${11:-"16"}   # LoRA rank
+LORA_ALPHA=${12:-"32"}  # LoRA alpha
+USE_LORA=${13:-"true"}   # 是否启用预训练LoRA微调，默认为true
+NUM_GPUS=${14:-"2"}
 
 
 # 检查参数
-if [ "$#" -gt 12 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_gate] [num_moe_experts] [use_culture_loss] [num_activated_experts] [use_lora] [use_mask] [num_gpus] [lora_rank] [lora_alpha]"
+if [ "$#" -gt 14 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss] [alpha] [beta] [num_moe_experts] [num_activated_experts] [lora_rank] [lora_alpha] [use_lora] [num_gpus]"
     exit 1
 fi
 
@@ -128,7 +130,9 @@ echo "  共享专家: $USE_SHARED"
 echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS (top-k激活，如果等于总专家数则为dense模式)"
-echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, csl=CSL三组件损失, false=仅L_aux)"
+echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_o, kl=KL散度L_o, csl=CSL两组件损失, false=仅L_aux)"
+echo "  损失函数权重: ALPHA=$ALPHA (负载均衡损失系数), BETA=$BETA (文化专注性损失CSL系数)"
+echo "  总损失公式: L_total = L_CE + ALPHA × L_aux + BETA × L_csl"
 echo "  启用预训练LoRA: $USE_LORA"
 echo "  启用MASK机制: $USE_MASK (true=双路输入处理, false=单路输入处理)"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
@@ -219,6 +223,8 @@ cat > "$OUTPUT_DIR/config.json" << EOF
         "moe_experts": $NUM_MOE_EXPERTS,
         "activated_experts": $NUM_ACTIVATED_EXPERTS,
         "use_culture_loss": $USE_CULTURE_LOSS,
+        "alpha": $ALPHA,
+        "beta": $BETA,
         "use_lora": $USE_LORA,
         "use_mask": $USE_MASK,
         "lora_rank": $LORA_RANK,
@@ -266,6 +272,8 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --num_moe_experts $NUM_MOE_EXPERTS \
         --num_activated_experts $NUM_ACTIVATED_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
+        --alpha $ALPHA \
+        --beta $BETA \
         --use_lora $USE_LORA \
         --use_mask $USE_MASK \
         --use_shared $USE_SHARED \
@@ -296,6 +304,8 @@ else
         --num_moe_experts $NUM_MOE_EXPERTS \
         --num_activated_experts $NUM_ACTIVATED_EXPERTS \
         --use_culture_loss $USE_CULTURE_LOSS \
+        --alpha $ALPHA \
+        --beta $BETA \
         --use_lora $USE_LORA \
         --use_mask $USE_MASK \
         --use_shared $USE_SHARED \

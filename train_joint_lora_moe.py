@@ -307,7 +307,8 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
 
 
 def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
-                     num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
+                     num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
+                     alpha=0.01, beta=0.01):
     """
     联合训练一个epoch：同时训练LoRA和MoE
     """
@@ -497,12 +498,12 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                     loss_weight=culture_loss_weight
                 )
 
-                # 组合总损失
+                # 组合总损失 (新公式: L_total = L_CE + ALPHA × L_aux + BETA × L_csl)
                 lm_loss = enhanced_loss_dict["L_h"]
                 aux_loss = enhanced_loss_dict["L_aux"]
                 csl_total_loss = csl_loss_dict["L_culture_total"]
 
-                total_batch_loss = lm_loss + aux_loss + csl_total_loss
+                total_batch_loss = lm_loss + alpha * aux_loss + beta * csl_total_loss
 
                 # 更新损失字典以包含CSL组件
                 enhanced_loss_dict["L_culture"] = csl_total_loss
@@ -565,8 +566,8 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             if moe_aux_loss is None:
                 moe_aux_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
 
-            # 简化的总损失
-            total_batch_loss = lm_loss + 0.01 * moe_aux_loss
+            # 简化的总损失 (新公式: L_total = L_CE + ALPHA × L_aux)
+            total_batch_loss = lm_loss + alpha * moe_aux_loss
             culture_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
 
             # 设置占位符变量用于进度条显示
@@ -684,7 +685,7 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
     }
 
 
-def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01):
+def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_loss=True, culture_loss_weight=0.01, alpha=0.01, beta=0.01):
     """
     联合模型验证
     """
@@ -823,7 +824,7 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
                 culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
 
                 lm_loss = lm_loss.to(dtype=torch.float16)
-                total_batch_loss = lm_loss + 0.01 * moe_aux_loss
+                total_batch_loss = lm_loss + alpha * moe_aux_loss
 
             # 检查总损失是否为NaN/Inf
             if torch.isnan(total_batch_loss) or torch.isinf(total_batch_loss):
@@ -973,6 +974,10 @@ def main():
                         help="Whether to use culture loss")
     parser.add_argument("--culture_loss_weight", type=float, default=0.01,
                         help="Culture loss weight")
+    parser.add_argument("--alpha", type=float, default=0.01,
+                        help="Load balancing loss coefficient")
+    parser.add_argument("--beta", type=float, default=0.01,
+                        help="Culture specialty loss CSL coefficient")
     parser.add_argument("--use_lora", type=str, default="true",
                         help="Whether to enable pre-trained LoRA fine-tuning")
     parser.add_argument("--use_mask", type=str, default="true",
@@ -1559,7 +1564,9 @@ def main():
             num_accumulation_steps=args.gradient_accumulation_steps,
             rank=rank,
             use_culture_loss=use_culture_loss,
-            culture_loss_weight=args.culture_loss_weight
+            culture_loss_weight=args.culture_loss_weight,
+            alpha=args.alpha,
+            beta=args.beta
         )
 
         if is_main_process(rank):
@@ -1592,7 +1599,9 @@ def main():
             val_metrics = evaluate_joint(
                 model, val_loader, device, tokenizer, rank=rank,
                 use_culture_loss=use_culture_loss,
-                culture_loss_weight=args.culture_loss_weight
+                culture_loss_weight=args.culture_loss_weight,
+                alpha=args.alpha,
+                beta=args.beta
             )
 
             # 生成答案并评估准确率（只在主进程执行）
