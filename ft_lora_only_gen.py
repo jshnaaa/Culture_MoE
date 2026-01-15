@@ -585,7 +585,7 @@ class CultureLLMNewFormatDataset(Dataset):
         return {
             'input_ids': input_ids,
             'attention_mask': attention_mask,
-            'labels': labels,
+            'culture_labels': labels,  # 🔧 修复：键名从'labels'改为'culture_labels'，与train_joint_lora_moe.py中的变量名匹配
             'input_ids_mask': input_ids_mask,
             'attention_mask_mask': attention_mask_mask,
             'instruction': instruction,

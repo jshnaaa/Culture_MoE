@@ -324,7 +324,7 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
     for batch_idx, batch in enumerate(pbar):
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
-        labels = batch['labels'].to(device)
+        labels = batch['culture_labels'].to(device)  # 🔧 修复：键名从'labels'改为'culture_labels'
 
         # 🔧 检查batch是否有有效的训练标签，如果没有则跳过
         total_valid_labels = (labels != -100).sum().item()
@@ -702,7 +702,7 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
         for batch_idx, batch in enumerate(pbar):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
-            labels = batch['labels'].to(device)
+            labels = batch['culture_labels'].to(device)  # 🔧 修复：键名从'labels'改为'culture_labels'
 
             # 🔧 检查batch是否有有效的训练标签，如果没有则跳过
             total_valid_labels = (labels != -100).sum().item()
