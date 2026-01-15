@@ -380,11 +380,9 @@ else
 fi
 
 # 构建eval命令参数
-EVAL_ARGS="--model_path \"$MODEL_PATH\" \
+EVAL_ARGS="--model_dir \"$MODEL_PATH\" \
     --base_model_path \"$BASE_MODEL_PATH\" \
-    --output_dir \"$OUTPUT_DIR\" \
-    --experiment_name \"$EXPERIMENT_NAME\" \
-    --max_length $MAX_LENGTH"
+    --output_file \"$OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}.json\""
 
 # 执行评估 - 支持多数据集分离测试
 EXPERIMENT_SUCCESS=0
@@ -414,28 +412,10 @@ print(split_info.get('data_path', ''))")
             echo "✅ 从split文件中获取${FIRST_DATASET_NAME}数据文件: $BLEND_DATA_FILE"
 
             # 构建第一个数据集评估参数
-            BLEND_EVAL_ARGS="--model_path \"$MODEL_PATH\" \
+            BLEND_EVAL_ARGS="--model_dir \"$MODEL_PATH\" \
                 --base_model_path \"$BASE_MODEL_PATH\" \
-                --output_dir \"$OUTPUT_DIR\" \
-                --experiment_name \"${EXPERIMENT_NAME}_${FIRST_DATASET_NAME}\" \
-                --use_fixed_split \
-                --split_file \"$BLEND_SPLIT_FILE\" \
-                --data_file \"$BLEND_DATA_FILE\" \
-                --max_length $MAX_LENGTH"
-
-            # 根据配置添加disable参数
-            if [ "$USE_SHARED" = "false" ]; then
-                BLEND_EVAL_ARGS="$BLEND_EVAL_ARGS --disable_shared"
-            fi
-            if [ "$USE_MASK" = "false" ]; then
-                BLEND_EVAL_ARGS="$BLEND_EVAL_ARGS --disable_mask"
-            fi
-            if [ "$USE_GATE" = "false" ]; then
-                BLEND_EVAL_ARGS="$BLEND_EVAL_ARGS --disable_gate"
-            fi
-            if [ "$USE_CULTURE_LOSS" = "false" ]; then
-                BLEND_EVAL_ARGS="$BLEND_EVAL_ARGS --disable_culture_loss"
-            fi
+                --data_split_file \"$BLEND_SPLIT_FILE\" \
+                --output_file \"$OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}_${FIRST_DATASET_NAME}.json\""
 
             # 执行第一个数据集评估
             eval "python eval_simplified_culturemoe.py $BLEND_EVAL_ARGS"
@@ -474,28 +454,10 @@ print(split_info.get('data_path', ''))")
             echo "✅ 从split文件中获取${SECOND_DATASET_NAME}数据文件: $CULTUREATLAS_DATA_FILE"
 
             # 构建第二个数据集评估参数
-            CULTUREATLAS_EVAL_ARGS="--model_path \"$MODEL_PATH\" \
+            CULTUREATLAS_EVAL_ARGS="--model_dir \"$MODEL_PATH\" \
                 --base_model_path \"$BASE_MODEL_PATH\" \
-                --output_dir \"$OUTPUT_DIR\" \
-                --experiment_name \"${EXPERIMENT_NAME}_${SECOND_DATASET_NAME}\" \
-                --use_fixed_split \
-                --split_file \"$CULTUREATLAS_SPLIT_FILE\" \
-                --data_file \"$CULTUREATLAS_DATA_FILE\" \
-                --max_length $MAX_LENGTH"
-
-            # 根据配置添加disable参数
-            if [ "$USE_SHARED" = "false" ]; then
-                CULTUREATLAS_EVAL_ARGS="$CULTUREATLAS_EVAL_ARGS --disable_shared"
-            fi
-            if [ "$USE_MASK" = "false" ]; then
-                CULTUREATLAS_EVAL_ARGS="$CULTUREATLAS_EVAL_ARGS --disable_mask"
-            fi
-            if [ "$USE_GATE" = "false" ]; then
-                CULTUREATLAS_EVAL_ARGS="$CULTUREATLAS_EVAL_ARGS --disable_gate"
-            fi
-            if [ "$USE_CULTURE_LOSS" = "false" ]; then
-                CULTUREATLAS_EVAL_ARGS="$CULTUREATLAS_EVAL_ARGS --disable_culture_loss"
-            fi
+                --data_split_file \"$CULTUREATLAS_SPLIT_FILE\" \
+                --output_file \"$OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}_${SECOND_DATASET_NAME}.json\""
 
             # 执行第二个数据集评估
             eval "python eval_simplified_culturemoe.py $CULTUREATLAS_EVAL_ARGS"
@@ -521,58 +483,21 @@ else
 
     # 根据数据模式添加不同的参数
     if [ "$USE_PKL_SPLIT" = "true" ]; then
-        # PKL模式：使用数据划分文件和固定分割
-        EVAL_ARGS="$EVAL_ARGS --use_fixed_split"
+        # PKL模式：使用数据划分文件
         if [ -n "$SPLIT_FILE" ]; then
-            EVAL_ARGS="$EVAL_ARGS --split_file \"$SPLIT_FILE\""
-
-            # 从split文件中提取原始数据文件路径
-            ORIGINAL_DATA_FILE=$(python -c "
-import pickle
-with open('$SPLIT_FILE', 'rb') as f:
-    split_info = pickle.load(f)
-print(split_info.get('data_path', ''))")
-
-            if [ -n "$ORIGINAL_DATA_FILE" ] && [ -f "$ORIGINAL_DATA_FILE" ]; then
-                EVAL_ARGS="$EVAL_ARGS --data_file \"$ORIGINAL_DATA_FILE\""
-                echo "✅ 从split文件中获取原始数据文件: $ORIGINAL_DATA_FILE"
-            else
-                echo "❌ 无法从split文件中获取有效的数据文件路径"
-                exit 1
-            fi
+            EVAL_ARGS="--model_dir \"$MODEL_PATH\" \
+                --base_model_path \"$BASE_MODEL_PATH\" \
+                --data_split_file \"$SPLIT_FILE\" \
+                --output_file \"$OUTPUT_DIR/evaluation_results_${EXPERIMENT_NAME}.json\""
         else
             echo "❌ PKL模式下未找到split文件"
             exit 1
         fi
     else
-        # 完整数据集模式：在整个数据集上进行推理测试，不进行划分
-        EVAL_ARGS="$EVAL_ARGS --data_file \"$DATA_FILE\""
-        # 通过设置val_split=1.0来使用完整数据集作为验证集
-        EVAL_ARGS="$EVAL_ARGS --val_split 1.0"
-        echo "📊 完整数据集模式：将在全部 $(python -c "import json; print(len(json.load(open('$DATA_FILE'))))" 2>/dev/null || echo "?") 条数据上进行推理测试"
-    fi
-
-    # 根据配置添加disable参数
-    if [ "$USE_SHARED" = "false" ]; then
-        EVAL_ARGS="$EVAL_ARGS --disable_shared"
-    fi
-
-    if [ "$USE_MASK" = "false" ]; then
-        EVAL_ARGS="$EVAL_ARGS --disable_mask"
-    fi
-
-    if [ "$USE_GATE" = "false" ]; then
-        EVAL_ARGS="$EVAL_ARGS --disable_gate"
-    fi
-
-    if [ "$USE_CULTURE_LOSS" = "false" ]; then
-        EVAL_ARGS="$EVAL_ARGS --disable_culture_loss"
-    fi
-
-    # 添加country分组参数（仅对DATA_ID=16）
-    if [ "$USE_COUNTRY_GROUPING" = "true" ]; then
-        EVAL_ARGS="$EVAL_ARGS --enable_country_grouping"
-        echo "🌍 启用country分组统计（blend数据集）"
+        # 完整数据集模式：需要手动创建data_split文件
+        echo "📊 完整数据集模式需要手动创建data_split_8_1_1.pkl文件"
+        echo "⚠️ 注意：完整数据集模式暂不支持，请使用PKL模式"
+        exit 1
     fi
 
     # 执行评估
