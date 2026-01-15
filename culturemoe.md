@@ -174,18 +174,17 @@ CSL是CultureMoE联合训练的核心创新，通过三个互补的损失组件�
 #### 4.1 总损失函数 (Total Loss)
 
 **总损失公式**:
-$$L_{total} = L_{generation} + \lambda \times (\alpha \times L_{aux} + \beta \times L_{culture})$$
+$$L_{total} = L_{generation} + \alpha \times L_{aux} + \beta \times L_{culture}$$
 
 其中：
 - $L_{generation}$: 主要生成损失（语言建模损失）
 - $L_{aux}$: 负载均衡损失（辅助损失）
-- $L_{culture}$: 文化损失（CSL三组件损失）
-- $\lambda$: 辅助损失总权重 (默认1.0)
-- $\alpha$: 负载均衡损失权重 (默认0.1)
-- $\beta$: 文化损失权重 (默认0.5)
+- $L_{culture}$: 文化损失（CSL两组件损失）
+- $\alpha$: 负载均衡损失系数 (默认0.01)
+- $\beta$: 文化损失权重 (默认0.01)
 
 当USE_CULTURE_LOSS=csl时，文化损失采用创新的CSL设计：
-$$L_{culture} = L_{culture\_router} + L_{culture\_share} + L_{culture\_sr}$$
+$$L_{culture} = L_{culture\_router} + L_{culture\_sr}$$
 
 #### 4.2 生成损失 (Generation Loss)
 
@@ -214,7 +213,7 @@ $$L_{balance}^{(l)} = \text{MSE}(\bar{u}^{(l)}, \frac{1}{E} \mathbf{1})$$
 - $E$: 专家数量
 - $\mathbf{1}$: 全1向量
 
-#### 4.4 CSL三组件损失
+#### 4.4 CSL两组件损失
 
 ##### 4.4.1 路由专家文化相似性损失 (L_culture_router)
 
@@ -229,19 +228,14 @@ $$L_{router}^{(i,j)} = \begin{cases}
 sim(wr_i, wr_j) & \text{if } cul_i \neq cul_j \text{ (惩罚相似)}
 \end{cases}$$
 
-##### 4.4.2 共享专家文化无关损失 (L_culture_share)
-
-**设计目标**: 不论文化是否相同，共享专家的输出表示都应尽可能一致，强制学习文化无关的表示。
-
-**数学公式**:
-$$L_{culture\_share} = \frac{1}{|P|} \sum_{(i,j) \in P} (1 - sim(es_i, es_j))$$
-
-##### 4.4.3 共享-路由专家解耦损失 (L_culture_sr)
+##### 4.4.2 共享-路由专家解耦损失 (L_culture_sr)
 
 **设计目标**: 对于同一个样本，共享专家和路由专家的输出表示应尽可能不同，促进互补学习。
 
 **数学公式**:
 $$L_{culture\_sr} = \frac{1}{B} \sum_{i=1}^{B} sim(es_i, er_i)$$
+
+**重要说明**: 已移除L_culture_share（共享专家文化无关损失）组件，CSL现在只包含两个组件：L_culture_router和L_culture_sr。
 
 ### 5. MASK机制与双路输入处理
 
@@ -312,6 +306,8 @@ JointLoRAMoEModel是联合训练版本的核心架构，实现了基础LoRA适�
 | use_mask | true | 是否启用MASK机制双路输入处理 |
 | use_gate | true | 是否使用门控网络 |
 | use_culture_loss | csl | 文化损失模式 (ori/new/kl/csl/false) |
+| alpha | 0.01 | 负载均衡损失系数 |
+| beta | 0.01 | 文化专注性损失CSL系数 |
 | num_moe_experts | 4 | MoE专家数量 |
 | num_activated_experts | 2 | 激活的专家数量 |
 | lora_rank | 16 | LoRA rank |
@@ -333,12 +329,12 @@ JointLoRAMoEModel是联合训练版本的核心架构，实现了基础LoRA适�
 | 损失类型 | 权重 | 描述 |
 |----------|------|------|
 | generation_loss | 1.0 | 主要生成损失 |
-| L_culture_router | β/3 | 路由专家文化相似性损失 |
-| L_culture_share | β/3 | 共享专家文化无关损失 |
-| L_culture_sr | β/3 | 共享-路由解耦损失 |
-| aux_loss | α | 辅助损失（负载均衡） |
+| L_culture_router | BETA | 路由专家文化相似性损失 |
+| L_culture_sr | BETA | 共享-路由解耦损失 |
+| L_culture_total | BETA | 文化专注性损失CSL（两组件） |
+| aux_loss | ALPHA | 辅助损失（负载均衡） |
 
-其中λ=1.0, α=0.1, β=0.5为默认权重配置。
+其中ALPHA=0.01（负载均衡损失系数），BETA=0.01（文化专注性损失CSL系数）为默认权重配置。
 
 ## 内存优化策略
 
@@ -391,18 +387,20 @@ DDP配置针对MoE特点优化：
 4. use_mask: 是否启用MASK机制
 5. use_gate: 是否启用门控网络
 6. use_culture_loss: 文化损失模式 (ori/new/kl/csl/false)
-7. num_moe_experts: MoE专家总数
-8. num_activated_experts: 激活专家数量
-9. lora_rank: LoRA秩
-10. lora_alpha: LoRA缩放参数
-11. use_lora: 是否启用基础LoRA训练
-12. num_gpus: 使用的GPU数量
+7. alpha: 负载均衡损失系数 (默认0.01)
+8. beta: 文化专注性损失CSL系数 (默认0.01)
+9. num_moe_experts: MoE专家总数
+10. num_activated_experts: 激活专家数量
+11. lora_rank: LoRA秩
+12. lora_alpha: LoRA缩放参数
+13. use_lora: 是否启用基础LoRA训练
+14. num_gpus: 使用的GPU数量
 
 ### 配置实验示例
 
 **启用CSL文化损失**:
 ```bash
-./run_joint_lora_moe_training.sh llama 2 true true true csl 4 2 16 32 true 2
+./run_joint_lora_moe_training.sh llama 2 true true true csl 0.01 0.01 4 2 16 32 true 2
 ```
 
 **使用传统文化损失**:
