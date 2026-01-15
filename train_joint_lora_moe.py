@@ -994,6 +994,8 @@ def main():
                         help="LoRA alpha")
     parser.add_argument("--lora_dropout", type=float, default=0.1,
                         help="LoRA dropout")
+    parser.add_argument("--pos_lora", type=str, default="att",
+                        help="LoRA position: att=attention layer, ffn=FFN layer (default: att)")
 
     parser.add_argument("--memory_efficient", action='store_true',
                         help="Enable memory efficient training")
@@ -1006,6 +1008,11 @@ def main():
     use_mask = args.use_mask.lower() == 'true'
     use_shared = args.use_shared.lower() == 'true'
     use_gate = args.use_gate.lower() == 'true'
+    # 🔧 根据pos_lora参数决定LoRA挂载位置
+    pos_lora = args.pos_lora.lower() if args.pos_lora else 'att'
+    if pos_lora not in ['att', 'ffn']:
+        print(f"⚠️ 无效的pos_lora参数: {pos_lora}，使用默认值'att'")
+        pos_lora = 'att'
 
     # 🔧 根据backbone和data_id组合设置MoE影响权重
     if args.backbone == "llama":

@@ -22,13 +22,14 @@ NUM_MOE_EXPERTS=${9:-"4"}  # MoE专家数量
 NUM_ACTIVATED_EXPERTS=${10:-"2"}  # 激活的专家数量，默认为top-2
 LORA_RANK=${11:-"16"}   # LoRA rank
 LORA_ALPHA=${12:-"32"}  # LoRA alpha
+POS_LORA=${15:-"att"}  # LoRA挂载位置：att=attention层, ffn=FFN层，默认为att
 USE_LORA=${13:-"true"}   # 是否启用预训练LoRA微调，默认为true
-NUM_GPUS=${14:-"2"}
+NUM_GPUS=${16:-"2"}
 
 
 # 检查参数
-if [ "$#" -gt 14 ]; then
-    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss] [alpha] [beta] [num_moe_experts] [num_activated_experts] [lora_rank] [lora_alpha] [use_lora] [num_gpus]"
+if [ "$#" -gt 15 ]; then
+    echo "❌ 参数过多！用法: $0 [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss] [alpha] [beta] [num_moe_experts] [num_activated_experts] [lora_rank] [lora_alpha] [pos_lora] [use_lora] [num_gpus]"
     exit 1
 fi
 
@@ -134,6 +135,7 @@ echo "  文化损失模式: $USE_CULTURE_LOSS (ori=原始L_o, new=文化感知L_
 echo "  损失函数权重: ALPHA=$ALPHA (负载均衡损失系数), BETA=$BETA (文化专注性损失CSL系数)"
 echo "  总损失公式: L_total = L_CE + ALPHA × L_aux + BETA × L_csl"
 echo "  启用预训练LoRA: $USE_LORA"
+echo "  LoRA挂载位置: $POS_LORA (att=attention层, ffn=FFN层，默认att)"
 echo "  启用MASK机制: $USE_MASK (true=双路输入处理, false=单路输入处理)"
 echo "  LoRA配置: rank=$LORA_RANK, alpha=$LORA_ALPHA"
 echo "  GPU: $NUM_GPUS卡"
@@ -280,6 +282,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --use_gate $USE_GATE \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
+        --pos_lora $POS_LORA \
         --eval_interval 1 \
         --memory_efficient \
         2>&1 | tee "$OUTPUT_DIR/training.log"
@@ -312,6 +315,7 @@ else
         --use_gate $USE_GATE \
         --lora_rank $LORA_RANK \
         --lora_alpha $LORA_ALPHA \
+        --pos_lora $POS_LORA \
         --eval_interval 1 \
         --memory_efficient \
         2>&1 | tee "$OUTPUT_DIR/training.log"

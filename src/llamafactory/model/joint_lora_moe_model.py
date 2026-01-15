@@ -27,6 +27,7 @@ class JointLoRAMoEConfig:
     lora_alpha: int = 32
     lora_dropout: float = 0.1
     lora_target_modules: List[str] = None
+    pos_lora: str = "att"  # LoRA挂载位置：att=attention层, ffn=FFN层
     use_lora: bool = True  # 是否启用预训练LoRA微调
 
     # MoE配置
@@ -803,6 +804,22 @@ class JointLoRAMoEModel(nn.Module):
 
     def _apply_lora(self):
         """应用LoRA到基础模型"""
+        # 🔧 根据pos_lora参数决定LoRA挂载位置
+        # pos_lora="att": LoRA挂在attention层（默认）
+        # pos_lora="ffn": LoRA挂在FFN层（即MoE专家层）
+        if self.config.pos_lora == "ffn":
+            # 当pos_lora="ffn"时，将MoE专家的LoRA也挂在attention层
+            # 这样整个joint moe模型包括六组挂在attention层的lora适配器
+            # 覆盖默认的attention层配置
+            self.config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+            if is_main_process(rank):
+                print(f"🔧 pos_lora=ffn: 将MoE专家LoRA也挂在attention层，共6组attention LoRA")
+        else:
+            # 默认情况或pos_lora="att"：LoRA挂在attention层
+            self.config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+            if is_main_process(rank):
+                print(f"🔧 pos_lora={self.config.pos_lora}: LoRA挂在attention层")
+
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=self.config.lora_rank,
@@ -1271,6 +1288,7 @@ class JointLoRAMoEModel(nn.Module):
             print(f"  - Base LoRA params: {base_lora_params:,}")
             print(f"  - MoE params: {moe_params:,}")
             print(f"  - Architecture: Joint LoRA + MoE (预训练LoRA + 专家LoRA)")
+            print(f"  - LoRA挂载位置: {self.config.pos_lora} (att=attention层, ffn=FFN层)")
         else:
             print(f"  - Base params (frozen): {total_params - trainable_params:,}")
             print(f"  - MoE params (trainable): {moe_params:,}")
@@ -1313,7 +1331,8 @@ class JointLoRAMoEModel(nn.Module):
             'moe_intermediate_dim': self.config.moe_intermediate_dim,
             'use_culture_loss': self.config.use_culture_loss,
             'culture_loss_weight': self.config.culture_loss_weight,
-            'dropout': self.config.dropout
+            'dropout': self.config.dropout,
+            'pos_lora': self.config.pos_lora,  # 🔧 新增：保存pos_lora配置
         }
 
         with open(config_path, 'w') as f:
