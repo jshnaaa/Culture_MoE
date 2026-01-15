@@ -287,7 +287,7 @@ echo ""
 BATCH_SIZE=2              # 🔧 改回2以支持文化损失对比学习
 GRADIENT_ACCUMULATION=8   # 🔧 调整梯度累积，保持有效batch size=32
 LEARNING_RATE=1e-5        # 🔧 平衡学习率：保持稳定性同时恢复学习能力（从5e-6提升到1e-5）
-NUM_EPOCHS=5              # 🔧 减少到5轮
+NUM_EPOCHS=12              # 🔧 减少到5轮
 
 # 动态设置max_seq_len：参考joint版本逻辑，进一步降低应对显存问题
 echo "🔧 调试信息: DATA_ID='$DATA_ID'"
