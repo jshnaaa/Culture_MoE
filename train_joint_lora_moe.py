@@ -1741,7 +1741,7 @@ def main():
         print("="*80)
 
     # 清理分布式训练
-    cleanup_distributed()
+    cleanup_distributed()  # 🔧 修复：拼写错误，应为cleanup_distributed
 
 
 if __name__ == "__main__":
