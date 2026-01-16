@@ -104,10 +104,10 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
     device = culture_labels.device if culture_labels is not None else torch.device('cuda')
     dtype = torch.float16
 
-    # 初始化损失组件（两组件版本）
-    L_culture_router = torch.tensor(0.0, device=device, dtype=dtype)
-    L_culture_share = torch.tensor(0.0, device=device, dtype=dtype)  # 保持为0，不再计算
-    L_culture_sr = torch.tensor(0.0, device=device, dtype=dtype)
+    # 初始化损失组件（两组件版本）- 使用requires_grad保持梯度
+    L_culture_router = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+    L_culture_share = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)  # 保持为0，不再计算
+    L_culture_sr = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
 
     # 输入验证
     if culture_labels is None:
@@ -131,9 +131,9 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
                     router_expert_outputs.unsqueeze(0)
                 )
                 if not (torch.isnan(similarity).any() or torch.isinf(similarity).any()):
-                    # 确保similarity是标量值，避免张量形状不匹配
-                    similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
-                    L_culture_sr = similarity_scalar * loss_weight
+                    # 保持tensor形式以维持梯度，取mean如果不是标量
+                    similarity_tensor = similarity if similarity.numel() == 1 else similarity.mean()
+                    L_culture_sr = similarity_tensor * loss_weight
 
         return {
             'L_culture_router': L_culture_router,
@@ -144,7 +144,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
 
     # 计算L_culture_router（路由专家文化相似性损失）
     if expert_weights is not None:
-        router_loss = torch.tensor(0.0, device=device, dtype=dtype)
+        router_loss = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
         count_router = 0
 
         for i in range(batch_size):
@@ -160,15 +160,15 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
                 if torch.isnan(similarity).any() or torch.isinf(similarity).any():
                     continue
 
-                # 确保similarity是标量值，避免张量形状不匹配
-                similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
+                # 保持tensor形式以维持梯度，取mean如果不是标量
+                similarity_tensor = similarity if similarity.numel() == 1 else similarity.mean()
 
                 if culture_labels[i] == culture_labels[j]:
                     # 相同文化，鼓励相似的专家权重
-                    router_loss += (1.0 - similarity_scalar)
+                    router_loss = router_loss + (1.0 - similarity_tensor)
                 else:
                     # 不同文化，惩罚相似的专家权重
-                    router_loss += similarity_scalar
+                    router_loss = router_loss + similarity_tensor
 
                 count_router += 1
 
@@ -185,7 +185,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
         print(f"🔍 CSL SR Debug: shared_shape={shared_expert_outputs.shape}, router_shape={router_expert_outputs.shape}")
         print(f"  Shared norm: {[torch.norm(shared_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
         print(f"  Router norm: {[torch.norm(router_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
-        sr_loss = torch.tensor(0.0, device=device, dtype=dtype)
+        sr_loss = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
         count_sr = 0
 
         for i in range(batch_size):
@@ -200,11 +200,11 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
             if torch.isnan(similarity).any() or torch.isinf(similarity).any():
                 continue
 
-            # 确保similarity是标量值，避免张量形状不匹配
-            similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
+            # 保持tensor形式以维持梯度，取mean如果不是标量
+            similarity_tensor = similarity if similarity.numel() == 1 else similarity.mean()
 
             # 惩罚同一样本的共享和路由专家输出相似性
-            sr_loss += similarity_scalar
+            sr_loss = sr_loss + similarity_tensor
             count_sr += 1
 
         if count_sr > 0:
@@ -251,7 +251,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
         return regularization_loss.to(dtype=torch.float16)
 
     # 统一使用float16以节省显存
-    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=True)
     count = 0
 
     # 计算同文化样本间的相似性和不同文化样本间的差异性
@@ -273,9 +273,9 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
                 if torch.isnan(similarity).any() or torch.isinf(similarity).any():
                     continue
 
-                # 确保similarity是标量值，避免广播问题
-                similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
-                culture_loss += (1.0 - similarity_scalar)
+                # 保持tensor形式以维持梯度，取mean如果不是标量
+                similarity_tensor = similarity if similarity.numel() == 1 else similarity.mean()
+                culture_loss = culture_loss + (1.0 - similarity_tensor)
             else:
                 # 不同文化，鼓励不同的专家权重
                 vec1 = expert_weights[i].unsqueeze(0)
@@ -291,9 +291,9 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
                 if torch.isnan(similarity).any() or torch.isinf(similarity).any():
                     continue
 
-                # 确保similarity是标量值，避免广播问题
-                similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
-                culture_loss += similarity_scalar
+                # 保持tensor形式以维持梯度，取mean如果不是标量
+                similarity_tensor = similarity if similarity.numel() == 1 else similarity.mean()
+                culture_loss = culture_loss + similarity_tensor
             count += 1
 
     if count > 0:
