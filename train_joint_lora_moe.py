@@ -183,10 +183,10 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
 
     # 计算L_culture_sr（共享-路由解耦损失）
     if shared_expert_outputs is not None and router_expert_outputs is not None:
-        # 🔧 调试：检查专家输出状态
-        print(f"🔍 CSL SR Debug: shared_shape={shared_expert_outputs.shape}, router_shape={router_expert_outputs.shape}")
-        print(f"  Shared norm: {[torch.norm(shared_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
-        print(f"  Router norm: {[torch.norm(router_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
+        # 🔧 调试：检查专家输出状态（仅在出现问题时输出）
+        # print(f"🔍 CSL SR Debug: shared_shape={shared_expert_outputs.shape}, router_shape={router_expert_outputs.shape}")
+        # print(f"  Shared norm: {[torch.norm(shared_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
+        # print(f"  Router norm: {[torch.norm(router_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
         sr_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
         count_sr = 0
 
@@ -511,30 +511,24 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
 
                 total_batch_loss = lm_loss + alpha * aux_loss + beta * csl_total_loss
 
-                # 🔧 调试信息：输出损失组件以验证beta参数作用
-                if batch_idx < 3 and rank == 0:  # 只在前几个batch和主进程输出
-                    print(f"🔍 Batch {batch_idx} CSL Loss Debug:")
-                    print(f"  LM Loss: {lm_loss.item():.6f}")
-                    print(f"  Aux Loss: {aux_loss.item():.6f} (alpha={alpha})")
-                    print(f"  CSL Total Loss: {csl_total_loss.item():.6f} (beta={beta})")
-                    print(f"  CSL Router Loss: {csl_loss_dict['L_culture_router'].item():.6f}")
-                    print(f"  CSL SR Loss: {csl_loss_dict['L_culture_sr'].item():.6f}")
-                    print(f"  Final Total Loss: {total_batch_loss.item():.6f}")
-                    print(f"  Beta contribution: {(beta * csl_total_loss).item():.6f}")
+                # 🔧 调试信息：仅在出现问题时输出
+                # if batch_idx < 3 and rank == 0:
+                #     print(f"🔍 Batch {batch_idx} CSL Loss Debug:")
+                #     print(f"  LM Loss: {lm_loss.item():.6f}")
+                #     print(f"  Aux Loss: {aux_loss.item():.6f} (alpha={alpha})")
+                #     print(f"  CSL Total Loss: {csl_total_loss.item():.6f} (beta={beta})")
+                #     print(f"  CSL Router Loss: {csl_loss_dict['L_culture_router'].item():.6f}")
+                #     print(f"  CSL SR Loss: {csl_loss_dict['L_culture_sr'].item():.6f}")
+                #     print(f"  Final Total Loss: {total_batch_loss.item():.6f}")
+                #     print(f"  Beta contribution: {(beta * csl_total_loss).item():.6f}")
+                #     if expert_weights is not None and culture_labels is not None:
+                #         print(f"  Expert weights shape: {expert_weights.shape}")
+                #         print(f"  Culture labels: {culture_labels.tolist()}")
+                #         print(f"  Expert weights mean: {expert_weights.mean(dim=1).tolist()}")
 
-                    # 🔧 新增：检查专家权重和文化标签
-                    if expert_weights is not None and culture_labels is not None:
-                        print(f"  Expert weights shape: {expert_weights.shape}")
-                        print(f"  Culture labels: {culture_labels.tolist()}")
-                        print(f"  Expert weights mean: {expert_weights.mean(dim=1).tolist()}")
-
-                    # 🔧 新增：检查CSL损失是否产生梯度
-                    if csl_total_loss.requires_grad:
-                        print(f"  CSL loss requires_grad: True")
-                    else:
-                        print(f"  ⚠️  CSL loss requires_grad: False (无梯度!)")
-
-                    # 🔧 新增：检查专家输出状态
+                # 🔧 关键检查：梯度连接问题（仅在出现问题时输出）
+                if not csl_total_loss.requires_grad and rank == 0:
+                    print(f"⚠️ Batch {batch_idx}: CSL loss requires_grad: False (无梯度!)")
                     shared_available = shared_expert_outputs is not None
                     router_available = router_expert_outputs is not None
                     print(f"  Shared expert output: {'Available' if shared_available else 'Missing'}")
