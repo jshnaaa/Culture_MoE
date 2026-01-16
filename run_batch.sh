@@ -1,46 +1,11 @@
-#echo "blend llama (with country field for grouping)"
-#bash run_ft_base.sh llama 161
-#echo "blend qwen (with country field for grouping)"
-#bash run_ft_base.sh qwen 161
-echo "blend rp llama (with country field for grouping)"
-bash run_ft_base.sh llama 162
-echo "blend rp qwen (with country field for grouping)"
-bash run_ft_base.sh qwen 162
-echo "blend joint llama (with country field for grouping)"
-bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 16
-
-#bash run_joint_lora_moe_training.sh qwen 24
-
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 0
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 0 true true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 0 true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 0 false
-
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 3
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 3 true true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 3 true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 3 false
-
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 5
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 5 true true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 5 true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 qwen 5 false
-
-#bash run_joint_lora_moe_training.sh llama 24
-
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 0
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 0 true true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 0 true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 0 false
-
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 3
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 3 true true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 3 true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 3 false
-
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 5
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 5 true true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 5 true false
-#bash run_eval_joint_culturemoe.sh /root/autodl-fs/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_gatetrue_masktrue_20260102_215142 llama 5 false
-
+echo "！！！0.005"
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.005_20260116_224500 llama 0
+echo "！！！0.01"
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.01_20260116_105251 llama 0
+echo "！！！0.02"
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.02_20260116_212428 llama 0
+echo "！！！0.05"
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.05_20260116_211442 llama 0
+echo "！！！0.1"
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.1_20260116_210344 llama 0
 shutdown
