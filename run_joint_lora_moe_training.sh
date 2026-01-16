@@ -276,6 +276,7 @@ if [ "$NUM_GPUS" -eq 1 ]; then
         --use_culture_loss $USE_CULTURE_LOSS \
         --alpha $ALPHA \
         --beta $BETA \
+        --culture_loss_weight $BETA \
         --use_lora $USE_LORA \
         --use_mask $USE_MASK \
         --use_shared $USE_SHARED \
@@ -309,6 +310,7 @@ else
         --use_culture_loss $USE_CULTURE_LOSS \
         --alpha $ALPHA \
         --beta $BETA \
+        --culture_loss_weight $BETA \
         --use_lora $USE_LORA \
         --use_mask $USE_MASK \
         --use_shared $USE_SHARED \

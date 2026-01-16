@@ -505,6 +505,17 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
 
                 total_batch_loss = lm_loss + alpha * aux_loss + beta * csl_total_loss
 
+                # 🔧 调试信息：输出损失组件以验证beta参数作用
+                if batch_idx < 3 and rank == 0:  # 只在前几个batch和主进程输出
+                    print(f"🔍 Batch {batch_idx} CSL Loss Debug:")
+                    print(f"  LM Loss: {lm_loss.item():.6f}")
+                    print(f"  Aux Loss: {aux_loss.item():.6f} (alpha={alpha})")
+                    print(f"  CSL Total Loss: {csl_total_loss.item():.6f} (beta={beta})")
+                    print(f"  CSL Router Loss: {csl_loss_dict['L_culture_router'].item():.6f}")
+                    print(f"  CSL SR Loss: {csl_loss_dict['L_culture_sr'].item():.6f}")
+                    print(f"  Final Total Loss: {total_batch_loss.item():.6f}")
+                    print(f"  Beta contribution: {(beta * csl_total_loss).item():.6f}")
+
                 # 更新损失字典以包含CSL组件
                 enhanced_loss_dict["L_culture"] = csl_total_loss
                 enhanced_loss_dict["L_culture_router"] = csl_loss_dict["L_culture_router"]
