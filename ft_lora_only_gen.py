@@ -638,7 +638,9 @@ def dynamic_padding_collate_fn(batch, tokenizer, max_seq_length=384):
     for item in batch:
         input_ids = item['input_ids']
         attention_mask = item['attention_mask']
-        labels = item['labels']
+        labels = item.get('labels', item.get('culture_labels'))  # 兼容两种键名
+        if labels is None:
+            raise KeyError(f"Neither 'labels' nor 'culture_labels' found in item. Available keys: {list(item.keys())}")
 
         # 处理mask版本的数据
         input_ids_mask = item.get('input_ids_mask', input_ids)  # 如果没有mask版本，使用原版本
