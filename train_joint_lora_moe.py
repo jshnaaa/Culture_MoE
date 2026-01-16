@@ -130,7 +130,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
                     shared_expert_outputs.unsqueeze(0),
                     router_expert_outputs.unsqueeze(0)
                 )
-                if not (torch.isnan(similarity) or torch.isinf(similarity)):
+                if not (torch.isnan(similarity).any() or torch.isinf(similarity).any()):
                     # 确保similarity是标量值，避免张量形状不匹配
                     similarity_scalar = similarity.item() if similarity.numel() == 1 else similarity.mean().item()
                     L_culture_sr = similarity_scalar * loss_weight
@@ -157,7 +157,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
                     continue
 
                 similarity = F.cosine_similarity(wr_i.unsqueeze(0), wr_j.unsqueeze(0))
-                if torch.isnan(similarity) or torch.isinf(similarity):
+                if torch.isnan(similarity).any() or torch.isinf(similarity).any():
                     continue
 
                 # 确保similarity是标量值，避免张量形状不匹配
@@ -197,7 +197,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
                 continue
 
             similarity = F.cosine_similarity(es_i.unsqueeze(0), er_i.unsqueeze(0))
-            if torch.isnan(similarity) or torch.isinf(similarity):
+            if torch.isnan(similarity).any() or torch.isinf(similarity).any():
                 continue
 
             # 确保similarity是标量值，避免张量形状不匹配
@@ -270,7 +270,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
 
                 similarity = F.cosine_similarity(vec1, vec2)
                 similarity = similarity.to(dtype=torch.float16)
-                if torch.isnan(similarity) or torch.isinf(similarity):
+                if torch.isnan(similarity).any() or torch.isinf(similarity).any():
                     continue
 
                 # 确保similarity是标量值，避免广播问题
@@ -288,7 +288,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
 
                 similarity = F.cosine_similarity(vec1, vec2)
                 similarity = similarity.to(dtype=torch.float16)
-                if torch.isnan(similarity) or torch.isinf(similarity):
+                if torch.isnan(similarity).any() or torch.isinf(similarity).any():
                     continue
 
                 # 确保similarity是标量值，避免广播问题
@@ -304,7 +304,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
         culture_loss = torch.tensor(culture_loss, device=culture_labels.device, dtype=torch.float16)
 
     # 检查文化损失是否为NaN/Inf，如果是则返回零损失
-    if torch.isnan(culture_loss) or torch.isinf(culture_loss):
+    if torch.isnan(culture_loss).any() or torch.isinf(culture_loss).any():
         culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
 
     return culture_loss
