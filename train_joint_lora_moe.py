@@ -181,6 +181,10 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
 
     # 计算L_culture_sr（共享-路由解耦损失）
     if shared_expert_outputs is not None and router_expert_outputs is not None:
+        # 🔧 调试：检查专家输出状态
+        print(f"🔍 CSL SR Debug: shared_shape={shared_expert_outputs.shape}, router_shape={router_expert_outputs.shape}")
+        print(f"  Shared norm: {[torch.norm(shared_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
+        print(f"  Router norm: {[torch.norm(router_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
         sr_loss = torch.tensor(0.0, device=device, dtype=dtype)
         count_sr = 0
 
@@ -503,7 +507,14 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 aux_loss = enhanced_loss_dict["L_aux"]
                 csl_total_loss = csl_loss_dict["L_culture_total"]
 
-                total_batch_loss = lm_loss + alpha * aux_loss + beta * csl_total_loss
+                # 🔧 增强CSL损失影响：如果CSL损失太小，进行放大
+                if csl_total_loss.item() < 0.1:  # 如果CSL损失小于0.1，放大10倍
+                    enhanced_csl_loss = csl_total_loss * 10.0
+                    print(f"🔧 CSL损失太小({csl_total_loss.item():.6f})，放大10倍至{enhanced_csl_loss.item():.6f}")
+                else:
+                    enhanced_csl_loss = csl_total_loss
+
+                total_batch_loss = lm_loss + alpha * aux_loss + beta * enhanced_csl_loss
 
                 # 🔧 调试信息：输出损失组件以验证beta参数作用
                 if batch_idx < 3 and rank == 0:  # 只在前几个batch和主进程输出
@@ -515,6 +526,24 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                     print(f"  CSL SR Loss: {csl_loss_dict['L_culture_sr'].item():.6f}")
                     print(f"  Final Total Loss: {total_batch_loss.item():.6f}")
                     print(f"  Beta contribution: {(beta * csl_total_loss).item():.6f}")
+
+                    # 🔧 新增：检查专家权重和文化标签
+                    if expert_weights is not None and culture_labels is not None:
+                        print(f"  Expert weights shape: {expert_weights.shape}")
+                        print(f"  Culture labels: {culture_labels.tolist()}")
+                        print(f"  Expert weights mean: {expert_weights.mean(dim=1).tolist()}")
+
+                    # 🔧 新增：检查CSL损失是否产生梯度
+                    if csl_total_loss.requires_grad:
+                        print(f"  CSL loss requires_grad: True")
+                    else:
+                        print(f"  ⚠️  CSL loss requires_grad: False (无梯度!)")
+
+                    # 🔧 新增：检查专家输出状态
+                    shared_available = shared_expert_outputs is not None
+                    router_available = router_expert_outputs is not None
+                    print(f"  Shared expert output: {'Available' if shared_available else 'Missing'}")
+                    print(f"  Router expert output: {'Available' if router_available else 'Missing'}")
 
                 # 更新损失字典以包含CSL组件
                 enhanced_loss_dict["L_culture"] = csl_total_loss
