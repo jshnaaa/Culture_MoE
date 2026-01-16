@@ -735,7 +735,7 @@ class MoELayer(nn.Module):
                 self.nan_count += 1
 
             # 返回增强损失所需的完整信息
-            return final_output, expert_weights, aux_loss, expert_outputs, soft_routing_scores, activated_experts
+            return final_output, expert_weights, aux_loss, expert_outputs, soft_routing_scores, activated_experts, shared_output, routing_output
 
         except Exception as e:
             print(f"⚠️ MoE layer completely failed: {e}, using fallback transformation")
@@ -758,7 +758,7 @@ class MoELayer(nn.Module):
             fallback_soft_routing_scores = expert_weights
             fallback_activated_experts = list(range(self.num_experts))
 
-            return fallback_output, expert_weights, aux_loss, fallback_expert_outputs, fallback_soft_routing_scores, fallback_activated_experts
+            return fallback_output, expert_weights, aux_loss, fallback_expert_outputs, fallback_soft_routing_scores, fallback_activated_experts, None, None
 
 
 class JointLoRAMoEModel(nn.Module):
@@ -954,7 +954,7 @@ class JointLoRAMoEModel(nn.Module):
 
         # 3. MoE层处理 - 增量架构实现，支持MASK机制的双路处理和推理时共享专家控制
         # print("🔧 启用增量MoE架构：MoE作为基础LoRA的增量调整")  # 减少日志
-        moe_delta, expert_weights, moe_aux_loss, expert_outputs, soft_routing_scores, activated_experts = self.moe_layer(
+        moe_delta, expert_weights, moe_aux_loss, expert_outputs, soft_routing_scores, activated_experts, shared_output, routing_output = self.moe_layer(
             hidden_states,
             mask_hidden_states=getattr(self, '_mask_hidden_states', None),
             use_shared=use_shared,
@@ -1209,6 +1209,9 @@ class JointLoRAMoEModel(nn.Module):
             'expert_outputs': expert_outputs,  # 激活专家的输出
             'soft_routing_scores': soft_routing_scores,  # 所有专家的soft routing分数
             'activated_experts': activated_experts,  # 被激活的专家索引列表
+            # 🔧 CSL损失计算所需的专家输出
+            'shared_expert_outputs': shared_output,  # 共享专家输出
+            'router_expert_outputs': routing_output,  # 路由专家输出
         })()
 
     def _get_regularization_loss(self):
