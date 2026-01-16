@@ -507,14 +507,7 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 aux_loss = enhanced_loss_dict["L_aux"]
                 csl_total_loss = csl_loss_dict["L_culture_total"]
 
-                # 🔧 增强CSL损失影响：如果CSL损失太小，进行放大
-                if csl_total_loss.item() < 0.1:  # 如果CSL损失小于0.1，放大10倍
-                    enhanced_csl_loss = csl_total_loss * 10.0
-                    print(f"🔧 CSL损失太小({csl_total_loss.item():.6f})，放大10倍至{enhanced_csl_loss.item():.6f}")
-                else:
-                    enhanced_csl_loss = csl_total_loss
-
-                total_batch_loss = lm_loss + alpha * aux_loss + beta * enhanced_csl_loss
+                total_batch_loss = lm_loss + alpha * aux_loss + beta * csl_total_loss
 
                 # 🔧 调试信息：输出损失组件以验证beta参数作用
                 if batch_idx < 3 and rank == 0:  # 只在前几个batch和主进程输出
