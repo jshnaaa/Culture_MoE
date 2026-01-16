@@ -8,6 +8,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import logging
@@ -16,6 +17,16 @@ try:
     from peft import LoraConfig, get_peft_model, TaskType
 except ImportError:
     raise ImportError("PEFT library is required. Please install with: pip install peft")
+
+
+def is_main_process(rank=None):
+    """检查是否为主进程"""
+    if rank is None:
+        if dist.is_initialized():
+            rank = dist.get_rank()
+        else:
+            rank = 0
+    return rank == 0
 
 
 @dataclass
@@ -812,12 +823,12 @@ class JointLoRAMoEModel(nn.Module):
             # 这样整个joint moe模型包括六组挂在attention层的lora适配器
             # 覆盖默认的attention层配置
             self.config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-            if is_main_process(rank):
+            if is_main_process():
                 print(f"🔧 pos_lora=ffn: 将MoE专家LoRA也挂在attention层，共6组attention LoRA")
         else:
             # 默认情况或pos_lora="att"：LoRA挂在attention层
             self.config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-            if is_main_process(rank):
+            if is_main_process():
                 print(f"🔧 pos_lora={self.config.pos_lora}: LoRA挂在attention层")
 
         lora_config = LoraConfig(
