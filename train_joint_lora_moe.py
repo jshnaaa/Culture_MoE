@@ -104,10 +104,12 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
     device = culture_labels.device if culture_labels is not None else torch.device('cuda')
     dtype = torch.float16
 
-    # 初始化损失组件（两组件版本）- 使用requires_grad保持梯度
-    L_culture_router = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
-    L_culture_share = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)  # 保持为0，不再计算
-    L_culture_sr = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+    # 初始化损失组件（两组件版本）
+    # 🔧 关键修复：使用torch.zeros()而不是torch.tensor()，避免创建需要梯度的叶子节点
+    # 当损失为0时，不应该有梯度，这样可以避免梯度计算图的问题
+    L_culture_router = torch.zeros(1, device=device, dtype=dtype).squeeze()
+    L_culture_share = torch.zeros(1, device=device, dtype=dtype).squeeze()  # 保持为0，不再计算
+    L_culture_sr = torch.zeros(1, device=device, dtype=dtype).squeeze()
 
     # 输入验证
     if culture_labels is None:
@@ -144,7 +146,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
 
     # 计算L_culture_router（路由专家文化相似性损失）
     if expert_weights is not None:
-        router_loss = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+        router_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
         count_router = 0
 
         for i in range(batch_size):
@@ -185,7 +187,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
         print(f"🔍 CSL SR Debug: shared_shape={shared_expert_outputs.shape}, router_shape={router_expert_outputs.shape}")
         print(f"  Shared norm: {[torch.norm(shared_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
         print(f"  Router norm: {[torch.norm(router_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
-        sr_loss = torch.tensor(0.0, device=device, dtype=dtype, requires_grad=True)
+        sr_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
         count_sr = 0
 
         for i in range(batch_size):
@@ -232,14 +234,14 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
         culture_loss: 文化损失
     """
     if expert_weights is None or culture_labels is None:
-        return torch.tensor(0.0, device=culture_labels.device if culture_labels is not None else torch.device('cuda'), dtype=torch.float16)
+        return torch.zeros(1, device=culture_labels.device if culture_labels is not None else torch.device('cuda'), dtype=torch.float16).squeeze()
 
     batch_size = expert_weights.shape[0]
 
     # 检查维度匹配
     if expert_weights.shape[0] != culture_labels.shape[0]:
         print(f"⚠️ Dimension mismatch: expert_weights.shape={expert_weights.shape}, culture_labels.shape={culture_labels.shape}")
-        return torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+        return torch.zeros(1, device=culture_labels.device, dtype=torch.float16).squeeze()
 
     if batch_size < 2:
         # 当batch_size=1时，使用专家权重的正则化损失来鼓励专家分化
@@ -251,7 +253,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
         return regularization_loss.to(dtype=torch.float16)
 
     # 统一使用float16以节省显存
-    culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16, requires_grad=True)
+    culture_loss = torch.zeros(1, device=culture_labels.device, dtype=torch.float16).squeeze()
     count = 0
 
     # 计算同文化样本间的相似性和不同文化样本间的差异性
@@ -305,7 +307,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
 
     # 检查文化损失是否为NaN/Inf，如果是则返回零损失
     if torch.isnan(culture_loss).any() or torch.isinf(culture_loss).any():
-        culture_loss = torch.tensor(0.0, device=culture_labels.device, dtype=torch.float16)
+        culture_loss = torch.zeros(1, device=culture_labels.device, dtype=torch.float16).squeeze()
 
     return culture_loss
 
@@ -597,16 +599,16 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             # 确保moe_aux_loss有梯度连接
             moe_aux_loss = getattr(outputs, 'moe_aux_loss', None)
             if moe_aux_loss is None:
-                moe_aux_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
+                moe_aux_loss = torch.zeros(1, device=device, dtype=lm_loss.dtype).squeeze()
 
             # 简化的总损失 (新公式: L_total = L_CE + ALPHA × L_aux)
             total_batch_loss = lm_loss + alpha * moe_aux_loss
-            culture_loss = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
+            culture_loss = torch.zeros(1, device=device, dtype=lm_loss.dtype).squeeze()
 
             # 设置占位符变量用于进度条显示
             l_balance = moe_aux_loss
-            l_o = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
-            l_v = torch.tensor(0.0, device=device, dtype=lm_loss.dtype, requires_grad=True)
+            l_o = torch.zeros(1, device=device, dtype=lm_loss.dtype).squeeze()
+            l_v = torch.zeros(1, device=device, dtype=lm_loss.dtype).squeeze()
 
         # 简化的梯度检查（仅在前3个batch）- 注释掉，专注tokenizer问题
         # if batch_idx < 3:
@@ -853,8 +855,8 @@ def evaluate_joint(model, val_loader, device, tokenizer, rank=0, use_culture_los
                 # 简化损失计算
                 lm_loss = outputs.loss
                 expert_weights = getattr(outputs, 'expert_weights', None)
-                moe_aux_loss = getattr(outputs, 'moe_aux_loss', torch.tensor(0.0, device=device, dtype=torch.float16))
-                culture_loss = torch.tensor(0.0, device=device, dtype=torch.float16)
+                moe_aux_loss = getattr(outputs, 'moe_aux_loss', torch.zeros(1, device=device, dtype=torch.float16).squeeze())
+                culture_loss = torch.zeros(1, device=device, dtype=torch.float16).squeeze()
 
                 lm_loss = lm_loss.to(dtype=torch.float16)
                 total_batch_loss = lm_loss + alpha * moe_aux_loss
