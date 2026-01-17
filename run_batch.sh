@@ -1,11 +1,16 @@
-echo "！！！0.005"
-bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.005_20260116_224500 llama 0
-echo "！！！0.01"
-bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.01_20260116_105251 llama 0
-echo "！！！0.02"
-bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.02_20260116_212428 llama 0
-echo "！！！0.05"
-bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.05_20260116_211442 llama 0
-echo "！！！0.1"
-bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.1_20260116_210344 llama 0
+echo "！！！dataid=0"
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.005_20260117_193749 llama 0
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.01_20260116_213411 llama 0
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.02_20260117_091527 llama 0
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.05_20260117_101125 llama 0
+echo "！！！dataid=3"
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.005_20260117_193749 llama 3
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.01_20260116_213411 llama 3
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.02_20260117_091527 llama 3
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.05_20260117_101125 llama 3
+echo "！！！dataid=5"
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.005_20260117_193749 llama 5
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.01_20260116_213411 llama 5
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.02_20260117_091527 llama 5
+bash run_eval_joint_culturemoe.sh /autodl-fs/data/joint_lora_moe/llama_CulturalBench_cultureLLM_sharedtrue_masktrue_gatetrue_losscsl_0.01_0.05_20260117_101125 llama 5
 shutdown
