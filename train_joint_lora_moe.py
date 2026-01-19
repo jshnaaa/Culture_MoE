@@ -114,11 +114,21 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
 
     # 输入验证
     if culture_labels is None:
+        # 🔧 根据which_csl参数构造L_culture_total
+        if which_csl == "all":
+            L_culture_total = L_culture_router + L_culture_sr
+        elif which_csl == "r":
+            L_culture_total = L_culture_router
+        elif which_csl == "sr":
+            L_culture_total = L_culture_sr
+        else:
+            L_culture_total = L_culture_router + L_culture_sr
+
         return {
             'L_culture_router': L_culture_router,
             'L_culture_share': L_culture_share,
             'L_culture_sr': L_culture_sr,
-            'L_culture_total': L_culture_router + L_culture_sr  # 两组件版本
+            'L_culture_total': L_culture_total
         }
 
     batch_size = culture_labels.shape[0]
@@ -138,11 +148,21 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
                     similarity_tensor = similarity if similarity.numel() == 1 else similarity.mean()
                     L_culture_sr = similarity_tensor * loss_weight
 
+        # 🔧 根据which_csl参数构造L_culture_total
+        if which_csl == "all":
+            L_culture_total = L_culture_router + L_culture_sr
+        elif which_csl == "r":
+            L_culture_total = L_culture_router
+        elif which_csl == "sr":
+            L_culture_total = L_culture_sr
+        else:
+            L_culture_total = L_culture_router + L_culture_sr
+
         return {
             'L_culture_router': L_culture_router,
             'L_culture_share': L_culture_share,
             'L_culture_sr': L_culture_sr,
-            'L_culture_total': L_culture_router + L_culture_sr  # 两组件版本
+            'L_culture_total': L_culture_total
         }
 
     # 计算L_culture_router（路由专家文化相似性损失）
@@ -215,12 +235,27 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
         if count_sr > 0:
             L_culture_sr = sr_loss / count_sr * loss_weight
 
+    # 🔧 根据which_csl参数构造L_culture_total，避免将零值张量加入梯度计算
+    # 这样可以确保梯度正确传播
+    if which_csl == "all":
+        # 使用所有组件
+        L_culture_total = L_culture_router + L_culture_sr
+    elif which_csl == "r":
+        # 仅使用router损失
+        L_culture_total = L_culture_router
+    elif which_csl == "sr":
+        # 仅使用SR损失
+        L_culture_total = L_culture_sr
+    else:
+        # 默认使用所有组件
+        L_culture_total = L_culture_router + L_culture_sr
+
     # 返回所有损失组件
     return {
         'L_culture_router': L_culture_router,
         'L_culture_share': L_culture_share,
         'L_culture_sr': L_culture_sr,
-        'L_culture_total': L_culture_router + L_culture_sr  # 两组件版本
+        'L_culture_total': L_culture_total
     }
 
 
