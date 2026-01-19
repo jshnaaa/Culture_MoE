@@ -82,7 +82,7 @@ def is_main_process(rank):
     return rank == 0
 
 
-def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_expert_outputs, culture_labels, loss_weight=0.01):
+def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_expert_outputs, culture_labels, loss_weight=0.01, which_csl="all"):
     """
     计算CSL文化相似性损失（两组件版本）
 
@@ -97,6 +97,7 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
         router_expert_outputs: 路由专家融合输出 [B, hidden_dim] (er_i)
         culture_labels: 文化标签 [B]
         loss_weight: 损失权重
+        which_csl: CSL损失组件选择 ("all"=router+sr, "r"=仅router, "sr"=仅sr)
 
     Returns:
         dict: 包含总损失和各组件损失的字典
@@ -145,7 +146,8 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
         }
 
     # 计算L_culture_router（路由专家文化相似性损失）
-    if expert_weights is not None:
+    # 根据which_csl参数决定是否计算
+    if expert_weights is not None and which_csl in ["all", "r"]:
         router_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
         count_router = 0
 
@@ -182,7 +184,8 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
     # L_culture_share保持为0
 
     # 计算L_culture_sr（共享-路由解耦损失）
-    if shared_expert_outputs is not None and router_expert_outputs is not None:
+    # 根据which_csl参数决定是否计算
+    if shared_expert_outputs is not None and router_expert_outputs is not None and which_csl in ["all", "sr"]:
         # 🔧 调试：检查专家输出状态（仅在出现问题时输出）
         # print(f"🔍 CSL SR Debug: shared_shape={shared_expert_outputs.shape}, router_shape={router_expert_outputs.shape}")
         # print(f"  Shared norm: {[torch.norm(shared_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
@@ -314,7 +317,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
 
 def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                      num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
-                     alpha=0.01, beta=0.01):
+                     alpha=0.01, beta=0.01, args=None):
     """
     联合训练一个epoch：同时训练LoRA和MoE
     """
@@ -501,7 +504,8 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                     shared_expert_outputs=shared_expert_outputs,
                     router_expert_outputs=router_expert_outputs,
                     culture_labels=culture_labels,
-                    loss_weight=culture_loss_weight
+                    loss_weight=culture_loss_weight,
+                    which_csl=args.which_csl
                 )
 
                 # 组合总损失 (新公式: L_total = L_CE + ALPHA × L_aux + BETA × L_csl)
@@ -1001,6 +1005,8 @@ def main():
                         help="Number of activated experts (top-k), if equal to num_moe_experts then dense mode")
     parser.add_argument("--use_culture_loss", type=str, default="new",
                         help="Whether to use culture loss")
+    parser.add_argument("--which_csl", type=str, default="all",
+                        help="CSL loss components: all=router+sr, r=router only, sr=sr only")
     parser.add_argument("--culture_loss_weight", type=float, default=0.01,
                         help="Culture loss weight")
     parser.add_argument("--alpha", type=float, default=0.01,
@@ -1602,7 +1608,8 @@ def main():
             use_culture_loss=use_culture_loss,
             culture_loss_weight=args.culture_loss_weight,
             alpha=args.alpha,
-            beta=args.beta
+            beta=args.beta,
+            args=args
         )
 
         if is_main_process(rank):
