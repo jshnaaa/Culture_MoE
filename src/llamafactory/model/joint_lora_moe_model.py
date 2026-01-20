@@ -539,7 +539,9 @@ class MoELayer(nn.Module):
                 routing_output = hidden_states
             else:
                 # 动态Top-k加权融合
-                routing_output = torch.zeros_like(hidden_states)
+                # 🔧 关键修复：使用 hidden_states * 0.0 而不是 torch.zeros_like()
+                # 这样可以确保 routing_output 从一开始就有梯度连接
+                routing_output = hidden_states * 0.0
                 total_weight = 0.0
 
                 for i in range(expert_weights.size(1)):  # 遍历所有专家
@@ -548,7 +550,8 @@ class MoELayer(nn.Module):
                         if i in expert_outputs:
                             weight = weight_val.unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
                             weight = torch.clamp(weight, min=0.0, max=1.0)
-                            routing_output += weight * expert_outputs[i]
+                            # 🔧 避免使用 in-place 操作 +=，改用普通加法以确保梯度正确传播
+                            routing_output = routing_output + weight * expert_outputs[i]
                             total_weight += weight_val.mean().item()
 
                 # 降低总权重阈值，避免过早使用passthrough
