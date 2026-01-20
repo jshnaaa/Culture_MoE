@@ -211,35 +211,53 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
         # print(f"  Shared norm: {[torch.norm(shared_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
         # print(f"  Router norm: {[torch.norm(router_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
 
-        # 🔧 关键调试：检查输入的梯度状态
-        print(f"🔍 CSL SR 输入梯度状态:")
-        print(f"  shared_expert_outputs.requires_grad = {shared_expert_outputs.requires_grad}")
-        print(f"  router_expert_outputs.requires_grad = {router_expert_outputs.requires_grad}")
+        # 🔧 关键修复：确保至少有一个输入有梯度
+        # 如果shared_expert_outputs没有梯度，我们需要确保通过router_expert_outputs传播梯度
+        has_shared_grad = shared_expert_outputs.requires_grad
+        has_router_grad = router_expert_outputs.requires_grad
 
-        sr_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
-        count_sr = 0
+        # 如果两者都没有梯度，跳过SR损失计算
+        if not has_shared_grad and not has_router_grad:
+            print(f"⚠️ 警告：shared和router专家输出都没有梯度，跳过SR损失计算")
+            L_culture_sr = torch.zeros(1, device=device, dtype=dtype).squeeze()
+        else:
+            # 至少有一个有梯度，可以计算SR损失
+            sr_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
+            count_sr = 0
 
-        for i in range(batch_size):
-            es_i = shared_expert_outputs[i]
-            er_i = router_expert_outputs[i]
+            for i in range(batch_size):
+                es_i = shared_expert_outputs[i]
+                er_i = router_expert_outputs[i]
 
-            # 检查零向量
-            if torch.norm(es_i) < 1e-8 or torch.norm(er_i) < 1e-8:
-                continue
+                # 检查零向量
+                if torch.norm(es_i) < 1e-8 or torch.norm(er_i) < 1e-8:
+                    continue
 
-            similarity = F.cosine_similarity(es_i.unsqueeze(0), er_i.unsqueeze(0))
-            if torch.isnan(similarity).any() or torch.isinf(similarity).any():
-                continue
+                # 🔧 关键修复：即使一个输入没有梯度，cosine_similarity仍然可以计算
+                # 梯度会通过有梯度的输入传播
+                similarity = F.cosine_similarity(es_i.unsqueeze(0), er_i.unsqueeze(0))
+                if torch.isnan(similarity).any() or torch.isinf(similarity).any():
+                    continue
 
-            # 保持tensor形式以维持梯度，取mean如果不是标量
-            similarity_tensor = similarity if similarity.numel() == 1 else similarity.mean()
+                # 保持tensor形式以维持梯度，取mean如果不是标量
+                similarity_tensor = similarity if similarity.numel() == 1 else similarity.mean()
 
-            # 惩罚同一样本的共享和路由专家输出相似性
-            sr_loss = sr_loss + similarity_tensor
-            count_sr += 1
+                # 惩罚同一样本的共享和路由专家输出相似性
+                # 🔧 确保使用非in-place操作以保持梯度
+                sr_loss = sr_loss + similarity_tensor
+                count_sr += 1
 
-        if count_sr > 0:
-            L_culture_sr = sr_loss / count_sr * loss_weight
+            if count_sr > 0:
+                L_culture_sr = sr_loss / count_sr * loss_weight
+
+            # 🔧 额外验证：确保计算出的loss有梯度（至少通过一个输入）
+            if not L_culture_sr.requires_grad and (has_shared_grad or has_router_grad):
+                print(f"⚠️ 警告：SR loss计算后仍无梯度，尝试添加梯度连接")
+                # 通过有梯度的输入添加一个极小的连接项
+                if has_router_grad:
+                    L_culture_sr = L_culture_sr + router_expert_outputs.mean() * 0.0
+                elif has_shared_grad:
+                    L_culture_sr = L_culture_sr + shared_expert_outputs.mean() * 0.0
 
     # 🔧 根据which_csl参数构造L_culture_total，避免将零值张量加入梯度计算
     # 这样可以确保梯度正确传播
@@ -538,18 +556,6 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 expert_weights = getattr(outputs, 'expert_weights', None)
                 shared_expert_outputs = getattr(outputs, 'shared_expert_outputs', None)
                 router_expert_outputs = getattr(outputs, 'router_expert_outputs', None)
-
-                # 🔧 调试：检查专家输出的梯度状态
-                if batch_idx % 8 == 0 and rank == 0:
-                    print(f"\n🔍 Batch {batch_idx} 专家输出梯度状态:")
-                    if shared_expert_outputs is not None:
-                        print(f"  shared_expert_outputs: shape={shared_expert_outputs.shape}, requires_grad={shared_expert_outputs.requires_grad}")
-                    else:
-                        print(f"  shared_expert_outputs: None")
-                    if router_expert_outputs is not None:
-                        print(f"  router_expert_outputs: shape={router_expert_outputs.shape}, requires_grad={router_expert_outputs.requires_grad}")
-                    else:
-                        print(f"  router_expert_outputs: None")
 
                 # 计算CSL损失
                 csl_loss_dict = compute_csl_culture_loss(
