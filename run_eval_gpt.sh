@@ -9,37 +9,57 @@ echo "使用OpenAI GPT作为baseline对比"
 echo "======================================="
 
 # 参数设置
-DATA_ID=${1}  # 数据集ID：2,3,4,5
-GPT_MODEL=${2:-"gpt-3.5-turbo"}  # GPT模型名称，默认gpt-3.5-turbo
-MAX_SAMPLES=${3}  # 可选：最大样本数（用于测试）
+DATA_ID=${1:-"2"}  # 数据集ID，默认2(CulturalBench)
+GPT_MODEL_INPUT=${2:-"4o"}  # GPT模型简化名，默认4o
+MAX_SAMPLES=${3:-"20"}  # 最大样本数，默认20（测试模式）
 
-# 检查参数
-if [ -z "$DATA_ID" ]; then
-    echo "❌ 缺少必需参数！"
-    echo "用法: $0 <data_id> [gpt_model] [max_samples]"
-    echo ""
-    echo "参数说明:"
-    echo "  data_id:     数据集ID (2=CulturalBench, 3=normad, 4=cultureLLM, 5=cultureAtlas)"
-    echo "  gpt_model:   GPT模型名称 (可选，默认: gpt-3.5-turbo)"
-    echo "               支持: gpt-3.5-turbo, gpt-4, gpt-4-turbo-preview 等"
-    echo "  max_samples: 最大评测样本数 (可选，用于快速测试)"
-    echo ""
-    echo "示例:"
-    echo "  $0 2                    # 使用gpt-3.5-turbo评测CulturalBench全部样本"
-    echo "  $0 2 gpt-4              # 使用gpt-4评测CulturalBench全部样本"
-    echo "  $0 2 gpt-3.5-turbo 100  # 使用gpt-3.5-turbo评测CulturalBench前100个样本"
-    exit 1
+# 🔧 模型名称映射：简化名 → OpenAI完整模型名
+case $GPT_MODEL_INPUT in
+    3.5)
+        GPT_MODEL="gpt-3.5-turbo"
+        MODEL_TAG="gpt35"
+        ;;
+    4o)
+        GPT_MODEL="gpt-4o"
+        MODEL_TAG="gpt4o"
+        ;;
+    4omini)
+        GPT_MODEL="gpt-4o-mini"
+        MODEL_TAG="gpt4omini"
+        ;;
+    *)
+        # 向后兼容：如果输入的是完整模型名，直接使用
+        GPT_MODEL="$GPT_MODEL_INPUT"
+        MODEL_TAG=$(echo "$GPT_MODEL" | tr '.' '_' | tr '-' '_')
+        echo "ℹ️  使用完整模型名: $GPT_MODEL"
+        ;;
+esac
+
+# 🔧 设置API KEY（优先使用环境变量，如果不存在则使用硬编码值）
+# ⚠️  注意：硬编码API KEY存在安全风险，建议仅在私有环境使用
+if [ -z "$OPENAI_API_KEY" ]; then
+    export OPENAI_API_KEY="YOUR_API_KEY_HERE"
+    echo "ℹ️  使用脚本内置API KEY"
 fi
 
-# 检查OPENAI_API_KEY环境变量
-if [ -z "$OPENAI_API_KEY" ]; then
-    echo "❌ 错误: 未设置OPENAI_API_KEY环境变量"
+# 显示帮助信息（可选，使用 -h 或 --help 触发）
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "用法: $0 [data_id] [gpt_model] [max_samples]"
     echo ""
-    echo "请先设置API KEY:"
-    echo "  export OPENAI_API_KEY='your-api-key-here'"
+    echo "参数说明（所有参数都是可选的）:"
+    echo "  data_id:     数据集ID (默认: 2)"
+    echo "               2=CulturalBench, 3=normad, 4=cultureLLM, 5=cultureAtlas"
+    echo "  gpt_model:   GPT模型简化名 (默认: 4o)"
+    echo "               3.5=gpt-3.5-turbo, 4o=gpt-4o, 4omini=gpt-4o-mini"
+    echo "  max_samples: 最大评测样本数 (默认: 20，用于快速测试)"
     echo ""
-    echo "获取API KEY: https://platform.openai.com/api-keys"
-    exit 1
+    echo "示例:"
+    echo "  $0                      # 使用所有默认值 (DATA_ID=2, GPT_MODEL=4o, MAX_SAMPLES=20)"
+    echo "  $0 2                    # 评测CulturalBench，使用gpt-4o，20个样本"
+    echo "  $0 3 3.5                # 评测normad，使用gpt-3.5-turbo，20个样本"
+    echo "  $0 4 4omini 100         # 评测cultureLLM，使用gpt-4o-mini，100个样本"
+    echo "  $0 2 4o 0               # 评测CulturalBench全部样本（MAX_SAMPLES=0表示全部）"
+    exit 0
 fi
 
 # 设置数据文件路径
@@ -80,18 +100,18 @@ fi
 
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-MODEL_TAG=$(echo "$GPT_MODEL" | tr '.' '_' | tr '-' '_')  # 将模型名中的.和-替换为_
 OUTPUT_DIR="/root/autodl-fs/gpt_eval_results/${MODEL_TAG}_${DATASET_TAG}_${TIMESTAMP}"
 
 echo ""
 echo "配置信息:"
-echo "  GPT模型: $GPT_MODEL"
-echo "  数据集: $DATASET_TAG"
+echo "  模型简化名: $GPT_MODEL_INPUT"
+echo "  实际模型: $GPT_MODEL"
+echo "  数据集: $DATASET_TAG (DATA_ID=$DATA_ID)"
 echo "  数据文件: $TRAIN_FILE"
-if [ -n "$MAX_SAMPLES" ]; then
-    echo "  最大样本数: $MAX_SAMPLES (测试模式)"
-else
+if [ "$MAX_SAMPLES" = "0" ] || [ -z "$MAX_SAMPLES" ]; then
     echo "  最大样本数: 全部 (完整评测)"
+else
+    echo "  最大样本数: $MAX_SAMPLES (测试模式)"
 fi
 echo "  输出目录: $OUTPUT_DIR"
 echo ""
@@ -103,13 +123,14 @@ mkdir -p "$OUTPUT_DIR"
 cat > "$OUTPUT_DIR/eval_config.json" << EOF
 {
     "eval_type": "gpt_api_baseline",
-    "model": "$GPT_MODEL",
+    "model_input": "$GPT_MODEL_INPUT",
+    "model_actual": "$GPT_MODEL",
     "dataset": {
         "data_id": "$DATA_ID",
         "dataset_tag": "$DATASET_TAG",
         "data_file": "$TRAIN_FILE"
     },
-    "max_samples": $(if [ -n "$MAX_SAMPLES" ]; then echo "$MAX_SAMPLES"; else echo "null"; fi),
+    "max_samples": $(if [ "$MAX_SAMPLES" = "0" ]; then echo "null"; else echo "$MAX_SAMPLES"; fi),
     "timestamp": "$TIMESTAMP"
 }
 EOF
@@ -123,8 +144,8 @@ PYTHON_CMD="python eval_gpt.py \
     --output_dir \"$OUTPUT_DIR\" \
     --model_name \"$GPT_MODEL\""
 
-# 添加可选参数
-if [ -n "$MAX_SAMPLES" ]; then
+# 添加可选参数（MAX_SAMPLES=0表示全部，不传递给Python脚本）
+if [ "$MAX_SAMPLES" != "0" ] && [ -n "$MAX_SAMPLES" ]; then
     PYTHON_CMD="$PYTHON_CMD --max_samples $MAX_SAMPLES"
 fi
 
