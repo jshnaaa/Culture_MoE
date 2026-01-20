@@ -168,8 +168,8 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
     # 计算L_culture_router（路由专家文化相似性损失）
     # 根据which_csl参数决定是否计算
     if expert_weights is not None and which_csl in ["all", "r"]:
-        router_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
-        count_router = 0
+        # 🔧 关键修复：使用列表收集所有loss项，避免torch.zeros()初始化导致的梯度丢失
+        router_losses = []
 
         for i in range(batch_size):
             for j in range(i + 1, batch_size):
@@ -189,15 +189,17 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
 
                 if culture_labels[i] == culture_labels[j]:
                     # 相同文化，鼓励相似的专家权重
-                    router_loss = router_loss + (1.0 - similarity_tensor)
+                    router_losses.append(1.0 - similarity_tensor)
                 else:
                     # 不同文化，惩罚相似的专家权重
-                    router_loss = router_loss + similarity_tensor
+                    router_losses.append(similarity_tensor)
 
-                count_router += 1
-
-        if count_router > 0:
-            L_culture_router = router_loss / count_router * loss_weight
+        # 🔧 使用torch.stack()计算平均值，确保梯度连接
+        if len(router_losses) > 0:
+            L_culture_router = torch.stack(router_losses).mean() * loss_weight
+        else:
+            # 没有有效样本对时，返回零值
+            L_culture_router = torch.zeros(1, device=device, dtype=dtype).squeeze()
 
     # L_culture_share组件已移除（共享专家文化无关损失）
     # 根据用户要求，CSL现在只包含两个组件：L_culture_router和L_culture_sr
@@ -222,8 +224,8 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
             L_culture_sr = torch.zeros(1, device=device, dtype=dtype).squeeze()
         else:
             # 至少有一个有梯度，可以计算SR损失
-            sr_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
-            count_sr = 0
+            # 🔧 关键修复：使用列表收集所有similarity，避免torch.zeros()初始化导致的梯度丢失
+            similarities = []
 
             for i in range(batch_size):
                 es_i = shared_expert_outputs[i]
@@ -242,22 +244,16 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
                 # 保持tensor形式以维持梯度，取mean如果不是标量
                 similarity_tensor = similarity if similarity.numel() == 1 else similarity.mean()
 
-                # 惩罚同一样本的共享和路由专家输出相似性
-                # 🔧 确保使用非in-place操作以保持梯度
-                sr_loss = sr_loss + similarity_tensor
-                count_sr += 1
+                # 收集similarity用于后续计算
+                similarities.append(similarity_tensor)
 
-            if count_sr > 0:
-                L_culture_sr = sr_loss / count_sr * loss_weight
-
-            # 🔧 额外验证：确保计算出的loss有梯度（至少通过一个输入）
-            if not L_culture_sr.requires_grad and (has_shared_grad or has_router_grad):
-                print(f"⚠️ 警告：SR loss计算后仍无梯度，尝试添加梯度连接")
-                # 通过有梯度的输入添加一个极小的连接项
-                if has_router_grad:
-                    L_culture_sr = L_culture_sr + router_expert_outputs.mean() * 0.0
-                elif has_shared_grad:
-                    L_culture_sr = L_culture_sr + shared_expert_outputs.mean() * 0.0
+            # 🔧 使用torch.stack()计算平均值，确保梯度连接
+            if len(similarities) > 0:
+                # torch.stack()会创建新张量并保持梯度连接
+                L_culture_sr = torch.stack(similarities).mean() * loss_weight
+            else:
+                # 没有有效样本时，返回零值（但这种情况很少见）
+                L_culture_sr = torch.zeros(1, device=device, dtype=dtype).squeeze()
 
     # 🔧 根据which_csl参数构造L_culture_total，避免将零值张量加入梯度计算
     # 这样可以确保梯度正确传播
