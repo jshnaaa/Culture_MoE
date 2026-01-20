@@ -117,7 +117,7 @@ fi
 
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="/root/autodl-fs/joint_lora_moe/${MODEL_NAME}_${DATASET_TAG}_shared${USE_SHARED}_mask${USE_MASK}_gate${USE_GATE}_loss${USE_CULTURE_LOSS}_${ALPHA}_${BETA}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/joint_lora_moe/${MODEL_NAME}_${DATASET_TAG}_shared${USE_SHARED}_mask${USE_MASK}_gate${USE_GATE}_loss${USE_CULTURE_LOSS}_${WHICH_CSL}_${ALPHA}_${BETA}_${TIMESTAMP}"
 
 echo "配置信息:"
 echo "  模型: $MODEL_NAME ($BASE_MODEL)"

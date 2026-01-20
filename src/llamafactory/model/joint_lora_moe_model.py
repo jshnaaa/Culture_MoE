@@ -436,6 +436,11 @@ class MoELayer(nn.Module):
         self.total_forward_calls += 1
         current_nan_detected = False
 
+        # 🔧 关键修复：初始化 shared_output 和 routing_output
+        # 确保它们始终有定义，且有梯度连接
+        shared_output = None
+        routing_output = None
+
         try:
             # 移除过度严格的输入限制，只检查NaN/Inf
             if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
@@ -676,6 +681,8 @@ class MoELayer(nn.Module):
             else:
                 # 不使用共享专家
                 final_output = routing_output
+                # 🔧 关键修复：当不使用共享专家时，shared_output 保持为 None
+                shared_output = None
                 if use_shared_actual is False:
                     # print("🔧 消融研究模式: 推理时禁用共享专家和MASK分化机制 (use_shared=False)")
                     pass

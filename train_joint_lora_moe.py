@@ -210,6 +210,12 @@ def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_exper
         # print(f"🔍 CSL SR Debug: shared_shape={shared_expert_outputs.shape}, router_shape={router_expert_outputs.shape}")
         # print(f"  Shared norm: {[torch.norm(shared_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
         # print(f"  Router norm: {[torch.norm(router_expert_outputs[i]).item() for i in range(min(3, batch_size))]}")
+
+        # 🔧 关键调试：检查输入的梯度状态
+        print(f"🔍 CSL SR 输入梯度状态:")
+        print(f"  shared_expert_outputs.requires_grad = {shared_expert_outputs.requires_grad}")
+        print(f"  router_expert_outputs.requires_grad = {router_expert_outputs.requires_grad}")
+
         sr_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
         count_sr = 0
 
@@ -532,6 +538,18 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                 expert_weights = getattr(outputs, 'expert_weights', None)
                 shared_expert_outputs = getattr(outputs, 'shared_expert_outputs', None)
                 router_expert_outputs = getattr(outputs, 'router_expert_outputs', None)
+
+                # 🔧 调试：检查专家输出的梯度状态
+                if batch_idx % 8 == 0 and rank == 0:
+                    print(f"\n🔍 Batch {batch_idx} 专家输出梯度状态:")
+                    if shared_expert_outputs is not None:
+                        print(f"  shared_expert_outputs: shape={shared_expert_outputs.shape}, requires_grad={shared_expert_outputs.requires_grad}")
+                    else:
+                        print(f"  shared_expert_outputs: None")
+                    if router_expert_outputs is not None:
+                        print(f"  router_expert_outputs: shape={router_expert_outputs.shape}, requires_grad={router_expert_outputs.requires_grad}")
+                    else:
+                        print(f"  router_expert_outputs: None")
 
                 # 计算CSL损失
                 csl_loss_dict = compute_csl_culture_loss(
