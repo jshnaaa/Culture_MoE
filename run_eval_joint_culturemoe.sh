@@ -14,16 +14,17 @@ MODEL_PATH=${1}  # 默认联合训练模型根目录
 BACKBONE=${2:-"llama"}  # 模型骨干：llama/qwen
 DATA_ID=${3:-"0"}  # 数据集ID，0=使用pkl文件，1-5=使用完整数据集
 USE_SHARED=${4:-"true"}  # 是否使用共享专家，支持消融评估
-USE_MASK=${5:-"true"}   # 是否启用MASK机制，支持消融评估
-USE_GATE=${6:-"true"}   # 是否使用MoE内部融合Gate，支持消融评估(false=固定权重0.5:0.5)
-USE_CULTURE_LOSS=${7:-"csl"}  # 文化损失类型
-NUM_MOE_EXPERTS=${8:-"4"}  # MoE专家数量
-NUM_ACTIVATED_EXPERTS=${9:-"2"}  # 激活的专家数量
-NUM_GPUS=${10:-"1"}  # GPU数量
+USE_MOE=${5:-"true"}   # 是否使用MoE结构（router+路由专家），默认为true；false时仅使用shared专家（消融实验）
+USE_MASK=${6:-"true"}   # 是否启用MASK机制，支持消融评估
+USE_GATE=${7:-"true"}   # 是否使用MoE内部融合Gate，支持消融评估(false=固定权重0.5:0.5)
+USE_CULTURE_LOSS=${8:-"csl"}  # 文化损失类型
+NUM_MOE_EXPERTS=${9:-"4"}  # MoE专家数量
+NUM_ACTIVATED_EXPERTS=${10:-"2"}  # 激活的专家数量
+NUM_GPUS=${11:-"1"}  # GPU数量
 
 # 检查参数
-if [ "$#" -gt 10 ]; then
-    echo "❌ 参数过多！用法: $0 [model_path] [backbone] [data_id] [use_shared] [use_mask] [use_gate] [use_culture_loss] [num_moe_experts] [num_activated_experts] [num_gpus]"
+if [ "$#" -gt 11 ]; then
+    echo "❌ 参数过多！用法: $0 [model_path] [backbone] [data_id] [use_shared] [use_moe] [use_mask] [use_gate] [use_culture_loss] [num_moe_experts] [num_activated_experts] [num_gpus]"
     exit 1
 fi
 
@@ -213,7 +214,7 @@ echo "🔧 最终MAX_SEQ_LEN设置为: $MAX_SEQ_LEN"
 
 # 设置输出目录
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="/root/autodl-fs/joint_eval_results/${MODEL_NAME}_${DATASET_TAG}_SHARED${USE_SHARED}_MASK_${USE_MASK}_GATE${USE_GATE}_CULTURELOSS_${USE_CULTURE_LOSS}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/joint_eval_results/${MODEL_NAME}_${DATASET_TAG}_SHARED${USE_SHARED}_MOE${USE_MOE}_MASK_${USE_MASK}_GATE${USE_GATE}_CULTURELOSS_${USE_CULTURE_LOSS}_${TIMESTAMP}"
 
 echo ""
 echo "评估配置信息:"
@@ -226,6 +227,7 @@ else
     echo "  数据来源: 完整数据集 ($TRAIN_FILE)"
 fi
 echo "  共享专家: $USE_SHARED"
+echo "  MoE结构: $USE_MOE (消融评估: false=仅使用shared专家，跳过router+路由专家)"
 echo "  MoE内部Gate: $USE_GATE"
 echo "  MoE专家数: $NUM_MOE_EXPERTS"
 echo "  激活专家数: $NUM_ACTIVATED_EXPERTS"
@@ -259,6 +261,7 @@ cat > "$OUTPUT_DIR/eval_config.json" << EOF
     },
     "model_params": {
         "use_shared_expert": $USE_SHARED,
+        "use_moe_structure": $USE_MOE,
         "use_moe_gate": $USE_GATE,
         "moe_experts": $NUM_MOE_EXPERTS,
         "activated_experts": $NUM_ACTIVATED_EXPERTS,
@@ -321,6 +324,7 @@ if [ "$DATA_ID" = "0" ] && [ $(echo "$PKL_FILES" | wc -w) -gt 1 ]; then
                 --num_moe_experts "$NUM_MOE_EXPERTS" \
                 --num_activated_experts "$NUM_ACTIVATED_EXPERTS" \
                 --use_shared "$USE_SHARED" \
+                --use_moe "$USE_MOE" \
                 --use_gate "$USE_GATE" \
                 --use_culture_loss "$USE_CULTURE_LOSS" \
                 --use_mask "$USE_MASK" \
@@ -343,6 +347,7 @@ if [ "$DATA_ID" = "0" ] && [ $(echo "$PKL_FILES" | wc -w) -gt 1 ]; then
                 --num_moe_experts "$NUM_MOE_EXPERTS" \
                 --num_activated_experts "$NUM_ACTIVATED_EXPERTS" \
                 --use_shared "$USE_SHARED" \
+                --use_moe "$USE_MOE" \
                 --use_gate "$USE_GATE" \
                 --use_culture_loss "$USE_CULTURE_LOSS" \
                 --use_mask "$USE_MASK" \
@@ -396,6 +401,7 @@ else
             --num_moe_experts "$NUM_MOE_EXPERTS" \
             --num_activated_experts "$NUM_ACTIVATED_EXPERTS" \
             --use_shared "$USE_SHARED" \
+            --use_moe "$USE_MOE" \
             --use_gate "$USE_GATE" \
             --use_culture_loss "$USE_CULTURE_LOSS" \
             --use_mask "$USE_MASK" \
@@ -418,6 +424,7 @@ else
             --num_moe_experts "$NUM_MOE_EXPERTS" \
             --num_activated_experts "$NUM_ACTIVATED_EXPERTS" \
             --use_shared "$USE_SHARED" \
+            --use_moe "$USE_MOE" \
             --use_gate "$USE_GATE" \
             --use_culture_loss "$USE_CULTURE_LOSS" \
             --use_mask "$USE_MASK" \

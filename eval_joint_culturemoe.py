@@ -51,7 +51,8 @@ from ft_lora_only_gen import (
 
 def generate_answer_with_shared_control(model, tokenizer, instruction: str, input_text: str,
                                       instruction_mask: str = None, device: str = 'cuda',
-                                      use_mask: bool = True, use_shared: bool = None, use_gate: bool = None,
+                                      use_mask: bool = True, use_shared: bool = None,
+                                      use_moe: bool = None, use_gate: bool = None,
                                       max_new_tokens: int = 5) -> str:
     """
     支持推理时共享专家控制的生成答案函数
@@ -65,6 +66,7 @@ def generate_answer_with_shared_control(model, tokenizer, instruction: str, inpu
         device: 设备
         use_mask: 是否启用MASK机制
         use_shared: 推理时是否使用共享专家（None使用训练配置，True/False覆盖配置进行消融研究）
+        use_moe: 推理时是否使用MoE结构（None使用训练配置，False=仅使用shared专家，跳过router+路由专家）
         use_gate: 推理时是否使用门控网络（None使用训练配置，True/False覆盖配置进行消融研究）
         max_new_tokens: 最大生成token数
 
@@ -132,6 +134,8 @@ def generate_answer_with_shared_control(model, tokenizer, instruction: str, inpu
                 # 🔧 关键：传递推理时消融控制参数
                 if use_shared is not None:
                     generate_kwargs['use_shared'] = use_shared
+                if use_moe is not None:
+                    generate_kwargs['use_moe'] = use_moe
                 if use_gate is not None:
                     generate_kwargs['use_gate'] = use_gate
 
@@ -606,7 +610,7 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     return joint_model
 
 
-def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True, use_shared=None, use_gate=None, group_by_country=False):
+def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True, use_shared=None, use_moe=None, use_gate=None, group_by_country=False):
     """
     🔧 修复版本：评估联合模型，支持MASK机制双路输入和推理时消融控制
 
@@ -689,11 +693,12 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
                     instruction_mask = batch.instruction_mask[i] if hasattr(batch.instruction_mask, '__getitem__') else batch.instruction_mask
 
                 # 🔧 修复：支持推理时共享专家控制的生成答案
-                # 使用改进的generate_answer函数，支持use_shared参数
+                # 使用改进的generate_answer函数，支持use_shared和use_moe参数
                 generated_text = generate_answer_with_shared_control(
                     actual_model, tokenizer, instruction, input_text,
                     instruction_mask=instruction_mask, device=device,
-                    use_mask=use_mask, use_shared=use_shared, use_gate=use_gate
+                    use_mask=use_mask, use_shared=use_shared,
+                    use_moe=use_moe, use_gate=use_gate
                 )
 
                 # 提取答案
@@ -833,6 +838,9 @@ def main():
                         help="Number of activated experts")
     parser.add_argument("--use_shared", type=str, default="true",
                         help="Whether to use shared expert")
+    parser.add_argument("--use_moe", type=str, default="true",
+                        help="Whether to use MoE structure (router+routing experts). "
+                             "false=only use shared expert (ablation study)")
     parser.add_argument("--use_gate", type=str, default="true",
                         help="Whether to use MoE gate network for inference-time ablation study")
     parser.add_argument("--use_culture_loss", type=str, default="csl",
@@ -850,15 +858,17 @@ def main():
 
     # 转换字符串参数
     use_shared = args.use_shared.lower() == 'true'
+    use_moe = args.use_moe.lower() == 'true'  # 🔧 添加use_moe参数转换
     use_gate = args.use_gate.lower() == 'true'
     use_mask = args.use_mask.lower() == 'true'  # 🔧 添加use_mask参数转换
 
-    # 🔧 use_shared参数控制推理时是否使用共享专家
+    # 🔧 消融控制参数说明：
+    # - use_shared: 推理时是否使用共享专家
+    # - use_moe: 推理时是否使用MoE结构（router+路由专家）
+    # - use_gate: 推理时是否使用门控网络
     # None时使用训练配置，True/False时覆盖配置进行消融研究
     use_shared_for_inference = use_shared  # 直接使用USE_SHARED参数进行推理时控制
-
-    # 🔧 use_gate参数控制推理时是否使用门控网络
-    # None时使用训练配置，True/False时覆盖配置进行消融研究
+    use_moe_for_inference = use_moe  # 直接使用USE_MOE参数进行推理时控制
     use_gate_for_inference = use_gate  # 直接使用USE_GATE参数进行推理时控制
 
     # 设置设备
@@ -879,9 +889,11 @@ def main():
         print(f"MoE experts: {args.num_moe_experts}")
         print(f"Activated experts: {args.num_activated_experts}")
         print(f"Use shared: {use_shared}")
+        print(f"Use MoE: {use_moe}")  # 🔧 添加use_moe参数显示
         print(f"Use gate: {use_gate}")
         print(f"Use mask: {use_mask}")  # 🔧 添加use_mask参数显示
         print(f"Use shared inference: {use_shared} (消融研究: 推理时是否使用共享专家)")  # 🔧 使用USE_SHARED参数控制推理
+        print(f"Use MoE inference: {use_moe} (消融研究: 推理时是否使用MoE结构router+路由专家)")  # 🔧 使用USE_MOE参数控制推理
         print(f"Use gate inference: {use_gate} (消融研究: 推理时是否使用门控网络)")  # 🔧 使用USE_GATE参数控制推理
         print(f"Culture loss: {args.use_culture_loss}")
         print(f"Output directory: {args.output_dir}")
@@ -1018,7 +1030,7 @@ def main():
     else:
         print(f"📊 使用标准评估模式 (DATA_ID={args.data_id})")
 
-    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask, use_shared=use_shared_for_inference, use_gate=use_gate_for_inference, group_by_country=group_by_country)
+    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask, use_shared=use_shared_for_inference, use_moe=use_moe_for_inference, use_gate=use_gate_for_inference, group_by_country=group_by_country)
 
     # 保存结果（只在主进程执行）
     if is_main_process(rank):
@@ -1041,12 +1053,14 @@ def main():
             },
             'ablation_study': {
                 'shared_expert_enabled': use_shared,
+                'moe_structure_enabled': use_moe,
                 'gate_network_enabled': use_gate,
                 'mask_mechanism_enabled': use_mask,
                 'culture_loss_type': args.use_culture_loss,
                 'shared_expert_inference_actual': use_shared_for_inference,
+                'moe_structure_inference_actual': use_moe_for_inference,
                 'gate_network_inference_actual': use_gate_for_inference,
-                'ablation_note': '消融评估：可通过USE_SHARED和USE_GATE参数控制推理时是否使用共享专家和门控网络'
+                'ablation_note': '消融评估：可通过USE_SHARED、USE_MOE和USE_GATE参数控制推理时是否使用共享专家、MoE结构和门控网络'
             },
             'data_config': {
                 'data_id': args.data_id,

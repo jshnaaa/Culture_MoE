@@ -35,12 +35,14 @@ case $GPT_MODEL_INPUT in
         ;;
 esac
 
-# 🔧 设置API KEY（优先使用环境变量，如果不存在则使用硬编码值）
-# ⚠️  注意：硬编码API KEY存在安全风险，建议仅在私有环境使用
+# 🔧 检查API KEY环境变量
 if [ -z "$OPENAI_API_KEY" ]; then
-    export OPENAI_API_KEY="YOUR_API_KEY_HERE"
-    echo "ℹ️  使用脚本内置API KEY"
+    echo "❌ 错误: 未设置OPENAI_API_KEY环境变量"
+    echo "请先设置API KEY："
+    echo "  export OPENAI_API_KEY='your-api-key-here'"
+    exit 1
 fi
+echo "✅ 使用环境变量中的API KEY"
 
 # 显示帮助信息（可选，使用 -h 或 --help 触发）
 if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then

@@ -57,6 +57,7 @@ class JointLoRAMoEConfig:
 
     # 消融实验配置
     use_shared: bool = True  # 是否使用共享专家
+    use_moe: bool = True     # 是否使用MoE结构（router+路由专家），false时仅使用shared专家（消融实验）
     use_gate: bool = True    # 是否使用门控网络
 
     # 其他配置
@@ -393,9 +394,16 @@ class MoELayer(nn.Module):
         self.nan_count = 0
         self.total_forward_calls = 0
 
-    def forward(self, hidden_states, mask_hidden_states=None, use_shared=None, use_gate=None):
+    def forward(self, hidden_states, mask_hidden_states=None, use_shared=None, use_moe=None, use_gate=None):
         """
-        前向传播 - 增强损失版本，支持MASK机制的双路处理和推理时共享专家控制
+        前向传播 - 增强损失版本，支持MASK机制的双路处理和推理时消融控制
+
+        Args:
+            hidden_states: 主输入隐藏状态
+            mask_hidden_states: MASK版本输入隐藏状态（可选）
+            use_shared: 推理时是否使用共享专家（None使用训练配置）
+            use_moe: 推理时是否使用MoE结构（None使用训练配置，False=仅使用shared专家）
+            use_gate: 推理时是否使用门控网络（None使用训练配置）
 
         Args:
             hidden_states: [B, L, H] 输入隐藏状态（用于路由专家）
@@ -417,20 +425,38 @@ class MoELayer(nn.Module):
 
         # 🔧 消融配置检查：动态控制专家使用和门控融合
         use_shared_actual = use_shared
+        use_moe_actual = use_moe
         use_gate_actual = use_gate
 
         # 如果设置了ablation_config，使用消融配置覆盖参数
         if hasattr(self, 'ablation_config') and self.ablation_config is not None:
             if use_shared_actual is None:
                 use_shared_actual = self.ablation_config.get('use_shared', True)
+            if use_moe_actual is None:
+                use_moe_actual = self.ablation_config.get('use_moe', True)
             if use_gate_actual is None:
                 use_gate_actual = self.ablation_config.get('use_gate', True)
 
         # 如果仍为None，使用默认值
         if use_shared_actual is None:
             use_shared_actual = True
+        if use_moe_actual is None:
+            use_moe_actual = True
         if use_gate_actual is None:
             use_gate_actual = True
+
+        # 🔧 消融实验：如果禁用MoE结构，只使用shared expert
+        if use_moe_actual == False:
+            # 跳过router和routing experts，只使用shared expert
+            if use_shared_actual and self.shared_expert is not None:
+                # 使用mask_hidden_states（如果有）或原始hidden_states
+                input_for_shared = mask_hidden_states if mask_hidden_states is not None else hidden_states
+                shared_output = self.shared_expert(input_for_shared)
+                # 返回格式：(output, None, None, None, None, None)
+                return shared_output, None, None, None, None, None
+            else:
+                # 没有shared expert或被禁用，返回原始输入
+                return hidden_states, None, None, None, None, None
 
         # 🔧 增加前向传播调用计数
         self.total_forward_calls += 1
@@ -817,6 +843,7 @@ class JointLoRAMoEModel(nn.Module):
         # 🔧 添加消融评估配置（推理时动态控制）
         self.ablation_config = {
             'use_shared': None,  # None使用训练配置，True/False覆盖配置
+            'use_moe': None,     # None使用训练配置，False=仅使用shared专家
             'use_gate': None,
             'use_mask': None
         }
@@ -874,7 +901,7 @@ class JointLoRAMoEModel(nn.Module):
         print("🔒 基础模型已冻结，仅训练MoE专家层和路由器")
 
     def forward(self, input_ids=None, attention_mask=None, input_ids_mask=None, attention_mask_mask=None,
-                labels=None, culture_labels=None, use_shared=None, use_gate=None, **kwargs):
+                labels=None, culture_labels=None, use_shared=None, use_moe=None, use_gate=None, **kwargs):
         """
         前向传播
 
@@ -887,6 +914,8 @@ class JointLoRAMoEModel(nn.Module):
             culture_labels: [B] 文化标签（用于计算文化损失）
             use_shared: bool, 推理时是否使用共享专家。
                        None时使用训练配置，True/False时覆盖配置进行消融研究
+            use_moe: bool, 推理时是否使用MoE结构（router+路由专家）。
+                    None时使用训练配置，False=仅使用shared专家（消融实验）
             use_gate: bool, 推理时是否使用门控网络。
                      None时使用训练配置，True/False时覆盖配置进行消融研究
 
@@ -962,12 +991,13 @@ class JointLoRAMoEModel(nn.Module):
                 self.add_module('hidden_proj', self.hidden_proj)
             hidden_states = self.hidden_proj(hidden_states)
 
-        # 3. MoE层处理 - 增量架构实现，支持MASK机制的双路处理和推理时共享专家控制
+        # 3. MoE层处理 - 增量架构实现，支持MASK机制的双路处理和推理时消融控制
         # print("🔧 启用增量MoE架构：MoE作为基础LoRA的增量调整")  # 减少日志
         moe_delta, expert_weights, moe_aux_loss, expert_outputs, soft_routing_scores, activated_experts, shared_output, routing_output = self.moe_layer(
             hidden_states,
             mask_hidden_states=getattr(self, '_mask_hidden_states', None),
             use_shared=use_shared,
+            use_moe=use_moe,
             use_gate=use_gate
         )
 
@@ -1394,6 +1424,11 @@ class JointLoRAMoEModel(nn.Module):
             if attention_mask is None:
                 attention_mask = torch.ones_like(current_ids)
 
+            # 🔧 提取消融控制参数
+            use_shared = kwargs.get('use_shared', None)
+            use_moe = kwargs.get('use_moe', None)
+            use_gate = kwargs.get('use_gate', None)
+
             # 重复检测计数器
             repeated_count = 0
             max_repeated_allowed = 2  # 减少到2次，更早介入
@@ -1401,9 +1436,13 @@ class JointLoRAMoEModel(nn.Module):
 
             for step in range(max_new_tokens):
                 # 使用我们的forward方法（包含MoE层）
+                # 🔧 传递消融控制参数
                 outputs = self.forward(
                     input_ids=current_ids,
-                    attention_mask=attention_mask
+                    attention_mask=attention_mask,
+                    use_shared=use_shared,
+                    use_moe=use_moe,
+                    use_gate=use_gate
                 )
 
                 # 获取最后一个位置的logits
