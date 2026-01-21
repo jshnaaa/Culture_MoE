@@ -29,7 +29,7 @@ case $GPT_MODEL_INPUT in
         MODEL_TAG="gpt4omini"
         ;;
     *)
-        # 向后兼容：如果输入的是完整模型名， 直接使用
+        # 向后兼容：如果输入的是完整模型名，直接使用
         GPT_MODEL="$GPT_MODEL_INPUT"
         MODEL_TAG=$(echo "$GPT_MODEL" | tr '.' '_' | tr '-' '_')
         echo "ℹ️  使用完整模型名: $GPT_MODEL"
