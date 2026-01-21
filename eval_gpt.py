@@ -189,11 +189,13 @@ def call_gpt_api(
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that answers cultural survey questions."},
+                    {"role": "system", "content": "You are an assistant that answers multiple-choice questions with only the number of the correct option."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=temperature,
-                max_tokens=50  # 限制输出长度，因为只需要一个数字
+                top_p=0.1,  # 确保最确定的输出
+                max_tokens=5,  # 只需要单个数字（1-4）
+                stop=["\n"]  # 输出数字后立即停止
             )
 
             answer = response.choices[0].message.content
