@@ -452,11 +452,12 @@ class MoELayer(nn.Module):
                 # 使用mask_hidden_states（如果有）或原始hidden_states
                 input_for_shared = mask_hidden_states if mask_hidden_states is not None else hidden_states
                 shared_output = self.shared_expert(input_for_shared)
-                # 返回格式：(output, None, None, None, None, None)
-                return shared_output, None, None, None, None, None
+                # 返回格式：(output, expert_weights, aux_loss, expert_outputs, soft_routing_scores, activated_experts, shared_output, routing_output)
+                # 保持8个返回值与正常MoE流程一致
+                return shared_output, None, None, None, None, None, shared_output, None
             else:
                 # 没有shared expert或被禁用，返回原始输入
-                return hidden_states, None, None, None, None, None
+                return hidden_states, None, None, None, None, None, None, None
 
         # 🔧 增加前向传播调用计数
         self.total_forward_calls += 1
