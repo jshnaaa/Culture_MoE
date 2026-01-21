@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # GPT API评测脚本
-# 使用OpenAI GPT模型对文化数据集进行评测，作为baseline对比
+# 使用OpenAI GPT模型对 文化数据集进行评测，作为baseline对比
 
 echo "======================================="
 echo "GPT API 数据集评测"
