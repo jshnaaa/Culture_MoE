@@ -76,6 +76,39 @@ fi
 export OPENAI_API_KEY="$OPENAI_API_KEY_INPUT"
 echo "✅ 使用提供的API KEY"
 
+# 🔧 网络配置检查和提示
+echo ""
+echo "🌐 网络配置检查:"
+
+# 检查代理配置
+if [ -n "$HTTP_PROXY" ] || [ -n "$http_proxy" ] || [ -n "$HTTPS_PROXY" ] || [ -n "$https_proxy" ]; then
+    echo "  ✅ 检测到代理配置:"
+    [ -n "$HTTP_PROXY" ] && echo "     HTTP_PROXY=$HTTP_PROXY"
+    [ -n "$HTTPS_PROXY" ] && echo "     HTTPS_PROXY=$HTTPS_PROXY"
+else
+    echo "  ⚠️  未检测到代理配置"
+    echo "     如果服务器在中国大陆，可能无法访问OpenAI API"
+    echo "     建议设置代理："
+    echo "       export HTTP_PROXY=http://your-proxy:port"
+    echo "       export HTTPS_PROXY=http://your-proxy:port"
+fi
+
+# 检查自定义base_url
+if [ -n "$OPENAI_BASE_URL" ]; then
+    echo "  ✅ 使用自定义API地址: $OPENAI_BASE_URL"
+else
+    echo "  ℹ️  使用默认API地址: https://api.openai.com/v1"
+    echo "     如需使用中转服务，可设置："
+    echo "       export OPENAI_BASE_URL=https://your-proxy-url/v1"
+fi
+
+# 检查超时配置
+if [ -n "$OPENAI_TIMEOUT" ]; then
+    echo "  ℹ️  自定义超时时间: ${OPENAI_TIMEOUT}秒"
+else
+    echo "  ℹ️  使用默认超时时间: 60秒"
+fi
+
 # 设置数据文件路径
 case $DATA_ID in
     2)

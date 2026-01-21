@@ -141,8 +141,10 @@ def call_gpt_api(
     """
     try:
         from openai import OpenAI
-    except ImportError:
-        print("❌ 错误: 未安装openai库，请运行: pip install openai")
+        import httpx
+    except ImportError as e:
+        print(f"❌ 错误: 缺少依赖库，请运行: pip install openai httpx")
+        print(f"   详细错误: {e}")
         return None, False
 
     # 从环境变量获取API KEY
@@ -151,7 +153,35 @@ def call_gpt_api(
         print("❌ 错误: 未设置OPENAI_API_KEY环境变量")
         return None, False
 
-    client = OpenAI(api_key=api_key)
+    # 🔧 配置代理和超时
+    # 1. 从环境变量读取代理配置
+    http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+
+    # 2. 从环境变量读取自定义base_url（用于中转服务）
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+    # 3. 配置超时时间（默认60秒）
+    timeout = float(os.environ.get("OPENAI_TIMEOUT", "60.0"))
+
+    # 4. 创建OpenAI客户端
+    try:
+        if http_proxy or https_proxy:
+            # 使用代理
+            http_client = httpx.Client(
+                proxies={
+                    "http://": http_proxy,
+                    "https://": https_proxy or http_proxy
+                },
+                timeout=timeout
+            )
+            client = OpenAI(api_key=api_key, http_client=http_client, base_url=base_url)
+        else:
+            # 不使用代理
+            client = OpenAI(api_key=api_key, timeout=timeout, base_url=base_url)
+    except Exception as e:
+        print(f"❌ 错误: 创建OpenAI客户端失败: {e}")
+        return None, False
 
     # 重试机制
     for attempt in range(max_retries):
