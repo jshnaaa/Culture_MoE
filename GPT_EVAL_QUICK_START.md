@@ -2,10 +2,10 @@
 
 ## 🚀 快速开始
 
-### 最简单的使用方式（使用所有默认值）
+### 基本使用方式
 
 ```bash
-bash run_eval_gpt.sh
+bash run_eval_gpt.sh <your-api-key>
 ```
 
 这将使用默认配置：
@@ -16,62 +16,89 @@ bash run_eval_gpt.sh
 ## 📝 参数说明
 
 ```bash
-bash run_eval_gpt.sh [data_id] [gpt_model] [max_samples]
+bash run_eval_gpt.sh <api_key> [data_id] [gpt_model] [max_samples]
 ```
 
-所有参数都是**可选的**，有默认值：
-
-| 参数 | 默认值 | 说明 | 可选值 |
-|------|--------|------|--------|
-| data_id | 2 | 数据集ID | 2=CulturalBench, 3=normad, 4=cultureLLM, 5=cultureAtlas |
-| gpt_model | 4o | GPT模型简化名 | 3.5=gpt-3.5-turbo, 4o=gpt-4o, 4omini=gpt-4o-mini |
-| max_samples | 20 | 最大样本数 | 任意正整数，0或留空=全部样本 |
+| 参数 | 是否必需 | 默认值 | 说明 | 可选值 |
+|------|----------|--------|------|--------|
+| api_key | **必需** | - | OpenAI API KEY | sk-proj-开头的密钥 |
+| data_id | 可选 | 2 | 数据集ID | 2=CulturalBench, 3=normad, 4=cultureLLM, 5=cultureAtlas |
+| gpt_model | 可选 | 4o | GPT模型简化名 | 3.5=gpt-3.5-turbo, 4o=gpt-4o, 4omini=gpt-4o-mini |
+| max_samples | 可选 | 20 | 最大样本数 | 任意正整数，0或留空=全部样本 |
 
 ## 💡 使用示例
 
 ### 1. 使用默认配置
 ```bash
-bash run_eval_gpt.sh
-# 等同于: bash run_eval_gpt.sh 2 4o 20
+bash run_eval_gpt.sh sk-proj-your-api-key-here
+# 等同于: bash run_eval_gpt.sh sk-proj-xxx 2 4o 20
 ```
 
 ### 2. 只改变数据集
 ```bash
-bash run_eval_gpt.sh 3          # 评测normad数据集
-bash run_eval_gpt.sh 4          # 评测cultureLLM数据集
-bash run_eval_gpt.sh 5          # 评测cultureAtlas数据集
+bash run_eval_gpt.sh sk-proj-xxx 3          # 评测normad数据集
+bash run_eval_gpt.sh sk-proj-xxx 4          # 评测cultureLLM数据集
+bash run_eval_gpt.sh sk-proj-xxx 5          # 评测cultureAtlas数据集
 ```
 
 ### 3. 改变模型
 ```bash
-bash run_eval_gpt.sh 2 3.5      # 使用GPT-3.5-turbo
-bash run_eval_gpt.sh 2 4omini   # 使用GPT-4o-mini（更便宜）
+bash run_eval_gpt.sh sk-proj-xxx 2 3.5      # 使用GPT-3.5-turbo
+bash run_eval_gpt.sh sk-proj-xxx 2 4omini   # 使用GPT-4o-mini（更便宜）
 ```
 
 ### 4. 改变样本数
 ```bash
-bash run_eval_gpt.sh 2 4o 100   # 评测100个样本
-bash run_eval_gpt.sh 2 4o 0     # 评测全部样本
+bash run_eval_gpt.sh sk-proj-xxx 2 4o 100   # 评测100个样本
+bash run_eval_gpt.sh sk-proj-xxx 2 4o 0     # 评测全部样本
 ```
 
 ### 5. 组合使用
 ```bash
 # 使用GPT-3.5评测normad数据集的前50个样本
-bash run_eval_gpt.sh 3 3.5 50
+bash run_eval_gpt.sh sk-proj-xxx 3 3.5 50
 
 # 使用GPT-4o-mini评测CulturalBench全部样本
-bash run_eval_gpt.sh 2 4omini 0
+bash run_eval_gpt.sh sk-proj-xxx 2 4omini 0
 ```
 
-## 🔑 API KEY配置
+## 🔑 API KEY安全说明
 
-脚本已内置API KEY，无需额外配置。
-
-如果需要使用自己的API KEY，可以通过环境变量设置（优先级更高）：
+### ✅ 推荐做法（命令行传参）
 
 ```bash
-export OPENAI_API_KEY='your-api-key-here'
-bash run_eval_gpt.sh
+# 方式1: 直接传参（推荐）
+bash run_eval_gpt.sh sk-proj-your-api-key-here 2 4o 20
+
+# 方式2: 使用变量（避免历史记录）
+API_KEY="sk-proj-your-api-key-here"
+bash run_eval_gpt.sh "$API_KEY" 2 4o 20
+unset API_KEY
+```
+
+### ⚠️ 安全提示
+
+- ✅ API KEY作为参数传入，不会被记录到Git历史
+- ✅ 配置输出中只显示前20个字符（如: `sk-proj-vGsST9hHdXBt...`）
+- ⚠️ 注意：命令行历史可能记录API KEY，使用后建议清理：
+  ```bash
+  history -d $(history 1)  # 删除上一条命令
+  # 或者
+  history -c               # 清空所有历史
+  ```
+
+### 🔒 更安全的方式（使用环境变量）
+
+```bash
+# 临时设置（当前会话有效）
+export OPENAI_API_KEY='sk-proj-your-api-key-here'
+bash run_eval_gpt.sh dummy-key 2 4o 20  # 第一个参数会被环境变量覆盖
+
+# 或者从文件读取（不要提交.env文件到Git）
+echo 'sk-proj-your-api-key' > .api_key
+export OPENAI_API_KEY=$(cat .api_key)
+bash run_eval_gpt.sh dummy-key 2 4o 20
+rm .api_key
 ```
 
 ## 📊 输出结果
@@ -103,35 +130,35 @@ gpt4o_CulturalBench_20250120_143022/
 
 ### 快速测试（默认配置）
 ```bash
-bash run_eval_gpt.sh
+bash run_eval_gpt.sh sk-proj-xxx
 ```
 
 ### 完整评测（全部样本）
 ```bash
-bash run_eval_gpt.sh 2 4o 0
+bash run_eval_gpt.sh sk-proj-xxx 2 4o 0
 ```
 
 ### 成本优化（使用便宜的模型）
 ```bash
-bash run_eval_gpt.sh 2 3.5      # GPT-3.5最便宜
-bash run_eval_gpt.sh 2 4omini   # GPT-4o-mini性价比高
+bash run_eval_gpt.sh sk-proj-xxx 2 3.5      # GPT-3.5最便宜
+bash run_eval_gpt.sh sk-proj-xxx 2 4omini   # GPT-4o-mini性价比高
 ```
 
 ### 对比不同模型
 ```bash
 # 依次评测三个模型
-bash run_eval_gpt.sh 2 3.5 100
-bash run_eval_gpt.sh 2 4omini 100
-bash run_eval_gpt.sh 2 4o 100
+bash run_eval_gpt.sh sk-proj-xxx 2 3.5 100
+bash run_eval_gpt.sh sk-proj-xxx 2 4omini 100
+bash run_eval_gpt.sh sk-proj-xxx 2 4o 100
 ```
 
 ### 对比不同数据集
 ```bash
 # 使用同一模型评测所有数据集
-bash run_eval_gpt.sh 2 4o 50    # CulturalBench
-bash run_eval_gpt.sh 3 4o 50    # normad
-bash run_eval_gpt.sh 4 4o 50    # cultureLLM
-bash run_eval_gpt.sh 5 4o 50    # cultureAtlas
+bash run_eval_gpt.sh sk-proj-xxx 2 4o 50    # CulturalBench
+bash run_eval_gpt.sh sk-proj-xxx 3 4o 50    # normad
+bash run_eval_gpt.sh sk-proj-xxx 4 4o 50    # cultureLLM
+bash run_eval_gpt.sh sk-proj-xxx 5 4o 50    # cultureAtlas
 ```
 
 ## 🔧 查看帮助信息
@@ -161,18 +188,30 @@ bash run_eval_gpt.sh --help
 
 ## 🐛 故障排查
 
-### 问题1: API调用失败
+### 问题1: 未提供API KEY
 
-检查网络连接和API配额：
-```bash
-curl https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY"
+```
+❌ 错误: 未提供OpenAI API KEY
 ```
 
-### 问题2: 数据文件不存在
+**解决方案**: 确保第一个参数是有效的API KEY
+```bash
+bash run_eval_gpt.sh sk-proj-your-api-key-here
+```
+
+### 问题2: API调用失败
+
+检查API KEY是否有效：
+```bash
+curl https://api.openai.com/v1/models \
+  -H "Authorization: Bearer sk-proj-your-api-key"
+```
+
+### 问题3: 数据文件不存在
 
 确认数据文件路径正确（脚本默认使用 `/root/autodl-fs/` 路径）
 
-### 问题3: 权限问题
+### 问题4: 权限问题
 
 确保脚本有执行权限：
 ```bash

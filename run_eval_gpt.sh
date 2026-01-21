@@ -9,9 +9,10 @@ echo "使用OpenAI GPT作为baseline对比"
 echo "======================================="
 
 # 参数设置
-DATA_ID=${1:-"2"}  # 数据集ID，默认2(CulturalBench)
-GPT_MODEL_INPUT=${2:-"4o"}  # GPT模型简化名，默认4o
-MAX_SAMPLES=${3:-"20"}  # 最大样本数，默认20（测试模式）
+OPENAI_API_KEY_INPUT=${1}  # OpenAI API KEY（必需参数）
+DATA_ID=${2:-"2"}  # 数据集ID，默认2(CulturalBench)
+GPT_MODEL_INPUT=${3:-"4o"}  # GPT模型简化名，默认4o
+MAX_SAMPLES=${4:-"20"}  # 最大样本数，默认20（测试模式）
 
 # 🔧 模型名称映射：简化名 → OpenAI完整模型名
 case $GPT_MODEL_INPUT in
@@ -35,20 +36,12 @@ case $GPT_MODEL_INPUT in
         ;;
 esac
 
-# 🔧 检查API KEY环境变量
-if [ -z "$OPENAI_API_KEY" ]; then
-    echo "❌ 错误: 未设置OPENAI_API_KEY环境变量"
-    echo "请先设置API KEY："
-    echo "  export OPENAI_API_KEY='your-api-key-here'"
-    exit 1
-fi
-echo "✅ 使用环境变量中的API KEY"
-
 # 显示帮助信息（可选，使用 -h 或 --help 触发）
 if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    echo "用法: $0 [data_id] [gpt_model] [max_samples]"
+    echo "用法: $0 <api_key> [data_id] [gpt_model] [max_samples]"
     echo ""
-    echo "参数说明（所有参数都是可选的）:"
+    echo "参数说明:"
+    echo "  api_key:     OpenAI API KEY (必需参数)"
     echo "  data_id:     数据集ID (默认: 2)"
     echo "               2=CulturalBench, 3=normad, 4=cultureLLM, 5=cultureAtlas"
     echo "  gpt_model:   GPT模型简化名 (默认: 4o)"
@@ -56,13 +49,32 @@ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     echo "  max_samples: 最大评测样本数 (默认: 20，用于快速测试)"
     echo ""
     echo "示例:"
-    echo "  $0                      # 使用所有默认值 (DATA_ID=2, GPT_MODEL=4o, MAX_SAMPLES=20)"
-    echo "  $0 2                    # 评测CulturalBench，使用gpt-4o，20个样本"
-    echo "  $0 3 3.5                # 评测normad，使用gpt-3.5-turbo，20个样本"
-    echo "  $0 4 4omini 100         # 评测cultureLLM，使用gpt-4o-mini，100个样本"
-    echo "  $0 2 4o 0               # 评测CulturalBench全部样本（MAX_SAMPLES=0表示全部）"
+    echo "  $0 sk-proj-xxx                    # 使用默认值 (DATA_ID=2, GPT_MODEL=4o, MAX_SAMPLES=20)"
+    echo "  $0 sk-proj-xxx 2                  # 评测CulturalBench，使用gpt-4o，20个样本"
+    echo "  $0 sk-proj-xxx 3 3.5              # 评测normad，使用gpt-3.5-turbo，20个样本"
+    echo "  $0 sk-proj-xxx 4 4omini 100       # 评测cultureLLM，使用gpt-4o-mini，100个样本"
+    echo "  $0 sk-proj-xxx 2 4o 0             # 评测CulturalBench全部样本（MAX_SAMPLES=0表示全部）"
+    echo ""
+    echo "注意: API KEY作为第一个参数传入，不会被记录到日志或Git历史中"
     exit 0
 fi
+
+# 🔧 检查API KEY参数
+if [ -z "$OPENAI_API_KEY_INPUT" ]; then
+    echo "❌ 错误: 未提供OpenAI API KEY"
+    echo ""
+    echo "用法: $0 <api_key> [data_id] [gpt_model] [max_samples]"
+    echo ""
+    echo "示例:"
+    echo "  $0 sk-proj-your-api-key-here 2 4o 20"
+    echo ""
+    echo "提示: 使用 $0 --help 查看详细帮助"
+    exit 1
+fi
+
+# 设置API KEY环境变量
+export OPENAI_API_KEY="$OPENAI_API_KEY_INPUT"
+echo "✅ 使用提供的API KEY"
 
 # 设置数据文件路径
 case $DATA_ID in
@@ -106,6 +118,7 @@ OUTPUT_DIR="/root/autodl-fs/gpt_eval_results/${MODEL_TAG}_${DATASET_TAG}_${TIMES
 
 echo ""
 echo "配置信息:"
+echo "  API KEY: ${OPENAI_API_KEY:0:20}... (已隐藏)"
 echo "  模型简化名: $GPT_MODEL_INPUT"
 echo "  实际模型: $GPT_MODEL"
 echo "  数据集: $DATASET_TAG (DATA_ID=$DATA_ID)"
