@@ -1,130 +1,115 @@
 #!/bin/bash
 
-# GPT API评测脚本
-# 使用OpenAI GPT模型对 文化数据集进行评测，作为baseline对比
+# 多模型API评测脚本
+# 支持评测 DeepSeek-R1, Mistral, GPT 等模型
 
 echo "======================================="
-echo "GPT API 数据集评测"
-echo "使用OpenAI GPT作为baseline对比"
+echo "多模型 API 数据集评测"
+echo "支持 DeepSeek, Mistral, GPT 等模型"
 echo "======================================="
 
-# 参数设置
-OPENAI_API_KEY_INPUT=${1}  # OpenAI API KEY（必需参数）
-DATA_ID=${2:-"2"}  # 数据集ID，默认2(CulturalBench)
-GPT_MODEL_INPUT=${3:-"4o"}  # GPT模型简化名，默认4o
-MAX_SAMPLES=${4:-"20"}  # 最大样本数，默认20（测试模式）
+# 参数设置（调整后的顺序）
+WHICH_MODEL=${1:-"ds"}  # 模型选择，默认ds(deepseek)
+API_KEY=${2}  # API KEY（必需参数）
+DATA_ID=${3:-"2"}  # 数据集ID，默认2(CulturalBench)
+MAX_SAMPLES=${4:-"5"}  # 最大样本数，默认5（快速测试）
 
-# 🔧 模型名称映射：简化名 → OpenAI完整模型名
-case $GPT_MODEL_INPUT in
-    3.5)
-        GPT_MODEL="gpt-3.5-turbo"
-        MODEL_TAG="gpt35"
-        ;;
-    4o)
-        GPT_MODEL="gpt-4o"
-        MODEL_TAG="gpt4o"
-        ;;
-    4omini)
-        GPT_MODEL="gpt-4o-mini"
-        MODEL_TAG="gpt4omini"
-        ;;
-    *)
-        # 向后兼容：如果输入的是完整模型名， 直接使用
-        GPT_MODEL="$GPT_MODEL_INPUT"
-        MODEL_TAG=$(echo "$GPT_MODEL" | tr '.' '_' | tr '-' '_')
-        echo "ℹ️  使用完整模型名: $GPT_MODEL"
-        ;;
-esac
-
-# 显示帮助信息（可选，使用 -h 或 --help 触发）
+# 显示帮助信息
 if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    echo "用法: $0 <api_key> [data_id] [gpt_model] [max_samples]"
+    echo "用法: $0 <which_model> <api_key> [data_id] [max_samples]"
     echo ""
     echo "参数说明:"
-    echo "  api_key:     OpenAI API KEY (必需参数)"
+    echo "  which_model: 模型选择 (默认: ds)"
+    echo "               ds=DeepSeek-R1, mistral=Mistral-Small-3.1, gpt=GPT-4o"
+    echo "  api_key:     API KEY (必需参数)"
     echo "  data_id:     数据集ID (默认: 2)"
     echo "               2=CulturalBench, 3=normad, 4=cultureLLM, 5=cultureAtlas"
-    echo "  gpt_model:   GPT模型简化名 (默认: 4o)"
-    echo "               3.5=gpt-3.5-turbo, 4o=gpt-4o, 4omini=gpt-4o-mini"
-    echo "  max_samples: 最大评测样本数 (默认: 20，用于快速测试)"
+    echo "  max_samples: 最大评测样本数 (默认: 5，用于快速测试)"
     echo ""
     echo "示例:"
-    echo "  $0 sk-proj-xxx                    # 使用默认值 (DATA_ID=2, GPT_MODEL=4o, MAX_SAMPLES=20)"
-    echo "  $0 sk-proj-xxx 2                  # 评测CulturalBench，使用gpt-4o，20个样本"
-    echo "  $0 sk-proj-xxx 3 3.5              # 评测normad，使用gpt-3.5-turbo，20个样本"
-    echo "  $0 sk-proj-xxx 4 4omini 100       # 评测cultureLLM，使用gpt-4o-mini，100个样本"
-    echo "  $0 sk-proj-xxx 2 4o 0             # 评测CulturalBench全部样本（MAX_SAMPLES=0表示全部）"
+    echo "  $0 ds sk-or-v1-xxx                # 使用DeepSeek-R1评测CulturalBench，5个样本"
+    echo "  $0 mistral sk-or-v1-xxx 3 10     # 使用Mistral评测normad，10个样本"
+    echo "  $0 gpt sk-proj-xxx 2 20          # 使用GPT-4o评测CulturalBench，20个样本"
     echo ""
-    echo "注意: API KEY作为第一个参数传入，不会被记录到日志或Git历史中"
+    echo "注意: API KEY作为第二个参数传入，不会被记录到日志或Git历史中"
     exit 0
 fi
 
-# 🔧 检查API KEY参数
-if [ -z "$OPENAI_API_KEY_INPUT" ]; then
-    echo "❌ 错误: 未提供OpenAI API KEY"
+# 检查API KEY参数
+if [ -z "$API_KEY" ]; then
+    echo "❌ 错误: 未提供API KEY"
     echo ""
-    echo "用法: $0 <api_key> [data_id] [gpt_model] [max_samples]"
+    echo "用法: $0 <which_model> <api_key> [data_id] [max_samples]"
     echo ""
     echo "示例:"
-    echo "  $0 sk-proj-your-api-key-here 2 4o 20"
+    echo "  $0 ds sk-or-v1-your-api-key 2 5"
     echo ""
     echo "提示: 使用 $0 --help 查看详细帮助"
     exit 1
 fi
 
-# 设置API KEY环境变量
-export OPENAI_API_KEY="$OPENAI_API_KEY_INPUT"
-echo "✅ 使用提供的API KEY"
+# 根据模型选择设置参数
+case $WHICH_MODEL in
+    ds)
+        MODEL_NAME="deepseek-r1"
+        MODEL_TAG="deepseek"
+        EVAL_SCRIPT="eval_ds.py"
+        MODEL_FULL_NAME="deepseek/deepseek-r1-0528:free"
+        echo "✅ 使用模型: DeepSeek-R1"
+        ;;
+    mistral)
+        MODEL_NAME="mistral-small-3.1"
+        MODEL_TAG="mistral"
+        EVAL_SCRIPT="eval_mistral.py"
+        MODEL_FULL_NAME="mistralai/mistral-small-3.1-24b-instruct:free"
+        echo "✅ 使用模型: Mistral-Small-3.1"
+        ;;
+    gpt|4o|3.5|4omini)
+        # GPT模型保持原有逻辑
+        MODEL_NAME="gpt"
+        MODEL_TAG="gpt"
+        EVAL_SCRIPT="eval_gpt.py"
 
-# 🔧 网络配置检查和提示
-echo ""
-echo "🌐 网络配置检查:"
+        # GPT模型名称映射
+        case $WHICH_MODEL in
+            3.5)
+                MODEL_FULL_NAME="gpt-3.5-turbo"
+                MODEL_TAG="gpt35"
+                ;;
+            4o|gpt)
+                MODEL_FULL_NAME="gpt-4o"
+                MODEL_TAG="gpt4o"
+                ;;
+            4omini)
+                MODEL_FULL_NAME="gpt-4o-mini"
+                MODEL_TAG="gpt4omini"
+                ;;
+        esac
+        echo "✅ 使用模型: $MODEL_FULL_NAME"
+        ;;
+    *)
+        echo "❌ 无效的模型选择: $WHICH_MODEL"
+        echo "支持的模型: ds (DeepSeek), mistral (Mistral), gpt/4o/3.5/4omini (GPT系列)"
+        exit 1
+        ;;
+esac
 
-# 检查代理配置
-if [ -n "$HTTP_PROXY" ] || [ -n "$http_proxy" ] || [ -n "$HTTPS_PROXY" ] || [ -n "$https_proxy" ]; then
-    echo "  ✅ 检测到代理配置:"
-    [ -n "$HTTP_PROXY" ] && echo "     HTTP_PROXY=$HTTP_PROXY"
-    [ -n "$HTTPS_PROXY" ] && echo "     HTTPS_PROXY=$HTTPS_PROXY"
-else
-    echo "  ⚠️  未检测到代理配置"
-    echo "     如果服务器在中国大陆，可能无法访问OpenAI API"
-    echo "     建议设置代理："
-    echo "       export HTTP_PROXY=http://your-proxy:port"
-    echo "       export HTTPS_PROXY=http://your-proxy:port"
-fi
-
-# 检查自定义base_url
-if [ -n "$OPENAI_BASE_URL" ]; then
-    echo "  ✅ 使用自定义API地址: $OPENAI_BASE_URL"
-else
-    echo "  ℹ️  使用默认API地址: https://api.openai.com/v1"
-    echo "     如需使用中转服务，可设置："
-    echo "       export OPENAI_BASE_URL=https://your-proxy-url/v1"
-fi
-
-# 检查超时配置
-if [ -n "$OPENAI_TIMEOUT" ]; then
-    echo "  ℹ️  自定义超时时间: ${OPENAI_TIMEOUT}秒"
-else
-    echo "  ℹ️  使用默认超时时间: 60秒"
-fi
-
-# 设置数据文件路径
+# 设置数据文件路径（使用_gpt.json后缀）
 case $DATA_ID in
     2)
-        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
+        TRAIN_FILE="/root/autodl-fs/CulturalBench_merge_gen_gpt.json"
         DATASET_TAG="CulturalBench"
         ;;
     3)
-        TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
+        TRAIN_FILE="/root/autodl-fs/normad_merge_gen_gpt.json"
         DATASET_TAG="normad"
         ;;
     4)
-        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen_gpt.json"
         DATASET_TAG="cultureLLM"
         ;;
     5)
-        TRAIN_FILE="/root/autodl-fs/cultureAtlas_merge_gen.json"
+        TRAIN_FILE="/root/autodl-fs/cultureAtlas_merge_gen_gpt.json"
         DATASET_TAG="cultureAtlas"
         ;;
     *)
@@ -145,15 +130,15 @@ if [ ! -f "$TRAIN_FILE" ]; then
     exit 1
 fi
 
-# 设置输出目录
+# 设置输出目录（新格式）
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUTPUT_DIR="/root/autodl-fs/gpt_eval_results/${MODEL_TAG}_${DATASET_TAG}_${TIMESTAMP}"
+OUTPUT_DIR="/root/autodl-fs/gpt_eval_results/${WHICH_MODEL}_${DATASET_TAG}_${MAX_SAMPLES}_${TIMESTAMP}"
 
 echo ""
 echo "配置信息:"
-echo "  API KEY: ${OPENAI_API_KEY:0:20}... (已隐藏)"
-echo "  模型简化名: $GPT_MODEL_INPUT"
-echo "  实际模型: $GPT_MODEL"
+echo "  模型选择: $WHICH_MODEL"
+echo "  实际模型: $MODEL_FULL_NAME"
+echo "  API KEY: ${API_KEY:0:20}... (已隐藏)"
 echo "  数据集: $DATASET_TAG (DATA_ID=$DATA_ID)"
 echo "  数据文件: $TRAIN_FILE"
 if [ "$MAX_SAMPLES" = "0" ] || [ -z "$MAX_SAMPLES" ]; then
@@ -162,6 +147,7 @@ else
     echo "  最大样本数: $MAX_SAMPLES (测试模式)"
 fi
 echo "  输出目录: $OUTPUT_DIR"
+echo "  评测脚本: $EVAL_SCRIPT"
 echo ""
 
 # 创建输出目录
@@ -170,9 +156,10 @@ mkdir -p "$OUTPUT_DIR"
 # 保存配置信息
 cat > "$OUTPUT_DIR/eval_config.json" << EOF
 {
-    "eval_type": "gpt_api_baseline",
-    "model_input": "$GPT_MODEL_INPUT",
-    "model_actual": "$GPT_MODEL",
+    "eval_type": "multi_model_api_eval",
+    "which_model": "$WHICH_MODEL",
+    "model_name": "$MODEL_NAME",
+    "model_full_name": "$MODEL_FULL_NAME",
     "dataset": {
         "data_id": "$DATA_ID",
         "dataset_tag": "$DATASET_TAG",
@@ -183,14 +170,15 @@ cat > "$OUTPUT_DIR/eval_config.json" << EOF
 }
 EOF
 
-echo "开始GPT API评测..."
+echo "开始模型评测..."
 echo ""
 
 # 构造Python命令
-PYTHON_CMD="python eval_gpt.py \
+PYTHON_CMD="python $EVAL_SCRIPT \
+    --api_key \"$API_KEY\" \
     --data_file \"$TRAIN_FILE\" \
     --output_dir \"$OUTPUT_DIR\" \
-    --model_name \"$GPT_MODEL\""
+    --model_name \"$MODEL_FULL_NAME\""
 
 # 添加可选参数（MAX_SAMPLES=0表示全部，不传递给Python脚本）
 if [ "$MAX_SAMPLES" != "0" ] && [ -n "$MAX_SAMPLES" ]; then
@@ -208,10 +196,10 @@ EVAL_SUCCESS=$?
 echo ""
 echo "======================================="
 if [ $EVAL_SUCCESS -eq 0 ]; then
-    echo "✅ GPT评测成功！"
+    echo "✅ 模型评测成功！"
 
     # 检查结果文件
-    RESULTS_FILE="$OUTPUT_DIR/eval_results.json"
+    RESULTS_FILE="$OUTPUT_DIR/eval_result.json"
     if [ -f "$RESULTS_FILE" ]; then
         echo "✅ 评测结果已保存: $RESULTS_FILE"
 
@@ -228,7 +216,9 @@ try:
     print(f'  准确率: {results.get(\"accuracy\", 0):.4f} ({results.get(\"accuracy\", 0)*100:.2f}%)')
     print(f'  总样本数: {results.get(\"total_samples\", 0)}')
     print(f'  正确预测数: {results.get(\"correct_predictions\", 0)}')
-    print(f'  API调用失败数: {results.get(\"failed_api_calls\", 0)}')
+    print(f'  错误预测数: {results.get(\"wrong_predictions\", 0)}')
+    if 'failed_api_calls' in results:
+        print(f'  API调用失败数: {results.get(\"failed_api_calls\", 0)}')
 except Exception as e:
     print(f'无法解析评测结果文件: {e}')
 "
@@ -237,10 +227,10 @@ except Exception as e:
         echo "⚠️  评测完成但未找到结果文件"
     fi
 else
-    echo "❌ GPT评测失败！退出码: $EVAL_SUCCESS"
+    echo "❌ 模型评测失败！退出码: $EVAL_SUCCESS"
     echo ""
     echo "故障排查："
-    echo "1. 检查OPENAI_API_KEY是否正确"
+    echo "1. 检查API_KEY是否正确"
     echo "2. 检查网络连接是否正常"
     echo "3. 检查API配额是否充足"
     echo "4. 查看详细日志: $OUTPUT_DIR/eval.log"
@@ -251,8 +241,8 @@ echo "文件位置:"
 echo "  评测日志: $OUTPUT_DIR/eval.log"
 echo "  评测配置: $OUTPUT_DIR/eval_config.json"
 if [ $EVAL_SUCCESS -eq 0 ]; then
-    echo "  评测结果: $OUTPUT_DIR/eval_results.json"
-    echo "  详细结果: $OUTPUT_DIR/detailed_results.json"
+    echo "  评测结果: $OUTPUT_DIR/eval_result.json"
+    echo "  详细答案: $OUTPUT_DIR/generated_answers.json"
 fi
 echo ""
 
