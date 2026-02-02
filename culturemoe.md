@@ -14,6 +14,213 @@ CultureMoE是一个基于Mixture of Experts (MoE)架构的文化感知语言模�
 - **内存高效**: 基于LoRA的专家设计，显著降低参数量和内存需求
 - **分层学习率**: 基础LoRA和MoE组件使用不同学习率的精细化优化
 
+## Joint MoE模型详细架构
+
+### 整体架构层次
+
+Joint LoRA+MoE模型采用增量架构设计，在基础语言模型之上添加MoE处理层，实现端到端的联合训练。整体架构从底层到顶层包括：
+
+#### 1. 模型层次结构
+
+```
+JointLoRAMoEModel (顶层模型类)
+├── base_model (基础语言模型)
+│   ├── LLaMA 3.1-8B-Instruct / Qwen 2.5-7B-Instruct
+│   └── LoRA适配器 (可选，通过PEFT库应用)
+├── moe_layer (MoE处理层)
+│   ├── router (MoERouter路由器)
+│   ├── experts (专家组，nn.ModuleList)
+│   │   ├── expert_0 (MoEExpert)
+│   │   ├── expert_1 (MoEExpert)
+│   │   ├── ...
+│   │   └── expert_N (MoEExpert)
+│   ├── shared_expert (共享专家，MoEExpert，可选)
+│   └── gate_network (门控网络，Linear层，可选)
+└── 辅助组件 (按需创建)
+    ├── hidden_proj (隐藏层投影，用于维度匹配)
+    ├── hidden_proj_back (反向投影，用于维度恢复)
+    └── temp_lm_head (临时语言模型头，用于logits计算)
+```
+
+#### 2. MoE层在总体架构中的位置
+
+MoE层位于基础模型的隐藏层输出和语言模型头之间，作为一个**增量处理层**：
+
+```
+输入序列 (input_ids, attention_mask)
+    ↓
+基础模型处理 (包含LoRA适配器)
+    ↓
+隐藏状态输出 (base_hidden_states) [B, L, H]
+    ↓
+MoE层处理 (增量计算)
+    ↓
+MoE增量输出 (moe_delta) [B, L, H]
+    ↓
+增量融合: final_output = base_hidden_states + moe_influence_weight * moe_delta
+    ↓
+语言模型头 (LM Head)
+    ↓
+最终logits输出 [B, L, vocab_size]
+```
+
+### 各层详细结构
+
+#### 1. MoERouter (路由器)
+
+**结构组成**：
+- **核心组件**：单个Linear层 (`hidden_dim → num_experts`)
+- **数据精度**：强制使用Float32精度确保数值稳定性
+- **初始化策略**：小随机初始化 (std=0.02)，偏置初始化 (std=0.01)
+
+**功能职责**：
+- 根据输入隐藏状态计算专家激活权重
+- 使用数值稳定的softmax避免梯度爆炸/消失
+- 支持Top-k稀疏激活和Dense全激活模式
+
+**输入输出规格**：
+- 输入：pooled_hidden_states [B, H] (通过mean pooling得到)
+- 输出：expert_weights [B, num_experts], router_logits [B, num_experts]
+
+#### 2. MoEExpert (专家网络)
+
+**结构组成**：
+```
+MoEExpert
+├── gate_proj: Linear(hidden_dim → intermediate_dim, bias=True)
+├── up_proj: Linear(hidden_dim → intermediate_dim, bias=True)
+├── down_proj: Linear(intermediate_dim → hidden_dim, bias=True)
+├── act_fn: SiLU()
+└── dropout: Dropout(dropout_rate)
+```
+
+**前向传播流程**：
+1. **门控分支**：`gate_output = gate_proj(x)`
+2. **上投影分支**：`up_output = up_proj(x)`
+3. **激活融合**：`intermediate = SiLU(gate_output) * up_output`
+4. **Dropout处理**：`intermediate = dropout(intermediate)`
+5. **下投影输出**：`output = down_proj(intermediate) * scaling_factor`
+
+**参数配置**：
+- 中间维度：`intermediate_dim = hidden_dim * 4` (默认)
+- 输出缩放：`scaling_factor = 5.0` (增强MoE表达能力)
+- 数值范围：输出限制在 [-5.0, +5.0] 范围内
+
+#### 3. MoELayer (MoE处理层)
+
+**核心组件详细结构**：
+
+```
+MoELayer
+├── router: MoERouter (Float32精度)
+├── experts: nn.ModuleList[MoEExpert] (num_moe_experts个)
+├── shared_expert: MoEExpert (可选，use_shared=True时启用)
+└── gate_network: Linear(hidden_dim → 2, Float32精度) (可选，use_gate=True时启用)
+```
+
+**专家激活机制**：
+- **Top-k模式** (k < num_experts)：仅激活权重最高的k个专家，重新归一化top-k权重
+- **Dense模式** (k == num_experts)：激活所有专家，使用原始路由权重
+- **动态专家选择**：根据路由器输出的logits进行top-k选择
+
+**MASK机制双路处理**：
+- **路由专家输入**：原始隐藏状态 (hidden_states)
+- **共享专家输入**：MASK版本隐藏状态 (mask_hidden_states)
+- **专家分化策略**：奇数专家使用原始输入，偶数专家使用MASK输入
+- **输出融合**：通过门控网络或固定权重融合路由专家和共享专家输出
+
+### 数据流向和处理过程
+
+#### 1. 双路输入处理流程 (MASK机制启用时)
+
+```
+原始输入 (instruction + input)
+    ↓
+基础模型处理 → hidden_states_original
+    ↓
+路由专家处理路径
+
+MASK输入 (instruction_mask + input)
+    ↓
+基础模型处理 → hidden_states_mask
+    ↓
+共享专家处理路径
+
+两路输出通过门控网络融合
+```
+
+#### 2. MoE层内部处理流程
+
+```
+输入隐藏状态 [B, L, H]
+    ↓
+平均池化 → pooled_states [B, H]
+    ↓
+路由器计算 → expert_weights [B, num_experts]
+    ↓
+Top-k专家选择 → activated_experts [List]
+    ↓
+并行专家计算:
+├── routing_expert_1(hidden_states) → expert_output_1
+├── routing_expert_2(hidden_states) → expert_output_2
+├── ...
+└── shared_expert(mask_hidden_states) → shared_output
+    ↓
+加权融合:
+├── routing_output = Σ(weight_i * expert_output_i)
+└── final_output = gate_fusion(routing_output, shared_output)
+    ↓
+输出增量 [B, L, H]
+```
+
+#### 3. 增量架构融合过程
+
+```
+基础LoRA输出 (base_hidden_states) [B, L, H]
+    +
+MoE增量输出 (moe_delta * moe_influence_weight) [B, L, H]
+    ↓
+组合隐藏状态 (final_hidden_states) [B, L, H]
+    ↓
+语言模型头处理 → logits [B, L, vocab_size]
+```
+
+### 新增组件说明
+
+相对于基础语言模型，Joint MoE架构新增的主要组件：
+
+#### 1. 核心MoE组件
+- **MoE路由器**：1个Linear层 (hidden_dim → num_experts)，约0.03M参数
+- **路由专家群**：4个MoEExpert，每个约1.05M参数，共约4.2M参数
+- **共享专家**：1个MoEExpert，约1.05M参数
+- **门控网络**：1个Linear层 (hidden_dim → 2)，约0.008M参数
+
+#### 2. 辅助组件 (按需创建)
+- **维度投影层**：用于处理隐藏维度不匹配的情况
+- **临时LM头**：用于特殊情况下的logits计算
+
+#### 3. 参数统计
+- **总新增参数**：约5.3M (相比8B基础模型约增加0.066%)
+- **可训练参数**：约100M (包含LoRA参数 + MoE参数)
+- **参数效率**：仅训练约1.25%的总参数实现文化适应
+
+### 技术特点
+
+#### 1. 增量架构设计
+- MoE层产生相对于基础LoRA的**增量调整**，而非完全替换
+- 通过moe_influence_weight控制MoE影响程度，确保基础能力保持稳定
+- 支持不同backbone的差异化影响权重配置
+
+#### 2. 数值稳定性优化
+- 路由器和门控网络使用Float32精度避免精度损失
+- 专家输出限制在合理范围内防止梯度爆炸
+- 完善的异常检测和fallback机制确保训练稳定
+
+#### 3. 内存效率优化
+- 基于LoRA的专家设计大幅减少参数量
+- 支持Top-k稀疏激活减少计算开销
+- 动态内存管理和梯度优化适配多GPU训练
+
 ## Joint CultureMoE模型介绍
 
 ### 整体架构
