@@ -122,6 +122,29 @@ class CultureLLMNewFormatDataset:
         }
 
 
+def parse_soft_answers(output_str: str) -> list:
+    """
+    解析可能包含多个答案的output字符串（用于soft accuracy）
+
+    例如:
+        "1, 2" -> ["1", "2"]
+        "3, 4, 5" -> ["3", "4", "5"]
+        "1" -> ["1"]
+
+    Args:
+        output_str: 输出字符串，可能包含逗号分隔的多个答案
+
+    Returns:
+        答案列表
+    """
+    if not output_str:
+        return []
+
+    # 分割并清理空格
+    answers = [ans.strip() for ans in output_str.split(',') if ans.strip()]
+    return answers
+
+
 def extract_answer_from_text(text: str) -> str:
     """
     从生成的文本中提取答案
@@ -197,7 +220,7 @@ def generate_answer(model, tokenizer, text: str, device: str = 'cuda', max_new_t
     return generated_text
 
 
-def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_size=4, max_length=512, group_by_country=False):
+def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_size=4, max_length=512, group_by_country=False, data_id=""):
     """
     在数据集上评估 Base 模型
 
@@ -210,6 +233,7 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_siz
         batch_size: 批次大小（当前实现为逐个处理，参数保留用于未来优化）
         max_length: 输入序列的最大长度
         group_by_country: 是否按country分组统计结果（用于blend数据集）
+        data_id: 数据集ID，用于决定是否使用soft accuracy（40、402、403使用soft accuracy）
 
     Returns:
         dict: 包含评估指标的字典
@@ -223,12 +247,17 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_siz
     # 🔧 新增：country分组统计
     country_stats = {}  # {country: {'correct': 0, 'total': 0, 'accuracy': 0.0}}
 
+    # 🔧 新增：判断是否使用soft accuracy（DATA_ID=40、402、403）
+    use_soft_accuracy = (data_id in ["40", "402", "403"])
+
     print(f"\nGenerating answers on dataset...")
     print(f"📊 Batch size: {batch_size} (memory optimization)")
     print(f"📏 Max length: {max_length} tokens")
     print(f"📋 Processing {len(dataset)} samples...")
     if group_by_country:
         print(f"🌍 Country grouping: enabled")
+    if use_soft_accuracy:
+        print(f"🎯 Accuracy mode: Soft accuracy (multiple correct answers allowed)")
 
     for idx in tqdm(range(len(dataset)), desc="Generating"):
         sample = dataset[idx]
@@ -244,8 +273,15 @@ def evaluate_base_model(model, tokenizer, dataset, device, output_dir, batch_siz
         # 提取答案
         predicted_answer = extract_answer_from_text(generated_text)
 
-        # 比对答案
-        is_correct = (predicted_answer == true_output)
+        # 比对答案 - 根据data_id决定使用soft accuracy还是exact accuracy
+        if use_soft_accuracy:
+            # Soft accuracy: 预测答案在可能的正确答案集合中即可
+            possible_answers = parse_soft_answers(true_output)
+            is_correct = (predicted_answer in possible_answers)
+        else:
+            # Exact accuracy: 精确匹配
+            is_correct = (predicted_answer == true_output)
+
         if is_correct:
             correct += 1
         total += 1
@@ -401,15 +437,18 @@ def main():
     print("Starting evaluation...")
     print("="*80 + "\n")
 
-    eval_metrics = evaluate_base_model(model, tokenizer, dataset, args.device, args.output_dir, args.batch_size, args.max_length, group_by_country)
+    eval_metrics = evaluate_base_model(model, tokenizer, dataset, args.device, args.output_dir, args.batch_size, args.max_length, group_by_country, args.data_id)
 
     # 保存评估结果
+    use_soft_accuracy = (args.data_id in ["40", "402", "403"])
     results = {
         'accuracy': eval_metrics['accuracy'],
         'correct': eval_metrics['correct'],
         'total': eval_metrics['total'],
         'timestamp': datetime.now().isoformat(),
-        'group_by_country': group_by_country
+        'group_by_country': group_by_country,
+        'soft_accuracy': use_soft_accuracy,
+        'data_id': args.data_id
     }
 
     # 🔧 新增：如果有country分组统计，添加到结果中
@@ -433,6 +472,9 @@ def main():
     print("\n" + "="*80)
     print("📊 Evaluation Results")
     print("="*80)
+    if use_soft_accuracy:
+        print(f"🎯 Accuracy Mode: Soft Accuracy (DATA_ID={args.data_id})")
+        print(f"   Multiple correct answers allowed per question")
     print(f"Accuracy: {eval_metrics['accuracy']:.4f}")
     print(f"Correct: {eval_metrics['correct']}/{eval_metrics['total']}")
 

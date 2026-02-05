@@ -97,6 +97,27 @@ case $DATA_ID in
         DATASET_TAG="cultureLLM_icl"
         echo "Using CultureLLM dataset (new format)"
         ;;
+    40)
+        # CultureLLM semantic (soft accuracy)
+        DATASET_NAME="CultureLLM"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen_semantic.json"
+        DATASET_TAG="cultureLLM_semantic"
+        echo "Using CultureLLM semantic dataset (soft accuracy mode)"
+        ;;
+    402)
+        # CultureLLM rp semantic (soft accuracy)
+        DATASET_NAME="CultureLLM"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_rp_gen_semantic.json"
+        DATASET_TAG="cultureLLM_rp_semantic"
+        echo "Using CultureLLM rp semantic dataset (soft accuracy mode)"
+        ;;
+    403)
+        # CultureLLM ICL semantic (soft accuracy)
+        DATASET_NAME="CultureLLM_icl"
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen_samples_semantic.json"
+        DATASET_TAG="cultureLLM_icl_semantic"
+        echo "Using CultureLLM ICL semantic dataset (soft accuracy mode)"
+        ;;
     61)
         TRAIN_FILE="/autodl-fs/data/moral_stories_merge_gen.json"
         DATASET_TAG="moral"
