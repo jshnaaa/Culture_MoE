@@ -103,6 +103,11 @@ case $DATA_ID in
         DATASET_TAG="blend"
         echo "📊 使用blend数据集 (支持country分组统计)"
         ;;
+    40)
+        TEST_FILE="/root/autodl-fs/cultureLLM_merge_gen_semantic.json"
+        DATASET_TAG="cultureLLM_semantic"
+        echo "🎯 使用CultureLLM semantic数据集 (soft accuracy模式)"
+        ;;
     *)
         echo "❌ 错误: 无效的DATA_ID=$DATA_ID"
         echo ""
@@ -113,6 +118,7 @@ case $DATA_ID in
         echo "  4  - CultureLLM"
         echo "  5  - CultureAtlas"
         echo "  16 - Blend (支持country分组统计)"
+        echo "  40 - CultureLLM semantic (soft accuracy模式)"
         exit 1
         ;;
 esac

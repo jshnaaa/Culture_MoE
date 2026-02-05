@@ -74,8 +74,13 @@ case $DATA_ID in
         TRAIN_FILE="/root/autodl-fs/blend_merge_gen.json"
         DATASET_TAG="blend"
         ;;
+    40)
+        TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen_semantic.json"
+        DATASET_TAG="cultureLLM_semantic"
+        echo "🎯 使用CultureLLM semantic数据集 (soft accuracy模式)"
+        ;;
     *)
-        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 0=pkl文件, 1=unified, 2=CulturalBench, 3=normad, 4=cultureLLM, 5=cultureAtlas, 16=blend)"
+        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 0=pkl文件, 1=unified, 2=CulturalBench, 3=normad, 4=cultureLLM, 5=cultureAtlas, 16=blend, 40=cultureLLM_semantic)"
         exit 1
         ;;
 esac

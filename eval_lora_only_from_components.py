@@ -568,7 +568,30 @@ def extract_label_robust(answer: str, num_classes: int = 10):
     return extract_label_enhanced(answer, num_classes)
 
 
-def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_dir: str = None, group_by_country: bool = False):
+def parse_soft_answers(output_str: str) -> list:
+    """
+    解析可能包含多个答案的output字符串（用于soft accuracy）
+
+    例如:
+        "1, 2" -> ["1", "2"]
+        "3, 4, 5" -> ["3", "4", "5"]
+        "1" -> ["1"]
+
+    Args:
+        output_str: 输出字符串，可能包含逗号分隔的多个答案
+
+    Returns:
+        答案列表
+    """
+    if not output_str:
+        return []
+
+    # 分割并清理空格
+    answers = [ans.strip() for ans in str(output_str).split(',') if ans.strip()]
+    return answers
+
+
+def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_dir: str = None, group_by_country: bool = False, data_id: str = ""):
     """
     评估模型
 
@@ -579,6 +602,7 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
         num_classes: 类别数量
         output_dir: 输出目录
         group_by_country: 是否按country分组统计结果（用于blend数据集）
+        data_id: 数据集ID，用于决定是否使用soft accuracy（40使用soft accuracy）
 
     Returns:
         results: 评估结果
@@ -587,6 +611,11 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
     print(f"Number of classes: {num_classes}")
     if group_by_country:
         print(f"🌍 Country grouping: enabled")
+
+    # 🔧 新增：判断是否使用soft accuracy（DATA_ID=40）
+    use_soft_accuracy = (data_id == "40")
+    if use_soft_accuracy:
+        print(f"🎯 Accuracy mode: Soft accuracy (multiple correct answers allowed)")
 
     all_preds = []
     all_labels = []
@@ -603,10 +632,20 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
         # 🔧 新增：获取country字段（用于blend数据集分组统计）
         country = item.get('country', None)
 
-        # 处理标签（1-indexed -> 0-indexed）
-        label = int(item['output'])
-        if label >= 1:
-            label = label - 1
+        # 处理标签
+        output_str = str(item['output'])
+
+        if use_soft_accuracy:
+            # Soft accuracy模式：解析可能的多个正确答案（1-indexed）
+            possible_answers_1indexed = parse_soft_answers(output_str)
+            # 转换为0-indexed用于比较
+            possible_answers = [int(ans) - 1 for ans in possible_answers_1indexed if ans.isdigit()]
+        else:
+            # Exact accuracy模式：单一答案（1-indexed -> 0-indexed）
+            label = int(output_str)
+            if label >= 1:
+                label = label - 1
+            possible_answers = [label]
 
         # 生成答案
         raw_answer, pred = generate_answer(model, tokenizer, instruction, input_text, num_classes)
@@ -616,7 +655,13 @@ def evaluate_model(model, tokenizer, test_data, num_classes: int = 10, output_di
             failed_count += 1
 
         # 判断正确性
-        is_correct = (pred == label)
+        if use_soft_accuracy:
+            # Soft accuracy: 预测在可能答案集合中即可
+            is_correct = (pred in possible_answers)
+            label = possible_answers[0] if possible_answers else 0  # 用于保存
+        else:
+            # Exact accuracy: 精确匹配
+            is_correct = (pred == label)
 
         # 🔧 新增：更新country分组统计
         if group_by_country and country is not None:
@@ -878,7 +923,8 @@ def main():
                 test_data,
                 num_classes=10,  # 默认使用10个类别
                 output_dir=os.path.join(args.output_dir, pkl_name),
-                group_by_country=False  # pkl文件模式不支持country分组
+                group_by_country=False,  # pkl文件模式不支持country分组
+                data_id=args.data_id
             )
 
             # 保存单个pkl文件的结果
@@ -925,7 +971,8 @@ def main():
             test_data,
             num_classes=args.num_classes,
             output_dir=args.output_dir,
-            group_by_country=group_by_country
+            group_by_country=group_by_country,
+            data_id=args.data_id
         )
 
     # 保存评估结果

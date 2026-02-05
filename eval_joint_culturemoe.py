@@ -49,6 +49,29 @@ from ft_lora_only_gen import (
 )
 
 
+def parse_soft_answers(output_str: str) -> list:
+    """
+    解析可能包含多个答案的output字符串（用于soft accuracy）
+
+    例如:
+        "1, 2" -> ["1", "2"]
+        "3, 4, 5" -> ["3", "4", "5"]
+        "1" -> ["1"]
+
+    Args:
+        output_str: 输出字符串，可能包含逗号分隔的多个答案
+
+    Returns:
+        答案列表
+    """
+    if not output_str:
+        return []
+
+    # 分割并清理空格
+    answers = [ans.strip() for ans in str(output_str).split(',') if ans.strip()]
+    return answers
+
+
 def generate_answer_with_shared_control(model, tokenizer, instruction: str, input_text: str,
                                       instruction_mask: str = None, device: str = 'cuda',
                                       use_mask: bool = True, use_shared: bool = None,
@@ -610,13 +633,22 @@ def load_joint_model(base_model_path: str, joint_model_path: str, device: str,
     return joint_model
 
 
-def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True, use_shared=None, use_moe=None, use_gate=None, group_by_country=False):
+def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask=True, use_shared=None, use_moe=None, use_gate=None, group_by_country=False, data_id=""):
     """
     🔧 修复版本：评估联合模型，支持MASK机制双路输入和推理时消融控制
 
     Args:
         model: 联合模型
         test_loader: 测试数据加载器
+        tokenizer: tokenizer
+        device: 设备
+        rank: 进程rank
+        use_mask: 是否使用MASK机制
+        use_shared: 是否使用共享专家
+        use_moe: 是否使用MoE结构
+        use_gate: 是否使用门控网络
+        group_by_country: 是否按country分组统计
+        data_id: 数据集ID，用于决定是否使用soft accuracy（40使用soft accuracy）
         tokenizer: tokenizer
         device: 设备
         rank: 进程rank
@@ -643,6 +675,11 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
     # 🔧 调试：检查country分组状态
     if rank == 0 and group_by_country:
         print(f"🌍 Country分组统计已启用，将收集country字段统计信息")
+
+    # 🔧 新增：判断是否使用soft accuracy（DATA_ID=40）
+    use_soft_accuracy = (data_id == "40")
+    if rank == 0 and use_soft_accuracy:
+        print(f"🎯 Accuracy mode: Soft accuracy (multiple correct answers allowed)")
 
     correct = 0
     total = 0
@@ -704,18 +741,26 @@ def evaluate_joint_model(model, test_loader, tokenizer, device, rank=0, use_mask
                 # 提取答案
                 predicted_answer = extract_answer_from_text(generated_text)
 
+                # 判断正确性
+                if use_soft_accuracy:
+                    # Soft accuracy: 预测答案在可能的正确答案集合中即可
+                    possible_answers = parse_soft_answers(true_output)
+                    is_correct = (predicted_answer in possible_answers)
+                else:
+                    # Exact accuracy: 精确匹配
+                    is_correct = (predicted_answer == true_output)
+
                 # 🔧 新增：前10个样本的详细调试输出
                 if total < 10 and rank == 0:
                     print(f"\n📋 Sample {total + 1} debug:")
                     print(f"  Instruction: {instruction[:100]}...")
                     print(f"  Input: {input_text[:50]}...")
                     print(f"  True output: '{true_output}'")
+                    if use_soft_accuracy:
+                        print(f"  Possible answers: {parse_soft_answers(true_output)}")
                     print(f"  Generated text: '{generated_text}'")
                     print(f"  Predicted answer: '{predicted_answer}'")
-                    print(f"  Correct: {predicted_answer == true_output}")
-
-                # 判断正确性
-                is_correct = (predicted_answer == true_output)
+                    print(f"  Correct: {is_correct}")
                 if is_correct:
                     correct += 1
                 total += 1
@@ -1030,7 +1075,7 @@ def main():
     else:
         print(f"📊 使用标准评估模式 (DATA_ID={args.data_id})")
 
-    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask, use_shared=use_shared_for_inference, use_moe=use_moe_for_inference, use_gate=use_gate_for_inference, group_by_country=group_by_country)
+    eval_results = evaluate_joint_model(model, test_loader, tokenizer, device, rank, use_mask=use_mask, use_shared=use_shared_for_inference, use_moe=use_moe_for_inference, use_gate=use_gate_for_inference, group_by_country=group_by_country, data_id=args.data_id)
 
     # 保存结果（只在主进程执行）
     if is_main_process(rank):
