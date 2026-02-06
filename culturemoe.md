@@ -246,6 +246,148 @@ $$\text{final\_output} = w_{\text{routing}} \odot \text{routing\_output} + w_{\t
    final_output = routing_weight * routing_output + shared_weight * shared_output
    ```
 
+##### 门控网络的输入来源
+
+**关键说明**：门控网络的输入`gate_input`来源于**原始hidden_states**（非MASK版本）。
+
+```python
+gate_input = hidden_states.mean(dim=1)  # 使用原始hidden_states，不是mask_hidden_states
+```
+
+**设计理由**：
+1. **全局决策基础**：门控网络需要基于完整的、未经MASK的输入信息来做出融合决策
+2. **避免信息损失**：MASK机制会隐藏部分文化信息，不适合用于全局融合决策
+3. **一致性保证**：与路由器使用相同的输入源（原始hidden_states），保持决策的一致性
+4. **独立判断**：门控网络独立于MASK机制，可以基于完整信息判断如何平衡两类专家
+
+##### 完整数据流图
+
+**MASK机制启用时的完整数据流**：
+
+```
+输入层
+├── hidden_states (原始输入) [B, L, H]
+│   ├─→ MeanPooling → [B, H]
+│   │   ├─→ 路由器 (Router) → expert_weights [B, num_experts]
+│   │   └─→ 门控网络 (Gate Network) → gate_weights [B, 2]
+│   │
+│   └─→ 路由专家计算
+│       ├─→ 奇数专家 (Expert 1, 3, ...) 使用 hidden_states
+│       ├─→ 偶数专家 (Expert 0, 2, ...) 使用 mask_hidden_states
+│       └─→ 加权融合 → routing_output [B, L, H]
+│
+└── mask_hidden_states (MASK输入) [B, L, H]
+    └─→ 共享专家 (Shared Expert) → shared_output [B, L, H]
+
+融合层
+├── gate_weights [B, 2]
+│   ├─→ routing_weight = gate_weights[:, 0]
+│   └─→ shared_weight = gate_weights[:, 1]
+│
+└── final_output = routing_weight * routing_output + shared_weight * shared_output
+```
+
+**数据流详细说明**：
+
+1. **输入阶段**：
+   - 原始输入通过基础模型产生`hidden_states` [B, L, H]
+   - MASK输入通过基础模型产生`mask_hidden_states` [B, L, H]
+
+2. **路由决策阶段**（使用原始hidden_states）：
+   ```python
+   pooled = hidden_states.mean(dim=1)  # [B, L, H] → [B, H]
+   expert_weights, router_logits = router(pooled)  # → [B, num_experts]
+   ```
+
+3. **专家计算阶段**（双路输入）：
+   - **路由专家**：
+     ```python
+     for expert_idx in activated_experts:
+         if expert_idx % 2 == 0:  # 偶数专家
+             expert_input = mask_hidden_states
+         else:  # 奇数专家
+             expert_input = hidden_states
+         expert_output = experts[expert_idx](expert_input)
+
+     routing_output = Σ(expert_weights[i] * expert_outputs[i])
+     ```
+
+   - **共享专家**：
+     ```python
+     shared_output = shared_expert(mask_hidden_states)
+     ```
+
+4. **门控融合阶段**（使用原始hidden_states）：
+   ```python
+   gate_input = hidden_states.mean(dim=1)  # [B, L, H] → [B, H]
+   gate_logits = gate_network(gate_input)  # [B, H] → [B, 2]
+   gate_weights = softmax(gate_logits)  # [B, 2]
+
+   routing_weight = gate_weights[:, 0].unsqueeze(1).unsqueeze(2)  # [B, 1, 1]
+   shared_weight = gate_weights[:, 1].unsqueeze(1).unsqueeze(2)   # [B, 1, 1]
+
+   final_output = routing_weight * routing_output + shared_weight * shared_output
+   ```
+
+##### Gate Logits和Gate Weights的计算过程
+
+**Gate Logits计算**：
+```python
+# 步骤1: 准备输入
+gate_input = hidden_states.mean(dim=1)  # [B, L, H] → [B, H]
+gate_input = torch.clamp(gate_input, min=-10.0, max=10.0)
+gate_input = gate_input.float()  # Float16 → Float32
+
+# 步骤2: 线性变换得到logits
+gate_logits = W_g @ gate_input.T + b_g  # [2, H] @ [H, B] + [2] → [B, 2]
+# 等价于: gate_logits = gate_network(gate_input)
+gate_logits = torch.clamp(gate_logits, min=-10.0, max=10.0)
+```
+
+**Gate Weights计算**（Softmax归一化）：
+```python
+# 步骤3: Shifted Softmax（数值稳定版本）
+max_logits = torch.max(gate_logits, dim=-1, keepdim=True)[0]  # [B, 1]
+shifted_logits = gate_logits - max_logits  # [B, 2] - [B, 1] → [B, 2]
+
+# 步骤4: 指数和归一化
+exp_logits = torch.exp(shifted_logits)  # [B, 2]
+sum_exp = torch.sum(exp_logits, dim=-1, keepdim=True)  # [B, 1]
+gate_weights = exp_logits / (sum_exp + 1e-8)  # [B, 2]
+
+# 步骤5: 二次归一化（确保数值稳定）
+gate_weights = gate_weights / (torch.sum(gate_weights, dim=-1, keepdim=True) + 1e-8)
+```
+
+**数学表示**：
+$$\text{gate\_logits} = W_g \cdot \text{gate\_input} + b_g$$
+$$\text{gate\_weights}_i = \frac{\exp(\text{gate\_logits}_i - \max(\text{gate\_logits}))}{\sum_j \exp(\text{gate\_logits}_j - \max(\text{gate\_logits}))}$$
+
+其中：
+- $W_g \in \mathbb{R}^{2 \times H}$：门控网络权重矩阵
+- $b_g \in \mathbb{R}^{2}$：门控网络偏置向量
+- $\text{gate\_weights} \in \mathbb{R}^{B \times 2}$：归一化后的门控权重，满足 $\sum_i \text{gate\_weights}_i = 1$
+
+##### 关键设计要点
+
+**为什么gate_input使用原始hidden_states？**
+
+1. **完整信息**：原始hidden_states包含完整的语义和文化信息，适合做全局决策
+2. **MASK独立性**：门控决策不应受MASK机制影响，需要基于完整输入判断专家组合
+3. **决策一致性**：与路由器使用相同的输入源，保持整体决策的一致性
+4. **灵活融合**：可以根据完整输入特征动态调整路由专家（可能包含MASK输入）和共享专家（使用MASK输入）的权重
+
+**数据流总结**：
+- **路由器输入**：原始hidden_states的pooling → 决定激活哪些专家
+- **路由专家输入**：原始或MASK hidden_states（根据专家索引） → 生成文化感知表示
+- **共享专家输入**：MASK hidden_states → 生成文化无关表示
+- **门控网络输入**：原始hidden_states的pooling → 决定如何融合两类专家
+
+这种设计确保了：
+1. 路由决策和融合决策基于完整信息
+2. 专家计算通过MASK机制实现表示分化
+3. 整体架构既保持决策的全局一致性，又实现了专家的表示多样性
+
 ##### 初始化策略
 
 **权重初始化**：
