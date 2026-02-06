@@ -129,6 +129,182 @@ MoELayer
 - **专家分化策略**：奇数专家使用原始输入，偶数专家使用MASK输入
 - **输出融合**：通过门控网络或固定权重融合路由专家和共享专家输出
 
+#### 4. 门控网络 (Gate Network)
+
+门控网络是Joint MoE架构中的关键组件，负责动态融合路由专家和共享专家的输出，实现自适应的专家组合策略。
+
+##### 网络结构
+
+**基本结构**：
+```
+Gate Network
+└── Linear(hidden_dim → 2, bias=True, dtype=Float32)
+```
+
+**结构特点**：
+- **单层线性网络**：最简单的门控机制，计算高效
+- **Float32精度**：使用Float32而非Float16，提高数值稳定性
+- **二元输出**：输出2个logits，分别对应路由专家和共享专家的权重
+- **有偏置项**：bias=True，增强表达能力
+
+##### 数学公式
+
+**完整计算流程**：
+
+1. **门控输入计算**：
+$$\text{gate\_input} = \text{MeanPooling}(\text{hidden\_states}) \in \mathbb{R}^{B \times H}$$
+
+2. **门控logits计算**：
+$$\text{gate\_logits} = W_g \cdot \text{gate\_input} + b_g \in \mathbb{R}^{B \times 2}$$
+   其中 $W_g \in \mathbb{R}^{2 \times H}$，$b_g \in \mathbb{R}^{2}$
+
+3. **Shifted Softmax归一化**（数值稳定版本）：
+$$\text{max\_logits} = \max(\text{gate\_logits}, \text{dim}=-1)$$
+$$\text{shifted\_logits} = \text{gate\_logits} - \text{max\_logits}$$
+$$\text{exp\_logits} = \exp(\text{shifted\_logits})$$
+$$\text{gate\_weights} = \frac{\text{exp\_logits}}{\sum \text{exp\_logits} + \epsilon}$$
+
+4. **权重提取**：
+$$w_{\text{routing}} = \text{gate\_weights}[:, 0] \in \mathbb{R}^{B}$$
+$$w_{\text{shared}} = \text{gate\_weights}[:, 1] \in \mathbb{R}^{B}$$
+
+5. **专家输出融合**：
+$$\text{final\_output} = w_{\text{routing}} \odot \text{routing\_output} + w_{\text{shared}} \odot \text{shared\_output}$$
+   其中 $\odot$ 表示广播乘法
+
+##### 输入输出规格
+
+**输入**：
+- **gate_input**: `[B, H]`
+  - 来源：`hidden_states.mean(dim=1)`
+  - 通过序列维度的平均池化获得全局表示
+  - 预处理：限制范围到 `[-10.0, 10.0]`，转换为Float32
+
+**中间输出**：
+- **gate_logits**: `[B, 2]`
+  - 原始门控分数，未归一化
+  - 限制范围：`[-10.0, 10.0]`
+
+- **gate_weights**: `[B, 2]`
+  - 归一化后的门控权重
+  - 性质：$w_{\text{routing}} + w_{\text{shared}} = 1$
+  - 范围：$[0, 1]$
+
+**最终输出**：
+- **routing_weight**: `[B, 1, 1]`
+  - 路由专家权重，扩展维度用于广播
+
+- **shared_weight**: `[B, 1, 1]`
+  - 共享专家权重，扩展维度用于广播
+
+**融合输入**：
+- **routing_output**: `[B, L, H]` - 路由专家的输出
+- **shared_output**: `[B, L, H]` - 共享专家的输出
+
+**融合输出**：
+- **final_output**: `[B, L, H]` - 最终融合结果
+
+##### 权重计算流程
+
+**详细步骤**：
+
+1. **输入准备**：
+   ```python
+   gate_input = hidden_states.mean(dim=1)  # [B, L, H] → [B, H]
+   gate_input = torch.clamp(gate_input, min=-10.0, max=10.0)
+   gate_input = gate_input.float()  # Float16 → Float32
+   ```
+
+2. **Logits计算**：
+   ```python
+   gate_logits = self.gate_network(gate_input)  # [B, H] → [B, 2]
+   gate_logits = torch.clamp(gate_logits, min=-10.0, max=10.0)
+   ```
+
+3. **Shifted Softmax**（避免数值溢出）：
+   ```python
+   max_logits = torch.max(gate_logits, dim=-1, keepdim=True)[0]
+   shifted_logits = gate_logits - max_logits
+   exp_logits = torch.exp(shifted_logits)
+   gate_weights = exp_logits / (torch.sum(exp_logits, dim=-1, keepdim=True) + 1e-8)
+   ```
+
+4. **二次归一化**（确保数值稳定）：
+   ```python
+   gate_weights = gate_weights / (torch.sum(gate_weights, dim=-1, keepdim=True) + 1e-8)
+   gate_weights = gate_weights.to(routing_output.dtype)  # Float32 → Float16
+   ```
+
+5. **权重提取与维度扩展**：
+   ```python
+   routing_weight = gate_weights[:, 0].unsqueeze(1).unsqueeze(2)  # [B] → [B, 1, 1]
+   shared_weight = gate_weights[:, 1].unsqueeze(1).unsqueeze(2)   # [B] → [B, 1, 1]
+   ```
+
+6. **专家输出融合**：
+   ```python
+   final_output = routing_weight * routing_output + shared_weight * shared_output
+   ```
+
+##### 初始化策略
+
+**权重初始化**：
+```python
+nn.init.normal_(self.gate_network.weight, mean=0.0, std=0.01)
+```
+- 使用小标准差的正态分布
+- 避免初始阶段权重过大导致的不稳定
+
+**偏置初始化**：
+```python
+nn.init.constant_(self.gate_network.bias, 0.0)
+```
+- 初始化为零，确保初始状态下两个专家权重相近（约0.5:0.5）
+
+##### 数值稳定性优化
+
+**多层保护机制**：
+
+1. **Float32精度计算**：
+   - 门控网络权重和计算使用Float32
+   - 避免Float16精度损失导致的数值问题
+
+2. **输入范围限制**：
+   - gate_input限制在`[-10, 10]`
+   - gate_logits限制在`[-10, 10]`
+   - 防止极端值导致的数值溢出
+
+3. **Shifted Softmax**：
+   - 减去最大值避免exp溢出
+   - 标准的数值稳定技巧
+
+4. **二次归一化**：
+   - 确保权重和严格为1
+   - 补偿浮点运算的累积误差
+
+5. **异常检测与Fallback**：
+   - 检测NaN/Inf并使用固定权重(0.5:0.5)
+   - 确保训练过程的鲁棒性
+
+##### 工作模式
+
+**训练模式**：
+- 门控权重通过反向传播学习
+- 根据输入动态调整专家组合比例
+- 学习不同样本的最优专家融合策略
+
+**消融模式**（use_gate=False）：
+- 使用固定权重：0.5 × routing_output + 0.5 × shared_output
+- 用于消融实验，验证门控网络的有效性
+
+##### 设计优势
+
+1. **自适应融合**：根据输入特征动态调整专家权重
+2. **参数高效**：仅增加 `2 × hidden_dim + 2` 个参数（约0.008M）
+3. **计算高效**：单层线性变换，计算开销极小
+4. **数值稳定**：Float32精度和多重保护机制
+5. **可解释性**：权重分布可以反映不同专家的贡献
+
 ### 数据流向和处理过程
 
 #### 1. 双路输入处理流程 (MASK机制启用时)
