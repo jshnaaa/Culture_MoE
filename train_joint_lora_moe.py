@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+import atexit
 from typing import Dict, List, Optional
 
 import torch
@@ -80,6 +81,180 @@ def cleanup_distributed():
 def is_main_process(rank):
     """检查是否为主进程"""
     return rank == 0
+
+
+class VectorDistanceLogger:
+    """
+    向量距离记录器 - 用于记录CDL（共享-路由专家距离）和RSL（样本间专家权重距离）
+
+    支持多卡训练（DDP）：
+    - 每个rank写入独立文件避免冲突
+    - 每个epoch自动flush确保数据写入磁盘
+    - 训练结束后主进程自动合并
+    - 仅当data_id=2时启用
+    """
+
+    def __init__(self, output_dir, data_id, use_culture_loss, rank, world_size):
+        """
+        初始化记录器
+
+        Args:
+            output_dir: 输出目录
+            data_id: 数据集ID（仅当=2时启用）
+            use_culture_loss: 文化损失类型（决定文件名前缀）
+            rank: 当前进程rank
+            world_size: 总进程数
+        """
+        self.enabled = (data_id == 2)
+        self.rank = rank
+        self.world_size = world_size
+        self.output_dir = output_dir
+
+        if not self.enabled:
+            return
+
+        # 确定文件名前缀（根据use_culture_loss）
+        has_csl = str(use_culture_loss).lower() in ["csl", "ori", "new", "kl"]
+        self.cdl_name = "cdl_vec_distance" if has_csl else "no_cdl_vec_distance"
+        self.rsl_name = "rsl_vec_distance" if has_csl else "no_rsl_vec_distance"
+
+        # 每个rank有独立的临时文件（追加模式支持训练恢复）
+        self.cdl_file_path = os.path.join(output_dir, f"{self.cdl_name}_rank{rank}.txt")
+        self.rsl_file_path = os.path.join(output_dir, f"{self.rsl_name}_rank{rank}.txt")
+
+        # 打开文件
+        self.cdl_file = open(self.cdl_file_path, "a")
+        self.rsl_file = open(self.rsl_file_path, "a")
+
+        # 如果是新文件，写入表头
+        if os.path.getsize(self.cdl_file_path) == 0:
+            self.cdl_file.write("epoch,step,sample_id,cdl_euclidean_distance\n")
+        if os.path.getsize(self.rsl_file_path) == 0:
+            self.rsl_file.write("epoch,step,sample_i_id,sample_j_id,culture_i,culture_j,same_culture,rsl_euclidean_distance\n")
+
+        if rank == 0:
+            print(f"📊 Vector distance logging enabled (data_id=2)")
+            print(f"   CDL file: {self.cdl_name}.txt")
+            print(f"   RSL file: {self.rsl_name}.txt")
+
+    def record(self, outputs, batch, batch_idx, epoch, global_step):
+        """记录一个batch的向量距离数据"""
+        if not self.enabled:
+            return
+
+        try:
+            # 提取必要数据
+            shared_outputs = outputs.shared_expert_outputs      # [B, L, H]
+            routing_outputs = outputs.router_expert_outputs     # [B, L, H]
+            expert_weights = outputs.expert_weights             # [B, num_experts]
+            culture_labels = batch.get('culture_labels', None)
+            sample_ids = batch.get('sample_ids', None)          # 可选，从Dataset获取
+
+            if culture_labels is None:
+                return
+
+            batch_size = expert_weights.shape[0]
+
+            # 如果没有sample_ids，使用global_step和batch_idx构造临时ID
+            if sample_ids is None:
+                base_id = global_step * 100000 + batch_idx * batch_size
+                sample_ids = torch.arange(base_id, base_id + batch_size, device=expert_weights.device)
+
+            # ========== 1. 记录CDL（共享-路由）距离 ==========
+            if shared_outputs is not None and routing_outputs is not None:
+                # Pooling: [B, L, H] -> [B, H]
+                shared_pooled = shared_outputs.mean(dim=1)
+                routing_pooled = routing_outputs.mean(dim=1)
+
+                # 欧氏距离 [B]
+                cdl_distances = torch.norm(shared_pooled - routing_pooled, dim=1)
+
+                for i in range(batch_size):
+                    self.cdl_file.write(
+                        f"{epoch},{global_step},{sample_ids[i].item()},{cdl_distances[i].item():.6f}\n"
+                    )
+
+            # ========== 2. 记录RSL（样本间专家权重）距离 ==========
+            if expert_weights is not None:
+                for i in range(batch_size):
+                    for j in range(i + 1, batch_size):
+                        # 欧氏距离
+                        rsl_distance = torch.norm(expert_weights[i] - expert_weights[j])
+
+                        # 是否同文化
+                        same_culture = 1 if culture_labels[i].item() == culture_labels[j].item() else 0
+
+                        self.rsl_file.write(
+                            f"{epoch},{global_step},"
+                            f"{sample_ids[i].item()},{sample_ids[j].item()},"
+                            f"{culture_labels[i].item()},{culture_labels[j].item()},"
+                            f"{same_culture},{rsl_distance.item():.6f}\n"
+                        )
+
+        except Exception as e:
+            # 记录失败不中断训练
+            if self.rank == 0:
+                print(f"⚠️ Warning: Failed to record at step {global_step}: {e}")
+
+    def save_epoch(self, epoch):
+        """每个epoch结束时调用，确保数据写入磁盘"""
+        if not self.enabled:
+            return
+        self.cdl_file.flush()
+        self.rsl_file.flush()
+        os.fsync(self.cdl_file.fileno())  # 强制写入磁盘
+        os.fsync(self.rsl_file.fileno())
+        if self.rank == 0:
+            print(f"💾 Epoch {epoch} vector distances saved to disk")
+
+    def close(self):
+        """关闭文件"""
+        if not self.enabled:
+            return
+        self.cdl_file.close()
+        self.rsl_file.close()
+
+    def merge(self):
+        """合并各rank的文件（仅在主进程调用）"""
+        if not self.enabled or self.rank != 0:
+            return
+
+        # 等待所有进程
+        if self.world_size > 1 and dist.is_initialized():
+            dist.barrier()
+
+        # 合并CDL文件
+        cdl_output = os.path.join(self.output_dir, f"{self.cdl_name}.txt")
+        with open(cdl_output, "w") as outfile:
+            outfile.write("epoch,step,sample_id,cdl_euclidean_distance\n")
+            for r in range(self.world_size):
+                rank_file = os.path.join(self.output_dir, f"{self.cdl_name}_rank{r}.txt")
+                if os.path.exists(rank_file):
+                    with open(rank_file, "r") as infile:
+                        first_line = infile.readline()
+                        # 如果不是表头则写入
+                        if not first_line.startswith("epoch,"):
+                            outfile.write(first_line)
+                        outfile.write(infile.read())
+                    os.remove(rank_file)  # 删除临时文件
+
+        # 合并RSL文件
+        rsl_output = os.path.join(self.output_dir, f"{self.rsl_name}.txt")
+        with open(rsl_output, "w") as outfile:
+            outfile.write("epoch,step,sample_i_id,sample_j_id,culture_i,culture_j,same_culture,rsl_euclidean_distance\n")
+            for r in range(self.world_size):
+                rank_file = os.path.join(self.output_dir, f"{self.rsl_name}_rank{r}.txt")
+                if os.path.exists(rank_file):
+                    with open(rank_file, "r") as infile:
+                        first_line = infile.readline()
+                        if not first_line.startswith("epoch,"):
+                            outfile.write(first_line)
+                        outfile.write(infile.read())
+                    os.remove(rank_file)
+
+        print(f"✅ Vector distance files merged:")
+        print(f"   - {cdl_output}")
+        print(f"   - {rsl_output}")
 
 
 def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_expert_outputs, culture_labels, loss_weight=0.01, which_csl="all"):
@@ -372,7 +547,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
 
 def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                      num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
-                     alpha=0.01, beta=0.01, args=None):
+                     alpha=0.01, beta=0.01, args=None, vec_logger=None, epoch=0):
     """
     联合训练一个epoch：同时训练LoRA和MoE
     """
@@ -440,6 +615,11 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             culture_labels=culture_labels,
             return_dict=True
         )
+
+        # ========== 记录向量距离（仅data_id=2时生效）==========
+        if vec_logger is not None:
+            vec_logger.record(outputs, batch, batch_idx, epoch=epoch, global_step=num_batches)
+        # ====================================================
 
         # 📋 Labels调试信息（前3个batch）- 注释掉，专注tokenizer问题
         # if batch_idx < 3:
@@ -1030,8 +1210,8 @@ def main():
                         help="Path to training data (JSON)")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output directory for results")
-    parser.add_argument("--data_id", type=str, required=True,
-                        help="Data ID for dataset-specific optimizations")
+    parser.add_argument("--data_id", type=int, default=2,
+                        help="Data ID for dataset-specific optimizations (only record vector distances when data_id=2)")
 
     # 训练参数
     parser.add_argument("--num_epochs", type=int, default=5,
@@ -1176,6 +1356,16 @@ def main():
 
     # 创建输出目录
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # ========== 初始化向量距离记录器（仅当data_id=2时启用）==========
+    vec_logger = VectorDistanceLogger(
+        output_dir=args.output_dir,
+        data_id=args.data_id,
+        use_culture_loss=args.use_culture_loss,
+        rank=rank,
+        world_size=world_size
+    )
+    # ==============================================================
 
     # 加载tokenizer
     print("Loading tokenizer...")
@@ -1664,8 +1854,15 @@ def main():
             culture_loss_weight=args.culture_loss_weight,
             alpha=args.alpha,
             beta=args.beta,
-            args=args
+            args=args,
+            vec_logger=vec_logger,
+            epoch=epoch
         )
+
+        # ========== 每个epoch结束，保存向量距离数据 ==========
+        if vec_logger is not None:
+            vec_logger.save_epoch(epoch)
+        # ===================================================
 
         if is_main_process(rank):
             print(f"  Train Loss: {train_metrics['loss']:.4f}")
@@ -1830,6 +2027,11 @@ def main():
         print(f"Use LoRA: {use_lora}")
         print(f"Culture loss: {use_culture_loss}")
         print("="*80)
+
+    # 关闭并合并向量距离文件
+    if 'vec_logger' in locals():
+        vec_logger.close()
+        vec_logger.merge()
 
     # 清理分布式训练
     cleanup_distributed()  # 🔧 修复：拼写错误，应为cleanup_distributed
