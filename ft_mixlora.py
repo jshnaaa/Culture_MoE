@@ -533,8 +533,8 @@ def main():
         top_k=args.top_k,
         aux_loss_coef=args.aux_loss_coef,
         ffn_target_modules=['gate_proj', 'up_proj', 'down_proj'],
-        attention_target_modules=None,  # 暂时禁用注意力层LoRA避免维度问题
-        apply_mixlora_to_attention=False
+        attention_target_modules=['q_proj', 'v_proj'],  # Attention层使用普通LoRA适配器
+        apply_mixlora_to_attention=False  # Attention层不使用MixLoRA专家路由，仅使用普通LoRA
     )
 
     # 创建MixLoRA模型
