@@ -140,9 +140,10 @@ class VectorDistanceLogger:
             expert_weights = outputs.expert_weights             # [B, num_experts]
             sample_ids = batch.get('sample_ids', None)          # 可选，从Dataset获取
 
-            # 🔍 调试信息：检查数据是否存在（只在第一个batch的第一个epoch打印）
-            if batch_idx == 0 and epoch == 0 and self.rank == 0:
-                print(f"🔍 VectorDistanceLogger Debug:")
+            # 🔍 调试信息：检查数据是否存在（只在第一个batch打印）
+            if batch_idx == 0 and self.rank == 0:
+                print(f"🔍 VectorDistanceLogger record() called:")
+                print(f"  epoch={epoch}, batch_idx={batch_idx}")
                 print(f"  enabled: {self.enabled}")
                 print(f"  shared_outputs: {shared_outputs is not None}")
                 print(f"  routing_outputs: {routing_outputs is not None}")
@@ -154,6 +155,8 @@ class VectorDistanceLogger:
                     print(f"  culture_labels shape: {culture_labels.shape}")
 
             if culture_labels is None:
+                if batch_idx == 0 and self.rank == 0:
+                    print(f"  ⚠️ culture_labels is None, skipping")
                 return
 
             batch_size = expert_weights.shape[0]
@@ -180,6 +183,8 @@ class VectorDistanceLogger:
                         'distance': cdl_distances[i].item()
                     })
                 self.has_data = True
+                if batch_idx == 0 and self.rank == 0:
+                    print(f"  ✅ Added {batch_size} CDL records, total={len(self.cdl_records)}")
 
             # ========== 2. 记录RSL（样本间专家权重）距离 ==========
             if expert_weights is not None:
@@ -202,28 +207,40 @@ class VectorDistanceLogger:
                             'distance': rsl_distance.item()
                         })
                 self.has_data = True
+                if batch_idx == 0 and self.rank == 0:
+                    rsl_count = batch_size * (batch_size - 1) // 2
+                    print(f"  ✅ Added {rsl_count} RSL records, total={len(self.rsl_records)}")
 
         except Exception as e:
-            # 记录失败不中断训练
+            # 记录失败不中断训练，但打印详细错误
             if self.rank == 0:
+                import traceback
                 print(f"⚠️ Warning: Failed to record at step {global_step}: {e}")
+                traceback.print_exc()
 
     def save_best_model_data(self, is_best):
         """如果是最佳模型，保存缓存的数据到文件"""
         if not self.enabled:
+            if self.rank == 0:
+                print(f"🔍 save_best_model_data: not enabled (data_id != 2)")
             return
 
         if not is_best:
             # 不是最佳模型，清空缓存并重置标志
+            if self.rank == 0:
+                print(f"📝 Not best model, discarding {len(self.cdl_records)} CDL + {len(self.rsl_records)} RSL records")
             self.cdl_records = []
             self.rsl_records = []
             self.has_data = False
             return
 
         # 是最佳模型，保存数据
+        if self.rank == 0:
+            print(f"🔍 save_best_model_data: is_best=True, has_data={self.has_data}, cdl_records={len(self.cdl_records)}, rsl_records={len(self.rsl_records)}")
+
         if not self.has_data or (len(self.cdl_records) == 0 and len(self.rsl_records) == 0):
             if self.rank == 0:
-                print(f"⚠️ No vector distance data to save")
+                print(f"⚠️ No vector distance data to save (has_data={self.has_data}, cdl={len(self.cdl_records)}, rsl={len(self.rsl_records)})")
             return
 
         # 每个rank保存到自己的文件
@@ -267,7 +284,6 @@ class VectorDistanceLogger:
         if not self.enabled or self.rank != 0:
             return
 
-        # 注意：不移除 barrier，因为非主进程不会调用此函数
         # 等待一段时间确保其他进程完成文件写入
         import time
         time.sleep(2)
@@ -281,15 +297,15 @@ class VectorDistanceLogger:
                 rank_file = os.path.join(self.output_dir, f"{self.cdl_name}_rank{r}.txt")
                 if os.path.exists(rank_file):
                     with open(rank_file, "r") as infile:
-                        first_line = infile.readline()
-                        # 如果不是表头则写入
-                        if not first_line.startswith("epoch,"):
-                            outfile.write(first_line)
-                            total_cdl_records += 1
-                        # 读取剩余行
-                        for line in infile:
+                        lines = infile.readlines()
+                        # 跳过表头，写入所有数据行
+                        for line in lines:
+                            if line.startswith("epoch,"):
+                                continue  # 跳过表头
                             outfile.write(line)
                             total_cdl_records += 1
+                    # 删除临时文件
+                    os.remove(rank_file)
 
         # 合并RSL文件
         rsl_output = os.path.join(self.output_dir, f"{self.rsl_name}.txt")
@@ -300,13 +316,13 @@ class VectorDistanceLogger:
                 rank_file = os.path.join(self.output_dir, f"{self.rsl_name}_rank{r}.txt")
                 if os.path.exists(rank_file):
                     with open(rank_file, "r") as infile:
-                        first_line = infile.readline()
-                        if not first_line.startswith("epoch,"):
-                            outfile.write(first_line)
-                            total_rsl_records += 1
-                        for line in infile:
+                        lines = infile.readlines()
+                        for line in lines:
+                            if line.startswith("epoch,"):
+                                continue
                             outfile.write(line)
                             total_rsl_records += 1
+                    os.remove(rank_file)
 
         print(f"✅ Vector distance files merged:")
         print(f"   - {cdl_output} ({total_cdl_records} records)")
