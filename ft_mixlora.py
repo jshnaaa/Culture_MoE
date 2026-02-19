@@ -24,9 +24,11 @@ import argparse
 import json
 import os
 import sys
+from functools import partial
 from typing import Dict, List
 
 import torch
+import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
@@ -84,6 +86,67 @@ def cleanup_distributed():
 def is_main_process(rank):
     """检查是否为主进程"""
     return rank == 0
+
+
+def mixlora_collate_fn(batch, pad_token_id=0):
+    """
+    MixLoRA的collate函数 - 处理不同长度的序列
+
+    Args:
+        batch: 数据集返回的样本列表
+        pad_token_id: padding token的ID
+
+    Returns:
+        批次数据字典
+    """
+    # 找到batch内最长的序列长度
+    max_length = max(len(item['input_ids']) for item in batch)
+
+    # 准备batch数据
+    batch_input_ids = []
+    batch_attention_mask = []
+    batch_labels = []
+    batch_input_ids_mask = []
+    batch_attention_mask_mask = []
+
+    for item in batch:
+        input_ids = item['input_ids']
+        attention_mask = item['attention_mask']
+        # 兼容两种可能的labels键名
+        labels = item.get('labels', item.get('culture_labels'))
+        input_ids_mask = item.get('input_ids_mask', input_ids)
+        attention_mask_mask = item.get('attention_mask_mask', attention_mask)
+
+        # 计算需要padding的长度
+        pad_length = max_length - len(input_ids)
+
+        if pad_length > 0:
+            # 右侧padding
+            padded_input_ids = torch.cat([input_ids, torch.full((pad_length,), pad_token_id, dtype=torch.long)])
+            padded_attention_mask = torch.cat([attention_mask, torch.zeros(pad_length, dtype=torch.long)])
+            padded_labels = torch.cat([labels, torch.full((pad_length,), -100, dtype=torch.long)])
+            padded_input_ids_mask = torch.cat([input_ids_mask, torch.full((pad_length,), pad_token_id, dtype=torch.long)])
+            padded_attention_mask_mask = torch.cat([attention_mask_mask, torch.zeros(pad_length, dtype=torch.long)])
+        else:
+            padded_input_ids = input_ids
+            padded_attention_mask = attention_mask
+            padded_labels = labels
+            padded_input_ids_mask = input_ids_mask
+            padded_attention_mask_mask = attention_mask_mask
+
+        batch_input_ids.append(padded_input_ids)
+        batch_attention_mask.append(padded_attention_mask)
+        batch_labels.append(padded_labels)
+        batch_input_ids_mask.append(padded_input_ids_mask)
+        batch_attention_mask_mask.append(padded_attention_mask_mask)
+
+    return {
+        'input_ids': torch.stack(batch_input_ids),
+        'attention_mask': torch.stack(batch_attention_mask),
+        'labels': torch.stack(batch_labels),
+        'input_ids_mask': torch.stack(batch_input_ids_mask),
+        'attention_mask_mask': torch.stack(batch_attention_mask_mask),
+    }
 
 
 def train_epoch_mixlora(model_adapter, train_loader, optimizer, device, num_accumulation_steps=1, rank=0):
@@ -459,6 +522,9 @@ def main():
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank) if world_size > 1 else None
     val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False) if world_size > 1 else None
 
+    # 创建collate_fn
+    collate_fn = partial(mixlora_collate_fn, pad_token_id=tokenizer.pad_token_id)
+
     # 创建数据加载器
     train_loader = DataLoader(
         train_dataset,
@@ -466,7 +532,8 @@ def main():
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
 
     val_loader = DataLoader(
@@ -475,7 +542,8 @@ def main():
         shuffle=False,
         sampler=val_sampler,
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
 
     # 加载基础模型

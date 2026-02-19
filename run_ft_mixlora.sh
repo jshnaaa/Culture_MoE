@@ -92,7 +92,7 @@ echo "Backbone: $BACKBONE ($MODEL_NAME)"
 echo "Dataset: $DATASET_NAME"
 echo ""
 echo "MixLoRA Configuration:"
-echo "  - Number of experts: 6"
+echo "  - Number of experts: 4"
 echo "  - Top-K routing: 2"
 echo "  - LoRA rank: 64"
 echo "  - LoRA alpha: 16"
@@ -144,7 +144,7 @@ python ft_mixlora.py \
     --lora_r 64 \
     --lora_alpha 16 \
     --lora_dropout 0.1 \
-    --num_experts 6 \
+    --num_experts 4 \
     --top_k 2 \
     --aux_loss_coef 0.01 \
     --eval_interval 3 \
@@ -177,7 +177,7 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "💡 Model architecture summary:"
     echo "   - Base model: $MODEL_NAME (frozen)"
-    echo "   - FFN layers: 6 LoRA experts per layer (Top-2 routing)"
+    echo "   - FFN layers: 4 LoRA experts per layer (Top-2 routing)"
     echo "   - Attention layers: Standard LoRA on q_proj, v_proj (not routed)"
     echo "   - Parameter efficiency: Only LoRA weights are trainable"
     echo "   - Load balancing: Auxiliary loss ensures expert utilization balance"
