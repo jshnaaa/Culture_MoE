@@ -88,9 +88,8 @@ class VectorDistanceLogger:
     向量距离记录器 - 用于记录CDL（共享-路由专家距离）和RSL（样本间专家权重距离）
 
     支持多卡训练（DDP）：
-    - 每个rank写入独立文件避免冲突
-    - 每个epoch自动flush确保数据写入磁盘
-    - 训练结束后主进程自动合并
+    - 缓存数据，只在最佳模型时写入文件
+    - 每个rank独立处理
     - 仅当data_id=2时启用
     """
 
@@ -105,10 +104,15 @@ class VectorDistanceLogger:
             rank: 当前进程rank
             world_size: 总进程数
         """
-        self.enabled = (data_id == 2)
+        self.enabled = (int(data_id) == 2)
         self.rank = rank
         self.world_size = world_size
         self.output_dir = output_dir
+
+        # 数据缓存列表
+        self.cdl_records = []
+        self.rsl_records = []
+        self.has_data = False
 
         if not self.enabled:
             return
@@ -118,27 +122,14 @@ class VectorDistanceLogger:
         self.cdl_name = "cdl_vec_distance" if has_csl else "no_cdl_vec_distance"
         self.rsl_name = "rsl_vec_distance" if has_csl else "no_rsl_vec_distance"
 
-        # 每个rank有独立的临时文件（追加模式支持训练恢复）
-        self.cdl_file_path = os.path.join(output_dir, f"{self.cdl_name}_rank{rank}.txt")
-        self.rsl_file_path = os.path.join(output_dir, f"{self.rsl_name}_rank{rank}.txt")
-
-        # 打开文件
-        self.cdl_file = open(self.cdl_file_path, "a")
-        self.rsl_file = open(self.rsl_file_path, "a")
-
-        # 如果是新文件，写入表头
-        if os.path.getsize(self.cdl_file_path) == 0:
-            self.cdl_file.write("epoch,step,sample_id,cdl_euclidean_distance\n")
-        if os.path.getsize(self.rsl_file_path) == 0:
-            self.rsl_file.write("epoch,step,sample_i_id,sample_j_id,culture_i,culture_j,same_culture,rsl_euclidean_distance\n")
-
         if rank == 0:
             print(f"📊 Vector distance logging enabled (data_id=2)")
-            print(f"   CDL file: {self.cdl_name}.txt")
-            print(f"   RSL file: {self.rsl_name}.txt")
+            print(f"   CDL file: {self.cdl_name}_rank*.txt")
+            print(f"   RSL file: {self.rsl_name}_rank*.txt")
+            print(f"   Mode: Only save best model data")
 
     def record(self, outputs, batch, batch_idx, epoch, global_step):
-        """记录一个batch的向量距离数据"""
+        """记录一个batch的向量距离数据（缓存到内存）"""
         if not self.enabled:
             return
 
@@ -170,9 +161,13 @@ class VectorDistanceLogger:
                 cdl_distances = torch.norm(shared_pooled - routing_pooled, dim=1)
 
                 for i in range(batch_size):
-                    self.cdl_file.write(
-                        f"{epoch},{global_step},{sample_ids[i].item()},{cdl_distances[i].item():.6f}\n"
-                    )
+                    self.cdl_records.append({
+                        'epoch': epoch,
+                        'step': global_step,
+                        'sample_id': sample_ids[i].item(),
+                        'distance': cdl_distances[i].item()
+                    })
+                self.has_data = True
 
             # ========== 2. 记录RSL（样本间专家权重）距离 ==========
             if expert_weights is not None:
@@ -184,47 +179,91 @@ class VectorDistanceLogger:
                         # 是否同文化
                         same_culture = 1 if culture_labels[i].item() == culture_labels[j].item() else 0
 
-                        self.rsl_file.write(
-                            f"{epoch},{global_step},"
-                            f"{sample_ids[i].item()},{sample_ids[j].item()},"
-                            f"{culture_labels[i].item()},{culture_labels[j].item()},"
-                            f"{same_culture},{rsl_distance.item():.6f}\n"
-                        )
+                        self.rsl_records.append({
+                            'epoch': epoch,
+                            'step': global_step,
+                            'sample_i_id': sample_ids[i].item(),
+                            'sample_j_id': sample_ids[j].item(),
+                            'culture_i': culture_labels[i].item(),
+                            'culture_j': culture_labels[j].item(),
+                            'same_culture': same_culture,
+                            'distance': rsl_distance.item()
+                        })
+                self.has_data = True
 
         except Exception as e:
             # 记录失败不中断训练
             if self.rank == 0:
                 print(f"⚠️ Warning: Failed to record at step {global_step}: {e}")
 
-    def save_epoch(self, epoch):
-        """每个epoch结束时调用，确保数据写入磁盘"""
+    def save_best_model_data(self, is_best):
+        """如果是最佳模型，保存缓存的数据到文件"""
         if not self.enabled:
             return
-        self.cdl_file.flush()
-        self.rsl_file.flush()
-        os.fsync(self.cdl_file.fileno())  # 强制写入磁盘
-        os.fsync(self.rsl_file.fileno())
-        if self.rank == 0:
-            print(f"💾 Epoch {epoch} vector distances saved to disk")
+
+        if not is_best:
+            # 不是最佳模型，清空缓存
+            self.cdl_records = []
+            self.rsl_records = []
+            if self.rank == 0:
+                print(f"📝 Not best model, discarding vector distance data")
+            return
+
+        # 是最佳模型，保存数据
+        if not self.has_data or (len(self.cdl_records) == 0 and len(self.rsl_records) == 0):
+            if self.rank == 0:
+                print(f"⚠️ No vector distance data to save")
+            return
+
+        # 每个rank保存到自己的文件
+        cdl_file_path = os.path.join(self.output_dir, f"{self.cdl_name}_rank{self.rank}.txt")
+        rsl_file_path = os.path.join(self.output_dir, f"{self.rsl_name}_rank{self.rank}.txt")
+
+        try:
+            # 保存CDL数据
+            with open(cdl_file_path, "w") as f:
+                f.write("epoch,step,sample_id,cdl_euclidean_distance\n")
+                for record in self.cdl_records:
+                    f.write(f"{record['epoch']},{record['step']},{record['sample_id']},{record['distance']:.6f}\n")
+
+            # 保存RSL数据
+            with open(rsl_file_path, "w") as f:
+                f.write("epoch,step,sample_i_id,sample_j_id,culture_i,culture_j,same_culture,rsl_euclidean_distance\n")
+                for record in self.rsl_records:
+                    f.write(f"{record['epoch']},{record['step']},"
+                           f"{record['sample_i_id']},{record['sample_j_id']},"
+                           f"{record['culture_i']},{record['culture_j']},"
+                           f"{record['same_culture']},{record['distance']:.6f}\n")
+
+            if self.rank == 0:
+                print(f"✅ Best model vector distance data saved:")
+                print(f"   - {cdl_file_path} ({len(self.cdl_records)} records)")
+                print(f"   - {rsl_file_path} ({len(self.rsl_records)} records)")
+
+        except Exception as e:
+            if self.rank == 0:
+                print(f"⚠️ Error saving vector distance data: {e}")
 
     def close(self):
-        """关闭文件"""
+        """清理资源"""
         if not self.enabled:
             return
-        self.cdl_file.close()
-        self.rsl_file.close()
+        self.cdl_records = []
+        self.rsl_records = []
 
     def merge(self):
         """合并各rank的文件（仅在主进程调用）"""
         if not self.enabled or self.rank != 0:
             return
 
-        # 等待所有进程
-        if self.world_size > 1 and dist.is_initialized():
-            dist.barrier()
+        # 注意：不移除 barrier，因为非主进程不会调用此函数
+        # 等待一段时间确保其他进程完成文件写入
+        import time
+        time.sleep(2)
 
         # 合并CDL文件
         cdl_output = os.path.join(self.output_dir, f"{self.cdl_name}.txt")
+        total_cdl_records = 0
         with open(cdl_output, "w") as outfile:
             outfile.write("epoch,step,sample_id,cdl_euclidean_distance\n")
             for r in range(self.world_size):
@@ -235,11 +274,15 @@ class VectorDistanceLogger:
                         # 如果不是表头则写入
                         if not first_line.startswith("epoch,"):
                             outfile.write(first_line)
-                        outfile.write(infile.read())
-                    os.remove(rank_file)  # 删除临时文件
+                            total_cdl_records += 1
+                        # 读取剩余行
+                        for line in infile:
+                            outfile.write(line)
+                            total_cdl_records += 1
 
         # 合并RSL文件
         rsl_output = os.path.join(self.output_dir, f"{self.rsl_name}.txt")
+        total_rsl_records = 0
         with open(rsl_output, "w") as outfile:
             outfile.write("epoch,step,sample_i_id,sample_j_id,culture_i,culture_j,same_culture,rsl_euclidean_distance\n")
             for r in range(self.world_size):
@@ -249,12 +292,14 @@ class VectorDistanceLogger:
                         first_line = infile.readline()
                         if not first_line.startswith("epoch,"):
                             outfile.write(first_line)
-                        outfile.write(infile.read())
-                    os.remove(rank_file)
+                            total_rsl_records += 1
+                        for line in infile:
+                            outfile.write(line)
+                            total_rsl_records += 1
 
         print(f"✅ Vector distance files merged:")
-        print(f"   - {cdl_output}")
-        print(f"   - {rsl_output}")
+        print(f"   - {cdl_output} ({total_cdl_records} records)")
+        print(f"   - {rsl_output} ({total_rsl_records} records)")
 
 
 def compute_csl_culture_loss(expert_weights, shared_expert_outputs, router_expert_outputs, culture_labels, loss_weight=0.01, which_csl="all"):
@@ -1859,10 +1904,8 @@ def main():
             epoch=epoch
         )
 
-        # ========== 每个epoch结束，保存向量距离数据 ==========
-        if vec_logger is not None:
-            vec_logger.save_epoch(epoch)
-        # ===================================================
+        # 注意：向量距离数据不再在每个epoch保存，只在最佳模型时保存
+
 
         if is_main_process(rank):
             print(f"  Train Loss: {train_metrics['loss']:.4f}")
@@ -1920,7 +1963,8 @@ def main():
                 print(f"  Eval Accuracy: {gen_metrics['accuracy']:.4f} ({gen_metrics['correct']}/{gen_metrics['total']})")
 
                 # 根据accuracy保存最好的模型
-                if gen_metrics['accuracy'] > best_eval_accuracy:
+                is_best = gen_metrics['accuracy'] > best_eval_accuracy
+                if is_best:
                     best_eval_accuracy = gen_metrics['accuracy']
 
                     # 删除旧的最好模型
@@ -1941,6 +1985,26 @@ def main():
                     tokenizer.save_pretrained(best_model_dir)
 
                     print(f"  ✅ Best model saved (accuracy: {best_eval_accuracy:.4f})")
+
+                # 广播is_best给所有进程（确保所有进程知道是否是最佳模型）
+                is_best_tensor = torch.tensor([1 if is_best else 0], dtype=torch.int32, device=device)
+                if world_size > 1:
+                    dist.broadcast(is_best_tensor, src=0)
+                is_best_all = is_best_tensor.item() == 1
+
+                # 保存向量距离数据（如果是最佳模型）
+                if vec_logger is not None:
+                    vec_logger.save_best_model_data(is_best_all)
+            else:
+                # 非主进程也需要知道是否是最佳模型
+                is_best_tensor = torch.tensor([0], dtype=torch.int32, device=device)
+                if world_size > 1:
+                    dist.broadcast(is_best_tensor, src=0)
+                is_best_all = is_best_tensor.item() == 1
+
+                # 保存向量距离数据（如果是最佳模型）
+                if vec_logger is not None:
+                    vec_logger.save_best_model_data(is_best_all)
 
             # 记录结果
             epoch_results.append({
