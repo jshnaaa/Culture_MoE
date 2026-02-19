@@ -99,8 +99,9 @@ def mixlora_collate_fn(batch, pad_token_id=0):
     Returns:
         批次数据字典
     """
-    # 找到batch内最长的序列长度
+    # 找到batch内最长的序列长度（包括原始版本和mask版本）
     max_length = max(len(item['input_ids']) for item in batch)
+    max_length_mask = max(len(item.get('input_ids_mask', item['input_ids'])) for item in batch)
 
     # 准备batch数据
     batch_input_ids = []
@@ -119,18 +120,23 @@ def mixlora_collate_fn(batch, pad_token_id=0):
 
         # 计算需要padding的长度
         pad_length = max_length - len(input_ids)
+        pad_length_mask = max_length_mask - len(input_ids_mask)
 
         if pad_length > 0:
-            # 右侧padding
+            # 右侧padding - 原始版本
             padded_input_ids = torch.cat([input_ids, torch.full((pad_length,), pad_token_id, dtype=torch.long)])
             padded_attention_mask = torch.cat([attention_mask, torch.zeros(pad_length, dtype=torch.long)])
             padded_labels = torch.cat([labels, torch.full((pad_length,), -100, dtype=torch.long)])
-            padded_input_ids_mask = torch.cat([input_ids_mask, torch.full((pad_length,), pad_token_id, dtype=torch.long)])
-            padded_attention_mask_mask = torch.cat([attention_mask_mask, torch.zeros(pad_length, dtype=torch.long)])
         else:
             padded_input_ids = input_ids
             padded_attention_mask = attention_mask
             padded_labels = labels
+
+        if pad_length_mask > 0:
+            # 右侧padding - mask版本
+            padded_input_ids_mask = torch.cat([input_ids_mask, torch.full((pad_length_mask,), pad_token_id, dtype=torch.long)])
+            padded_attention_mask_mask = torch.cat([attention_mask_mask, torch.zeros(pad_length_mask, dtype=torch.long)])
+        else:
             padded_input_ids_mask = input_ids_mask
             padded_attention_mask_mask = attention_mask_mask
 

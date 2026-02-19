@@ -128,7 +128,7 @@ class VectorDistanceLogger:
             print(f"   RSL file: {self.rsl_name}_rank*.txt")
             print(f"   Mode: Only save best model data")
 
-    def record(self, outputs, batch, batch_idx, epoch, global_step):
+    def record(self, outputs, batch, batch_idx, epoch, global_step, culture_labels=None):
         """记录一个batch的向量距离数据（缓存到内存）"""
         if not self.enabled:
             return
@@ -138,8 +138,20 @@ class VectorDistanceLogger:
             shared_outputs = outputs.shared_expert_outputs      # [B, L, H]
             routing_outputs = outputs.router_expert_outputs     # [B, L, H]
             expert_weights = outputs.expert_weights             # [B, num_experts]
-            culture_labels = batch.get('culture_labels', None)
             sample_ids = batch.get('sample_ids', None)          # 可选，从Dataset获取
+
+            # 🔍 调试信息：检查数据是否存在（只在第一个batch的第一个epoch打印）
+            if batch_idx == 0 and epoch == 0 and self.rank == 0:
+                print(f"🔍 VectorDistanceLogger Debug:")
+                print(f"  enabled: {self.enabled}")
+                print(f"  shared_outputs: {shared_outputs is not None}")
+                print(f"  routing_outputs: {routing_outputs is not None}")
+                print(f"  expert_weights: {expert_weights is not None}")
+                print(f"  culture_labels (passed): {culture_labels is not None}")
+                if expert_weights is not None:
+                    print(f"  expert_weights shape: {expert_weights.shape}")
+                if culture_labels is not None:
+                    print(f"  culture_labels shape: {culture_labels.shape}")
 
             if culture_labels is None:
                 return
@@ -202,11 +214,10 @@ class VectorDistanceLogger:
             return
 
         if not is_best:
-            # 不是最佳模型，清空缓存
+            # 不是最佳模型，清空缓存并重置标志
             self.cdl_records = []
             self.rsl_records = []
-            if self.rank == 0:
-                print(f"📝 Not best model, discarding vector distance data")
+            self.has_data = False
             return
 
         # 是最佳模型，保存数据
@@ -662,8 +673,8 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         )
 
         # ========== 记录向量距离（仅data_id=2时生效）==========
-        if vec_logger is not None:
-            vec_logger.record(outputs, batch, batch_idx, epoch=epoch, global_step=num_batches)
+        if vec_logger is not None and culture_labels is not None:
+            vec_logger.record(outputs, batch, batch_idx, epoch=epoch, global_step=num_batches, culture_labels=culture_labels)
         # ====================================================
 
         # 📋 Labels调试信息（前3个batch）- 注释掉，专注tokenizer问题
