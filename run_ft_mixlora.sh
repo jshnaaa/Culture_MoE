@@ -11,25 +11,29 @@
 # - Top-K路由：每次只激活K个专家，提高计算效率
 # - 负载均衡：使用辅助损失确保专家使用的均衡分布
 # - 计算优化：共享FFN计算，减少重复计算
+# - 支持合并数据集训练（CulturalBench + CultureLLM）
 #
 # 使用方法：
 #   sh run_ft_mixlora.sh <BACKBONE> <DATA_ID>
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
-#   DATA_ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM (默认 4)
+#   DATA_ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM, 24=CulturalBench+CultureLLM (默认 24)
 #
 # 示例：
-#   # 使用 LLaMA + CultureLLM 数据集
-#   sh run_ft_mixlora.sh llama 4
+#   # 使用 LLaMA + CulturalBench+CultureLLM 合并数据集（默认）
+#   sh run_ft_mixlora.sh llama 24
 #
-#   # 使用 Qwen + CultureLLM 数据集
-#   sh run_ft_mixlora.sh qwen 4
+#   # 使用 Qwen + CulturalBench+CultureLLM 合并数据集
+#   sh run_ft_mixlora.sh qwen 24
+#
+#   # 使用 LLaMA + 单独的CultureLLM 数据集
+#   sh run_ft_mixlora.sh llama 4
 # ============================================================
 
 # ✅ 配置参数
 BACKBONE="${1:-llama}"              # 默认使用 llama
-DATA_ID="${2:-4}"                   # 默认 CultureLLM (4)
+DATA_ID="${2:-24}"                  # 默认 CulturalBench+CultureLLM (24)
 
 # 根据 backbone 选择 base 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
@@ -64,26 +68,37 @@ case $DATA_ID in
         echo "Using NormAD dataset"
         ;;
     4)
-        # CultureLLM (默认)
+        # CultureLLM
         DATASET_NAME="CultureLLM"
         TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
         echo "Using CultureLLM dataset"
         ;;
+    24)
+        # CulturalBench + CultureLLM 合并数据集（默认）
+        DATASET_NAME="CulturalBench+CultureLLM"
+        TRAIN_FILE="MERGED:CulturalBench+CultureLLM"  # 特殊标识，由Python脚本处理
+        DATASET_TAG="CulturalBench_CultureLLM"
+        echo "Using CulturalBench+CultureLLM merged dataset"
+        echo "  - 将分别对两个数据集进行8:1:1划分"
+        echo "  - 生成独立的pkl文件: data_split_8_1_1_CulturalBench.pkl, data_split_8_1_1_CultureLLM.pkl"
+        ;;
     *)
-        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 1, 2, 3, or 4."
+        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 1, 2, 3, 4, or 24."
         echo ""
         echo "DATA_ID options:"
-        echo "  1 - unified_all_datasets"
-        echo "  2 - CulturalBench"
-        echo "  3 - NormAD"
-        echo "  4 - CultureLLM (default)"
+        echo "  1  - unified_all_datasets"
+        echo "  2  - CulturalBench"
+        echo "  3  - NormAD"
+        echo "  4  - CultureLLM"
+        echo "  24 - CulturalBench+CultureLLM (default)"
         exit 1
         ;;
 esac
 
-# 输出目录
-OUTPUT_DIR="/root/autodl-tmp/CultureMoE/Culture_Alignment/ft/ft_mixlora_${DATASET_TAG}_${BACKBONE}_$(date +%Y%m%d_%H%M)"
+# 设置时间戳和输出目录
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+OUTPUT_DIR="/root/autodl-fs/mixlora/${MODEL_NAME}_${DATASET_TAG}_${TIMESTAMP}"
 
 echo "============================================================"
 echo "Fine-tuning Model with MixLoRA"
@@ -114,12 +129,19 @@ if [ ! -d "$BASE_MODEL_PATH" ]; then
     exit 1
 fi
 
-if [ ! -f "$TRAIN_FILE" ]; then
-    echo "❌ Error: Train file not found: $TRAIN_FILE"
-    echo ""
-    echo "Please ensure the data file exists in correct format:"
-    echo "  {\"instruction\": ..., \"instruction_mask\": ..., \"input\": ..., \"output\": ..., \"label\": ...}"
-    exit 1
+# 🔧 修改：对于MERGED:开头的特殊标识，跳过文件检查
+if [[ "$TRAIN_FILE" == MERGED:* ]]; then
+    echo "✅ 检测到合并数据集标识: $TRAIN_FILE"
+    echo "将由Python脚本处理具体的数据文件..."
+else
+    # 对于普通文件，进行存在性检查
+    if [ ! -f "$TRAIN_FILE" ]; then
+        echo "❌ Error: Train file not found: $TRAIN_FILE"
+        echo ""
+        echo "Please ensure the data file exists in correct format:"
+        echo "  {\"instruction\": ..., \"instruction_mask\": ..., \"input\": ..., \"output\": ..., \"label\": ...}"
+        exit 1
+    fi
 fi
 
 # 创建输出目录
@@ -133,7 +155,7 @@ python ft_mixlora.py \
     --base_model_path "$BASE_MODEL_PATH" \
     --train_file "$TRAIN_FILE" \
     --output_dir "$OUTPUT_DIR" \
-    --num_epochs 12 \
+    --num_epochs 6 \
     --batch_size 8 \
     --eval_batch_size 8 \
     --learning_rate 2e-4 \
@@ -158,12 +180,13 @@ if [ $? -eq 0 ]; then
     echo "Results saved to: $OUTPUT_DIR"
     echo ""
     echo "Files generated:"
-    echo "  - best_mixlora/ (Best MixLoRA weights and config)"
+    echo "  - best_mixlora/ (Best MixLoRA weights and config - 仅保存训练参数)"
     echo "    ├── mixlora_config.json (MixLoRA configuration)"
-    echo "    ├── mixlora_weights.pt (MixLoRA expert weights)"
-    echo "    └── tokenizer files"
-    echo "  - epoch_eval_results.json (Epoch-by-epoch results)"
-    echo "  - generated_answers.json (Generated answers on validation set)"
+    echo "    └── mixlora_weights.pt (MixLoRA expert weights only)"
+    echo "  - epoch_eval_results.json (Epoch-by-epoch results, 包含合并和分离评估)"
+    echo "  - generated_answers.json (Generated answers on merged validation set)"
+    echo "  - individual_dataset_results.json (分离数据集评估结果)"
+    echo "  - data_split_8_1_1_*.pkl (各数据集划分信息)"
     echo "  - config.json (Training configuration)"
     echo ""
     echo "💡 To view results:"

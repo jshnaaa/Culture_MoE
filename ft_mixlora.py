@@ -46,6 +46,7 @@ from src.llamafactory.model.mixlora_adapter import create_mixlora_model
 from ft_lora_only_gen import (
     CultureLLMNewFormatDataset,
     load_and_process_data,
+    load_and_process_merged_data_8_1_1,
     extract_answer_from_text,
     generate_answer
 )
@@ -312,29 +313,36 @@ def evaluate_mixlora(model_adapter, val_loader, device, rank=0):
 
 
 def generate_and_evaluate_answers_mixlora(
-    model_adapter, val_dataset, tokenizer, device, output_dir, epoch=None, rank=0
+    model_adapter, val_dataset, tokenizer, device, output_dir, epoch=None, rank=0,
+    individual_val_datasets=None
 ):
     """
     MixLoRA生成答案并评估准确率
 
     Args:
         model_adapter: MixLoRA模型适配器
-        val_dataset: 验证数据集
+        val_dataset: 验证数据集（可能是合并的）
         tokenizer: tokenizer
         device: 设备
         output_dir: 输出目录
         epoch: 当前epoch数
+        individual_val_datasets: 各个数据集的验证集列表（用于分离统计）
 
     Returns:
         dict: 包含准确率等指标的字典
     """
     model_adapter.base_model.eval()
 
+    # 合并数据集的统计
     correct = 0
     total = 0
     generated_data = []
 
-    for idx in tqdm(range(len(val_dataset)), desc="Generating", disable=(rank != 0), mininterval=1.0):
+    # 分离数据集的统计（如果有）
+    individual_stats = {}
+
+    # 1. 评估合并数据集（用于模型选择）
+    for idx in tqdm(range(len(val_dataset)), desc="Evaluating merged dataset", disable=(rank != 0), mininterval=1.0):
         # 获取原始数据集（处理 Subset 对象）
         if hasattr(val_dataset, 'dataset'):
             original_idx = val_dataset.indices[idx]
@@ -356,51 +364,173 @@ def generate_and_evaluate_answers_mixlora(
         predicted_answer = extract_answer_from_text(generated_text)
 
         # 比对答案
-        if predicted_answer == true_output:
+        is_correct = predicted_answer == true_output
+        if is_correct:
             correct += 1
         total += 1
 
         # 保存生成的数据
-        generated_data.append({
+        item = {
             'instruction': instruction,
             'input': input_text,
             'true_output': true_output,
             'label': label,
             'generated_text': generated_text,
             'predicted_answer': predicted_answer,
-            'correct': predicted_answer == true_output
-        })
+            'correct': is_correct
+        }
 
-    accuracy = correct / total if total > 0 else 0
+        # 添加数据集来源信息（如果有）
+        if 'source_dataset' in sample:
+            item['source_dataset'] = sample['source_dataset']
 
-    # 保存生成的答案
-    with open(os.path.join(output_dir, 'generated_answers.json'), 'w', encoding='utf-8') as f:
-        json.dump(generated_data, f, indent=2, ensure_ascii=False)
+        generated_data.append(item)
 
-    if epoch is not None:
-        epoch_answers_file = os.path.join(output_dir, f'generated_answers_epoch_{epoch}.json')
-        with open(epoch_answers_file, 'w', encoding='utf-8') as f:
+    merged_accuracy = correct / total if total > 0 else 0
+
+    # 2. 分离评估各个数据集（如果有individual_val_datasets）
+    if individual_val_datasets is not None:
+        if is_main_process(rank):
+            print(f"\n🔧 开始分离评估各个数据集...")
+
+        for dataset_idx, individual_dataset in enumerate(individual_val_datasets):
+            dataset_name = f"Dataset_{dataset_idx}"
+
+            # 尝试从数据集中获取名称
+            if hasattr(individual_dataset, 'dataset') and hasattr(individual_dataset.dataset, 'dataset_names'):
+                if dataset_idx < len(individual_dataset.dataset.dataset_names):
+                    dataset_name = individual_dataset.dataset.dataset_names[dataset_idx]
+
+            if is_main_process(rank):
+                print(f"  评估 {dataset_name}...")
+
+            dataset_correct = 0
+            dataset_total = 0
+            dataset_generated_data = []
+
+            for idx in tqdm(range(len(individual_dataset)), desc=f"Evaluating {dataset_name}", disable=(rank != 0), mininterval=1.0, leave=False):
+                # 获取样本
+                if hasattr(individual_dataset, 'dataset'):
+                    original_idx = individual_dataset.indices[idx]
+                    sample = individual_dataset.dataset[original_idx]
+                else:
+                    sample = individual_dataset[idx]
+
+                instruction = sample['instruction']
+                input_text = sample['input']
+                true_output = sample['output']
+                label = sample['label']
+
+                # 生成答案
+                generated_text = generate_answer(
+                    model_adapter.base_model, tokenizer, instruction, input_text, device
+                )
+                predicted_answer = extract_answer_from_text(generated_text)
+
+                # 比对答案
+                is_correct = predicted_answer == true_output
+                if is_correct:
+                    dataset_correct += 1
+                dataset_total += 1
+
+                dataset_generated_data.append({
+                    'instruction': instruction,
+                    'input': input_text,
+                    'true_output': true_output,
+                    'label': label,
+                    'generated_text': generated_text,
+                    'predicted_answer': predicted_answer,
+                    'correct': is_correct
+                })
+
+            dataset_accuracy = dataset_correct / dataset_total if dataset_total > 0 else 0
+            individual_stats[dataset_name] = {
+                'accuracy': dataset_accuracy,
+                'correct': dataset_correct,
+                'total': dataset_total,
+                'generated_data': dataset_generated_data
+            }
+
+            if is_main_process(rank):
+                print(f"    {dataset_name} - Accuracy: {dataset_accuracy:.4f} ({dataset_correct}/{dataset_total})")
+
+    accuracy = merged_accuracy
+
+    # 保存生成的答案（只在主进程执行）
+    if is_main_process(rank):
+        with open(os.path.join(output_dir, 'generated_answers.json'), 'w', encoding='utf-8') as f:
             json.dump(generated_data, f, indent=2, ensure_ascii=False)
 
-    # 打印前五条生成的答案
-    print("\n📋 前五条生成的答案:")
-    print("-" * 100)
-    for idx in range(min(5, len(generated_data))):
-        item = generated_data[idx]
-        print(f"\n样本 {idx + 1}:")
-        print(f"  Instruction: {item['instruction'][:80]}...")
-        print(f"  Input: {item['input']}")
-        print(f"  True Output: {item['true_output']}")
-        print(f"  Generated Text: {item['generated_text']}")
-        print(f"  Predicted Answer: {item['predicted_answer']}")
-        print(f"  Correct: {'✅' if item['correct'] else '❌'}")
-    print("\n" + "-" * 100)
+        if epoch is not None:
+            epoch_answers_file = os.path.join(output_dir, f'generated_answers_epoch_{epoch}.json')
+            with open(epoch_answers_file, 'w', encoding='utf-8') as f:
+                json.dump(generated_data, f, indent=2, ensure_ascii=False)
 
-    return {
+        # 🔧 新增：保存分离数据集的结果（如果有）
+        if individual_stats:
+            # 保存分离统计结果
+            individual_results_file = os.path.join(output_dir, 'individual_dataset_results.json')
+            with open(individual_results_file, 'w', encoding='utf-8') as f:
+                # 只保存统计信息，不保存详细的generated_data（避免文件过大）
+                stats_only = {}
+                for dataset_name, stats in individual_stats.items():
+                    stats_only[dataset_name] = {
+                        'accuracy': stats['accuracy'],
+                        'correct': stats['correct'],
+                        'total': stats['total']
+                    }
+                json.dump(stats_only, f, indent=2, ensure_ascii=False)
+
+            # 保存每个epoch的分离统计结果
+            if epoch is not None:
+                epoch_individual_file = os.path.join(output_dir, f'individual_dataset_results_epoch_{epoch}.json')
+                with open(epoch_individual_file, 'w', encoding='utf-8') as f:
+                    stats_only = {}
+                    for dataset_name, stats in individual_stats.items():
+                        stats_only[dataset_name] = {
+                            'accuracy': stats['accuracy'],
+                            'correct': stats['correct'],
+                            'total': stats['total']
+                        }
+                    json.dump(stats_only, f, indent=2, ensure_ascii=False)
+
+        # 打印前五条生成的答案
+        print("\n📋 前五条生成的答案:")
+        print("-" * 100)
+        for idx in range(min(5, len(generated_data))):
+            item = generated_data[idx]
+            print(f"\n样本 {idx + 1}:")
+            print(f"  Instruction: {item['instruction'][:80]}...")
+            print(f"  Input: {item['input']}")
+            print(f"  True Output: {item['true_output']}")
+            print(f"  Generated Text: {item['generated_text']}")
+            print(f"  Predicted Answer: {item['predicted_answer']}")
+            print(f"  Correct: {'✅' if item['correct'] else '❌'}")
+        print("\n" + "-" * 100)
+
+        # 打印分离统计信息
+        if individual_stats:
+            print(f"\n  📊 分离数据集统计（用于观察）:")
+            for dataset_name, stats in individual_stats.items():
+                print(f"    {dataset_name}: {stats['accuracy']:.4f} ({stats['correct']}/{stats['total']})")
+
+    result = {
         'accuracy': accuracy,
         'correct': correct,
         'total': total
     }
+
+    # 添加分离统计信息（如果有）
+    if individual_stats:
+        result['individual_stats'] = {}
+        for dataset_name, stats in individual_stats.items():
+            result['individual_stats'][dataset_name] = {
+                'accuracy': stats['accuracy'],
+                'correct': stats['correct'],
+                'total': stats['total']
+            }
+
+    return result
 
 
 def main():
@@ -514,15 +644,55 @@ def main():
 
     # 加载数据
     print("\nLoading and processing data...")
-    datasets = load_and_process_data(
-        args.train_file,
-        tokenizer,
-        max_length=args.max_length,
-        val_split=args.val_split
-    )
-    train_dataset = datasets['train']
-    val_dataset = datasets['validation']
-    print("✅ Data loaded")
+
+    # 🔧 新增：检查是否为合并数据集
+    individual_val_datasets = None
+    if args.train_file.startswith("MERGED:"):
+        # 处理合并数据集
+        merge_spec = args.train_file.replace("MERGED:", "")
+        print(f"🔧 检测到合并数据集: {merge_spec}")
+
+        if merge_spec == "CulturalBench+CultureLLM":
+            # CulturalBench + CultureLLM 合并
+            data_paths = [
+                "/root/autodl-fs/CulturalBench_merge_gen.json",
+                "/root/autodl-fs/cultureLLM_merge_gen.json"
+            ]
+            dataset_names = ["CulturalBench", "CultureLLM"]
+
+            print(f"🔧 使用合并数据集: {dataset_names}")
+            datasets = load_and_process_merged_data_8_1_1(
+                data_paths=data_paths,
+                dataset_names=dataset_names,
+                tokenizer=tokenizer,
+                max_length=args.max_length,
+                output_dir=args.output_dir,
+                seed=42
+            )
+
+            # 合并数据集的训练和验证集
+            train_dataset = datasets['train']
+            val_dataset = datasets['validation']
+
+            # 保存个体数据集信息，用于分离统计
+            individual_val_datasets = datasets['individual_datasets']['validation']
+        else:
+            raise ValueError(f"Unsupported merged dataset: {merge_spec}")
+
+        print("✅ Merged data loaded")
+    else:
+        # 处理单个数据集
+        datasets = load_and_process_data(
+            args.train_file,
+            tokenizer,
+            max_length=args.max_length,
+            val_split=args.val_split
+        )
+        train_dataset = datasets['train']
+        val_dataset = datasets['validation']
+        individual_val_datasets = None  # 单个数据集不需要分离统计
+
+        print("✅ Data loaded")
 
     # 创建分布式采样器
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank) if world_size > 1 else None
@@ -688,7 +858,8 @@ def main():
             # 生成答案并评估准确率（只在主进程执行）
             if is_main_process(rank):
                 gen_metrics = generate_and_evaluate_answers_mixlora(
-                    model_adapter, val_dataset, tokenizer, device, args.output_dir, epoch=epoch+1, rank=rank
+                    model_adapter, val_dataset, tokenizer, device, args.output_dir, epoch=epoch+1, rank=rank,
+                    individual_val_datasets=individual_val_datasets
                 )
             else:
                 gen_metrics = {'accuracy': 0.0, 'correct': 0, 'total': 0}
@@ -725,7 +896,7 @@ def main():
                     print(f"  ✅ Best model saved (accuracy: {best_eval_accuracy:.4f})")
 
             # 记录结果
-            epoch_results.append({
+            epoch_result = {
                 'epoch': epoch + 1,
                 'train_loss': train_metrics['loss'],
                 'train_main_loss': train_metrics.get('main_loss', 0),
@@ -737,7 +908,13 @@ def main():
                 'correct': gen_metrics['correct'],
                 'total': gen_metrics['total'],
                 'is_best': gen_metrics['accuracy'] == best_eval_accuracy
-            })
+            }
+
+            # 🔧 新增：添加分离统计信息
+            if 'individual_stats' in gen_metrics:
+                epoch_result['individual_stats'] = gen_metrics['individual_stats']
+
+            epoch_results.append(epoch_result)
         else:
             # 不评估的epoch，只记录训练损失
             epoch_results.append({
@@ -781,9 +958,14 @@ def main():
         print("="*80)
         print(f"Results saved to: {args.output_dir}")
         print(f"\nFiles generated:")
-        print(f"  - best_mixlora/ (Best MixLoRA weights and config)")
-        print(f"  - epoch_eval_results.json (Epoch-by-epoch results)")
-        print(f"  - generated_answers.json (Generated answers on validation set)")
+        print(f"  - best_mixlora/ (Best MixLoRA weights - 仅保存训练参数)")
+        print(f"    ├── mixlora_config.json")
+        print(f"    └── mixlora_weights.pt")
+        print(f"  - epoch_eval_results.json (Epoch-by-epoch results, 包含合并和分离评估)")
+        if individual_val_datasets:
+            print(f"  - individual_dataset_results.json (分离数据集评估结果)")
+        print(f"  - generated_answers.json (Generated answers on merged validation set)")
+        print(f"  - data_split_8_1_1_*.pkl (各数据集划分信息)")
         print(f"  - config.json (Training configuration)")
         print(f"\nBest validation accuracy: {best_eval_accuracy:.4f}")
         print("="*80)
