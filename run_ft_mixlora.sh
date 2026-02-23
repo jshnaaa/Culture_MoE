@@ -109,11 +109,14 @@ echo ""
 echo "MixLoRA Configuration:"
 echo "  - Number of experts: 4"
 echo "  - Top-K routing: 2"
-echo "  - LoRA rank: 64"
+echo "  - LoRA rank: 32"
 echo "  - LoRA alpha: 16"
 echo "  - FFN modules: gate_proj, up_proj, down_proj (MixLoRA)"
 echo "  - Attention modules: q_proj, v_proj (LoRA)"
 echo "  - Auxiliary loss coefficient: 0.01"
+echo "  - Learning rate: 5e-4"
+echo "  - Weight decay: 0.01"
+echo "  - Epochs: 8 (eval every 2 epochs)"
 echo ""
 echo "Components:"
 echo "  Base model: $BASE_MODEL_PATH"
@@ -155,21 +158,21 @@ python ft_mixlora.py \
     --base_model_path "$BASE_MODEL_PATH" \
     --train_file "$TRAIN_FILE" \
     --output_dir "$OUTPUT_DIR" \
-    --num_epochs 6 \
+    --num_epochs 8 \
     --batch_size 8 \
     --eval_batch_size 8 \
-    --learning_rate 2e-4 \
-    --weight_decay 0.001 \
+    --learning_rate 5e-4 \
+    --weight_decay 0.01 \
     --max_length 512 \
     --val_split 0.1 \
     --num_workers 4 \
-    --lora_r 64 \
+    --lora_r 32 \
     --lora_alpha 16 \
     --lora_dropout 0.1 \
     --num_experts 4 \
     --top_k 2 \
     --aux_loss_coef 0.01 \
-    --eval_interval 3 \
+    --eval_interval 2 \
     --device cuda
 
 if [ $? -eq 0 ]; then
