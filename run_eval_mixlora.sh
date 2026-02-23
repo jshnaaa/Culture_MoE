@@ -11,7 +11,7 @@
 # 参数说明：
 #   model_path: 训练输出目录（包含 best_mixlora/ 的目录）
 #   backbone: llama 或 qwen (默认 llama)
-#   data_id: 0=使用pkl文件测试集, 2=CulturalBench, 4=CultureLLM (默认 0)
+#   data_id: 0=使用pkl文件测试集, 2=CulturalBench, 3=NormAD, 4=CultureLLM, 5=cultureAtlas (默认 0)
 #   num_gpus: GPU数量 (默认 1)
 #
 # 示例：
@@ -53,11 +53,11 @@ fi
 # 设置基础模型路径
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-    MODEL_NAME="Qwen-2.5-7B-Instruct"
+    MODEL_NAME="Qwen"
     TOTAL_LAYERS=28
 else
     BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-    MODEL_NAME="LLaMA-3.1-8B-Instruct"
+    MODEL_NAME="LLaMA"
     TOTAL_LAYERS=32
 fi
 
@@ -74,13 +74,23 @@ fi
         DATASET_TAG="CulturalBench"
         echo "📋 使用 CulturalBench 完整数据集"
         ;;
+    3)
+        TRAIN_FILE="/root/autodl-fs/normad_merge_gen.json"
+        DATASET_TAG="normad"
+        echo "📋 使用 NormAD 完整数据集"
+        ;;
     4)
         TRAIN_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
         DATASET_TAG="cultureLLM"
         echo "📋 使用 CultureLLM 完整数据集"
         ;;
+    5)
+        TRAIN_FILE="/root/autodl-fs/cultureAtlas_merge_gen.json"
+        DATASET_TAG="cultureAtlas"
+        echo "📋 使用 cultureAtlas 完整数据集"
+        ;;
     *)
-        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 0=pkl文件, 2=CulturalBench, 4=CultureLLM)"
+        echo "❌ 无效的DATA_ID: $DATA_ID (支持: 0=pkl文件, 2=CulturalBench, 3=NormAD, 4=CultureLLM, 5=cultureAtlas)"
         exit 1
         ;;
 esac
