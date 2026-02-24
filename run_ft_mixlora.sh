@@ -38,10 +38,10 @@ DATA_ID="${2:-24}"                  # 默认 CulturalBench+CultureLLM (24)
 # 根据 backbone 选择 base 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
-    MODEL_NAME="Qwen 2.5-7B-Instruct"
+    MODEL_NAME="Qwen"
 else
     BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
-    MODEL_NAME="LLaMA 3.1-8B-Instruct"
+    MODEL_NAME="LLaMA"
 fi
 
 # 根据 DATA_ID 选择数据集
