@@ -199,76 +199,60 @@ class MixLoRAModelAdapter:
 
     def _replace_ffn_forward(self, layer, layer_idx: int):
         """
-        替换FFN层的前向传播
+        替换FFN层的前向传播 - 永久替换，不使用临时替换
 
         Args:
             layer: Transformer层
             layer_idx: 层索引
         """
-        # 保存原始的前向传播方法
-        original_forward = layer.forward
         mixlora_layer = self.mixlora_layers[f'layer_{layer_idx}']
 
-        def new_forward(hidden_states, *args, **kwargs):
-            """新的前向传播方法，集成MixLoRA"""
+        # 获取FFN模块
+        ffn_module = getattr(layer, 'mlp', None)
+        if ffn_module is None:
+            for ffn_attr in ['feed_forward', 'ffn']:
+                if hasattr(layer, ffn_attr):
+                    ffn_module = getattr(layer, ffn_attr)
+                    break
 
-            # 获取FFN模块
-            ffn_module = getattr(layer, 'mlp', None)
-            if ffn_module is None:
-                for ffn_attr in ['feed_forward', 'ffn']:
-                    if hasattr(layer, ffn_attr):
-                        ffn_module = getattr(layer, ffn_attr)
-                        break
+        if ffn_module is None:
+            logger.warning(f"Layer {layer_idx}: Cannot find FFN module, skipping MixLoRA")
+            return
 
-            if ffn_module is None:
-                logger.warning("Cannot find FFN module, using original forward")
-                return original_forward(hidden_states, *args, **kwargs)
+        # 保存原始的FFN forward方法
+        original_ffn_forward = ffn_module.forward
 
-            # 保存原始FFN的前向传播
-            original_ffn_forward = ffn_module.forward
-
-            def mixlora_ffn_forward(ffn_input):
-                """使用MixLoRA替换FFN计算"""
-                try:
-                    # 确保输入张量的设备和数据类型正确
-                    if not torch.is_tensor(ffn_input):
-                        return original_ffn_forward(ffn_input)
-
-                    # 检查输入维度
-                    if len(ffn_input.shape) != 3:  # 期望 [batch, seq, hidden]
-                        logger.warning(f"Unexpected FFN input shape: {ffn_input.shape}, using original")
-                        return original_ffn_forward(ffn_input)
-
-                    mixlora_output, aux_info = mixlora_layer(ffn_input)
-
-                    # 缓存辅助信息（仅在训练时）
-                    if layer.training:
-                        self.aux_info_cache.append(aux_info)
-
-                    # 确保输出维度与输入匹配
-                    if mixlora_output.shape != ffn_input.shape:
-                        logger.warning(f"MixLoRA output shape {mixlora_output.shape} != input shape {ffn_input.shape}")
-                        return original_ffn_forward(ffn_input)
-
-                    return mixlora_output
-                except Exception as e:
-                    logger.warning(f"MixLoRA FFN failed: {e}, using original")
+        # 创建永久性的MixLoRA FFN forward方法
+        def mixlora_ffn_forward(ffn_input):
+            """使用MixLoRA替换FFN计算"""
+            try:
+                # 确保输入张量的设备和数据类型正确
+                if not torch.is_tensor(ffn_input):
                     return original_ffn_forward(ffn_input)
 
-            # 替换FFN前向传播
-            ffn_module.forward = mixlora_ffn_forward
+                # 检查输入维度
+                if len(ffn_input.shape) != 3:  # 期望 [batch, seq, hidden]
+                    return original_ffn_forward(ffn_input)
 
-            try:
-                # 使用原始layer前向传播（注意力部分保持不变，FFN使用MixLoRA）
-                result = original_forward(hidden_states, *args, **kwargs)
-            finally:
-                # 恢复原始FFN前向传播
-                ffn_module.forward = original_ffn_forward
+                # 调用MixLoRA层
+                mixlora_output, aux_info = mixlora_layer(ffn_input)
 
-            return result
+                # 缓存辅助信息（仅在训练时）
+                if self.base_model.training:
+                    self.aux_info_cache.append(aux_info)
 
-        # 替换前向传播方法
-        layer.forward = new_forward
+                # 确保输出维度与输入匹配
+                if mixlora_output.shape != ffn_input.shape:
+                    return original_ffn_forward(ffn_input)
+
+                return mixlora_output
+            except Exception as e:
+                logger.warning(f"MixLoRA FFN failed: {e}, using original")
+                return original_ffn_forward(ffn_input)
+
+        # 永久性替换FFN的forward方法
+        ffn_module.forward = mixlora_ffn_forward
+        logger.debug(f"Layer {layer_idx}: FFN forward permanently replaced with MixLoRA")
 
     def _apply_attention_lora(self):
         """在注意力层应用普通LoRA"""
