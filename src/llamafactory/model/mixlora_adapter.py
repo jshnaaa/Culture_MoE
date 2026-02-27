@@ -322,6 +322,7 @@ class MixLoRAModelAdapter:
         mixlora_state_dict = {}
         total_trainable_params = 0
         total_saved_params = 0
+        dtype_counter = {}  # 统计不同数据类型的参数
 
         for layer_name, mixlora_layer in self.mixlora_layers.items():
             layer_state_dict = {}
@@ -331,9 +332,18 @@ class MixLoRAModelAdapter:
                 if param.requires_grad:
                     # 确保参数名称不包含冻结的基础层
                     if not any(frozen_key in param_name for frozen_key in ['base_ffn_layers']):
-                        layer_state_dict[param_name] = param.cpu().clone().detach()
+                        # 🔧 修复：确保使用float16保存，减小文件大小
+                        param_to_save = param.cpu().clone().detach()
+                        if param_to_save.dtype == torch.float32:
+                            param_to_save = param_to_save.half()  # 转换为float16
+
+                        layer_state_dict[param_name] = param_to_save
                         total_trainable_params += param.numel()
                         total_saved_params += param.numel()
+
+                        # 统计数据类型
+                        dtype_str = str(param_to_save.dtype)
+                        dtype_counter[dtype_str] = dtype_counter.get(dtype_str, 0) + param.numel()
 
             # 只有当层有可训练参数时才保存
             if layer_state_dict:
@@ -344,17 +354,20 @@ class MixLoRAModelAdapter:
 
         # 计算文件大小
         file_size_mb = os.path.getsize(weights_path) / (1024 * 1024)
-        param_size_mb = total_saved_params * 4 / (1024 * 1024)  # 假设float32
+        # 🔧 修复：根据实际数据类型计算期望大小
+        param_size_mb = total_saved_params * 2 / (1024 * 1024)  # float16占2字节
 
         logger.info(f"MixLoRA saved to: {save_directory}")
         logger.info(f"  Trainable parameters saved: {total_saved_params:,}")
+        logger.info(f"  Parameter dtypes: {dtype_counter}")
         logger.info(f"  File size: {file_size_mb:.2f} MB")
-        logger.info(f"  Expected size: {param_size_mb:.2f} MB")
+        logger.info(f"  Expected size (float16): {param_size_mb:.2f} MB")
 
         # 警告如果文件过大
         if file_size_mb > 200:  # 如果超过200MB
             logger.warning(f"⚠️  MixLoRA weights file is larger than expected: {file_size_mb:.2f} MB")
             logger.warning("This may indicate that frozen base model weights are being saved")
+            logger.warning(f"Expected size for {total_saved_params:,} parameters: ~{param_size_mb:.2f} MB")
         else:
             logger.info("✅ MixLoRA weights saved successfully (trainable parameters only)")
 

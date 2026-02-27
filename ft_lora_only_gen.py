@@ -1053,17 +1053,10 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     else:
         full_input = instruction
 
-    # 🔧 修复：确保生成时的输入格式与训练时完全一致，并添加引导
-    # 训练时格式：full_input + output_text (不添加空格)
-    # 生成时格式：full_input + 引导文本，让模型生成数字答案
-
-    # 🔧 关键修复：保持与训练时完全一致的格式
-    # 训练时的数据格式：instruction + input → output (直接是数字)
-    # 数据集的instruction已经包含了完整的提示，例如：
-    # "Give me the answer from 1 to 4: ... ### Answer:"
-    # 所以不需要添加任何额外的引导文本
-    full_input = full_input.rstrip()
-
+    # 🔧 关键修复：确保生成时的输入格式与训练时完全一致
+    # 训练时格式：full_input.rstrip() + "\n" + output_text
+    # 生成时格式：full_input.rstrip() + "\n"，让模型生成output
+    full_input = full_input.rstrip() + "\n"
 
     inputs = tokenizer(full_input, return_tensors="pt", truncation=True, max_length=512, padding=False)
     inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -1072,46 +1065,42 @@ def generate_answer(model, tokenizer, instruction: str, input_text: str, device:
     if 'attention_mask' not in inputs:
         inputs['attention_mask'] = torch.ones_like(inputs['input_ids'])
 
-
     with torch.no_grad():
         # 检查模型类型，确定使用哪种generate方法
         model_class_name = model.__class__.__name__
 
         # 🔧 修复：统一使用模型的generate方法
-        # SimplifiedCultureMoEAdapter现在有自己的generate方法，可以直接调用
         if ('JointLoRAMoE' in model_class_name or
             hasattr(model, 'moe_layer') or
             'SimplifiedCultureMoEAdapter' in model_class_name or
             hasattr(model, 'base_model') or
             hasattr(model, 'generate')):
 
-            # 🔧 统一调用：所有MoE模型都直接使用model.generate()
-
-            # 🔧 简化生成参数：与训练时保持一致的生成策略
-            # 不添加过多约束，让模型自然生成，就像训练时验证阶段一样
+            # 🔧 优化生成参数：针对单个数字答案的生成
             outputs = model.generate(
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs.get('attention_mask'),
-                max_new_tokens=5,  # 🔧 给足够空间生成答案
+                max_new_tokens=3,  # 🔧 答案只需要1-2个token
                 min_new_tokens=1,  # 🔧 至少生成1个token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,  # 🔧 使用贪心解码，与训练时一致
+                do_sample=False,  # 🔧 使用贪心解码
                 num_beams=1,
                 early_stopping=True,  # 🔧 启用早停
-                repetition_penalty=1.0  # 🔧 不添加重复惩罚
+                repetition_penalty=1.2  # 🔧 轻微惩罚重复
             )
         else:
             # 回退到标准generate方法
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=5,  # 🔧 与上面保持一致
+                max_new_tokens=3,  # 🔧 与上面保持一致
                 min_new_tokens=1,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,
                 num_beams=1,
-                early_stopping=True
+                early_stopping=True,
+                repetition_penalty=1.2
             )
 
     # 解码
