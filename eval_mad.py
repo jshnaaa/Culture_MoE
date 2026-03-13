@@ -900,10 +900,16 @@ def load_data(
     """
     加载评估数据
 
+    优先级规则：
+    1. 如果 max_samples > 0：直接取前 max_samples 个样本，忽略 random_p
+    2. 如果 max_samples = 0 或 None：使用 random_p 进行随机采样
+       - random_p = 1.0：使用全部数据
+       - random_p < 1.0：随机采样指定比例
+
     Args:
         data_file: 数据文件路径
-        max_samples: 最大样本数（用于测试）
-        random_p: 随机采样比例（0-1之间），如0.1表示随机取10%
+        max_samples: 最大样本数，0表示不限制（此时使用random_p）
+        random_p: 随机采样比例（0-1之间），1.0表示全部数据
         random_seed: 随机种子，保证可复现性
 
     Returns:
@@ -917,25 +923,33 @@ def load_data(
     original_size = len(data)
     print(f"Original dataset size: {original_size}")
 
-    # 如果指定了random_p，进行随机采样
-    if random_p is not None:
-        if not 0 < random_p <= 1.0:
-            raise ValueError(f"random_p must be between 0 and 1, got {random_p}")
-
-        import random
-        random.seed(random_seed)
-
-        sample_size = int(original_size * random_p)
-        sample_size = max(1, sample_size)  # 至少取1个样本
-
-        # 随机采样
-        data = random.sample(data, sample_size)
-        print(f"Random sampling: {random_p:.1%} of dataset ({sample_size} samples)")
-
-    # 如果还指定了max_samples，作为上限
-    if max_samples and len(data) > max_samples:
+    # 优先级1：如果指定了max_samples且大于0，直接使用（忽略random_p）
+    if max_samples is not None and max_samples > 0:
         data = data[:max_samples]
-        print(f"Limited to max_samples: {max_samples}")
+        print(f"Using max_samples mode: taking first {max_samples} samples (random_p ignored)")
+    # 优先级2：如果max_samples为0或None，使用random_p
+    else:
+        if random_p is not None:
+            if not 0 < random_p <= 1.0:
+                raise ValueError(f"random_p must be between 0 and 1, got {random_p}")
+
+            if random_p == 1.0:
+                # random_p=1.0 表示使用全部数据
+                print(f"Using all data (random_p=1.0): {original_size} samples")
+            else:
+                # random_p<1.0 表示随机采样
+                import random
+                random.seed(random_seed)
+
+                sample_size = int(original_size * random_p)
+                sample_size = max(1, sample_size)  # 至少取1个样本
+
+                # 随机采样
+                data = random.sample(data, sample_size)
+                print(f"Random sampling (random_p={random_p:.1%}): {sample_size} samples")
+        else:
+            # 如果两个参数都没指定，使用全部数据
+            print(f"No sampling specified, using all data: {original_size} samples")
 
     print(f"Final dataset size: {len(data)} samples")
     return data

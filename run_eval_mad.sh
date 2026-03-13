@@ -10,18 +10,33 @@
 # 参数说明:
 #   MODEL_TYPE  - 模型类型: 1=LLaMA 3.1, 2=Qwen 2.5
 #   DATA_ID     - 数据集编号: 1=unified, 2=CulturalBench, 3=NORMAD, 4=CultureLLM
-#   MAX_SAMPLES - (可选) 最大样本数上限，默认10
-#   RANDOM_P    - (可选) 随机采样比例(0-1)，默认0.1 (即10%)
+#   MAX_SAMPLES - (可选) 最大样本数，默认10
+#                 > 0: 直接取前N个样本（忽略RANDOM_P）
+#                 = 0: 使用RANDOM_P进行随机采样
+#   RANDOM_P    - (可选) 随机采样比例，默认0.1 (10%)
+#                 仅当MAX_SAMPLES=0时生效
+#                 = 1.0: 使用全部数据
+#                 < 1.0: 随机采样指定比例
+#
+# 优先级规则:
+#   1. 如果MAX_SAMPLES > 0 → 直接取前N个样本（快速测试）
+#   2. 如果MAX_SAMPLES = 0 → 使用RANDOM_P随机采样（数据多样性）
 #
 # 示例:
-#   # 使用LLaMA在CulturalBench上评估（默认随机取10%数据，最多10个样本）
+#   # 快速测试：取前10个样本（默认）
 #   bash run_eval_mad.sh 1 2
 #
-#   # 使用Qwen在NORMAD上评估，随机取20%数据，最多50个样本
-#   bash run_eval_mad.sh 2 3 50 0.2
+#   # 快速测试：取前50个样本
+#   bash run_eval_mad.sh 2 3 50
 #
-#   # 使用LLaMA在CultureLLM上评估，随机取5%数据，不限制样本数
-#   bash run_eval_mad.sh 1 4 "" 0.05
+#   # 随机采样：随机取10%数据（默认RANDOM_P=0.1）
+#   bash run_eval_mad.sh 1 2 0
+#
+#   # 随机采样：随机取20%数据
+#   bash run_eval_mad.sh 2 3 0 0.2
+#
+#   # 完整评估：使用全部数据
+#   bash run_eval_mad.sh 1 4 0 1.0
 #
 # ============================================================================
 
@@ -46,8 +61,12 @@ if [ "$MODEL_TYPE" -ne 1 ] && [ "$MODEL_TYPE" -ne 2 ]; then
     echo "参数:"
     echo "  MODEL_TYPE: 1=LLaMA 3.1, 2=Qwen 2.5"
     echo "  DATA_ID: 1=unified, 2=CulturalBench, 3=NORMAD, 4=CultureLLM"
-    echo "  MAX_SAMPLES: (可选) 最大样本数，默认10"
-    echo "  RANDOM_P: (可选) 随机采样比例，默认0.1 (10%)"
+    echo "  MAX_SAMPLES: (可选) 默认10"
+    echo "    > 0: 取前N个样本（忽略RANDOM_P）"
+    echo "    = 0: 使用RANDOM_P随机采样"
+    echo "  RANDOM_P: (可选) 默认0.1，仅当MAX_SAMPLES=0时生效"
+    echo "    = 1.0: 全部数据"
+    echo "    < 1.0: 随机采样比例"
     exit 1
 fi
 
@@ -140,8 +159,20 @@ echo "Model Path: $MODEL_PATH" | tee -a $LOG_FILE
 echo "Data ID: $DATA_ID ($DATA_NAME)" | tee -a $LOG_FILE
 echo "Data File: $DATA_FILE" | tee -a $LOG_FILE
 echo "Output Dir: $OUTPUT_DIR" | tee -a $LOG_FILE
-echo "Random Sampling: ${RANDOM_P} ($(echo "$RANDOM_P * 100" | bc)% of dataset)" | tee -a $LOG_FILE
-echo "Max Samples: $MAX_SAMPLES (upper limit)" | tee -a $LOG_FILE
+
+# 根据MAX_SAMPLES的值显示不同的采样策略
+if [ "$MAX_SAMPLES" -gt 0 ] 2>/dev/null; then
+    echo "Sampling Mode: MAX_SAMPLES (taking first $MAX_SAMPLES samples)" | tee -a $LOG_FILE
+    echo "  RANDOM_P is ignored in this mode" | tee -a $LOG_FILE
+elif [ "$MAX_SAMPLES" -eq 0 ] 2>/dev/null; then
+    echo "Sampling Mode: RANDOM_P (random sampling)" | tee -a $LOG_FILE
+    if [ "$RANDOM_P" = "1.0" ] || [ "$RANDOM_P" = "1" ]; then
+        echo "  Using all data (RANDOM_P=1.0)" | tee -a $LOG_FILE
+    else
+        echo "  Random sampling: ${RANDOM_P} ($(echo "$RANDOM_P * 100" | bc)% of dataset)" | tee -a $LOG_FILE
+    fi
+fi
+
 echo "Start Time: $(date)" | tee -a $LOG_FILE
 echo "========================================" | tee -a $LOG_FILE
 echo "" | tee -a $LOG_FILE
