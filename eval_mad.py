@@ -891,13 +891,20 @@ class MADDebateEngine:
 # 数据加载和评估
 # ============================================================================
 
-def load_data(data_file: str, max_samples: Optional[int] = None) -> List[Dict]:
+def load_data(
+    data_file: str,
+    max_samples: Optional[int] = None,
+    random_p: Optional[float] = None,
+    random_seed: int = 42
+) -> List[Dict]:
     """
     加载评估数据
 
     Args:
         data_file: 数据文件路径
         max_samples: 最大样本数（用于测试）
+        random_p: 随机采样比例（0-1之间），如0.1表示随机取10%
+        random_seed: 随机种子，保证可复现性
 
     Returns:
         数据列表
@@ -907,11 +914,30 @@ def load_data(data_file: str, max_samples: Optional[int] = None) -> List[Dict]:
     with open(data_file, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    if max_samples:
-        data = data[:max_samples]
-        print(f"Limited to {max_samples} samples for testing")
+    original_size = len(data)
+    print(f"Original dataset size: {original_size}")
 
-    print(f"Loaded {len(data)} samples")
+    # 如果指定了random_p，进行随机采样
+    if random_p is not None:
+        if not 0 < random_p <= 1.0:
+            raise ValueError(f"random_p must be between 0 and 1, got {random_p}")
+
+        import random
+        random.seed(random_seed)
+
+        sample_size = int(original_size * random_p)
+        sample_size = max(1, sample_size)  # 至少取1个样本
+
+        # 随机采样
+        data = random.sample(data, sample_size)
+        print(f"Random sampling: {random_p:.1%} of dataset ({sample_size} samples)")
+
+    # 如果还指定了max_samples，作为上限
+    if max_samples and len(data) > max_samples:
+        data = data[:max_samples]
+        print(f"Limited to max_samples: {max_samples}")
+
+    print(f"Final dataset size: {len(data)} samples")
     return data
 
 
@@ -1142,7 +1168,11 @@ def main():
     parser.add_argument('--output_dir', type=str, required=True,
                        help='Output directory for results')
     parser.add_argument('--max_samples', type=int, default=None,
-                       help='Maximum number of samples (for testing)')
+                       help='Maximum number of samples (upper limit after random sampling)')
+    parser.add_argument('--random_p', type=float, default=None,
+                       help='Random sampling ratio (0-1), e.g., 0.1 for 10%% of dataset')
+    parser.add_argument('--random_seed', type=int, default=42,
+                       help='Random seed for reproducibility (default: 42)')
     parser.add_argument('--model_path', type=str, default=None,
                        help='Custom model path (overrides default)')
 
@@ -1169,8 +1199,11 @@ def main():
     print(f"Model Path: {model_path}")
     print(f"Data File: {args.data_file}")
     print(f"Output Dir: {args.output_dir}")
+    if args.random_p:
+        print(f"Random Sampling: {args.random_p:.1%} of dataset")
+        print(f"Random Seed: {args.random_seed}")
     if args.max_samples:
-        print(f"Max Samples: {args.max_samples} (test mode)")
+        print(f"Max Samples: {args.max_samples} (upper limit)")
     print("=" * 80 + "\n")
 
     # 加载模型
@@ -1193,7 +1226,12 @@ def main():
     print("✅ Tokenizer loaded")
 
     # 加载数据
-    data = load_data(args.data_file, args.max_samples)
+    data = load_data(
+        args.data_file,
+        max_samples=args.max_samples,
+        random_p=args.random_p,
+        random_seed=args.random_seed
+    )
 
     # 初始化MAD引擎
     print("\nInitializing MAD Debate Engine...")
