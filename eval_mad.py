@@ -1197,12 +1197,13 @@ def main():
         model_path = args.model_path
         model_name = os.path.basename(model_path)
     else:
+        # 默认使用本地路径（如果shell脚本没有传递--model_path）
         if args.model_type == 1:
-            model_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-            model_name = "llama3.1-8b"
+            model_path = "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
+            model_name = "llama"
         elif args.model_type == 2:
-            model_path = "Qwen/Qwen2.5-7B-Instruct"
-            model_name = "qwen2.5-7b"
+            model_path = "/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
+            model_name = "qwen"
         else:
             raise ValueError("Invalid model_type")
 

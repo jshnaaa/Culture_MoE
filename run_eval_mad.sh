@@ -201,8 +201,8 @@ if [ -n "$MAX_SAMPLES" ]; then
     CMD="$CMD --max_samples $MAX_SAMPLES"
 fi
 
-# 如果需要指定自定义模型路径
-# CMD="$CMD --model_path $MODEL_PATH"
+# 添加模型路径（使用本地路径）
+CMD="$CMD --model_path $MODEL_PATH"
 
 # 执行评估
 echo "Command: $CMD" | tee -a $LOG_FILE
