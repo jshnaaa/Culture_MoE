@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -449,7 +450,7 @@ class MADDebateEngine:
     - Final: 裁判决策
     """
 
-    def __init__(self, model, tokenizer, device: str = 'cuda'):
+    def __init__(self, model, tokenizer, device: str = 'cuda', verbose: bool = False):
         """
         初始化MAD引擎
 
@@ -457,10 +458,12 @@ class MADDebateEngine:
             model: 预训练的语言模型
             tokenizer: 对应的tokenizer
             device: 运行设备
+            verbose: 是否输出详细日志
         """
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.verbose = verbose
         self.model.eval()
 
     def generate_response(
@@ -498,17 +501,22 @@ class MADDebateEngine:
 
         # Generate
         with torch.no_grad():
-            outputs = self.model.generate(
-                input_ids=inputs['input_ids'],
-                attention_mask=inputs['attention_mask'],
-                max_new_tokens=max_new_tokens,
-                temperature=temperature if do_sample else 1.0,
-                do_sample=do_sample,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-                num_beams=1,
-                early_stopping=True
-            )
+            try:
+                outputs = self.model.generate(
+                    input_ids=inputs['input_ids'],
+                    attention_mask=inputs['attention_mask'],
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature if do_sample else 1.0,
+                    do_sample=do_sample,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                    num_beams=1,
+                    early_stopping=True,
+                    use_cache=True  # 启用KV cache加速
+                )
+            except Exception as e:
+                print(f"\n⚠️  Generation error: {str(e)}")
+                raise
 
         # Decode只生成的部分
         generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
@@ -765,7 +773,7 @@ class MADDebateEngine:
         true_answer: str
     ) -> Dict:
         """
-        运行完整的MAD辩论流程
+        运行完整的MAD辩论流程 (并行优化版本)
 
         Args:
             instruction: 问题指令
@@ -775,33 +783,58 @@ class MADDebateEngine:
         Returns:
             完整的辩论结果字典
         """
-        # Round 0: 初始回答
-        agent_a_r0 = self.generate_initial_answer(instruction, input_text, role='affirmative')
-        agent_b_r0 = self.generate_initial_answer(instruction, input_text, role='negative')
+        # Round 0: 初始回答 (并行执行)
+        if self.verbose:
+            print("  [R0] Agent A & B generating in parallel...")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_a = executor.submit(
+                self.generate_initial_answer, instruction, input_text, 'affirmative'
+            )
+            future_b = executor.submit(
+                self.generate_initial_answer, instruction, input_text, 'negative'
+            )
+            agent_a_r0 = future_a.result()
+            agent_b_r0 = future_b.result()
 
-        # Round 1: 第一轮辩论
-        agent_a_r1 = self.generate_debate_round(
-            instruction, input_text, agent_a_r0, agent_b_r0,
-            role='affirmative', round_num=1
-        )
-        agent_b_r1 = self.generate_debate_round(
-            instruction, input_text, agent_b_r0, agent_a_r0,
-            role='negative', round_num=1
-        )
+        # Round 1: 第一轮辩论 (并行执行)
+        if self.verbose:
+            print("  [R1] Agent A & B generating in parallel...")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_a = executor.submit(
+                self.generate_debate_round,
+                instruction, input_text, agent_a_r0, agent_b_r0,
+                'affirmative', 1
+            )
+            future_b = executor.submit(
+                self.generate_debate_round,
+                instruction, input_text, agent_b_r0, agent_a_r0,
+                'negative', 1
+            )
+            agent_a_r1 = future_a.result()
+            agent_b_r1 = future_b.result()
 
-        # Round 2: 第二轮辩论
-        agent_a_r2 = self.generate_debate_round(
-            instruction, input_text, agent_a_r1, agent_b_r1,
-            role='affirmative', round_num=2,
-            history={'r0': (agent_a_r0, agent_b_r0), 'r1': (agent_a_r1, agent_b_r1)}
-        )
-        agent_b_r2 = self.generate_debate_round(
-            instruction, input_text, agent_b_r1, agent_a_r1,
-            role='negative', round_num=2,
-            history={'r0': (agent_b_r0, agent_a_r0), 'r1': (agent_b_r1, agent_a_r1)}
-        )
+        # Round 2: 第二轮辩论 (并行执行)
+        if self.verbose:
+            print("  [R2] Agent A & B generating in parallel...")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_a = executor.submit(
+                self.generate_debate_round,
+                instruction, input_text, agent_a_r1, agent_b_r1,
+                'affirmative', 2,
+                {'r0': (agent_a_r0, agent_b_r0), 'r1': (agent_a_r1, agent_b_r1)}
+            )
+            future_b = executor.submit(
+                self.generate_debate_round,
+                instruction, input_text, agent_b_r1, agent_a_r1,
+                'negative', 2,
+                {'r0': (agent_b_r0, agent_a_r0), 'r1': (agent_b_r1, agent_a_r1)}
+            )
+            agent_a_r2 = future_a.result()
+            agent_b_r2 = future_b.result()
 
-        # Final Decision: 裁判决策
+        # Final Decision: 裁判决策 (串行执行)
+        if self.verbose:
+            print("  [Judge] Generating final decision...")
         final_decision = self.generate_judge_decision(
             instruction, input_text,
             r0=(agent_a_r0, agent_b_r0),
@@ -1221,16 +1254,21 @@ def main():
         print(f"Max Samples: {args.max_samples} (upper limit)")
     print("=" * 80 + "\n")
 
+    # 设置设备
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device}")
+
     # 加载模型
     print("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.float16,
-        device_map="auto",
         trust_remote_code=True,
         low_cpu_mem_usage=True
     )
-    print("✅ Model loaded")
+    model = model.to(device)
+    model.eval()
+    print("✅ Model loaded and moved to device")
 
     # 加载tokenizer
     print("Loading tokenizer...")
@@ -1250,9 +1288,17 @@ def main():
 
     # 初始化MAD引擎
     print("\nInitializing MAD Debate Engine...")
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    mad_engine = MADDebateEngine(model, tokenizer, device)
+    # 前3个样本启用详细日志
+    mad_engine = MADDebateEngine(model, tokenizer, device, verbose=True)
     print("✅ MAD Engine initialized")
+
+    # Warm-up：第一次生成通常很慢，做一次预热
+    print("\nWarming up model (first generation)...")
+    try:
+        _ = mad_engine.generate_response("Test prompt", max_new_tokens=10)
+        print("✅ Model warm-up completed")
+    except Exception as e:
+        print(f"⚠️  Warm-up warning: {str(e)}")
 
     # 运行评估
     print("\nStarting evaluation...")
@@ -1263,9 +1309,20 @@ def main():
         input_text = item.get('input', '')
         true_answer = item.get('output', '')
 
+        # 添加详细日志（仅前3个样本）
+        if idx < 3:
+            print(f"\n[Sample {idx+1}] Processing...")
+            mad_engine.verbose = True
+        else:
+            mad_engine.verbose = False
+
         try:
             result = mad_engine.run_debate(instruction, input_text, true_answer)
             results.append(result)
+
+            if idx < 3:
+                print(f"[Sample {idx+1}] ✅ Completed")
+
         except Exception as e:
             print(f"\n⚠️  Error processing sample {idx}: {str(e)}")
             # 添加一个失败的结果
