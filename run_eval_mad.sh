@@ -8,8 +8,8 @@
 #   bash run_eval_mad.sh MODEL_TYPE DATA_ID [MAX_SAMPLES] [RANDOM_P]
 #
 # 参数说明:
-#   MODEL_TYPE  - 模型类型: 1=LLaMA 3.1, 2=Qwen 2.5
-#   DATA_ID     - 数据集编号: 1=unified, 2=CulturalBench, 3=NORMAD, 4=CultureLLM
+#   MODEL_TYPE  - 模型类型: 1=LLaMA 3.1-8B-Instruct, 2=Qwen 2.5-7B-Instruct
+#   DATA_ID     - 数据集编号: 2=CulturalBench, 3=NORMAD, 4=CultureLLM, 5=CultureAtlas
 #   MAX_SAMPLES - (可选) 最大样本数，默认10
 #                 > 0: 直接取前N个样本（忽略RANDOM_P）
 #                 = 0: 使用RANDOM_P进行随机采样
@@ -23,20 +23,20 @@
 #   2. 如果MAX_SAMPLES = 0 → 使用RANDOM_P随机采样（数据多样性）
 #
 # 示例:
-#   # 快速测试：取前10个样本（默认）
+#   # 快速测试：LLaMA在CulturalBench上取前10个样本（默认）
 #   bash run_eval_mad.sh 1 2
 #
-#   # 快速测试：取前50个样本
+#   # 快速测试：Qwen在NORMAD上取前50个样本
 #   bash run_eval_mad.sh 2 3 50
 #
-#   # 随机采样：随机取10%数据（默认RANDOM_P=0.1）
-#   bash run_eval_mad.sh 1 2 0
+#   # 随机采样：LLaMA在CultureLLM上随机取10%数据
+#   bash run_eval_mad.sh 1 4 0
 #
-#   # 随机采样：随机取20%数据
-#   bash run_eval_mad.sh 2 3 0 0.2
+#   # 随机采样：Qwen在CultureAtlas上随机取20%数据
+#   bash run_eval_mad.sh 2 5 0 0.2
 #
-#   # 完整评估：使用全部数据
-#   bash run_eval_mad.sh 1 4 0 1.0
+#   # 完整评估：LLaMA在CulturalBench上使用全部数据
+#   bash run_eval_mad.sh 1 2 0 1.0
 #
 # ============================================================================
 
@@ -59,8 +59,8 @@ if [ "$MODEL_TYPE" -ne 1 ] && [ "$MODEL_TYPE" -ne 2 ]; then
     echo "  bash run_eval_mad.sh MODEL_TYPE DATA_ID [MAX_SAMPLES] [RANDOM_P]"
     echo ""
     echo "参数:"
-    echo "  MODEL_TYPE: 1=LLaMA 3.1, 2=Qwen 2.5"
-    echo "  DATA_ID: 1=unified, 2=CulturalBench, 3=NORMAD, 4=CultureLLM"
+    echo "  MODEL_TYPE: 1=LLaMA 3.1-8B-Instruct, 2=Qwen 2.5-7B-Instruct"
+    echo "  DATA_ID: 2=CulturalBench, 3=NORMAD, 4=CultureLLM, 5=CultureAtlas"
     echo "  MAX_SAMPLES: (可选) 默认10"
     echo "    > 0: 取前N个样本（忽略RANDOM_P）"
     echo "    = 0: 使用RANDOM_P随机采样"
@@ -71,14 +71,14 @@ if [ "$MODEL_TYPE" -ne 1 ] && [ "$MODEL_TYPE" -ne 2 ]; then
 fi
 
 # 验证DATA_ID
-if [ "$DATA_ID" -lt 1 ] || [ "$DATA_ID" -gt 4 ]; then
-    echo "❌ 错误: DATA_ID 必须是 1-4"
+if [ "$DATA_ID" -lt 2 ] || [ "$DATA_ID" -gt 5 ]; then
+    echo "❌ 错误: DATA_ID 必须是 2-5"
     echo ""
     echo "数据集编号:"
-    echo "  1: unified_all_datasets.json"
     echo "  2: CulturalBench_merge_gen.json"
     echo "  3: normad_merge_gen.json"
     echo "  4: cultureLLM_merge_gen.json"
+    echo "  5: cultureAtlas_merge_gen.json"
     exit 1
 fi
 
@@ -87,53 +87,45 @@ fi
 # ============================================================================
 
 if [ "$MODEL_TYPE" -eq 1 ]; then
-    MODEL_NAME="llama3.1-8b"
-    # 🔧 修改为实际的模型路径
-    MODEL_PATH="/path/to/Meta-Llama-3.1-8B-Instruct"
-    # 如果使用Hugging Face模型，可以使用以下路径:
-    # MODEL_PATH="meta-llama/Meta-Llama-3.1-8B-Instruct"
+    MODEL_NAME="llama"
+    MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
 elif [ "$MODEL_TYPE" -eq 2 ]; then
-    MODEL_NAME="qwen2.5-7b"
-    # 🔧 修改为实际的模型路径
-    MODEL_PATH="/path/to/Qwen2.5-7B-Instruct"
-    # 如果使用Hugging Face模型，可以使用以下路径:
-    # MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
+    MODEL_NAME="qwen"
+    MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
 fi
 
 # ============================================================================
 # 数据集配置
 # ============================================================================
 
-# 🔧 修改为实际的数据文件路径
 case $DATA_ID in
-    1)
-        DATA_FILE="/path/to/unified_all_datasets.json"
-        DATA_NAME="unified"
-        ;;
     2)
-        DATA_FILE="/path/to/CulturalBench_merge_gen.json"
-        DATA_NAME="culturalbench"
+        DATA_FILE="/root/autodl-fs/CulturalBench_merge_gen.json"
+        DATA_NAME="CulturalBench"
         ;;
     3)
-        DATA_FILE="/path/to/normad_merge_gen.json"
+        DATA_FILE="/root/autodl-fs/normad_merge_gen.json"
         DATA_NAME="normad"
         ;;
     4)
-        DATA_FILE="/path/to/cultureLLM_merge_gen.json"
-        DATA_NAME="culturellm"
+        DATA_FILE="/root/autodl-fs/cultureLLM_merge_gen.json"
+        DATA_NAME="cultureLLM"
+        ;;
+    5)
+        DATA_FILE="/root/autodl-fs/cultureAtlas_merge_gen.json"
+        DATA_NAME="cultureAtlas"
         ;;
 esac
 
 # 检查数据文件是否存在
 if [ ! -f "$DATA_FILE" ]; then
     echo "⚠️  警告: 数据文件不存在: $DATA_FILE"
-    echo "请修改脚本中的数据文件路径"
     echo ""
     echo "当前配置的数据文件路径:"
-    echo "  1: /path/to/unified_all_datasets.json"
-    echo "  2: /path/to/CulturalBench_merge_gen.json"
-    echo "  3: /path/to/normad_merge_gen.json"
-    echo "  4: /path/to/cultureLLM_merge_gen.json"
+    echo "  2: /root/autodl-fs/CulturalBench_merge_gen.json"
+    echo "  3: /root/autodl-fs/normad_merge_gen.json"
+    echo "  4: /root/autodl-fs/cultureLLM_merge_gen.json"
+    echo "  5: /root/autodl-fs/cultureAtlas_merge_gen.json"
     exit 1
 fi
 
