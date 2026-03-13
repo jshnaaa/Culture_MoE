@@ -1,0 +1,1240 @@
+#!/usr/bin/env python3
+"""
+Multi-Agent Debate (MAD) 评估脚本
+
+实现基于prompt的多代理辩论系统，用于文化理解任务评估。
+
+使用方法：
+    python eval_mad.py \
+        --model_type 1 \
+        --data_file /path/to/data.json \
+        --output_dir /path/to/output \
+        [--max_samples 100]
+
+模型类型：
+    1: LLaMA 3.1-8B-Instruct
+    2: Qwen 2.5-7B-Instruct
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+
+import torch
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# ============================================================================
+# Prompt模板
+# ============================================================================
+
+PROMPT_AGENT_A_ROUND0 = """You are a cultural understanding expert. Your task is to answer the following multiple-choice question based on your initial intuition and reasoning.
+
+**Question:**
+{instruction}
+
+**Context:**
+{input}
+
+**Instructions:**
+1. Carefully read the question and context
+2. Think about the cultural factors involved
+3. Choose the best answer from options 1-4
+4. Explain your reasoning clearly
+5. Indicate your confidence level (0-100)
+
+**Output Format:**
+Answer: [1/2/3/4]
+Reasoning: [Your detailed reasoning in 3-5 sentences, focusing on cultural aspects]
+Confidence: [0-100]
+
+Please provide your answer now:"""
+
+
+PROMPT_AGENT_B_ROUND0 = """You are a critical thinking expert specializing in cultural analysis. Your task is to answer the following question by considering multiple perspectives and challenging common assumptions.
+
+**Question:**
+{instruction}
+
+**Context:**
+{input}
+
+**Instructions:**
+1. Question the obvious answer - what might be overlooked?
+2. Consider alternative cultural interpretations
+3. Think about edge cases and exceptions
+4. Choose the best answer from options 1-4
+5. Explain your reasoning with critical analysis
+
+**Output Format:**
+Answer: [1/2/3/4]
+Reasoning: [Your detailed reasoning in 3-5 sentences, emphasizing alternative perspectives]
+Confidence: [0-100]
+
+Please provide your answer now:"""
+
+
+PROMPT_AGENT_A_ROUND1 = """You are continuing the debate. You have seen the opposing view. Now reflect on both perspectives.
+
+**Original Question:**
+{instruction}
+
+**Context:**
+{input}
+
+**Your Previous Answer (Round 0):**
+- Answer: {answer_a0}
+- Reasoning: {reasoning_a0}
+- Confidence: {confidence_a0}
+
+**Opposing View (Agent B's Answer):**
+- Answer: {answer_b0}
+- Reasoning: {reasoning_b0}
+- Confidence: {confidence_b0}
+
+**Instructions for Reflection:**
+1. **Analyze the opposing view:**
+   - What are the strengths of their argument?
+   - What are the weaknesses or gaps?
+
+2. **Self-reflection:**
+   - Is my reasoning complete and accurate?
+   - Did I overlook any important cultural factors?
+   - Should I reconsider my answer?
+
+3. **Make a decision:**
+   - You may CHANGE your answer if convinced
+   - You may KEEP your answer if you have stronger reasons
+   - Explain your decision clearly
+
+**Output Format:**
+Answer: [1/2/3/4]
+Reasoning: [Your updated reasoning, incorporating insights from the debate]
+Reflection: [Your reflection on the opposing view - strengths, weaknesses, and why you changed/kept your answer]
+Confidence: [0-100]
+Changed: [Yes/No]
+
+Please provide your response:"""
+
+
+PROMPT_AGENT_B_ROUND1 = """You are continuing the debate. You have seen the opposing view. Now reflect critically on both perspectives.
+
+**Original Question:**
+{instruction}
+
+**Context:**
+{input}
+
+**Your Previous Answer (Round 0):**
+- Answer: {answer_b0}
+- Reasoning: {reasoning_b0}
+- Confidence: {confidence_b0}
+
+**Opposing View (Agent A's Answer):**
+- Answer: {answer_a0}
+- Reasoning: {reasoning_a0}
+- Confidence: {confidence_a0}
+
+**Instructions for Critical Reflection:**
+1. **Evaluate the opposing view:**
+   - What assumptions are they making?
+   - Are there cultural nuances they missed?
+
+2. **Challenge your own view:**
+   - Is my alternative perspective truly better?
+   - Am I being contrarian for the sake of it?
+   - What evidence supports my answer?
+
+3. **Refine your position:**
+   - Strengthen your argument or adjust your answer
+   - Provide clearer reasoning
+   - Explain your decision
+
+**Output Format:**
+Answer: [1/2/3/4]
+Reasoning: [Your refined reasoning, addressing the opposing view]
+Reflection: [Your critical analysis - what you learned and why your answer is justified]
+Confidence: [0-100]
+Changed: [Yes/No]
+
+Please provide your response:"""
+
+
+PROMPT_AGENT_A_ROUND2 = """This is the final round of debate. Review the entire discussion and provide your final position.
+
+**Original Question:**
+{instruction}
+
+**Context:**
+{input}
+
+**Debate History:**
+
+Round 0 (Initial):
+- Your answer: {answer_a0} (Confidence: {confidence_a0})
+- Their answer: {answer_b0} (Confidence: {confidence_b0})
+
+Round 1 (First Debate):
+- Your answer: {answer_a1} (Changed: {changed_a1}, Confidence: {confidence_a1})
+- Their answer: {answer_b1} (Changed: {changed_b1}, Confidence: {confidence_b1})
+- Your reflection: {reflection_a1}
+- Their reflection: {reflection_b1}
+
+**Instructions for Final Reflection:**
+1. **Review the debate trajectory:**
+   - What new insights emerged?
+   - How did the discussion evolve?
+
+2. **Final decision:**
+   - Based on all arguments, what is your final answer?
+   - What is the strongest evidence for this answer?
+   - What is your final confidence level?
+
+3. **Acknowledge uncertainty:**
+   - If still uncertain, explain why
+   - If confident, explain what convinced you
+
+**Output Format:**
+Answer: [1/2/3/4]
+Reasoning: [Your final, comprehensive reasoning]
+Final_Reflection: [What you learned from this debate and your final position]
+Confidence: [0-100]
+Changed_From_R1: [Yes/No]
+
+Please provide your final response:"""
+
+
+PROMPT_AGENT_B_ROUND2 = """This is the final round of debate. Review the entire discussion and provide your final critical assessment.
+
+**Original Question:**
+{instruction}
+
+**Context:**
+{input}
+
+**Debate History:**
+
+Round 0 (Initial):
+- Your answer: {answer_b0} (Confidence: {confidence_b0})
+- Their answer: {answer_a0} (Confidence: {confidence_a0})
+
+Round 1 (First Debate):
+- Your answer: {answer_b1} (Changed: {changed_b1}, Confidence: {confidence_b1})
+- Their answer: {answer_a1} (Changed: {changed_a1}, Confidence: {confidence_a1})
+- Your reflection: {reflection_b1}
+- Their reflection: {reflection_a1}
+
+**Instructions for Final Critical Assessment:**
+1. **Synthesize the debate:**
+   - What were the key points of disagreement?
+   - Where did we find common ground?
+
+2. **Final judgment:**
+   - What is the most culturally accurate answer?
+   - Have I been too critical or not critical enough?
+   - What is my final confidence?
+
+3. **Closing statement:**
+   - Summarize your final position
+   - Acknowledge any remaining doubts
+
+**Output Format:**
+Answer: [1/2/3/4]
+Reasoning: [Your final, comprehensive reasoning]
+Final_Reflection: [Your synthesis of the debate and final critical assessment]
+Confidence: [0-100]
+Changed_From_R1: [Yes/No]
+
+Please provide your final response:"""
+
+
+PROMPT_JUDGE_FINAL = """You are an impartial judge tasked with making the final decision based on a debate between two agents. Your role is to evaluate the quality of arguments, not simply count votes.
+
+**Original Question:**
+{instruction}
+
+**Context:**
+{input}
+
+**Complete Debate History:**
+
+=== ROUND 0: Initial Answers ===
+Agent A (Affirmative):
+- Answer: {answer_a0}
+- Reasoning: {reasoning_a0}
+- Confidence: {confidence_a0}
+
+Agent B (Negative):
+- Answer: {answer_b0}
+- Reasoning: {reasoning_b0}
+- Confidence: {confidence_b0}
+
+=== ROUND 1: First Debate ===
+Agent A:
+- Answer: {answer_a1} (Changed: {changed_a1})
+- Reasoning: {reasoning_a1}
+- Reflection: {reflection_a1}
+- Confidence: {confidence_a1}
+
+Agent B:
+- Answer: {answer_b1} (Changed: {changed_b1})
+- Reasoning: {reasoning_b1}
+- Reflection: {reflection_b1}
+- Confidence: {confidence_b1}
+
+=== ROUND 2: Final Positions ===
+Agent A:
+- Answer: {answer_a2} (Changed from R1: {changed_a2})
+- Reasoning: {reasoning_a2}
+- Final Reflection: {final_reflection_a2}
+- Confidence: {confidence_a2}
+
+Agent B:
+- Answer: {answer_b2} (Changed from R1: {changed_b2})
+- Reasoning: {reasoning_b2}
+- Final Reflection: {final_reflection_b2}
+- Confidence: {confidence_b2}
+
+**Your Task as Judge:**
+
+1. **Evaluate Argument Quality (NOT just agreement):**
+   - Logical Coherence (40%): Are the arguments logically sound?
+   - Cultural Sensitivity (30%): Do they demonstrate cultural understanding?
+   - Evidence Sufficiency (20%): Are the reasons well-supported?
+   - Reasoning Depth (10%): How deep is the analysis?
+
+2. **Identify Key Points:**
+   - Where do they agree/disagree?
+   - What are the strongest arguments on each side?
+   - Were there any critical insights during the debate?
+
+3. **Make Final Decision:**
+   - Choose the answer with the strongest overall argument
+   - This may NOT be the answer both agents converged to
+   - Explain your reasoning thoroughly
+
+4. **Assess Confidence:**
+   - How confident are you in this decision?
+   - What factors create uncertainty?
+
+**Output Format:**
+Final_Answer: [1/2/3/4]
+Decision_Reasoning: [Your comprehensive analysis in 4-6 sentences, explaining why this answer is best, which arguments were most convincing, what cultural factors are most relevant, and any remaining uncertainties]
+Argument_Quality_Assessment: [Brief evaluation of both agents' arguments]
+Confidence: [0-100]
+
+Please provide your final judgment:"""
+
+
+# ============================================================================
+# 辅助函数
+# ============================================================================
+
+def parse_model_output(output_text: str, expected_fields: List[str]) -> Dict[str, str]:
+    """
+    解析模型输出，提取结构化字段
+
+    Args:
+        output_text: 模型生成的文本
+        expected_fields: 期望的字段列表，如 ['Answer', 'Reasoning', 'Confidence']
+
+    Returns:
+        包含提取字段的字典
+    """
+    result = {}
+
+    for field in expected_fields:
+        # 使用正则表达式提取字段
+        # 匹配模式：Field: content 或 Field:\ncontent
+        pattern = rf"{field}:\s*(.+?)(?=\n[A-Z][a-z_]+:|$)"
+        match = re.search(pattern, output_text, re.DOTALL | re.IGNORECASE)
+
+        if match:
+            content = match.group(1).strip()
+            result[field] = content
+        else:
+            # 如果没有找到，尝试更宽松的匹配
+            pattern_loose = rf"{field}[:\s]+(.+?)(?=\n\n|$)"
+            match_loose = re.search(pattern_loose, output_text, re.DOTALL | re.IGNORECASE)
+            if match_loose:
+                result[field] = match_loose.group(1).strip()
+            else:
+                result[field] = ""
+
+    return result
+
+
+def extract_answer(text: str) -> str:
+    """
+    从文本中提取答案（1-4）
+
+    Args:
+        text: 包含答案的文本
+
+    Returns:
+        答案字符串 ('1', '2', '3', '4') 或 '1' (默认)
+    """
+    # 尝试多种模式
+    patterns = [
+        r'Answer:\s*([1-4])',
+        r'Final_Answer:\s*([1-4])',
+        r'^([1-4])$',
+        r'\b([1-4])\b',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.MULTILINE)
+        if match:
+            return match.group(1)
+
+    # 如果都没找到，返回默认值
+    return '1'
+
+
+def extract_confidence(text: str) -> int:
+    """
+    从文本中提取置信度（0-100）
+
+    Args:
+        text: 包含置信度的文本
+
+    Returns:
+        置信度整数
+    """
+    pattern = r'Confidence:\s*(\d+)'
+    match = re.search(pattern, text)
+
+    if match:
+        conf = int(match.group(1))
+        return max(0, min(100, conf))  # 限制在0-100范围
+    else:
+        return 50  # 默认置信度
+
+
+def extract_yes_no(text: str) -> bool:
+    """
+    从文本中提取Yes/No答案
+
+    Args:
+        text: 包含Yes/No的文本
+
+    Returns:
+        True (Yes) 或 False (No)
+    """
+    text_lower = text.lower()
+    if 'yes' in text_lower:
+        return True
+    elif 'no' in text_lower:
+        return False
+    else:
+        return False  # 默认为No
+
+
+# ============================================================================
+# MAD Debate Engine
+# ============================================================================
+
+class MADDebateEngine:
+    """
+    Multi-Agent Debate引擎
+
+    管理完整的辩论流程，包括：
+    - Round 0: 初始回答
+    - Round 1: 第一轮辩论（含反思）
+    - Round 2: 第二轮辩论（深度反思）
+    - Final: 裁判决策
+    """
+
+    def __init__(self, model, tokenizer, device: str = 'cuda'):
+        """
+        初始化MAD引擎
+
+        Args:
+            model: 预训练的语言模型
+            tokenizer: 对应的tokenizer
+            device: 运行设备
+        """
+        self.model = model
+        self.tokenizer = tokenizer
+        self.device = device
+        self.model.eval()
+
+    def generate_response(
+        self,
+        prompt: str,
+        max_new_tokens: int = 512,
+        temperature: float = 0.1,
+        do_sample: bool = False
+    ) -> str:
+        """
+        通用生成函数
+
+        Args:
+            prompt: 输入prompt
+            max_new_tokens: 最大生成token数
+            temperature: 采样温度
+            do_sample: 是否采样
+
+        Returns:
+            生成的文本
+        """
+        # Tokenize
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=2048,
+            padding=False
+        )
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        # 确保attention_mask存在
+        if 'attention_mask' not in inputs:
+            inputs['attention_mask'] = torch.ones_like(inputs['input_ids'])
+
+        # Generate
+        with torch.no_grad():
+            outputs = self.model.generate(
+                input_ids=inputs['input_ids'],
+                attention_mask=inputs['attention_mask'],
+                max_new_tokens=max_new_tokens,
+                temperature=temperature if do_sample else 1.0,
+                do_sample=do_sample,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+                num_beams=1,
+                early_stopping=True
+            )
+
+        # Decode只生成的部分
+        generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
+        generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+
+        return generated_text.strip()
+
+    def generate_initial_answer(
+        self,
+        instruction: str,
+        input_text: str,
+        role: str
+    ) -> Dict[str, any]:
+        """
+        生成初始回答（Round 0）
+
+        Args:
+            instruction: 问题指令
+            input_text: 问题上下文
+            role: 角色 ('affirmative' 或 'negative')
+
+        Returns:
+            包含answer, reasoning, confidence的字典
+        """
+        # 选择prompt模板
+        if role == 'affirmative':
+            prompt_template = PROMPT_AGENT_A_ROUND0
+        else:
+            prompt_template = PROMPT_AGENT_B_ROUND0
+
+        # 构建prompt
+        prompt = prompt_template.format(
+            instruction=instruction,
+            input=input_text if input_text else "(No additional context)"
+        )
+
+        # 生成
+        output_text = self.generate_response(prompt, max_new_tokens=384)
+
+        # 解析输出
+        parsed = parse_model_output(output_text, ['Answer', 'Reasoning', 'Confidence'])
+
+        result = {
+            'answer': extract_answer(parsed.get('Answer', output_text)),
+            'reasoning': parsed.get('Reasoning', output_text),
+            'confidence': extract_confidence(parsed.get('Confidence', '50')),
+            'raw_output': output_text
+        }
+
+        return result
+
+    def generate_debate_round(
+        self,
+        instruction: str,
+        input_text: str,
+        my_prev: Dict,
+        other_prev: Dict,
+        role: str,
+        round_num: int,
+        history: Optional[Dict] = None
+    ) -> Dict[str, any]:
+        """
+        生成辩论轮次回答（Round 1 或 Round 2）
+
+        Args:
+            instruction: 问题指令
+            input_text: 问题上下文
+            my_prev: 自己上一轮的回答
+            other_prev: 对方上一轮的回答
+            role: 角色 ('affirmative' 或 'negative')
+            round_num: 轮次号 (1 或 2)
+            history: 完整历史（仅Round 2需要）
+
+        Returns:
+            包含answer, reasoning, reflection, confidence, changed的字典
+        """
+        # 选择prompt模板
+        if round_num == 1:
+            if role == 'affirmative':
+                prompt_template = PROMPT_AGENT_A_ROUND1
+                prompt = prompt_template.format(
+                    instruction=instruction,
+                    input=input_text if input_text else "(No additional context)",
+                    answer_a0=my_prev['answer'],
+                    reasoning_a0=my_prev['reasoning'],
+                    confidence_a0=my_prev['confidence'],
+                    answer_b0=other_prev['answer'],
+                    reasoning_b0=other_prev['reasoning'],
+                    confidence_b0=other_prev['confidence']
+                )
+            else:
+                prompt_template = PROMPT_AGENT_B_ROUND1
+                prompt = prompt_template.format(
+                    instruction=instruction,
+                    input=input_text if input_text else "(No additional context)",
+                    answer_b0=my_prev['answer'],
+                    reasoning_b0=my_prev['reasoning'],
+                    confidence_b0=my_prev['confidence'],
+                    answer_a0=other_prev['answer'],
+                    reasoning_a0=other_prev['reasoning'],
+                    confidence_a0=other_prev['confidence']
+                )
+        else:  # round_num == 2
+            r0_my, r0_other = history['r0']
+            r1_my, r1_other = history['r1']
+
+            if role == 'affirmative':
+                prompt_template = PROMPT_AGENT_A_ROUND2
+                prompt = prompt_template.format(
+                    instruction=instruction,
+                    input=input_text if input_text else "(No additional context)",
+                    answer_a0=r0_my['answer'],
+                    confidence_a0=r0_my['confidence'],
+                    answer_b0=r0_other['answer'],
+                    confidence_b0=r0_other['confidence'],
+                    answer_a1=r1_my['answer'],
+                    changed_a1='Yes' if r1_my.get('changed', False) else 'No',
+                    confidence_a1=r1_my['confidence'],
+                    answer_b1=r1_other['answer'],
+                    changed_b1='Yes' if r1_other.get('changed', False) else 'No',
+                    confidence_b1=r1_other['confidence'],
+                    reflection_a1=r1_my.get('reflection', 'N/A'),
+                    reflection_b1=r1_other.get('reflection', 'N/A')
+                )
+            else:
+                prompt_template = PROMPT_AGENT_B_ROUND2
+                prompt = prompt_template.format(
+                    instruction=instruction,
+                    input=input_text if input_text else "(No additional context)",
+                    answer_b0=r0_my['answer'],
+                    confidence_b0=r0_my['confidence'],
+                    answer_a0=r0_other['answer'],
+                    confidence_a0=r0_other['confidence'],
+                    answer_b1=r1_my['answer'],
+                    changed_b1='Yes' if r1_my.get('changed', False) else 'No',
+                    confidence_b1=r1_my['confidence'],
+                    answer_a1=r1_other['answer'],
+                    changed_a1='Yes' if r1_other.get('changed', False) else 'No',
+                    confidence_a1=r1_other['confidence'],
+                    reflection_b1=r1_my.get('reflection', 'N/A'),
+                    reflection_a1=r1_other.get('reflection', 'N/A')
+                )
+
+        # 生成
+        output_text = self.generate_response(prompt, max_new_tokens=512)
+
+        # 解析输出
+        if round_num == 1:
+            expected_fields = ['Answer', 'Reasoning', 'Reflection', 'Confidence', 'Changed']
+        else:
+            expected_fields = ['Answer', 'Reasoning', 'Final_Reflection', 'Confidence', 'Changed_From_R1']
+
+        parsed = parse_model_output(output_text, expected_fields)
+
+        result = {
+            'answer': extract_answer(parsed.get('Answer', output_text)),
+            'reasoning': parsed.get('Reasoning', output_text),
+            'confidence': extract_confidence(parsed.get('Confidence', '50')),
+            'raw_output': output_text
+        }
+
+        if round_num == 1:
+            result['reflection'] = parsed.get('Reflection', 'N/A')
+            result['changed'] = extract_yes_no(parsed.get('Changed', 'No'))
+        else:
+            result['final_reflection'] = parsed.get('Final_Reflection', 'N/A')
+            result['changed'] = extract_yes_no(parsed.get('Changed_From_R1', 'No'))
+
+        return result
+
+    def generate_judge_decision(
+        self,
+        instruction: str,
+        input_text: str,
+        r0: Tuple[Dict, Dict],
+        r1: Tuple[Dict, Dict],
+        r2: Tuple[Dict, Dict]
+    ) -> Dict[str, any]:
+        """
+        生成裁判决策（Final Decision）
+
+        Args:
+            instruction: 问题指令
+            input_text: 问题上下文
+            r0: Round 0的(agent_a, agent_b)结果
+            r1: Round 1的(agent_a, agent_b)结果
+            r2: Round 2的(agent_a, agent_b)结果
+
+        Returns:
+            包含final_answer, reasoning, assessment, confidence的字典
+        """
+        agent_a_r0, agent_b_r0 = r0
+        agent_a_r1, agent_b_r1 = r1
+        agent_a_r2, agent_b_r2 = r2
+
+        # 构建prompt
+        prompt = PROMPT_JUDGE_FINAL.format(
+            instruction=instruction,
+            input=input_text if input_text else "(No additional context)",
+            # Round 0
+            answer_a0=agent_a_r0['answer'],
+            reasoning_a0=agent_a_r0['reasoning'],
+            confidence_a0=agent_a_r0['confidence'],
+            answer_b0=agent_b_r0['answer'],
+            reasoning_b0=agent_b_r0['reasoning'],
+            confidence_b0=agent_b_r0['confidence'],
+            # Round 1
+            answer_a1=agent_a_r1['answer'],
+            changed_a1='Yes' if agent_a_r1.get('changed', False) else 'No',
+            reasoning_a1=agent_a_r1['reasoning'],
+            reflection_a1=agent_a_r1.get('reflection', 'N/A'),
+            confidence_a1=agent_a_r1['confidence'],
+            answer_b1=agent_b_r1['answer'],
+            changed_b1='Yes' if agent_b_r1.get('changed', False) else 'No',
+            reasoning_b1=agent_b_r1['reasoning'],
+            reflection_b1=agent_b_r1.get('reflection', 'N/A'),
+            confidence_b1=agent_b_r1['confidence'],
+            # Round 2
+            answer_a2=agent_a_r2['answer'],
+            changed_a2='Yes' if agent_a_r2.get('changed', False) else 'No',
+            reasoning_a2=agent_a_r2['reasoning'],
+            final_reflection_a2=agent_a_r2.get('final_reflection', 'N/A'),
+            confidence_a2=agent_a_r2['confidence'],
+            answer_b2=agent_b_r2['answer'],
+            changed_b2='Yes' if agent_b_r2.get('changed', False) else 'No',
+            reasoning_b2=agent_b_r2['reasoning'],
+            final_reflection_b2=agent_b_r2.get('final_reflection', 'N/A'),
+            confidence_b2=agent_b_r2['confidence']
+        )
+
+        # 生成
+        output_text = self.generate_response(prompt, max_new_tokens=640)
+
+        # 解析输出
+        parsed = parse_model_output(
+            output_text,
+            ['Final_Answer', 'Decision_Reasoning', 'Argument_Quality_Assessment', 'Confidence']
+        )
+
+        result = {
+            'answer': extract_answer(parsed.get('Final_Answer', output_text)),
+            'reasoning': parsed.get('Decision_Reasoning', output_text),
+            'assessment': parsed.get('Argument_Quality_Assessment', 'N/A'),
+            'confidence': extract_confidence(parsed.get('Confidence', '50')),
+            'raw_output': output_text
+        }
+
+        return result
+
+    def run_debate(
+        self,
+        instruction: str,
+        input_text: str,
+        true_answer: str
+    ) -> Dict:
+        """
+        运行完整的MAD辩论流程
+
+        Args:
+            instruction: 问题指令
+            input_text: 问题上下文
+            true_answer: 正确答案
+
+        Returns:
+            完整的辩论结果字典
+        """
+        # Round 0: 初始回答
+        agent_a_r0 = self.generate_initial_answer(instruction, input_text, role='affirmative')
+        agent_b_r0 = self.generate_initial_answer(instruction, input_text, role='negative')
+
+        # Round 1: 第一轮辩论
+        agent_a_r1 = self.generate_debate_round(
+            instruction, input_text, agent_a_r0, agent_b_r0,
+            role='affirmative', round_num=1
+        )
+        agent_b_r1 = self.generate_debate_round(
+            instruction, input_text, agent_b_r0, agent_a_r0,
+            role='negative', round_num=1
+        )
+
+        # Round 2: 第二轮辩论
+        agent_a_r2 = self.generate_debate_round(
+            instruction, input_text, agent_a_r1, agent_b_r1,
+            role='affirmative', round_num=2,
+            history={'r0': (agent_a_r0, agent_b_r0), 'r1': (agent_a_r1, agent_b_r1)}
+        )
+        agent_b_r2 = self.generate_debate_round(
+            instruction, input_text, agent_b_r1, agent_a_r1,
+            role='negative', round_num=2,
+            history={'r0': (agent_b_r0, agent_a_r0), 'r1': (agent_b_r1, agent_a_r1)}
+        )
+
+        # Final Decision: 裁判决策
+        final_decision = self.generate_judge_decision(
+            instruction, input_text,
+            r0=(agent_a_r0, agent_b_r0),
+            r1=(agent_a_r1, agent_b_r1),
+            r2=(agent_a_r2, agent_b_r2)
+        )
+
+        # 构建完整结果
+        result = {
+            'question': instruction,
+            'context': input_text,
+            'true_answer': true_answer,
+            'debate_history': {
+                'round_0': {
+                    'agent_a': agent_a_r0,
+                    'agent_b': agent_b_r0
+                },
+                'round_1': {
+                    'agent_a': agent_a_r1,
+                    'agent_b': agent_b_r1
+                },
+                'round_2': {
+                    'agent_a': agent_a_r2,
+                    'agent_b': agent_b_r2
+                },
+                'final_decision': final_decision
+            },
+            'final_answer': final_decision['answer'],
+            'correct': final_decision['answer'] == true_answer,
+            'debate_metrics': self._compute_metrics(
+                agent_a_r0, agent_b_r0,
+                agent_a_r1, agent_b_r1,
+                agent_a_r2, agent_b_r2,
+                final_decision
+            )
+        }
+
+        return result
+
+    def _compute_metrics(
+        self,
+        a0, b0, a1, b1, a2, b2, final
+    ) -> Dict:
+        """
+        计算辩论指标
+
+        Returns:
+            包含各种指标的字典
+        """
+        # 初始一致性
+        initial_agreement = (a0['answer'] == b0['answer'])
+
+        # 收敛轮次
+        convergence_round = None
+        if initial_agreement:
+            convergence_round = 0
+        elif a1['answer'] == b1['answer']:
+            convergence_round = 1
+        elif a2['answer'] == b2['answer']:
+            convergence_round = 2
+
+        # 答案变化统计
+        total_changes = 0
+        if a1.get('changed', False):
+            total_changes += 1
+        if b1.get('changed', False):
+            total_changes += 1
+        if a2.get('changed', False):
+            total_changes += 1
+        if b2.get('changed', False):
+            total_changes += 1
+
+        # 最终一致性
+        final_agreement = (a2['answer'] == b2['answer'])
+
+        return {
+            'convergence_round': convergence_round,
+            'total_changes': total_changes,
+            'initial_agreement': initial_agreement,
+            'final_agreement': final_agreement,
+            'confidence_gain_a': a2['confidence'] - a0['confidence'],
+            'confidence_gain_b': b2['confidence'] - b0['confidence']
+        }
+
+
+# ============================================================================
+# 数据加载和评估
+# ============================================================================
+
+def load_data(data_file: str, max_samples: Optional[int] = None) -> List[Dict]:
+    """
+    加载评估数据
+
+    Args:
+        data_file: 数据文件路径
+        max_samples: 最大样本数（用于测试）
+
+    Returns:
+        数据列表
+    """
+    print(f"Loading data from: {data_file}")
+
+    with open(data_file, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    if max_samples:
+        data = data[:max_samples]
+        print(f"Limited to {max_samples} samples for testing")
+
+    print(f"Loaded {len(data)} samples")
+    return data
+
+
+def save_results(results: List[Dict], output_dir: str):
+    """
+    保存评估结果
+
+    Args:
+        results: 结果列表
+        output_dir: 输出目录
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 保存详细结果
+    detailed_path = os.path.join(output_dir, 'detailed_results.json')
+    with open(detailed_path, 'w', encoding='utf-8') as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    print(f"Detailed results saved to: {detailed_path}")
+
+    # 计算并保存统计摘要
+    summary = compute_summary_statistics(results)
+    summary_path = os.path.join(output_dir, 'summary_statistics.json')
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    print(f"Summary statistics saved to: {summary_path}")
+
+    # 保存辩论分析
+    analysis = compute_debate_analysis(results)
+    analysis_path = os.path.join(output_dir, 'debate_analysis.json')
+    with open(analysis_path, 'w', encoding='utf-8') as f:
+        json.dump(analysis, f, indent=2, ensure_ascii=False)
+    print(f"Debate analysis saved to: {analysis_path}")
+
+
+def compute_summary_statistics(results: List[Dict]) -> Dict:
+    """
+    计算汇总统计
+
+    Args:
+        results: 结果列表
+
+    Returns:
+        统计字典
+    """
+    total = len(results)
+    correct = sum(1 for r in results if r['correct'])
+    accuracy = correct / total if total > 0 else 0
+
+    # 置信度统计
+    confidences = [r['debate_history']['final_decision']['confidence'] for r in results]
+    avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+
+    # Agent A和Agent B的初始准确率
+    agent_a_correct = sum(
+        1 for r in results
+        if r['debate_history']['round_0']['agent_a']['answer'] == r['true_answer']
+    )
+    agent_b_correct = sum(
+        1 for r in results
+        if r['debate_history']['round_0']['agent_b']['answer'] == r['true_answer']
+    )
+
+    agent_a_accuracy = agent_a_correct / total if total > 0 else 0
+    agent_b_accuracy = agent_b_correct / total if total > 0 else 0
+
+    # MAD增益
+    mad_gain = accuracy - max(agent_a_accuracy, agent_b_accuracy)
+
+    return {
+        'accuracy': accuracy,
+        'total_samples': total,
+        'correct_predictions': correct,
+        'avg_confidence': avg_confidence,
+        'agent_a_accuracy': agent_a_accuracy,
+        'agent_b_accuracy': agent_b_accuracy,
+        'mad_gain': mad_gain
+    }
+
+
+def compute_debate_analysis(results: List[Dict]) -> Dict:
+    """
+    计算辩论过程分析
+
+    Args:
+        results: 结果列表
+
+    Returns:
+        分析字典
+    """
+    total = len(results)
+
+    # 收敛统计
+    convergence_counts = {0: 0, 1: 0, 2: 0, None: 0}
+    for r in results:
+        conv_round = r['debate_metrics']['convergence_round']
+        convergence_counts[conv_round] = convergence_counts.get(conv_round, 0) + 1
+
+    convergence_rates = {
+        'round_0': convergence_counts[0] / total if total > 0 else 0,
+        'round_1': (convergence_counts[0] + convergence_counts[1]) / total if total > 0 else 0,
+        'round_2': (convergence_counts[0] + convergence_counts[1] + convergence_counts[2]) / total if total > 0 else 0
+    }
+
+    # 答案变化统计
+    agent_a_r0_r1_changes = sum(
+        1 for r in results
+        if r['debate_history']['round_1']['agent_a'].get('changed', False)
+    )
+    agent_a_r1_r2_changes = sum(
+        1 for r in results
+        if r['debate_history']['round_2']['agent_a'].get('changed', False)
+    )
+    agent_b_r0_r1_changes = sum(
+        1 for r in results
+        if r['debate_history']['round_1']['agent_b'].get('changed', False)
+    )
+    agent_b_r1_r2_changes = sum(
+        1 for r in results
+        if r['debate_history']['round_2']['agent_b'].get('changed', False)
+    )
+
+    answer_changes = {
+        'agent_a': {
+            'r0_r1': agent_a_r0_r1_changes / total if total > 0 else 0,
+            'r1_r2': agent_a_r1_r2_changes / total if total > 0 else 0
+        },
+        'agent_b': {
+            'r0_r1': agent_b_r0_r1_changes / total if total > 0 else 0,
+            'r1_r2': agent_b_r1_r2_changes / total if total > 0 else 0
+        }
+    }
+
+    # 反思有效性
+    correct_changes = sum(
+        1 for r in results
+        if (r['debate_history']['round_0']['agent_a']['answer'] != r['true_answer'] and
+            r['debate_history']['round_2']['agent_a']['answer'] == r['true_answer']) or
+           (r['debate_history']['round_0']['agent_b']['answer'] != r['true_answer'] and
+            r['debate_history']['round_2']['agent_b']['answer'] == r['true_answer'])
+    )
+    correct_holds = sum(
+        1 for r in results
+        if (r['debate_history']['round_0']['agent_a']['answer'] == r['true_answer'] and
+            r['debate_history']['round_2']['agent_a']['answer'] == r['true_answer']) or
+           (r['debate_history']['round_0']['agent_b']['answer'] == r['true_answer'] and
+            r['debate_history']['round_2']['agent_b']['answer'] == r['true_answer'])
+    )
+    reflection_effectiveness = (correct_changes + correct_holds) / (total * 2) if total > 0 else 0
+
+    return {
+        'convergence': convergence_rates,
+        'answer_changes': answer_changes,
+        'reflection_effectiveness': reflection_effectiveness
+    }
+
+
+def print_statistics(results: List[Dict]):
+    """
+    打印统计信息
+
+    Args:
+        results: 结果列表
+    """
+    summary = compute_summary_statistics(results)
+    analysis = compute_debate_analysis(results)
+
+    print("\n" + "=" * 80)
+    print("MAD Evaluation Report")
+    print("=" * 80)
+
+    print("\n--- Basic Metrics ---")
+    print(f"Accuracy: {summary['accuracy']:.2%}")
+    print(f"Correct Predictions: {summary['correct_predictions']}/{summary['total_samples']}")
+    print(f"Average Confidence: {summary['avg_confidence']:.1f}")
+
+    print("\n--- Baseline Comparison ---")
+    print(f"Agent A (Round 0) Accuracy: {summary['agent_a_accuracy']:.2%}")
+    print(f"Agent B (Round 0) Accuracy: {summary['agent_b_accuracy']:.2%}")
+    print(f"MAD Gain: {summary['mad_gain']:+.2%}")
+
+    print("\n--- Convergence Analysis ---")
+    print(f"Round 0 Convergence: {analysis['convergence']['round_0']:.2%}")
+    print(f"Round 1 Convergence: {analysis['convergence']['round_1']:.2%}")
+    print(f"Round 2 Convergence: {analysis['convergence']['round_2']:.2%}")
+
+    print("\n--- Answer Changes ---")
+    print(f"Agent A R0→R1: {analysis['answer_changes']['agent_a']['r0_r1']:.2%}")
+    print(f"Agent A R1→R2: {analysis['answer_changes']['agent_a']['r1_r2']:.2%}")
+    print(f"Agent B R0→R1: {analysis['answer_changes']['agent_b']['r0_r1']:.2%}")
+    print(f"Agent B R1→R2: {analysis['answer_changes']['agent_b']['r1_r2']:.2%}")
+
+    print("\n--- Reflection Effectiveness ---")
+    print(f"Reflection Effectiveness: {analysis['reflection_effectiveness']:.2%}")
+
+    print("\n" + "=" * 80)
+
+    # 打印样本示例
+    print("\n📋 Sample Examples (First 3):")
+    print("-" * 80)
+    for idx in range(min(3, len(results))):
+        r = results[idx]
+        print(f"\nSample {idx + 1}:")
+        print(f"  Question: {r['question'][:80]}...")
+        print(f"  True Answer: {r['true_answer']}")
+        print(f"  Final Answer: {r['final_answer']}")
+        print(f"  Correct: {'✅' if r['correct'] else '❌'}")
+        print(f"  Agent A: {r['debate_history']['round_0']['agent_a']['answer']} → "
+              f"{r['debate_history']['round_1']['agent_a']['answer']} → "
+              f"{r['debate_history']['round_2']['agent_a']['answer']}")
+        print(f"  Agent B: {r['debate_history']['round_0']['agent_b']['answer']} → "
+              f"{r['debate_history']['round_1']['agent_b']['answer']} → "
+              f"{r['debate_history']['round_2']['agent_b']['answer']}")
+    print("-" * 80)
+
+
+# ============================================================================
+# 主函数
+# ============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="Multi-Agent Debate (MAD) Evaluation")
+
+    parser.add_argument('--model_type', type=int, required=True,
+                       choices=[1, 2],
+                       help='Model type: 1=LLaMA 3.1, 2=Qwen 2.5')
+    parser.add_argument('--data_file', type=str, required=True,
+                       help='Path to evaluation data file (JSON)')
+    parser.add_argument('--output_dir', type=str, required=True,
+                       help='Output directory for results')
+    parser.add_argument('--max_samples', type=int, default=None,
+                       help='Maximum number of samples (for testing)')
+    parser.add_argument('--model_path', type=str, default=None,
+                       help='Custom model path (overrides default)')
+
+    args = parser.parse_args()
+
+    # 确定模型路径
+    if args.model_path:
+        model_path = args.model_path
+        model_name = os.path.basename(model_path)
+    else:
+        if args.model_type == 1:
+            model_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+            model_name = "llama3.1-8b"
+        elif args.model_type == 2:
+            model_path = "Qwen/Qwen2.5-7B-Instruct"
+            model_name = "qwen2.5-7b"
+        else:
+            raise ValueError("Invalid model_type")
+
+    print("\n" + "=" * 80)
+    print("Multi-Agent Debate (MAD) Evaluation")
+    print("=" * 80)
+    print(f"Model Type: {args.model_type} ({model_name})")
+    print(f"Model Path: {model_path}")
+    print(f"Data File: {args.data_file}")
+    print(f"Output Dir: {args.output_dir}")
+    if args.max_samples:
+        print(f"Max Samples: {args.max_samples} (test mode)")
+    print("=" * 80 + "\n")
+
+    # 加载模型
+    print("Loading model...")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.float16,
+        device_map="auto",
+        trust_remote_code=True,
+        low_cpu_mem_usage=True
+    )
+    print("✅ Model loaded")
+
+    # 加载tokenizer
+    print("Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+    print("✅ Tokenizer loaded")
+
+    # 加载数据
+    data = load_data(args.data_file, args.max_samples)
+
+    # 初始化MAD引擎
+    print("\nInitializing MAD Debate Engine...")
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    mad_engine = MADDebateEngine(model, tokenizer, device)
+    print("✅ MAD Engine initialized")
+
+    # 运行评估
+    print("\nStarting evaluation...")
+    results = []
+
+    for idx, item in enumerate(tqdm(data, desc="Evaluating", mininterval=1.0)):
+        instruction = item.get('instruction', '')
+        input_text = item.get('input', '')
+        true_answer = item.get('output', '')
+
+        try:
+            result = mad_engine.run_debate(instruction, input_text, true_answer)
+            results.append(result)
+        except Exception as e:
+            print(f"\n⚠️  Error processing sample {idx}: {str(e)}")
+            # 添加一个失败的结果
+            results.append({
+                'question': instruction,
+                'context': input_text,
+                'true_answer': true_answer,
+                'final_answer': '1',
+                'correct': False,
+                'error': str(e)
+            })
+
+    # 保存结果
+    print("\nSaving results...")
+    save_results(results, args.output_dir)
+
+    # 打印统计
+    print_statistics(results)
+
+    print("\n✅ Evaluation completed!")
+    print(f"Results saved to: {args.output_dir}")
+
+
+if __name__ == '__main__':
+    main()
