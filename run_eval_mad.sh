@@ -48,7 +48,7 @@ set -e  # 遇到错误立即退出
 
 MODEL_TYPE=${1:-1}    # 默认使用LLaMA
 DATA_ID=${2:-2}       # 默认使用CulturalBench
-MAX_SAMPLES=${3:-1}  # 默认最多1个样本
+MAX_SAMPLES=${3:-0}  # 默认最多1个样本
 RANDOM_P=${4:-0.1}    # 默认随机取10%
 
 # 验证MODEL_TYPE
