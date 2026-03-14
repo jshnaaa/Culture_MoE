@@ -108,9 +108,14 @@ PROMPT_AGENT_A_ROUND1 = """You are continuing the collaborative discussion to fi
    - What cultural evidence supports their answer?
    - Are there any cultural factors you initially missed?
 
-3. **Update your position if needed:**
-   - KEEP your answer if the cultural evidence strongly supports it
-   - CHANGE your answer ONLY if the other perspective has stronger cultural evidence
+3. **Be cautious about changing your answer:**
+   - Your initial intuition may be correct - don't abandon it too easily
+   - KEEP your answer if you still believe it's culturally accurate
+   - CHANGE your answer ONLY if:
+     * The other perspective presents significantly stronger cultural evidence
+     * You realize you made a clear error in your initial reasoning
+     * The other perspective reveals a cultural factor you completely overlooked
+   - If uncertain, it's better to keep your answer than to change based on weak evidence
    - Explain your reasoning based on cultural accuracy
 
 **Output Format:**
@@ -151,9 +156,14 @@ PROMPT_AGENT_B_ROUND1 = """You are continuing the collaborative discussion to fi
    - What cultural evidence supports their answer?
    - Are there any cultural factors you initially missed?
 
-3. **Update your position if needed:**
-   - KEEP your answer if the cultural evidence strongly supports it
-   - CHANGE your answer ONLY if the other perspective has stronger cultural evidence
+3. **Be cautious about changing your answer:**
+   - Your initial intuition may be correct - don't abandon it too easily
+   - KEEP your answer if you still believe it's culturally accurate
+   - CHANGE your answer ONLY if:
+     * The other perspective presents significantly stronger cultural evidence
+     * You realize you made a clear error in your initial reasoning
+     * The other perspective reveals a cultural factor you completely overlooked
+   - If uncertain, it's better to keep your answer than to change based on weak evidence
    - Explain your reasoning based on cultural accuracy
 
 **Output Format:**
@@ -192,13 +202,20 @@ Round 1 (First Discussion):
    - Not a compromise answer
    - The answer that truly best fits the cultural context
 
-2. **Review all cultural evidence:**
+2. **Review all cultural evidence across ALL rounds:**
    - What cultural factors emerged in the discussion?
    - Which answer has the strongest cultural support?
    - Did the discussion reveal any overlooked aspects?
+   - **Important**: Your INITIAL answer (Round 0) may have been correct - reconsider it
 
-3. **Make your final decision:**
-   - Choose the answer with the strongest cultural evidence
+3. **Evaluate your answer changes critically:**
+   - If you changed your answer in Round 1, was that change justified?
+   - Did you abandon a correct answer due to persuasion rather than evidence?
+   - Sometimes the first intuition is the best - don't be afraid to return to it
+
+4. **Make your final decision:**
+   - Choose the answer with the strongest cultural evidence (from ANY round)
+   - This may be your Round 0 answer, Round 1 answer, or a new insight
    - Explain why this is most culturally accurate
    - Be confident if the evidence is clear
 
@@ -238,13 +255,20 @@ Round 1 (First Discussion):
    - Not a compromise answer
    - The answer that truly best fits the cultural context
 
-2. **Review all cultural evidence:**
+2. **Review all cultural evidence across ALL rounds:**
    - What cultural factors emerged in the discussion?
    - Which answer has the strongest cultural support?
    - Did the discussion reveal any overlooked aspects?
+   - **Important**: Your INITIAL answer (Round 0) may have been correct - reconsider it
 
-3. **Make your final decision:**
-   - Choose the answer with the strongest cultural evidence
+3. **Evaluate your answer changes critically:**
+   - If you changed your answer in Round 1, was that change justified?
+   - Did you abandon a correct answer due to persuasion rather than evidence?
+   - Sometimes the first intuition is the best - don't be afraid to return to it
+
+4. **Make your final decision:**
+   - Choose the answer with the strongest cultural evidence (from ANY round)
+   - This may be your Round 0 answer, Round 1 answer, or a new insight
    - Explain why this is most culturally accurate
    - Be confident if the evidence is clear
 
@@ -258,7 +282,7 @@ Changed_From_R1: [Yes/No]
 Please provide your final response:"""
 
 
-PROMPT_JUDGE_FINAL = """You are an impartial judge tasked with determining the MOST CULTURALLY ACCURATE answer based on a collaborative discussion between two cultural experts.
+PROMPT_JUDGE_FINAL = """You are an impartial judge tasked with determining the MOST CULTURALLY ACCURATE answer. Your goal is to find the CORRECT answer, not just evaluate the discussion quality.
 
 **Original Question:**
 {instruction}
@@ -266,7 +290,14 @@ PROMPT_JUDGE_FINAL = """You are an impartial judge tasked with determining the M
 **Context:**
 {input}
 
-**Complete Discussion History:**
+**STEP 1: First, analyze the question independently (before considering the agents' discussion)**
+
+Think about:
+- What cultural factors are most relevant to this question?
+- What would be the most culturally accurate answer based on the context?
+- What is your initial assessment? (Keep this in mind)
+
+**STEP 2: Now review the agents' discussion:**
 
 === ROUND 0: Initial Answers ===
 Agent A:
@@ -305,37 +336,40 @@ Agent B:
 - Final Reflection: {final_reflection_b2}
 - Confidence: {confidence_b2}
 
-**Your Task as Judge:**
+**STEP 3: Evaluate the discussion critically:**
 
-1. **Goal: Select the MOST CULTURALLY ACCURATE answer**
-   - Focus on cultural correctness, not argumentation quality
-   - Consider: Which answer truly best fits the cultural context described?
+1. **Analyze answer changes (IMPORTANT):**
+   - If an agent changed FROM a correct answer TO an incorrect one → RED FLAG (they were misled)
+   - If an agent changed FROM an incorrect answer TO a correct one → POSITIVE (they learned)
+   - If both agents converged on the same answer, evaluate WHY - is it truly correct or groupthink?
 
-2. **Evaluate Cultural Evidence:**
-   - What cultural factors support each answer?
+2. **Look for valuable insights across ALL rounds:**
+   - Don't just focus on final answers
+   - Sometimes the INITIAL answer of one agent is more accurate than the final consensus
+   - Consider which agent provided the strongest cultural evidence, even if they changed their answer later
+
+3. **Evaluate cultural evidence quality:**
    - Which reasoning demonstrates deeper cultural understanding?
-   - Are there any cultural nuances that were missed?
+   - Are there cultural nuances that one agent captured better?
+   - Don't be swayed by confidence alone - evaluate the actual cultural accuracy
 
-3. **Consider the Discussion Evolution:**
-   - Did agents converge on an answer? If so, why?
-   - If they disagree, which has stronger cultural evidence?
-   - Were there insights that emerged during discussion?
+**STEP 4: Make your independent decision:**
 
-4. **Make Your Decision:**
-   - Choose the answer that is MOST LIKELY CORRECT culturally
-   - This should usually be the answer with strongest cultural evidence
-   - If both agents converged with high confidence, strongly consider that answer
-   - Explain your reasoning based on cultural accuracy
+Your decision should be based on:
+1. Your own cultural analysis of the question (Step 1)
+2. The strongest cultural evidence from ANY round of discussion (not just final)
+3. Critical evaluation of answer changes and reasoning quality
 
-**Important Guidelines:**
-- Prioritize cultural accuracy over rhetorical skill
-- If both agents agree with high confidence, that's strong evidence
-- If they disagree, carefully evaluate which cultural reasoning is more sound
-- Don't be swayed by eloquence alone - focus on cultural correctness
+**Critical Decision Rules:**
+- ✅ If both agents agree AND their reasoning is culturally sound → Likely correct
+- ⚠️ If both agents agree BUT their reasoning is weak → Don't blindly follow consensus
+- ✅ If one agent had the correct answer initially but changed it → Consider that initial answer seriously
+- ✅ If agents disagree, choose the answer with stronger cultural evidence, regardless of confidence
+- ✅ Trust your own cultural analysis if agents' reasoning seems flawed
 
 **Output Format:**
 Final_Answer: [1/2/3/4]
-Decision_Reasoning: [Your analysis in 4-6 sentences, explaining why this answer is most culturally accurate, what cultural evidence supports it, and how the discussion informed your decision]
+Decision_Reasoning: [Your comprehensive analysis: (1) Your independent cultural assessment, (2) Which evidence from the discussion was most convincing, (3) Why you chose this answer over alternatives, (4) Any concerns about answer changes or consensus quality]
 Confidence: [0-100]
 
 Please provide your final judgment:"""
