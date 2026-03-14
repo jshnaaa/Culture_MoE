@@ -244,7 +244,7 @@ Changed_From_R1: [Yes/No]
 Please provide your final response:"""
 
 
-PROMPT_JUDGE_FINAL = """You are an impartial judge. Your task is to determine the most culturally accurate answer based on the discussion between two cultural experts.
+PROMPT_JUDGE_FINAL = """You are a judge. Two cultural experts have discussed a question and reached their final answers.
 
 **Question:**
 {instruction}
@@ -252,41 +252,30 @@ PROMPT_JUDGE_FINAL = """You are an impartial judge. Your task is to determine th
 **Context:**
 {input}
 
-**Discussion Summary:**
+**Final Answers (Round 2):**
+- Agent A: Answer {answer_a2} (Confidence: {confidence_a2})
+  Reasoning: {reasoning_a2}
 
-Round 0 - Initial Answers:
-- Agent A: Answer {answer_a0}, Confidence {confidence_a0}
-- Agent B: Answer {answer_b0}, Confidence {confidence_b0}
-
-Round 1 - After First Discussion:
-- Agent A: Answer {answer_a1} (Changed: {changed_a1}), Confidence {confidence_a1}
-- Agent B: Answer {answer_b1} (Changed: {changed_b1}), Confidence {confidence_b1}
-
-Round 2 - Final Answers:
-- Agent A: Answer {answer_a2} (Changed: {changed_a2}), Confidence {confidence_a2}
-- Agent B: Answer {answer_b2} (Changed: {changed_b2}), Confidence {confidence_b2}
+- Agent B: Answer {answer_b2} (Confidence: {confidence_b2})
+  Reasoning: {reasoning_b2}
 
 **Your Task:**
+Select which agent's answer is most likely correct.
 
-1. **Evaluate the evidence:** Which answer has the strongest cultural support based on the discussion?
-
-2. **Consider confidence and convergence:**
-   - If both agents agree with high confidence (>70) in Round 2, that's strong evidence
-   - If they disagree, evaluate which reasoning is more culturally sound
-
-3. **Make your decision:** Choose the answer that is most likely culturally correct
-
-**Decision Priority:**
-1. Both agents agree + high confidence → Strongly consider that answer
-2. Agents disagree → Choose the one with better cultural reasoning
-3. Both uncertain → Use your best judgment based on the cultural context
+**Decision Rules:**
+1. If both agents give the SAME answer → Choose that answer
+2. If agents give DIFFERENT answers → Choose the one with:
+   - Stronger cultural reasoning
+   - Higher confidence
+   - More convincing evidence
 
 **Output Format:**
+Selected_Agent: [A/B]
 Final_Answer: [1/2/3/4]
-Decision_Reasoning: [2-3 sentences explaining why this answer is most culturally accurate]
+Reasoning: [1-2 sentences: why you chose this agent's answer]
 Confidence: [0-100]
 
-Please provide your judgment:"""
+Your decision:"""
 
 
 # ============================================================================
@@ -709,18 +698,29 @@ class MADDebateEngine:
         )
 
         # 生成
-        output_text = self.generate_response(prompt, max_new_tokens=640)
+        output_text = self.generate_response(prompt, max_new_tokens=256)
 
         # 解析输出
         parsed = parse_model_output(
             output_text,
-            ['Final_Answer', 'Decision_Reasoning', 'Argument_Quality_Assessment', 'Confidence']
+            ['Selected_Agent', 'Final_Answer', 'Reasoning', 'Confidence']
         )
 
+        # 提取答案 - 优先从Final_Answer提取,否则根据Selected_Agent选择
+        final_answer = extract_answer(parsed.get('Final_Answer', ''))
+
+        # 如果Final_Answer提取失败,尝试根据Selected_Agent选择
+        if final_answer == '1' and 'Selected_Agent' in parsed:
+            selected = parsed['Selected_Agent'].strip().upper()
+            if 'A' in selected:
+                final_answer = agent_a_r2['answer']
+            elif 'B' in selected:
+                final_answer = agent_b_r2['answer']
+
         result = {
-            'answer': extract_answer(parsed.get('Final_Answer', output_text)),
-            'reasoning': parsed.get('Decision_Reasoning', output_text),
-            'assessment': parsed.get('Argument_Quality_Assessment', 'N/A'),
+            'answer': final_answer,
+            'reasoning': parsed.get('Reasoning', output_text[:200]),
+            'selected_agent': parsed.get('Selected_Agent', 'N/A'),
             'confidence': extract_confidence(parsed.get('Confidence', '50')),
             'raw_output': output_text
         }
