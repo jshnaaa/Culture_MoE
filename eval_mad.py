@@ -992,6 +992,110 @@ def load_data(
     return data
 
 
+def generate_answers_report(results: List[Dict]) -> List[Dict]:
+    """
+    生成答案报告,包含每个样本的问题、各智能体回答、最终答案和正确性
+
+    Args:
+        results: 结果列表
+
+    Returns:
+        答案报告列表
+    """
+    report = []
+    for r in results:
+        # 跳过错误样本
+        if 'error' in r:
+            continue
+
+        try:
+            # 提取各轮次的答案
+            agent_a_r0 = r['debate_history']['round_0']['agent_a'].get('answer', 'N/A')
+            agent_a_r1 = r['debate_history']['round_1']['agent_a'].get('answer', 'N/A')
+            agent_a_r2 = r['debate_history']['round_2']['agent_a'].get('answer', 'N/A')
+
+            agent_b_r0 = r['debate_history']['round_0']['agent_b'].get('answer', 'N/A')
+            agent_b_r1 = r['debate_history']['round_1']['agent_b'].get('answer', 'N/A')
+            agent_b_r2 = r['debate_history']['round_2']['agent_b'].get('answer', 'N/A')
+
+            report.append({
+                'question': r['question'],
+                'context': r.get('context', ''),
+                'agent_a_answers': {
+                    'round_0': agent_a_r0,
+                    'round_1': agent_a_r1,
+                    'round_2': agent_a_r2
+                },
+                'agent_b_answers': {
+                    'round_0': agent_b_r0,
+                    'round_1': agent_b_r1,
+                    'round_2': agent_b_r2
+                },
+                'final_answer': r.get('final_answer', 'N/A'),
+                'true_answer': r.get('true_answer', 'N/A'),
+                'is_correct': r.get('correct', False)
+            })
+        except (KeyError, TypeError) as e:
+            # 如果提取失败,跳过这个样本
+            continue
+
+    return report
+
+
+def compute_eval_metrics(results: List[Dict]) -> Dict:
+    """
+    计算评估指标: 准确率、精确率、召回率、F1分数
+
+    对于多分类问题,将其视为二分类(正确/错误)来计算指标
+
+    Args:
+        results: 结果列表
+
+    Returns:
+        评估指标字典
+    """
+    # 过滤掉错误样本
+    valid_results = [r for r in results if 'error' not in r]
+    total = len(valid_results)
+
+    if total == 0:
+        return {
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1_score': 0.0,
+            'total_samples': 0,
+            'correct_predictions': 0
+        }
+
+    # 计算正确预测数
+    correct = sum(1 for r in valid_results if r.get('correct', False))
+
+    # 准确率
+    accuracy = correct / total
+
+    # 对于每个样本都有预测和真实标签的情况:
+    # Precision = Recall = Accuracy
+    # 因为 TP=correct, FP=(total-correct), FN=(total-correct), TN=0
+    precision = accuracy
+    recall = accuracy
+
+    # F1分数
+    if precision + recall > 0:
+        f1_score = 2 * precision * recall / (precision + recall)
+    else:
+        f1_score = 0.0
+
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1_score,
+        'total_samples': total,
+        'correct_predictions': correct
+    }
+
+
 def save_results(results: List[Dict], output_dir: str):
     """
     保存评估结果
@@ -1021,6 +1125,20 @@ def save_results(results: List[Dict], output_dir: str):
     with open(analysis_path, 'w', encoding='utf-8') as f:
         json.dump(analysis, f, indent=2, ensure_ascii=False)
     print(f"Debate analysis saved to: {analysis_path}")
+
+    # 保存生成的答案 (用户要求的格式)
+    generated_answers = generate_answers_report(results)
+    answers_path = os.path.join(output_dir, 'generated_answers.json')
+    with open(answers_path, 'w', encoding='utf-8') as f:
+        json.dump(generated_answers, f, indent=2, ensure_ascii=False)
+    print(f"Generated answers saved to: {answers_path}")
+
+    # 保存评估指标 (准确率/精确率/召回率/F1)
+    eval_metrics = compute_eval_metrics(results)
+    metrics_path = os.path.join(output_dir, 'eval_results.json')
+    with open(metrics_path, 'w', encoding='utf-8') as f:
+        json.dump(eval_metrics, f, indent=2, ensure_ascii=False)
+    print(f"Evaluation metrics saved to: {metrics_path}")
 
 
 def compute_summary_statistics(results: List[Dict]) -> Dict:
