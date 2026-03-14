@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -465,6 +466,8 @@ class MADDebateEngine:
         self.device = device
         self.verbose = verbose
         self.model.eval()
+        # 添加线程锁,保护CUDA操作
+        self._generation_lock = threading.Lock()
 
     def generate_response(
         self,
@@ -485,7 +488,7 @@ class MADDebateEngine:
         Returns:
             生成的文本
         """
-        # Tokenize
+        # Tokenize (可以并行,不需要锁)
         inputs = self.tokenizer(
             prompt,
             return_tensors="pt",
@@ -499,24 +502,25 @@ class MADDebateEngine:
         if 'attention_mask' not in inputs:
             inputs['attention_mask'] = torch.ones_like(inputs['input_ids'])
 
-        # Generate
-        with torch.no_grad():
-            try:
-                outputs = self.model.generate(
-                    input_ids=inputs['input_ids'],
-                    attention_mask=inputs['attention_mask'],
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature if do_sample else 1.0,
-                    do_sample=do_sample,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                    num_beams=1,
-                    early_stopping=True,
-                    use_cache=True  # 启用KV cache加速
-                )
-            except Exception as e:
-                print(f"\n⚠️  Generation error: {str(e)}")
-                raise
+        # Generate (使用锁保护CUDA操作,确保线程安全)
+        with self._generation_lock:
+            with torch.no_grad():
+                try:
+                    outputs = self.model.generate(
+                        input_ids=inputs['input_ids'],
+                        attention_mask=inputs['attention_mask'],
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature if do_sample else 1.0,
+                        do_sample=do_sample,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                        num_beams=1,
+                        early_stopping=True,
+                        use_cache=True  # 启用KV cache加速
+                    )
+                except Exception as e:
+                    print(f"\n⚠️  Generation error: {str(e)}")
+                    raise
 
         # Decode只生成的部分
         generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
@@ -1029,26 +1033,52 @@ def compute_summary_statistics(results: List[Dict]) -> Dict:
     Returns:
         统计字典
     """
+    # 过滤掉错误样本,只统计成功的样本
+    valid_results = [r for r in results if 'error' not in r]
     total = len(results)
-    correct = sum(1 for r in results if r['correct'])
-    accuracy = correct / total if total > 0 else 0
+    valid_total = len(valid_results)
 
-    # 置信度统计
-    confidences = [r['debate_history']['final_decision']['confidence'] for r in results]
+    if valid_total == 0:
+        # 如果所有样本都失败,返回0值统计
+        return {
+            'accuracy': 0.0,
+            'total_samples': total,
+            'valid_samples': 0,
+            'failed_samples': total,
+            'correct_predictions': 0,
+            'avg_confidence': 0.0,
+            'agent_a_accuracy': 0.0,
+            'agent_b_accuracy': 0.0,
+            'mad_gain': 0.0
+        }
+
+    correct = sum(1 for r in valid_results if r['correct'])
+    accuracy = correct / valid_total if valid_total > 0 else 0
+
+    # 置信度统计 (安全访问)
+    confidences = []
+    for r in valid_results:
+        try:
+            conf = r['debate_history']['final_decision']['confidence']
+            confidences.append(conf)
+        except (KeyError, TypeError):
+            confidences.append(0)
     avg_confidence = sum(confidences) / len(confidences) if confidences else 0
 
-    # Agent A和Agent B的初始准确率
-    agent_a_correct = sum(
-        1 for r in results
-        if r['debate_history']['round_0']['agent_a']['answer'] == r['true_answer']
-    )
-    agent_b_correct = sum(
-        1 for r in results
-        if r['debate_history']['round_0']['agent_b']['answer'] == r['true_answer']
-    )
+    # Agent A和Agent B的初始准确率 (安全访问)
+    agent_a_correct = 0
+    agent_b_correct = 0
+    for r in valid_results:
+        try:
+            if r['debate_history']['round_0']['agent_a'].get('answer') == r['true_answer']:
+                agent_a_correct += 1
+            if r['debate_history']['round_0']['agent_b'].get('answer') == r['true_answer']:
+                agent_b_correct += 1
+        except (KeyError, TypeError):
+            pass
 
-    agent_a_accuracy = agent_a_correct / total if total > 0 else 0
-    agent_b_accuracy = agent_b_correct / total if total > 0 else 0
+    agent_a_accuracy = agent_a_correct / valid_total if valid_total > 0 else 0
+    agent_b_accuracy = agent_b_correct / valid_total if valid_total > 0 else 0
 
     # MAD增益
     mad_gain = accuracy - max(agent_a_accuracy, agent_b_accuracy)
@@ -1056,6 +1086,8 @@ def compute_summary_statistics(results: List[Dict]) -> Dict:
     return {
         'accuracy': accuracy,
         'total_samples': total,
+        'valid_samples': valid_total,
+        'failed_samples': total - valid_total,
         'correct_predictions': correct,
         'avg_confidence': avg_confidence,
         'agent_a_accuracy': agent_a_accuracy,
@@ -1074,13 +1106,28 @@ def compute_debate_analysis(results: List[Dict]) -> Dict:
     Returns:
         分析字典
     """
-    total = len(results)
+    # 过滤掉错误样本
+    valid_results = [r for r in results if 'error' not in r]
+    total = len(valid_results)
 
-    # 收敛统计
+    if total == 0:
+        return {
+            'convergence': {'round_0': 0, 'round_1': 0, 'round_2': 0},
+            'answer_changes': {
+                'agent_a': {'r0_r1': 0, 'r1_r2': 0},
+                'agent_b': {'r0_r1': 0, 'r1_r2': 0}
+            },
+            'reflection_effectiveness': 0
+        }
+
+    # 收敛统计 (安全访问)
     convergence_counts = {0: 0, 1: 0, 2: 0, None: 0}
-    for r in results:
-        conv_round = r['debate_metrics']['convergence_round']
-        convergence_counts[conv_round] = convergence_counts.get(conv_round, 0) + 1
+    for r in valid_results:
+        try:
+            conv_round = r['debate_metrics'].get('convergence_round')
+            convergence_counts[conv_round] = convergence_counts.get(conv_round, 0) + 1
+        except (KeyError, TypeError):
+            convergence_counts[None] += 1
 
     convergence_rates = {
         'round_0': convergence_counts[0] / total if total > 0 else 0,
@@ -1088,23 +1135,24 @@ def compute_debate_analysis(results: List[Dict]) -> Dict:
         'round_2': (convergence_counts[0] + convergence_counts[1] + convergence_counts[2]) / total if total > 0 else 0
     }
 
-    # 答案变化统计
-    agent_a_r0_r1_changes = sum(
-        1 for r in results
-        if r['debate_history']['round_1']['agent_a'].get('changed', False)
-    )
-    agent_a_r1_r2_changes = sum(
-        1 for r in results
-        if r['debate_history']['round_2']['agent_a'].get('changed', False)
-    )
-    agent_b_r0_r1_changes = sum(
-        1 for r in results
-        if r['debate_history']['round_1']['agent_b'].get('changed', False)
-    )
-    agent_b_r1_r2_changes = sum(
-        1 for r in results
-        if r['debate_history']['round_2']['agent_b'].get('changed', False)
-    )
+    # 答案变化统计 (安全访问)
+    agent_a_r0_r1_changes = 0
+    agent_a_r1_r2_changes = 0
+    agent_b_r0_r1_changes = 0
+    agent_b_r1_r2_changes = 0
+
+    for r in valid_results:
+        try:
+            if r['debate_history']['round_1']['agent_a'].get('changed', False):
+                agent_a_r0_r1_changes += 1
+            if r['debate_history']['round_2']['agent_a'].get('changed', False):
+                agent_a_r1_r2_changes += 1
+            if r['debate_history']['round_1']['agent_b'].get('changed', False):
+                agent_b_r0_r1_changes += 1
+            if r['debate_history']['round_2']['agent_b'].get('changed', False):
+                agent_b_r1_r2_changes += 1
+        except (KeyError, TypeError):
+            pass
 
     answer_changes = {
         'agent_a': {
@@ -1117,21 +1165,28 @@ def compute_debate_analysis(results: List[Dict]) -> Dict:
         }
     }
 
-    # 反思有效性
-    correct_changes = sum(
-        1 for r in results
-        if (r['debate_history']['round_0']['agent_a']['answer'] != r['true_answer'] and
-            r['debate_history']['round_2']['agent_a']['answer'] == r['true_answer']) or
-           (r['debate_history']['round_0']['agent_b']['answer'] != r['true_answer'] and
-            r['debate_history']['round_2']['agent_b']['answer'] == r['true_answer'])
-    )
-    correct_holds = sum(
-        1 for r in results
-        if (r['debate_history']['round_0']['agent_a']['answer'] == r['true_answer'] and
-            r['debate_history']['round_2']['agent_a']['answer'] == r['true_answer']) or
-           (r['debate_history']['round_0']['agent_b']['answer'] == r['true_answer'] and
-            r['debate_history']['round_2']['agent_b']['answer'] == r['true_answer'])
-    )
+    # 反思有效性 (安全访问)
+    correct_changes = 0
+    correct_holds = 0
+    for r in valid_results:
+        try:
+            a0_ans = r['debate_history']['round_0']['agent_a'].get('answer')
+            a2_ans = r['debate_history']['round_2']['agent_a'].get('answer')
+            b0_ans = r['debate_history']['round_0']['agent_b'].get('answer')
+            b2_ans = r['debate_history']['round_2']['agent_b'].get('answer')
+            true_ans = r['true_answer']
+
+            if a0_ans != true_ans and a2_ans == true_ans:
+                correct_changes += 1
+            if b0_ans != true_ans and b2_ans == true_ans:
+                correct_changes += 1
+            if a0_ans == true_ans and a2_ans == true_ans:
+                correct_holds += 1
+            if b0_ans == true_ans and b2_ans == true_ans:
+                correct_holds += 1
+        except (KeyError, TypeError):
+            pass
+
     reflection_effectiveness = (correct_changes + correct_holds) / (total * 2) if total > 0 else 0
 
     return {
@@ -1270,13 +1325,17 @@ def main():
     model.eval()
     print("✅ Model loaded and moved to device")
 
-    # 加载tokenizer
+    # 加载tokenizer (禁用fast tokenizer以确保多线程安全)
     print("Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path,
+        trust_remote_code=True,
+        use_fast=False  # 禁用fast tokenizer,避免多线程CUDA错误
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    print("✅ Tokenizer loaded")
+    print("✅ Tokenizer loaded (slow tokenizer for thread safety)")
 
     # 加载数据
     data = load_data(
@@ -1325,14 +1384,21 @@ def main():
 
         except Exception as e:
             print(f"\n⚠️  Error processing sample {idx}: {str(e)}")
-            # 添加一个失败的结果
+            # 添加一个失败的结果 (保持结构一致性)
             results.append({
                 'question': instruction,
                 'context': input_text,
                 'true_answer': true_answer,
                 'final_answer': '1',
                 'correct': False,
-                'error': str(e)
+                'error': str(e),
+                'debate_history': {
+                    'round_0': {'agent_a': {}, 'agent_b': {}},
+                    'round_1': {'agent_a': {}, 'agent_b': {}},
+                    'round_2': {'agent_a': {}, 'agent_b': {}},
+                    'final_decision': {'answer': '1', 'confidence': 0, 'reasoning': 'Error occurred'}
+                },
+                'debate_metrics': {}
             })
 
     # 保存结果
