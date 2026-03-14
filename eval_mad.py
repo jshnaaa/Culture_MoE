@@ -57,7 +57,7 @@ Confidence: [0-100]
 Please provide your answer now:"""
 
 
-PROMPT_AGENT_B_ROUND0 = """You are a critical thinking expert specializing in cultural analysis. Your task is to answer the following question by considering multiple perspectives and challenging common assumptions.
+PROMPT_AGENT_B_ROUND0 = """You are a cultural understanding expert with a focus on verification and validation. Your task is to independently answer the following question by carefully analyzing all aspects.
 
 **Question:**
 {instruction}
@@ -66,21 +66,21 @@ PROMPT_AGENT_B_ROUND0 = """You are a critical thinking expert specializing in cu
 {input}
 
 **Instructions:**
-1. Question the obvious answer - what might be overlooked?
-2. Consider alternative cultural interpretations
-3. Think about edge cases and exceptions
-4. Choose the best answer from options 1-4
-5. Explain your reasoning with critical analysis
+1. Carefully read the question and context
+2. Think about the cultural factors involved
+3. Consider all options systematically (1-4)
+4. Choose the answer that best fits the cultural context
+5. Explain your reasoning clearly and objectively
 
 **Output Format:**
 Answer: [1/2/3/4]
-Reasoning: [Your detailed reasoning in 3-5 sentences, emphasizing alternative perspectives]
+Reasoning: [Your detailed reasoning in 3-5 sentences, focusing on cultural accuracy]
 Confidence: [0-100]
 
 Please provide your answer now:"""
 
 
-PROMPT_AGENT_A_ROUND1 = """You are continuing the debate. You have seen the opposing view. Now reflect on both perspectives.
+PROMPT_AGENT_A_ROUND1 = """You are continuing the collaborative discussion to find the correct answer. You have seen another perspective.
 
 **Original Question:**
 {instruction}
@@ -93,37 +93,37 @@ PROMPT_AGENT_A_ROUND1 = """You are continuing the debate. You have seen the oppo
 - Reasoning: {reasoning_a0}
 - Confidence: {confidence_a0}
 
-**Opposing View (Agent B's Answer):**
+**Alternative Perspective (Agent B's Answer):**
 - Answer: {answer_b0}
 - Reasoning: {reasoning_b0}
 - Confidence: {confidence_b0}
 
-**Instructions for Reflection:**
-1. **Analyze the opposing view:**
-   - What are the strengths of their argument?
-   - What are the weaknesses or gaps?
+**Instructions for Collaborative Reflection:**
+1. **Goal: Find the CORRECT answer, not win the debate**
+   - Focus on cultural accuracy, not argumentation
+   - Consider: Which answer best fits the cultural context?
 
-2. **Self-reflection:**
-   - Is my reasoning complete and accurate?
-   - Did I overlook any important cultural factors?
-   - Should I reconsider my answer?
+2. **Analyze both perspectives objectively:**
+   - What cultural evidence supports your answer?
+   - What cultural evidence supports their answer?
+   - Are there any cultural factors you initially missed?
 
-3. **Make a decision:**
-   - You may CHANGE your answer if convinced
-   - You may KEEP your answer if you have stronger reasons
-   - Explain your decision clearly
+3. **Update your position if needed:**
+   - KEEP your answer if the cultural evidence strongly supports it
+   - CHANGE your answer ONLY if the other perspective has stronger cultural evidence
+   - Explain your reasoning based on cultural accuracy
 
 **Output Format:**
 Answer: [1/2/3/4]
-Reasoning: [Your updated reasoning, incorporating insights from the debate]
-Reflection: [Your reflection on the opposing view - strengths, weaknesses, and why you changed/kept your answer]
+Reasoning: [Your updated reasoning, focusing on cultural accuracy]
+Reflection: [Why this answer is most culturally accurate, considering both perspectives]
 Confidence: [0-100]
 Changed: [Yes/No]
 
 Please provide your response:"""
 
 
-PROMPT_AGENT_B_ROUND1 = """You are continuing the debate. You have seen the opposing view. Now reflect critically on both perspectives.
+PROMPT_AGENT_B_ROUND1 = """You are continuing the collaborative discussion to find the correct answer. You have seen another perspective.
 
 **Original Question:**
 {instruction}
@@ -136,37 +136,37 @@ PROMPT_AGENT_B_ROUND1 = """You are continuing the debate. You have seen the oppo
 - Reasoning: {reasoning_b0}
 - Confidence: {confidence_b0}
 
-**Opposing View (Agent A's Answer):**
+**Alternative Perspective (Agent A's Answer):**
 - Answer: {answer_a0}
 - Reasoning: {reasoning_a0}
 - Confidence: {confidence_a0}
 
-**Instructions for Critical Reflection:**
-1. **Evaluate the opposing view:**
-   - What assumptions are they making?
-   - Are there cultural nuances they missed?
+**Instructions for Collaborative Reflection:**
+1. **Goal: Find the CORRECT answer, not win the debate**
+   - Focus on cultural accuracy, not argumentation
+   - Consider: Which answer best fits the cultural context?
 
-2. **Challenge your own view:**
-   - Is my alternative perspective truly better?
-   - Am I being contrarian for the sake of it?
-   - What evidence supports my answer?
+2. **Analyze both perspectives objectively:**
+   - What cultural evidence supports your answer?
+   - What cultural evidence supports their answer?
+   - Are there any cultural factors you initially missed?
 
-3. **Refine your position:**
-   - Strengthen your argument or adjust your answer
-   - Provide clearer reasoning
-   - Explain your decision
+3. **Update your position if needed:**
+   - KEEP your answer if the cultural evidence strongly supports it
+   - CHANGE your answer ONLY if the other perspective has stronger cultural evidence
+   - Explain your reasoning based on cultural accuracy
 
 **Output Format:**
 Answer: [1/2/3/4]
-Reasoning: [Your refined reasoning, addressing the opposing view]
-Reflection: [Your critical analysis - what you learned and why your answer is justified]
+Reasoning: [Your updated reasoning, focusing on cultural accuracy]
+Reflection: [Why this answer is most culturally accurate, considering both perspectives]
 Confidence: [0-100]
 Changed: [Yes/No]
 
 Please provide your response:"""
 
 
-PROMPT_AGENT_A_ROUND2 = """This is the final round of debate. Review the entire discussion and provide your final position.
+PROMPT_AGENT_A_ROUND2 = """This is the final round of collaborative discussion. Review all perspectives and provide your final answer.
 
 **Original Question:**
 {instruction}
@@ -174,43 +174,45 @@ PROMPT_AGENT_A_ROUND2 = """This is the final round of debate. Review the entire 
 **Context:**
 {input}
 
-**Debate History:**
+**Discussion History:**
 
 Round 0 (Initial):
 - Your answer: {answer_a0} (Confidence: {confidence_a0})
 - Their answer: {answer_b0} (Confidence: {confidence_b0})
 
-Round 1 (First Debate):
+Round 1 (First Discussion):
 - Your answer: {answer_a1} (Changed: {changed_a1}, Confidence: {confidence_a1})
 - Their answer: {answer_b1} (Changed: {changed_b1}, Confidence: {confidence_b1})
 - Your reflection: {reflection_a1}
 - Their reflection: {reflection_b1}
 
-**Instructions for Final Reflection:**
-1. **Review the debate trajectory:**
-   - What new insights emerged?
-   - How did the discussion evolve?
+**Instructions for Final Decision:**
+1. **Goal: Determine the MOST CULTURALLY ACCURATE answer**
+   - Not the most argued answer
+   - Not a compromise answer
+   - The answer that truly best fits the cultural context
 
-2. **Final decision:**
-   - Based on all arguments, what is your final answer?
-   - What is the strongest evidence for this answer?
-   - What is your final confidence level?
+2. **Review all cultural evidence:**
+   - What cultural factors emerged in the discussion?
+   - Which answer has the strongest cultural support?
+   - Did the discussion reveal any overlooked aspects?
 
-3. **Acknowledge uncertainty:**
-   - If still uncertain, explain why
-   - If confident, explain what convinced you
+3. **Make your final decision:**
+   - Choose the answer with the strongest cultural evidence
+   - Explain why this is most culturally accurate
+   - Be confident if the evidence is clear
 
 **Output Format:**
 Answer: [1/2/3/4]
-Reasoning: [Your final, comprehensive reasoning]
-Final_Reflection: [What you learned from this debate and your final position]
+Reasoning: [Your final reasoning, emphasizing cultural accuracy]
+Final_Reflection: [Why this answer is most culturally accurate based on the full discussion]
 Confidence: [0-100]
 Changed_From_R1: [Yes/No]
 
 Please provide your final response:"""
 
 
-PROMPT_AGENT_B_ROUND2 = """This is the final round of debate. Review the entire discussion and provide your final critical assessment.
+PROMPT_AGENT_B_ROUND2 = """This is the final round of collaborative discussion. Review all perspectives and provide your final answer.
 
 **Original Question:**
 {instruction}
@@ -218,43 +220,45 @@ PROMPT_AGENT_B_ROUND2 = """This is the final round of debate. Review the entire 
 **Context:**
 {input}
 
-**Debate History:**
+**Discussion History:**
 
 Round 0 (Initial):
 - Your answer: {answer_b0} (Confidence: {confidence_b0})
 - Their answer: {answer_a0} (Confidence: {confidence_a0})
 
-Round 1 (First Debate):
+Round 1 (First Discussion):
 - Your answer: {answer_b1} (Changed: {changed_b1}, Confidence: {confidence_b1})
 - Their answer: {answer_a1} (Changed: {changed_a1}, Confidence: {confidence_a1})
 - Your reflection: {reflection_b1}
 - Their reflection: {reflection_a1}
 
-**Instructions for Final Critical Assessment:**
-1. **Synthesize the debate:**
-   - What were the key points of disagreement?
-   - Where did we find common ground?
+**Instructions for Final Decision:**
+1. **Goal: Determine the MOST CULTURALLY ACCURATE answer**
+   - Not the most argued answer
+   - Not a compromise answer
+   - The answer that truly best fits the cultural context
 
-2. **Final judgment:**
-   - What is the most culturally accurate answer?
-   - Have I been too critical or not critical enough?
-   - What is my final confidence?
+2. **Review all cultural evidence:**
+   - What cultural factors emerged in the discussion?
+   - Which answer has the strongest cultural support?
+   - Did the discussion reveal any overlooked aspects?
 
-3. **Closing statement:**
-   - Summarize your final position
-   - Acknowledge any remaining doubts
+3. **Make your final decision:**
+   - Choose the answer with the strongest cultural evidence
+   - Explain why this is most culturally accurate
+   - Be confident if the evidence is clear
 
 **Output Format:**
 Answer: [1/2/3/4]
-Reasoning: [Your final, comprehensive reasoning]
-Final_Reflection: [Your synthesis of the debate and final critical assessment]
+Reasoning: [Your final reasoning, emphasizing cultural accuracy]
+Final_Reflection: [Why this answer is most culturally accurate based on the full discussion]
 Confidence: [0-100]
 Changed_From_R1: [Yes/No]
 
 Please provide your final response:"""
 
 
-PROMPT_JUDGE_FINAL = """You are an impartial judge tasked with making the final decision based on a debate between two agents. Your role is to evaluate the quality of arguments, not simply count votes.
+PROMPT_JUDGE_FINAL = """You are an impartial judge tasked with determining the MOST CULTURALLY ACCURATE answer based on a collaborative discussion between two cultural experts.
 
 **Original Question:**
 {instruction}
@@ -262,20 +266,20 @@ PROMPT_JUDGE_FINAL = """You are an impartial judge tasked with making the final 
 **Context:**
 {input}
 
-**Complete Debate History:**
+**Complete Discussion History:**
 
 === ROUND 0: Initial Answers ===
-Agent A (Affirmative):
+Agent A:
 - Answer: {answer_a0}
 - Reasoning: {reasoning_a0}
 - Confidence: {confidence_a0}
 
-Agent B (Negative):
+Agent B:
 - Answer: {answer_b0}
 - Reasoning: {reasoning_b0}
 - Confidence: {confidence_b0}
 
-=== ROUND 1: First Debate ===
+=== ROUND 1: First Discussion ===
 Agent A:
 - Answer: {answer_a1} (Changed: {changed_a1})
 - Reasoning: {reasoning_a1}
@@ -303,30 +307,35 @@ Agent B:
 
 **Your Task as Judge:**
 
-1. **Evaluate Argument Quality (NOT just agreement):**
-   - Logical Coherence (40%): Are the arguments logically sound?
-   - Cultural Sensitivity (30%): Do they demonstrate cultural understanding?
-   - Evidence Sufficiency (20%): Are the reasons well-supported?
-   - Reasoning Depth (10%): How deep is the analysis?
+1. **Goal: Select the MOST CULTURALLY ACCURATE answer**
+   - Focus on cultural correctness, not argumentation quality
+   - Consider: Which answer truly best fits the cultural context described?
 
-2. **Identify Key Points:**
-   - Where do they agree/disagree?
-   - What are the strongest arguments on each side?
-   - Were there any critical insights during the debate?
+2. **Evaluate Cultural Evidence:**
+   - What cultural factors support each answer?
+   - Which reasoning demonstrates deeper cultural understanding?
+   - Are there any cultural nuances that were missed?
 
-3. **Make Final Decision:**
-   - Choose the answer with the strongest overall argument
-   - This may NOT be the answer both agents converged to
-   - Explain your reasoning thoroughly
+3. **Consider the Discussion Evolution:**
+   - Did agents converge on an answer? If so, why?
+   - If they disagree, which has stronger cultural evidence?
+   - Were there insights that emerged during discussion?
 
-4. **Assess Confidence:**
-   - How confident are you in this decision?
-   - What factors create uncertainty?
+4. **Make Your Decision:**
+   - Choose the answer that is MOST LIKELY CORRECT culturally
+   - This should usually be the answer with strongest cultural evidence
+   - If both agents converged with high confidence, strongly consider that answer
+   - Explain your reasoning based on cultural accuracy
+
+**Important Guidelines:**
+- Prioritize cultural accuracy over rhetorical skill
+- If both agents agree with high confidence, that's strong evidence
+- If they disagree, carefully evaluate which cultural reasoning is more sound
+- Don't be swayed by eloquence alone - focus on cultural correctness
 
 **Output Format:**
 Final_Answer: [1/2/3/4]
-Decision_Reasoning: [Your comprehensive analysis in 4-6 sentences, explaining why this answer is best, which arguments were most convincing, what cultural factors are most relevant, and any remaining uncertainties]
-Argument_Quality_Assessment: [Brief evaluation of both agents' arguments]
+Decision_Reasoning: [Your analysis in 4-6 sentences, explaining why this answer is most culturally accurate, what cultural evidence supports it, and how the discussion informed your decision]
 Confidence: [0-100]
 
 Please provide your final judgment:"""
