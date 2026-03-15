@@ -197,15 +197,21 @@ PROMPT_ROUND1_TEMPLATE = """You are continuing the multicultural discussion. You
 **Other Cultural Perspectives (Round 0):**
 {other_perspectives}
 
-**Instructions:**
-1. Consider the diverse cultural perspectives shared
-2. Reflect on whether other viewpoints reveal aspects you missed
-3. Update your answer if you find stronger cultural evidence
-4. Maintain your cultural perspective while being open to learning
+**Critical Instructions:**
+1. **Your cultural perspective is valuable and unique** - don't abandon it easily
+2. **Understand** other cultural viewpoints, but maintain your cultural lens
+3. **Only change your answer if:**
+   - You made a factual error in your cultural analysis
+   - Another perspective reveals a critical cultural factor you completely missed
+   - You realize your cultural reasoning was flawed
+4. **If uncertain, keep your original answer** - cultural diversity is valuable
+5. **It's OK to disagree** - different cultures may have different valid interpretations
+
+**Remember:** The goal is NOT to reach consensus, but to provide your culture's authentic perspective.
 
 **Output Format:**
 Answer: [1/2/3/4]
-Reasoning: [Your updated reasoning considering multicultural input]
+Reasoning: [Your reasoning from your cultural perspective, considering but not necessarily agreeing with others]
 Confidence: [0-100]
 Changed: [Yes/No]
 
@@ -215,7 +221,7 @@ Your response:"""
 # Prompt模板 - Round 2 (第二轮讨论)
 # ============================================================================
 
-PROMPT_ROUND2_TEMPLATE = """This is the final round of multicultural discussion. Review all perspectives and provide your final answer.
+PROMPT_ROUND2_TEMPLATE = """This is the final round of multicultural discussion. Provide your culture's final perspective.
 
 **Question:**
 {instruction}
@@ -230,14 +236,18 @@ Round 1 - Your updated answer: {your_r1_answer} (Changed: {changed_r1})
 **Other Cultural Perspectives (Round 1):**
 {other_perspectives_r1}
 
-**Instructions:**
-1. Review the full multicultural discussion
-2. Make your final decision based on the strongest cultural evidence
-3. Your answer should reflect the most culturally accurate response
+**Final Instructions:**
+1. **This is your culture's final voice** - make it count
+2. **Stand by your cultural perspective** if you believe it's valid
+3. **Cultural disagreement is normal and valuable** - don't force consensus
+4. **Your answer represents your culture's understanding** of this question
+5. **Be confident in your cultural lens** - it offers unique insights
+
+**Remember:** We value authentic cultural diversity over artificial consensus.
 
 **Output Format:**
 Answer: [1/2/3/4]
-Reasoning: [Your final reasoning]
+Reasoning: [Your culture's final perspective on this question]
 Confidence: [0-100]
 Changed: [Yes/No]
 
@@ -247,7 +257,7 @@ Your final answer:"""
 # Prompt模板 - Summarizer (总结者)
 # ============================================================================
 
-PROMPT_SUMMARIZER = """You are a multicultural summarizer. Five cultural experts have discussed a question from different perspectives. Your task is to determine the most culturally accurate answer by synthesizing their viewpoints.
+PROMPT_SUMMARIZER = """You are a multicultural synthesizer. Five cultural experts have shared their perspectives on a question. Your task is to make the final decision by honoring and synthesizing ALL cultural viewpoints.
 
 **Question:**
 {instruction}
@@ -255,7 +265,7 @@ PROMPT_SUMMARIZER = """You are a multicultural summarizer. Five cultural experts
 **Context:**
 {input}
 
-**Final Answers from Cultural Experts (Round 2):**
+**Cultural Perspectives (Round 2):**
 
 Asia Expert:
 - Answer: {asia_answer}
@@ -282,24 +292,28 @@ Africa Expert:
 - Reasoning: {africa_reasoning}
 - Confidence: {africa_confidence}
 
-**Your Task:**
-1. Analyze the diverse cultural perspectives
-2. Identify common ground and key differences
-3. Determine which answer has the strongest support across cultures
-4. Make a final decision that best represents multicultural understanding
+**Your Critical Task:**
+1. **Value ALL perspectives** - don't just follow the majority
+2. **Identify which cultural insights are most relevant** to this specific question
+3. **Consider:**
+   - Which culture's perspective is most applicable to the question context?
+   - Are there unique cultural insights that others missed?
+   - Does high confidence from one culture outweigh lower confidence from many?
+   - What does each culture contribute to understanding this question?
+4. **Make a decision that synthesizes the best cultural understanding**
 
-**Decision Guidelines:**
-- Consider the strength of reasoning from each perspective
-- Look for convergence across multiple cultures
-- Evaluate confidence levels
-- Choose the most culturally accurate answer
+**Important Guidelines:**
+- Majority vote is NOT automatically correct - evaluate reasoning quality
+- A single culture with strong, relevant reasoning may be more valuable than weak majority
+- Consider which culture has the most relevant expertise for this question
+- Cultural diversity is strength - use it wisely
 
 **Output Format:**
 Final_Answer: [1/2/3/4]
-Reasoning: [2-3 sentences explaining your synthesis of multicultural perspectives]
+Reasoning: [2-3 sentences: which cultural perspective(s) were most insightful and why you chose this answer]
 Confidence: [0-100]
 
-Your decision:"""
+Your synthesized decision:"""
 
 # ============================================================================
 # 辅助函数 (从eval_mad.py复制)
@@ -611,12 +625,16 @@ class CulturalMADEngine:
         return result
 
     def check_consensus(self, r2_all: Dict[str, Dict]) -> Tuple[bool, Optional[str]]:
-        """检查是否达成多数共识 (≥3/5)"""
+        """检查是否达成强共识 (≥4/5)
+
+        提高阈值从3/5到4/5,确保只有真正的强共识才跳过Summarizer,
+        让Summarizer有更多机会综合多元文化视角。
+        """
         answers = [r2_all[culture]['answer'] for culture in self.CULTURES]
         vote_counts = Counter(answers)
         most_common = vote_counts.most_common(1)[0]
 
-        if most_common[1] >= 3:  # 多数共识
+        if most_common[1] >= 4:  # 强共识 (≥80%)
             return True, most_common[0]
         else:
             return False, None
