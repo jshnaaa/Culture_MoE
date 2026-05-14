@@ -65,10 +65,10 @@ fi
 
 # 根据 backbone 选择 base 模型路径
 if [ "$BACKBONE" = "qwen" ]; then
-    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
+    BASE_MODEL_PATH="/root/autodl-tmp/base/Qwen2.5-7B-Instruct"
     MODEL_NAME="Qwen 2.5-7B-Instruct"
 else
-    BASE_MODEL_PATH="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
+    BASE_MODEL_PATH="/root/autodl-tmp/base/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="LLaMA 3.1-8B-Instruct"
 fi
 

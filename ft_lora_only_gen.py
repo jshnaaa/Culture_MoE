@@ -1790,18 +1790,19 @@ def main():
 
         print("✅ Merged data loaded")
     else:
-        # 处理单个数据集
-        datasets = load_and_process_data(
+        # 处理单个数据集，使用 8:1:1 划分（train:val:test）
+        datasets = load_and_process_data_8_1_1(
             args.train_file,
             tokenizer,
             max_length=args.max_length,
-            val_split=args.val_split
+            output_dir=args.output_dir
         )
         train_dataset = datasets['train']
         val_dataset = datasets['validation']
+        test_dataset = datasets['test']
         individual_val_datasets = None  # 单个数据集不需要分离统计
 
-        print("✅ Data loaded")
+        print("✅ Data loaded (8:1:1 split: train/val/test)")
 
     # 创建 collate_fn
     collate_fn = partial(dynamic_padding_collate_fn, tokenizer=tokenizer, max_seq_length=args.max_length)

@@ -30,11 +30,11 @@ fi
 
 # 设置基础模型路径
 if [ "$BACKBONE" = "llama" ]; then
-    BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Llama-3.1-8B-Instruct"
+    BASE_MODEL="/root/autodl-tmp/base/Meta-Llama-3.1-8B-Instruct"
     MODEL_NAME="llama"
     TOTAL_LAYERS=32
 elif [ "$BACKBONE" = "qwen" ]; then
-    BASE_MODEL="/root/autodl-tmp/CultureMoE/Culture_Alignment/Meta-Qwen-2.5-7B-Instruct"
+    BASE_MODEL="/root/autodl-tmp/base/Qwen2.5-7B-Instruct"
     MODEL_NAME="qwen"
     TOTAL_LAYERS=28
 else
