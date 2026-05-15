@@ -24,6 +24,16 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+try:
+    from torch.amp import autocast as _autocast, GradScaler  # PyTorch 2.0+
+    def amp_autocast(enabled=True):
+        return _autocast(device_type="cuda", dtype=torch.float16, enabled=enabled)
+    AMP_VERSION = 2
+except ImportError:
+    from torch.cuda.amp import autocast as _autocast, GradScaler  # PyTorch 1.x
+    def amp_autocast(enabled=True):
+        return _autocast(enabled=enabled)
+    AMP_VERSION = 1
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -619,7 +629,7 @@ def compute_culture_loss(expert_weights, culture_labels, loss_weight=0.01):
 
 def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
                      num_accumulation_steps=1, rank=0, use_culture_loss=True, culture_loss_weight=0.01,
-                     alpha=0.01, beta=0.01, args=None, vec_logger=None, epoch=0):
+                     alpha=0.01, beta=0.01, args=None, vec_logger=None, epoch=0, scaler=None):
     """
     联合训练一个epoch：同时训练LoRA和MoE
     """
@@ -679,14 +689,15 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             else:
                 culture_labels = batch['label'].to(device)
 
-        # 前向传播
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels,
-            culture_labels=culture_labels,
-            return_dict=True
-        )
+        # 前向传播（使用AMP混合精度）
+        with amp_autocast(enabled=(scaler is not None)):
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                culture_labels=culture_labels,
+                return_dict=True
+            )
 
         # ========== 记录向量距离（仅data_id=2时生效）==========
         if vec_logger is not None and culture_labels is not None:
@@ -925,6 +936,8 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
             if rank == 0:
                 print(f"⚠️ Batch {batch_idx}: NaN/Inf loss detected, 跳过此batch")
                 print(f"  LM loss: {lm_loss.item()}, MoE loss: {moe_aux_loss.item()}, Culture loss: {culture_loss.item()}")
+            # 释放计算图引用后再跳过
+            del outputs, total_batch_loss, lm_loss, moe_aux_loss, culture_loss, l_balance, l_o, l_v
             continue
 
         # 显示关键训练信息 - 注释掉，专注tokenizer问题
@@ -935,79 +948,102 @@ def train_epoch_joint(model, train_loader, optimizer, device, tokenizer,
         #         expert_str = ", ".join([f"E{i}={w:.3f}" for i, w in enumerate(expert_avg)])
         #         print(f"📊 Expert weights: [{expert_str}]")
 
-        # 梯度累积
+        # 梯度累积（使用AMP scaler）
         total_batch_loss = total_batch_loss / num_accumulation_steps
-        total_batch_loss.backward()
+        if scaler is not None:
+            scaler.scale(total_batch_loss).backward()
+        else:
+            total_batch_loss.backward()
 
-        total_loss += total_batch_loss.item() * num_accumulation_steps
-        total_lm_loss += lm_loss.item()
-        total_moe_loss += moe_aux_loss.item()
-        total_culture_loss += culture_loss.item()
+        # 记录标量值后立即释放所有计算图引用
+        _total_loss_val = total_batch_loss.item() * num_accumulation_steps
+        _lm_loss_val = lm_loss.item()
+        _moe_loss_val = moe_aux_loss.item()
+        _culture_loss_val = culture_loss.item()
+        _l_balance_val = l_balance.item() if use_culture_loss != 'false' else 0.0
+        _l_o_val = l_o.item() if use_culture_loss != 'false' else 0.0
+        _l_v_val = l_v.item() if use_culture_loss != 'false' else 0.0
+
+        total_loss += _total_loss_val
+        total_lm_loss += _lm_loss_val
+        total_moe_loss += _moe_loss_val
+        total_culture_loss += _culture_loss_val
         num_batches += 1
+
+        # 显式释放所有持有计算图引用的张量，避免显存泄漏
+        del outputs, total_batch_loss, lm_loss, moe_aux_loss, culture_loss
+        del l_balance, l_o, l_v
+        try:
+            del enhanced_loss_dict
+        except NameError:
+            pass
+        try:
+            del csl_loss_dict
+        except NameError:
+            pass
 
         # 梯度更新
         if (batch_idx + 1) % num_accumulation_steps == 0:
-            # 简化的梯度处理（Float32路由器不需要特殊处理）
-            # 检查和清理任何NaN/Inf梯度
-            for name, param in model.named_parameters():
-                if param.requires_grad and param.grad is not None:
-                    if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                        print(f"⚠️ Cleaning NaN/Inf gradient in {name}")
-                        param.grad.zero_()
+            if scaler is not None:
+                # AMP模式：使用scaler进行梯度unscale、裁剪、step
+                scaler.unscale_(optimizer)
 
-            # 统一的梯度裁剪
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                # 检查和清理任何NaN/Inf梯度
+                for name, param in model.named_parameters():
+                    if param.requires_grad and param.grad is not None:
+                        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                            if rank == 0:
+                                print(f"⚠️ Cleaning NaN/Inf gradient in {name}")
+                            param.grad.zero_()
 
-            optimizer.step()
+                # 统一的梯度裁剪
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                # 非AMP模式：原始梯度处理
+                for name, param in model.named_parameters():
+                    if param.requires_grad and param.grad is not None:
+                        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                            if rank == 0:
+                                print(f"⚠️ Cleaning NaN/Inf gradient in {name}")
+                            param.grad.zero_()
+
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
             optimizer.zero_grad()
 
-            # 不需要手动清理梯度，zero_grad()已经处理了
-            # for param in model.parameters():
-            #     if param.grad is not None:
-            #         param.grad = None
-
-        # 积极的内存清理
-        if (batch_idx + 1) % 1 == 0:  # 每个batch都清理
+        # 内存清理优化：每 num_accumulation_steps 个batch清理一次，避免频繁调用开销
+        if (batch_idx + 1) % num_accumulation_steps == 0:
             torch.cuda.empty_cache()
 
-        # 检查内存使用并提前清理
-        if torch.cuda.is_available():
+        # 检查内存使用并在极端情况下进行清理
+        if (batch_idx + 1) % (num_accumulation_steps * 4) == 0 and torch.cuda.is_available():
             memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-            if memory_allocated > 35:  # 降低阈值，提前清理
+            if memory_allocated > 38:  # 高内存阈值
                 torch.cuda.empty_cache()
                 import gc
                 gc.collect()
-                torch.cuda.empty_cache()  # 再次清理
                 if rank == 0:
                     print(f"⚠️ High memory usage ({memory_allocated:.1f}GB), forced cleanup")
 
-        # 如果内存仍然过高，暂停一下
-        if torch.cuda.is_available():
-            memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-            if memory_allocated > 42:  # 接近限制时暂停
-                if rank == 0:
-                    print(f"⚠️ Critical memory usage ({memory_allocated:.1f}GB), pausing...")
-                import time
-                time.sleep(1)
-                torch.cuda.empty_cache()
-                import gc
-                gc.collect()
-
-        # 更新进度条 - 显示增强损失组件
+        # 更新进度条 - 使用之前保存的标量值（张量已被del释放）
         postfix = {
-            'loss': f"{total_batch_loss.item() * num_accumulation_steps:.6f}",
-            'lm': f"{lm_loss.item():.6f}",
-            'aux': f"{moe_aux_loss.item():.6f}"
+            'loss': f"{_total_loss_val:.6f}",
+            'lm': f"{_lm_loss_val:.6f}",
+            'aux': f"{_moe_loss_val:.6f}"
         }
 
         if use_culture_loss:
             # 显示增强损失的各个组件
-            postfix['bal'] = f"{l_balance.item():.4f}"  # L_balance
-            postfix['ort'] = f"{l_o.item():.4f}"        # L_o (orthogonalization)
-            postfix['var'] = f"{l_v.item():.4f}"        # L_v (routing variance)
-            postfix['cul'] = f"{culture_loss.item():.4f}"  # L_culture
+            postfix['bal'] = f"{_l_balance_val:.4f}"  # L_balance
+            postfix['ort'] = f"{_l_o_val:.4f}"        # L_o (orthogonalization)
+            postfix['var'] = f"{_l_v_val:.4f}"        # L_v (routing variance)
+            postfix['cul'] = f"{_culture_loss_val:.4f}"  # L_culture
         else:
-            postfix['culture'] = f"{culture_loss.item():.4f}"
+            postfix['culture'] = f"{_culture_loss_val:.4f}"
 
         pbar.set_postfix(postfix)
 
@@ -1899,6 +1935,14 @@ def main():
 
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
 
+    # 创建AMP GradScaler用于混合精度训练
+    if AMP_VERSION == 2:
+        scaler = GradScaler("cuda")
+    else:
+        scaler = GradScaler()
+    if is_main_process(rank):
+        print("✅ AMP GradScaler created for mixed precision training (float16)")
+
     # 训练循环
     if is_main_process(rank):
         print("\n" + "="*80)
@@ -1917,7 +1961,7 @@ def main():
         if is_main_process(rank):
             print(f"Epoch {epoch + 1}/{args.num_epochs}")
 
-        # 训练
+        # 训练（使用AMP混合精度）
         train_metrics = train_epoch_joint(
             model, train_loader, optimizer, device, tokenizer,
             num_accumulation_steps=args.gradient_accumulation_steps,
@@ -1928,7 +1972,8 @@ def main():
             beta=args.beta,
             args=args,
             vec_logger=vec_logger,
-            epoch=epoch
+            epoch=epoch,
+            scaler=scaler
         )
 
         # 注意：向量距离数据不再在每个epoch保存，只在最佳模型时保存

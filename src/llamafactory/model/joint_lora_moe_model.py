@@ -929,13 +929,15 @@ class JointLoRAMoEModel(nn.Module):
 
         if self.config.use_mask and input_ids_mask is not None and attention_mask_mask is not None and use_shared_current:
             # 双路处理模式：分别处理原始输入和MASK输入
-            # 原始输入用于路由专家
+            # 原始输入用于路由专家 - 使用output_hidden_states=True但立即提取最后层并释放
             base_outputs_original = self.base_model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 output_hidden_states=True,
                 return_dict=True
             )
+            hidden_states_original = base_outputs_original.hidden_states[-1]  # [B, L, H] 路由专家用
+            del base_outputs_original  # 立即释放所有中间层hidden_states
 
             # MASK输入用于共享专家
             base_outputs_mask = self.base_model(
@@ -944,17 +946,15 @@ class JointLoRAMoEModel(nn.Module):
                 output_hidden_states=True,
                 return_dict=True
             )
-
-            # 获取两路隐藏状态
-            hidden_states_original = base_outputs_original.hidden_states[-1]  # [B, L, H] 路由专家用
             hidden_states_mask = base_outputs_mask.hidden_states[-1]  # [B, L, H] 共享专家用
+            del base_outputs_mask  # 立即释放所有中间层hidden_states
 
-            # 使用原始输入的输出作为主要基础输出（用于后续logits计算）
-            base_outputs = base_outputs_original
+            # 使用原始输入的输出作为主要基础输出
             hidden_states = hidden_states_original
 
             # 保存MASK版本的隐藏状态供MoE层使用
             self._mask_hidden_states = hidden_states_mask
+            self._dual_path_mode = True
 
         else:
             # 单路处理模式：所有专家使用相同输入
@@ -966,14 +966,19 @@ class JointLoRAMoEModel(nn.Module):
                 return_dict=True
             )
 
-            # 2. 获取最后一层隐藏状态
+            # 2. 获取最后一层隐藏状态并立即释放其他层引用
             hidden_states = base_outputs.hidden_states[-1]  # [B, L, H]
+            del base_outputs  # 立即释放所有中间层hidden_states
             self._mask_hidden_states = None
+            self._dual_path_mode = False
 
         # 🔍 调试基础模型输出（简化版）
         # base_range = f"min={hidden_states.min().item():.3f}, max={hidden_states.max().item():.3f}"
         # base_std = hidden_states.std().item()
         # print(f"🔍 基础模型输出: {base_range}, std={base_std:.6f}")
+
+        # 保存原始（未投影）的hidden_states，用于后续增量架构的残差连接
+        base_hidden_states = hidden_states  # [B, L, H] 原始维度
 
         # 确保hidden_states与MoE层的hidden_dim匹配
         if hidden_states.size(-1) != self.config.moe_hidden_dim:
@@ -1010,8 +1015,7 @@ class JointLoRAMoEModel(nn.Module):
         #     print(f"⚠️ 警告: MoE增量过大 (std={moe_std:.6f})，应该是小的调整!")
 
         # 🔧 关键修改：实现增量架构
-        # 保存原始基础LoRA输出
-        base_hidden_states = base_outputs.hidden_states[-1]  # [B, L, H]
+        # base_hidden_states 已在投影前保存（原始维度），用于残差连接
 
         # 🔧 处理维度不匹配问题
         if hasattr(self, 'hidden_proj') and moe_delta.size(-1) != base_hidden_states.size(-1):
@@ -1237,6 +1241,7 @@ class JointLoRAMoEModel(nn.Module):
                 culture_loss = torch.tensor(0.0, device=first_param.device, dtype=first_param.dtype, requires_grad=True)
 
         # 6. 返回结果 - 增量架构版本，包含增强损失所需信息
+        # 注意：移除了 base_hidden_states 和 moe_delta 的返回以节省显存
         return type('Outputs', (), {
             'loss': loss,
             'logits': logits,
@@ -1244,8 +1249,6 @@ class JointLoRAMoEModel(nn.Module):
             'expert_weights': expert_weights,
             'moe_aux_loss': moe_aux_loss,
             'culture_loss': culture_loss,  # 文化损失
-            'base_hidden_states': base_hidden_states,  # 额外返回基础LoRA输出用于调试
-            'moe_delta': moe_delta,  # 额外返回MoE增量用于调试
             # 增强损失所需的新信息
             'expert_outputs': expert_outputs,  # 激活专家的输出
             'soft_routing_scores': soft_routing_scores,  # 所有专家的soft routing分数

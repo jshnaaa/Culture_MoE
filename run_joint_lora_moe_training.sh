@@ -145,8 +145,8 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 针对长序列优化
-BATCH_SIZE=4              # 调整为4，充分利用2×48GB GPU内存
-GRADIENT_ACCUMULATION=8   # 相应调整梯度累积，保持有效batch size=64
+BATCH_SIZE=2              # 减小per-GPU batch size以避免OOM
+GRADIENT_ACCUMULATION=16  # 相应增大梯度累积，保持有效batch size=64
 
 # 🔧 根据backbone设置不同的学习率
 if [ "$BACKBONE" = "llama" ]; then
@@ -247,8 +247,8 @@ cat > "$OUTPUT_DIR/config.json" << EOF
 EOF
 
 # 设置内存优化环境变量 - 修复CUDA内存分配器问题
-# 移除expandable_segments配置，避免与某些PyTorch版本冲突
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
+# expandable_segments:True 减少显存碎片化，max_split_size_mb:256 限制分配块大小
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:256
 export CUDA_LAUNCH_BLOCKING=0
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1

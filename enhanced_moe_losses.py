@@ -68,18 +68,25 @@ def compute_enhanced_moe_loss(
         L_aux = compute_load_balance_loss(soft_routing_scores, expert_weights)
         loss_dict["L_aux"] = L_aux
 
-        # 3. L_o: 正交化损失（专家输出差异化）
-        # 检查是否使用文化感知的正交化损失或KL散度损失
-        use_cultural_aware = loss_weights.get("use_cultural_aware", False)
-        use_kl_loss = loss_weights.get("use_kl_loss", False)
-        L_o = compute_orthogonalization_loss(
-            expert_outputs, activated_experts, culture_labels,
-            use_cultural_aware, use_kl_loss, expert_weights
-        )
+        # 3. L_o: 正交化损失（专家输出差异化）- 权重为0时跳过以节省显存
+        beta_weight = loss_weights.get("beta", 0.0)
+        if beta_weight > 0:
+            use_cultural_aware = loss_weights.get("use_cultural_aware", False)
+            use_kl_loss = loss_weights.get("use_kl_loss", False)
+            L_o = compute_orthogonalization_loss(
+                expert_outputs, activated_experts, culture_labels,
+                use_cultural_aware, use_kl_loss, expert_weights
+            )
+        else:
+            L_o = torch.tensor(0.0, device=device, dtype=dtype)
         loss_dict["L_o"] = L_o
 
-        # 4. L_v: 路由方差损失（路由分数差异化）
-        L_v = compute_routing_variance_loss(soft_routing_scores)
+        # 4. L_v: 路由方差损失（路由分数差异化）- 权重为0时跳过以节省显存
+        gamma_weight = loss_weights.get("gamma", 0.0)
+        if gamma_weight > 0:
+            L_v = compute_routing_variance_loss(soft_routing_scores)
+        else:
+            L_v = torch.tensor(0.0, device=device, dtype=dtype)
         loss_dict["L_v"] = L_v
 
         # 5. 平衡损失 L_balance = αL_aux + βL_o + γL_v
