@@ -71,7 +71,7 @@ case $DATA_ID in
         DATASET_TAG="cultureLLM"
         ;;
     5)
-        TRAIN_FILE="/root/autodl-fs/cultureAtlas_merge_gen.json"
+        TRAIN_FILE="/autodl-fs/data/cultureAtlas_merge_gen.json"
         DATASET_TAG="cultureAtlas"
         ;;
     24)

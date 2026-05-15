@@ -8,7 +8,7 @@
 #
 # 参数说明：
 #   BACKBONE: llama 或 qwen (默认 llama)
-#   DATA_ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM, 24=CulturalBench+CultureLLM (默认 24)
+#   DATA_ID: 2=CulturalBench, 3=NormAD, 4=CultureLLM, 5=CultureAtlas, 24=CulturalBench+CultureLLM (默认 24)
 #
 # 示例：
 #   # 使用 LLaMA + CulturalBench+CultureLLM 合并数据集（默认）
@@ -64,6 +64,13 @@ case $DATA_ID in
         DATASET_TAG="cultureLLM"
         echo "Using CultureLLM dataset (new format)"
         ;;
+    5)
+        # CultureAtlas
+        DATASET_NAME="CultureAtlas"
+        TRAIN_FILE="/autodl-fs/data/cultureAtlas_merge_gen.json"
+        DATASET_TAG="cultureAtlas"
+        echo "Using CultureAtlas dataset (new format)"
+        ;;
     24)
         # CulturalBench + CultureLLM 合并数据集（默认）
         DATASET_NAME="CulturalBench+CultureLLM"
@@ -72,12 +79,13 @@ case $DATA_ID in
         echo "Using CulturalBench+CultureLLM merged dataset (new format)"
         ;;
     *)
-        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, or 24."
+        echo "❌ Error: Invalid DATA_ID=$DATA_ID. Must be 2, 3, 4, 5, or 24."
         echo ""
         echo "DATA_ID options:"
         echo "  2  - CulturalBench"
         echo "  3  - NormAD"
         echo "  4  - CultureLLM"
+        echo "  5  - CultureAtlas"
         echo "  24 - CulturalBench+CultureLLM (default)"
         exit 1
         ;;
