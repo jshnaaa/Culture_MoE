@@ -145,8 +145,8 @@ echo "  输出: $OUTPUT_DIR"
 echo ""
 
 # 内存优化的训练参数 - 针对长序列优化
-BATCH_SIZE=2              # 减小per-GPU batch size以避免OOM
-GRADIENT_ACCUMULATION=16  # 相应增大梯度累积，保持有效batch size=64
+BATCH_SIZE=1              # 最小化per-GPU batch size以避免OOM
+GRADIENT_ACCUMULATION=32  # 相应增大梯度累积，保持有效batch size=64
 
 # 🔧 根据backbone设置不同的学习率
 if [ "$BACKBONE" = "llama" ]; then
