@@ -19,13 +19,27 @@ import torch
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
-    AutoModelForImageTextToText,
     AutoModelForSeq2SeqLM,
-    AutoModelForTextToWaveform,
-    AutoModelForVision2Seq,
     AutoProcessor,
     AutoTokenizer,
 )
+
+# 以下类在较新版本 transformers 中才可用，旧版本中可选导入
+try:
+    from transformers import AutoModelForImageTextToText
+except ImportError:
+    AutoModelForImageTextToText = None
+
+try:
+    from transformers import AutoModelForVision2Seq
+except ImportError:
+    AutoModelForVision2Seq = None
+
+try:
+    from transformers import AutoModelForTextToWaveform
+except ImportError:
+    AutoModelForTextToWaveform = None
+
 from trl import AutoModelForCausalLMWithValueHead
 
 from ..extras import logging
@@ -176,13 +190,13 @@ def load_model(
             if model_args.mixture_of_depths == "load":
                 model = load_mod_pretrained_model(**init_kwargs)
             else:
-                if type(config) in AutoModelForImageTextToText._model_mapping.keys():  # image-text
+                if AutoModelForImageTextToText is not None and type(config) in AutoModelForImageTextToText._model_mapping.keys():  # image-text
                     load_class = AutoModelForImageTextToText
-                elif type(config) in AutoModelForVision2Seq._model_mapping.keys():  # image-text
+                elif AutoModelForVision2Seq is not None and type(config) in AutoModelForVision2Seq._model_mapping.keys():  # image-text
                     load_class = AutoModelForVision2Seq
                 elif type(config) in AutoModelForSeq2SeqLM._model_mapping.keys():  # audio-text
                     load_class = AutoModelForSeq2SeqLM
-                elif type(config) in AutoModelForTextToWaveform._model_mapping.keys():  # audio hack for qwen2_5_omni
+                elif AutoModelForTextToWaveform is not None and type(config) in AutoModelForTextToWaveform._model_mapping.keys():  # audio hack for qwen2_5_omni
                     load_class = AutoModelForTextToWaveform
                 else:
                     load_class = AutoModelForCausalLM
