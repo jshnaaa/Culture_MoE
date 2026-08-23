@@ -81,8 +81,6 @@ def main():
         author="hiyouga",
         author_email="hiyouga@buaa.edu.cn",
         description="Unified Efficient Fine-Tuning of 100+ LLMs",
-        long_description=open("README.md", encoding="utf-8").read(),
-        long_description_content_type="text/markdown",
         keywords=["AI", "LLM", "GPT", "ChatGPT", "Llama", "Transformer", "DeepSeek", "Pytorch"],
         license="Apache 2.0 License",
         url="https://github.com/hiyouga/LLaMA-Factory",

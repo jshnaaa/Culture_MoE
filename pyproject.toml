@@ -12,7 +12,6 @@ dynamic = [
     "scripts",
     "authors",
     "description",
-    "readme",
     "license",
     "keywords",
     "classifiers"
